@@ -1,7 +1,7 @@
 # rara-scribe
 
 Third agent in the **rara** ecosystem. Produces **high-quality transcripts, in the audio's
-native language**, for videos collected by `rara-harvest` (`channel_videos`) and catalogued
+native language**, for videos collected by `rara-harvest` (`channel_videos`) and cataloged
 by `rara-shelf` (`playlist_videos`).
 
 Replaces weak YouTube auto-captions with specialist ASR. **Source-agnostic**: YouTube, any

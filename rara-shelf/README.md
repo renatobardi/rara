@@ -1,7 +1,7 @@
 # rara-shelf
 
 Second agent in the **rara** ecosystem. While `rara-harvest` collects videos from external
-public channels, **rara-shelf** does the opposite: it catalogues **your own YouTube playlists**
+public channels, **rara-shelf** does the opposite: it catalogs **your own YouTube playlists**
 (public, private, and unlisted) and the videos in each one, recording **which playlist each
 video belongs to**.
 
