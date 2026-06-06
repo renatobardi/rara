@@ -337,6 +337,7 @@ func (a *ytDlpAcquirer) Acquire(ctx context.Context, src Source) ([]AudioChunk, 
 		args := []string{
 			"-x",
 			"--no-playlist", "--no-progress",
+			"--no-write-thumbnail", "--no-write-subs",
 			// Force the web player client (full cookie support) and fall back to
 			// mweb then android. The ios client uses OAuth tokens instead of
 			// browser cookies and silently ignores the --cookies flag.
