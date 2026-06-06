@@ -9,7 +9,9 @@ RUN go mod download
 
 COPY . .
 
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build \
+# Build a static binary for the build platform (amd64 on Cloud Build),
+# which is what Cloud Run runs. No hardcoded GOARCH cross-compile.
+RUN CGO_ENABLED=0 GOOS=linux go build \
     -ldflags="-w -s" \
     -o etl-job .
 

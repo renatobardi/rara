@@ -1,0 +1,83 @@
+name: Deploy to Cloud Run
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_after_deploy:
+        description: 'Execute the job once right after deploying'
+        required: false
+        default: 'true'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+  push:
+    branches:
+      - main
+    paths:
+      - 'rara-harvest/**'
+      - '.github/workflows/deploy.yml'
+
+# Required for Workload Identity Federation (keyless auth to GCP).
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  REGION: ${{ vars.GCP_REGION }}
+  AR_REPO: rara
+  JOB_NAME: rara-harvest
+  IMAGE: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/rara/rara-harvest:${{ github.sha }}
+
+jobs:
+  deploy:
+    name: Build & Deploy Cloud Run Job
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed # v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f # v2
+
+      - name: Build image with Cloud Build
+        run: |
+          gcloud builds submit rara-harvest \
+            --tag "$IMAGE" \
+            --project "${{ vars.GCP_PROJECT_ID }}"
+
+      - name: Deploy Cloud Run Job
+        run: |
+          # Create the job on first deploy, otherwise update it. Both paths
+          # mount the same Secret Manager secrets as environment variables.
+          if gcloud run jobs describe "$JOB_NAME" --region "$REGION" \
+               --project "${{ vars.GCP_PROJECT_ID }}" >/dev/null 2>&1; then
+            ACTION=update
+          else
+            ACTION=create
+          fi
+          echo "Job action: $ACTION"
+          gcloud run jobs "$ACTION" "$JOB_NAME" \
+            --image "$IMAGE" \
+            --region "$REGION" \
+            --project "${{ vars.GCP_PROJECT_ID }}" \
+            --set-secrets "YOUTUBE_API_KEY=youtube-api-key:latest,DATABASE_URL=database-url:latest" \
+            --max-retries 1 \
+            --task-timeout 600s \
+            --memory 512Mi \
+            --cpu 1
+
+      - name: Execute job once
+        if: github.event_name == 'push' || github.event.inputs.run_after_deploy == 'true'
+        run: |
+          gcloud run jobs execute "$JOB_NAME" \
+            --region "$REGION" \
+            --project "${{ vars.GCP_PROJECT_ID }}" \
+            --wait
