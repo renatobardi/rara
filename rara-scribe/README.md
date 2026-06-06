@@ -113,5 +113,7 @@ gcloud run jobs delete rara-scribe --region us-central1 --project oute-rara
 - `migrations/001_initial_schema.sql` creates `transcripts` + `transcript_segments`.
 - `migrations/002_widen_language.sql` widens `transcripts.language` to `TEXT` (Whisper returns
   full language names like `azerbaijani` that overflow the original `VARCHAR(10)`).
+- `migrations/003_add_attempt_count.sql` adds `transcripts.attempt_count` so permanently-failing
+  videos (deleted/private) stop being retried after a cap instead of every run.
 
 Applied by the `database-scribe.yml` workflow. See [DEPLOY.md](DEPLOY.md).
