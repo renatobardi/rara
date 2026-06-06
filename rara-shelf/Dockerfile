@@ -7,7 +7,8 @@ RUN apk add --no-cache git
 COPY go.mod go.sum ./
 RUN go mod download
 
-COPY . .
+# Copy only Go sources (avoids pulling unrelated files into the image layer).
+COPY *.go ./
 
 # Build a static binary for the build platform (amd64 on Cloud Build),
 # which is what Cloud Run runs. No hardcoded GOARCH cross-compile.
@@ -15,12 +16,15 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
     -ldflags="-w -s" \
     -o shelf-job .
 
-FROM alpine:latest
+FROM alpine:3.21
 
 RUN apk add --no-cache ca-certificates
 
 WORKDIR /app
 
 COPY --from=builder /build/shelf-job /app/shelf-job
+
+# Run as an unprivileged user.
+USER nobody
 
 ENTRYPOINT ["/app/shelf-job"]

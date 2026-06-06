@@ -40,8 +40,14 @@ jobs:
           sudo apt-get install -y postgresql-client
 
       - name: Build DATABASE_URL from secrets
+        env:
+          NEON_USERNAME: ${{ secrets.NEON_USERNAME }}
+          NEON_PASSWORD: ${{ secrets.NEON_PASSWORD }}
+          NEON_HOST: ${{ secrets.NEON_HOST }}
+          NEON_PORT: ${{ secrets.NEON_PORT }}
+          NEON_DATABASE: ${{ secrets.NEON_DATABASE }}
         run: |
-          echo "DATABASE_URL=postgresql://${{ secrets.NEON_USERNAME }}:${{ secrets.NEON_PASSWORD }}@${{ secrets.NEON_HOST }}:${{ secrets.NEON_PORT }}/${{ secrets.NEON_DATABASE }}" >> $GITHUB_ENV
+          echo "DATABASE_URL=postgresql://${NEON_USERNAME}:${NEON_PASSWORD}@${NEON_HOST}:${NEON_PORT}/${NEON_DATABASE}" >> "$GITHUB_ENV"
 
       - name: Test database connection
         run: |
@@ -93,8 +99,14 @@ jobs:
           sudo apt-get install -y postgresql-client
 
       - name: Build DATABASE_URL from secrets
+        env:
+          NEON_USERNAME: ${{ secrets.NEON_USERNAME }}
+          NEON_PASSWORD: ${{ secrets.NEON_PASSWORD }}
+          NEON_HOST: ${{ secrets.NEON_HOST }}
+          NEON_PORT: ${{ secrets.NEON_PORT }}
+          NEON_DATABASE: ${{ secrets.NEON_DATABASE }}
         run: |
-          echo "DATABASE_URL=postgresql://${{ secrets.NEON_USERNAME }}:${{ secrets.NEON_PASSWORD }}@${{ secrets.NEON_HOST }}:${{ secrets.NEON_PORT }}/${{ secrets.NEON_DATABASE }}" >> $GITHUB_ENV
+          echo "DATABASE_URL=postgresql://${NEON_USERNAME}:${NEON_PASSWORD}@${NEON_HOST}:${NEON_PORT}/${NEON_DATABASE}" >> "$GITHUB_ENV"
 
       - name: Apply migrations
         run: |
