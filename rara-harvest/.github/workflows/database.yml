@@ -28,9 +28,6 @@ on:
           - migrate
           - seed
 
-env:
-  DATABASE_URL: ${{ secrets.DATABASE_URL }}
-
 jobs:
   validate:
     name: Validate Schema
@@ -73,9 +70,14 @@ jobs:
 
       - name: Validate SQL syntax
         run: |
+          # Execute each migration inside a transaction and roll it back, so the
+          # SQL is genuinely parsed/planned by Postgres without persisting changes.
           for file in rara-harvest/migrations/*.sql; do
-            echo "Validating: $file"
-            psql "$DATABASE_URL" --single-transaction -f "$file" --dry-run || echo "⚠️ Dry run failed: $file"
+            echo "Validating: $(basename "$file")"
+            { echo "BEGIN;"; cat "$file"; echo "ROLLBACK;"; } \
+              | psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -q \
+              && echo "✅ $(basename "$file") is valid" \
+              || { echo "❌ $(basename "$file") failed validation"; exit 1; }
           done
 
       - name: Check current schema

@@ -121,13 +121,13 @@ deploy_cloud_run_job() {
         gcloud run jobs update "${JOB_NAME}" \
             --region="${REGION}" \
             --image="${IMAGE_PATH}" \
-            --set-env-vars="YOUTUBE_API_KEY=projects/${PROJECT_ID}/secrets/youtube-api-key/versions/latest,DATABASE_URL=projects/${PROJECT_ID}/secrets/database-url/versions/latest"
+            --set-secrets="YOUTUBE_API_KEY=youtube-api-key:latest,DATABASE_URL=database-url:latest"
     else
         log_info "Creating new Cloud Run job..."
         gcloud run jobs create "${JOB_NAME}" \
             --image="${IMAGE_PATH}" \
             --region="${REGION}" \
-            --set-env-vars="YOUTUBE_API_KEY=projects/${PROJECT_ID}/secrets/youtube-api-key/versions/latest,DATABASE_URL=projects/${PROJECT_ID}/secrets/database-url/versions/latest" \
+            --set-secrets="YOUTUBE_API_KEY=youtube-api-key:latest,DATABASE_URL=database-url:latest" \
             --memory=512Mi \
             --cpu=1 \
             --task-timeout=1800s \

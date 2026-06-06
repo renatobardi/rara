@@ -72,28 +72,24 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup Go
         uses: actions/setup-go@v4
         with:
           go-version: '1.23'
 
-      - name: Check for secrets
+      - name: Vulnerability scan (govulncheck)
         run: |
           cd rara-harvest
-          echo "Checking for hardcoded secrets..."
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          "$(go env GOPATH)/bin/govulncheck" ./...
 
-          # Check for common secret patterns
-          if grep -r "password\|api_key\|secret\|token" *.go | grep -v "// " | grep -v "test"; then
-            echo "⚠️  Potential secrets found in code (manual review needed)"
-          fi
-
-          echo "✅ Secret scan complete"
-
-      - name: Dependency audit
-        run: |
-          cd rara-harvest
-          go list -json -m all | go-audit audit || echo "⚠️  Some dependencies may need updates"
+      - name: Secret scan (gitleaks)
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   docker:
     name: Docker Build

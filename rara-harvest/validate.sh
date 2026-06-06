@@ -65,12 +65,14 @@ else
 fi
 
 # Check 4: Indexes
+# Two explicit performance indexes are expected (idx_videos_published_at,
+# idx_videos_channel_id). UNIQUE/PK-backed indexes are not named idx_*.
 log_check "indexes"
-INDEXES=$(psql "$DATABASE_URL" -c "\di" | grep -E "idx_|pk_" | wc -l)
-if [ "$INDEXES" -ge 4 ]; then
-    log_info "Found $INDEXES indexes (expected: 4+)"
+INDEXES=$(psql "$DATABASE_URL" -c "\di" | grep -E "idx_" | wc -l)
+if [ "$INDEXES" -ge 2 ]; then
+    log_info "Found $INDEXES indexes (expected: 2+)"
 else
-    log_error "Missing indexes (found: $INDEXES, expected: 4+)"
+    log_error "Missing indexes (found: $INDEXES, expected: 2+)"
     exit 1
 fi
 
