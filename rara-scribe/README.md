@@ -62,7 +62,14 @@ make lint          # go vet + staticcheck
 make build         # binário local (scribe-job)
 ```
 
-Requer `yt-dlp` e `ffmpeg` no PATH para correr de verdade (os testes não precisam — usam mocks).
+Para correr de verdade (não os testes — esses usam mocks) precisas de `yt-dlp` e `ffmpeg`. O
+binário é resolvido por **caminho absoluto** (não via `$PATH`); em dev local aponta com env:
+
+```bash
+export YT_DLP_BIN="$(which yt-dlp)" FFMPEG_BIN="$(which ffmpeg)"
+```
+
+No container os defaults (`/usr/local/bin/yt-dlp`, `/usr/bin/ffmpeg`) já estão corretos.
 
 ## Migrações
 

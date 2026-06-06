@@ -314,11 +314,13 @@ func cleanupChunks(chunks []AudioChunk) {
 // ---------------------------------------------------------------------------
 
 type ytDlpAcquirer struct {
+	ytDlp      string // absolute path to the yt-dlp binary
+	ffmpeg     string // absolute path to the ffmpeg binary
 	cookieFile string // optional path to a cookies.txt file
 }
 
-func newYtDlpAcquirer(cookieFile string) *ytDlpAcquirer {
-	return &ytDlpAcquirer{cookieFile: cookieFile}
+func newYtDlpAcquirer(ytDlp, ffmpeg, cookieFile string) *ytDlpAcquirer {
+	return &ytDlpAcquirer{ytDlp: ytDlp, ffmpeg: ffmpeg, cookieFile: cookieFile}
 }
 
 func (a *ytDlpAcquirer) Acquire(ctx context.Context, src Source) ([]AudioChunk, error) {
@@ -338,8 +340,10 @@ func (a *ytDlpAcquirer) Acquire(ctx context.Context, src Source) ([]AudioChunk, 
 		if a.cookieFile != "" {
 			args = append(args, "--cookies", a.cookieFile)
 		}
-		args = append(args, src.Ref)
-		if out, err := exec.CommandContext(ctx, "yt-dlp", args...).CombinedOutput(); err != nil {
+		// "--" ends option parsing: a ref starting with "-" is treated as a URL,
+		// not as a yt-dlp flag (argument-injection guard).
+		args = append(args, "--", src.Ref)
+		if out, err := exec.CommandContext(ctx, a.ytDlp, args...).CombinedOutput(); err != nil {
 			_ = os.RemoveAll(workDir)
 			return nil, fmt.Errorf("yt-dlp failed: %w: %s", err, lastLine(out))
 		}
@@ -355,7 +359,7 @@ func (a *ytDlpAcquirer) Acquire(ctx context.Context, src Source) ([]AudioChunk, 
 		"-reset_timestamps", "1",
 		pattern,
 	}
-	if out, err := exec.CommandContext(ctx, "ffmpeg", ffargs...).CombinedOutput(); err != nil {
+	if out, err := exec.CommandContext(ctx, a.ffmpeg, ffargs...).CombinedOutput(); err != nil {
 		_ = os.RemoveAll(workDir)
 		return nil, fmt.Errorf("ffmpeg failed: %w: %s", err, lastLine(out))
 	}
@@ -689,6 +693,16 @@ func nullInt(n int) *int {
 // Config & entrypoint
 // ---------------------------------------------------------------------------
 
+// resolveBin returns an absolute path to an external binary: the env override if
+// set, otherwise the fixed container default. It deliberately avoids resolving
+// the command name through $PATH.
+func resolveBin(envVar, defaultPath string) string {
+	if p := os.Getenv(envVar); p != "" {
+		return p
+	}
+	return defaultPath
+}
+
 func loadConfig() Config {
 	batch := defaultBatchSize
 	if v := os.Getenv("BATCH_SIZE"); v != "" {
@@ -736,7 +750,14 @@ func main() {
 	log.Println("Connected to database successfully")
 
 	db := &pgxDatabase{conn: conn}
-	acq := newYtDlpAcquirer(cookieFile)
+	// Resolve the external binaries to absolute paths (no $PATH lookup, which
+	// could be hijacked). Container defaults match the Dockerfile; override with
+	// YT_DLP_BIN / FFMPEG_BIN for local development.
+	acq := newYtDlpAcquirer(
+		resolveBin("YT_DLP_BIN", "/usr/local/bin/yt-dlp"),
+		resolveBin("FFMPEG_BIN", "/usr/bin/ffmpeg"),
+		cookieFile,
+	)
 	ctx := context.Background()
 
 	if *sourceFlag != "" {
