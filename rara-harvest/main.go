@@ -36,6 +36,11 @@ type PlaylistResponse struct {
 	Items []PlaylistItem `json:"items"`
 }
 
+// httpClient is shared across all channel fetches so HTTP connections are reused
+// across the ~100 channels processed per run (a fresh client per call would defeat
+// keep-alive). 15s timeout bounds any single YouTube Data API call.
+var httpClient = &http.Client{Timeout: 15 * time.Second}
+
 func main() {
 	apiKey := os.Getenv("YOUTUBE_API_KEY")
 	databaseURL := os.Getenv("DATABASE_URL")
@@ -125,15 +130,22 @@ func processChannel(ctx context.Context, conn *pgx.Conn, channel Channel, apiKey
 		return nil
 	}
 
+	inserted, skipped, failed := 0, 0, 0
 	for _, video := range videos {
-		err := upsertVideo(ctx, conn, channel.ID, video)
-		if err != nil {
+		isNew, err := upsertVideo(ctx, conn, channel.ID, video)
+		switch {
+		case err != nil:
+			failed++
 			log.Printf("Warning: Failed to upsert video %s: %v\n", video.ContentDetails.VideoID, err)
-			continue
+		case isNew:
+			inserted++
+		default:
+			skipped++ // already present (ON CONFLICT DO NOTHING)
 		}
 	}
 
-	log.Printf("Inserted/updated %d videos for channel %s\n", len(videos), channel.ChannelName)
+	log.Printf("Channel %s: %d inserted, %d skipped, %d failed (of %d fetched)\n",
+		channel.ChannelName, inserted, skipped, failed, len(videos))
 	return nil
 }
 
@@ -161,8 +173,7 @@ func fetchLatestVideos(ctx context.Context, apiKey, uploadPlaylistID string) ([]
 		return nil, err
 	}
 
-	client := &http.Client{Timeout: 15 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -185,7 +196,10 @@ func fetchLatestVideos(ctx context.Context, apiKey, uploadPlaylistID string) ([]
 	return playlistResp.Items, nil
 }
 
-func upsertVideo(ctx context.Context, conn *pgx.Conn, channelID int, video PlaylistItem) error {
+// upsertVideo inserts a video, returning whether a new row was actually created
+// (false means it already existed via ON CONFLICT DO NOTHING). The caller uses
+// this to report accurate inserted/skipped counts.
+func upsertVideo(ctx context.Context, conn *pgx.Conn, channelID int, video PlaylistItem) (bool, error) {
 	videoURL := fmt.Sprintf("https://www.youtube.com/watch?v=%s", video.ContentDetails.VideoID)
 
 	query := `
@@ -203,12 +217,13 @@ func upsertVideo(ctx context.Context, conn *pgx.Conn, channelID int, video Playl
 	)
 
 	if err != nil {
-		return err
+		return false, err
 	}
 
-	if commandTag.RowsAffected() > 0 {
+	inserted := commandTag.RowsAffected() > 0
+	if inserted {
 		log.Printf("Inserted video: %s - %s\n", video.ContentDetails.VideoID, video.Snippet.Title)
 	}
 
-	return nil
+	return inserted, nil
 }

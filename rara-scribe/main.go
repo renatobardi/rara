@@ -44,6 +44,15 @@ const (
 	// sourceTimeout bounds the work on a single video (download + transcribe), so
 	// a stuck yt-dlp/ffmpeg or a hung upload cannot block the whole batch.
 	sourceTimeout = 20 * time.Minute
+
+	// saveTimeout bounds the per-video database write, so a hung DB connection
+	// cannot stall the whole batch on its own (the batch ctx is unbounded).
+	saveTimeout = 30 * time.Second
+
+	// maxFailedAttempts caps how many times a failing video is retried. Past this,
+	// PendingVideos skips it so permanently-broken videos (deleted/private) stop
+	// burning yt-dlp/ASR calls every run. A 'done' save resets the counter.
+	maxFailedAttempts = 5
 )
 
 // transcribeClient is used for the (slower) ASR calls — uploading audio and
@@ -279,7 +288,12 @@ func runBatch(ctx context.Context, db Database, acq AudioAcquirer, tr Transcribe
 		if t.YoutubeVideoID == "" {
 			t.YoutubeVideoID = ref.YoutubeVideoID // fall back to the known id
 		}
-		if err := db.SaveTranscript(ctx, t, segs); err != nil {
+		// Bound the DB write on its own timeout — the batch ctx is unbounded, so a
+		// hung connection here must not stall the whole run.
+		saveCtx, cancelSave := context.WithTimeout(ctx, saveTimeout)
+		err := db.SaveTranscript(saveCtx, t, segs)
+		cancelSave()
+		if err != nil {
 			log.Printf("Warning: failed to save transcript for %s: %v\n", t.YoutubeVideoID, err)
 			continue
 		}
@@ -600,9 +614,10 @@ type pgxDatabase struct{ conn *pgx.Conn }
 // PendingVideos returns videos present in either collector table that do not yet
 // have a completed transcript, capped at limit.
 func (d *pgxDatabase) PendingVideos(ctx context.Context, limit int) ([]VideoRef, error) {
-	// Pending = videos in either collector table without a 'done' transcript.
-	// Order never-attempted videos before previously-failed ones so a handful of
-	// permanently-failing videos (deleted/private) can never starve the backlog.
+	// Pending = videos in either collector table without a 'done' transcript,
+	// excluding failed videos that have exhausted the retry cap (so deleted/private
+	// videos stop being retried forever). Never-attempted videos are ordered before
+	// previously-failed ones so a handful of failures can never starve the backlog.
 	const query = `
 		SELECT v.youtube_video_id, MIN(v.url) AS url
 		FROM (
@@ -611,11 +626,12 @@ func (d *pgxDatabase) PendingVideos(ctx context.Context, limit int) ([]VideoRef,
 			SELECT youtube_video_id, url FROM playlist_videos
 		) v
 		LEFT JOIN transcripts t ON t.youtube_video_id = v.youtube_video_id
-		WHERE t.youtube_video_id IS NULL OR t.status <> 'done'
+		WHERE (t.youtube_video_id IS NULL OR t.status <> 'done')
+		  AND NOT (t.status = 'failed' AND t.attempt_count >= $2)
 		GROUP BY v.youtube_video_id
 		ORDER BY MIN(CASE WHEN t.status = 'failed' THEN 1 ELSE 0 END) ASC
 		LIMIT $1`
-	rows, err := d.conn.Query(ctx, query, limit)
+	rows, err := d.conn.Query(ctx, query, limit, maxFailedAttempts)
 	if err != nil {
 		return nil, err
 	}
@@ -642,10 +658,17 @@ func (d *pgxDatabase) SaveTranscript(ctx context.Context, t Transcript, segs []S
 	}
 	defer tx.Rollback(ctx)
 
+	// attempt_count tracks consecutive failures: start a brand-new failed row at 1,
+	// a done row at 0; on conflict, increment when the new save is 'failed' and
+	// reset to 0 when it is 'done'.
+	initialAttempt := 0
+	if t.Status == "failed" {
+		initialAttempt = 1
+	}
 	const upsert = `
 		INSERT INTO transcripts
-			(source_type, youtube_video_id, source_ref, language, engine, transcript, duration_seconds, status, error)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+			(source_type, youtube_video_id, source_ref, language, engine, transcript, duration_seconds, status, error, attempt_count)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		ON CONFLICT (youtube_video_id) DO UPDATE SET
 			source_type = EXCLUDED.source_type,
 			source_ref = EXCLUDED.source_ref,
@@ -655,6 +678,9 @@ func (d *pgxDatabase) SaveTranscript(ctx context.Context, t Transcript, segs []S
 			duration_seconds = EXCLUDED.duration_seconds,
 			status = EXCLUDED.status,
 			error = EXCLUDED.error,
+			attempt_count = CASE WHEN EXCLUDED.status = 'failed'
+			                     THEN transcripts.attempt_count + 1
+			                     ELSE 0 END,
 			updated_at = CURRENT_TIMESTAMP
 		RETURNING id`
 	var id int
@@ -668,19 +694,26 @@ func (d *pgxDatabase) SaveTranscript(ctx context.Context, t Transcript, segs []S
 		nullInt(t.DurationSeconds),
 		t.Status,
 		nullStr(t.Error),
+		initialAttempt,
 	).Scan(&id); err != nil {
 		return err
 	}
 
-	// Replace any existing segments for this transcript.
+	// Replace any existing segments for this transcript. CopyFrom streams all
+	// segments in one round-trip — far cheaper than per-row INSERTs for long
+	// videos (hundreds of segments) at large batch sizes.
 	if _, err := tx.Exec(ctx, `DELETE FROM transcript_segments WHERE transcript_id = $1`, id); err != nil {
 		return err
 	}
-	for i, s := range segs {
-		if _, err := tx.Exec(ctx,
-			`INSERT INTO transcript_segments (transcript_id, seq, start_seconds, end_seconds, text)
-			 VALUES ($1, $2, $3, $4, $5)`,
-			id, i, s.Start, s.End, s.Text,
+	if len(segs) > 0 {
+		rows := make([][]any, len(segs))
+		for i, s := range segs {
+			rows[i] = []any{id, i, s.Start, s.End, s.Text}
+		}
+		if _, err := tx.CopyFrom(ctx,
+			pgx.Identifier{"transcript_segments"},
+			[]string{"transcript_id", "seq", "start_seconds", "end_seconds", "text"},
+			pgx.CopyFromRows(rows),
 		); err != nil {
 			return err
 		}

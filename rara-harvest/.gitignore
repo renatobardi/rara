@@ -1,4 +1,5 @@
 etl-job
+rara-harvest
 coverage.out
 *.out
 .env
