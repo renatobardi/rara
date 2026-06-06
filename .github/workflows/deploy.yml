@@ -71,10 +71,27 @@ jobs:
           images: ['${IMAGE}']
           YAML
 
-          gcloud builds submit \
+          # --async avoids log streaming (SA lacks log viewer); we poll status instead.
+          BUILD_ID=$(gcloud builds submit \
             --no-source \
             --config=/tmp/cloudbuild.yaml \
-            --project "${{ vars.GCP_PROJECT_ID }}"
+            --project "${{ vars.GCP_PROJECT_ID }}" \
+            --async \
+            --format='value(id)')
+          echo "Cloud Build ID: $BUILD_ID"
+
+          while true; do
+            STATUS=$(gcloud builds describe "$BUILD_ID" \
+              --project "${{ vars.GCP_PROJECT_ID }}" \
+              --format='value(status)')
+            echo "Build status: $STATUS"
+            case "$STATUS" in
+              SUCCESS) echo "Image built successfully"; break ;;
+              FAILURE|CANCELLED|TIMEOUT|INTERNAL_ERROR)
+                echo "Build failed: $STATUS"; exit 1 ;;
+              *) sleep 15 ;;
+            esac
+          done
 
       - name: Deploy Cloud Run Job
         run: |
