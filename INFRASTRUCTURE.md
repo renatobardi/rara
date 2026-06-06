@@ -162,7 +162,7 @@ condition**, not the secrecy of those identifiers. Verify periodically:
 Verify the WIF condition with:
 ```bash
 gcloud iam workload-identity-pools providers describe <PROVIDER> \
-  --location=global --workload-identity-pool=<POOL> --project "$PROJECT_ID" \
+  --location=global --workload-identity-pool=<POOL> --project <PROJECT_ID> \
   --format='value(attributeCondition)'
 ```
 

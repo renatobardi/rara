@@ -7,7 +7,7 @@ coverage.out
 *.pem
 *.key
 *.p12
-*-credentials.json
+*credentials*.json
 service-account*.json
 secrets/
 *.swp

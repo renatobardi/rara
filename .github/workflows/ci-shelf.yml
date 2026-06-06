@@ -1,8 +1,5 @@
 name: CI rara-shelf
 
-permissions:
-  contents: read
-
 on:
   push:
     branches:
@@ -23,6 +20,8 @@ jobs:
   code-quality:
     name: Code Quality & Tests
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
 
     steps:
       - name: Checkout code
@@ -77,6 +76,8 @@ jobs:
   security:
     name: Security Scan
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
 
     steps:
       - name: Checkout code

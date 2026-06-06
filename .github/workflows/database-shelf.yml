@@ -1,8 +1,5 @@
 name: Database Migrations (shelf)
 
-permissions:
-  contents: read
-
 on:
   push:
     branches:
@@ -32,6 +29,8 @@ jobs:
   validate:
     name: Validate Schema
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
 
     steps:
       - name: Checkout code
@@ -91,6 +90,8 @@ jobs:
       (github.ref == 'refs/heads/main' && github.event_name == 'push') ||
       (github.event_name == 'workflow_dispatch' && github.event.inputs.action == 'migrate')
     needs: validate
+    permissions:
+      contents: read
 
     steps:
       - name: Checkout code

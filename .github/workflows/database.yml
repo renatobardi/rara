@@ -1,8 +1,5 @@
 name: Database Migrations
 
-permissions:
-  contents: read
-
 on:
   push:
     branches:
@@ -39,6 +36,8 @@ jobs:
     # Runs on every push, PR, and manual validate/migrate — keeping migrate's
     # `needs: validate` satisfied so it isn't skipped on merges to main.
     if: "!(github.event_name == 'workflow_dispatch' && github.event.inputs.action == 'seed')"
+    permissions:
+      contents: read
 
     steps:
       - name: Checkout code
@@ -99,6 +98,8 @@ jobs:
       (github.ref == 'refs/heads/main' && github.event_name == 'push') ||
       (github.event_name == 'workflow_dispatch' && github.event.inputs.action == 'migrate')
     needs: validate
+    permissions:
+      contents: read
 
     steps:
       - name: Checkout code
@@ -160,6 +161,8 @@ jobs:
     name: Load Seed Data (Optional)
     runs-on: ubuntu-latest
     if: github.event.inputs.action == 'seed'
+    permissions:
+      contents: read
 
     steps:
       - name: Checkout code
@@ -194,6 +197,7 @@ jobs:
     runs-on: ubuntu-latest
     if: always()
     needs: [validate]
+    permissions: {}
 
     steps:
       - name: Install PostgreSQL client
