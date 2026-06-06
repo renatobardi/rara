@@ -1,7 +1,11 @@
-.PHONY: help test test-verbose test-coverage test-race lint fmt clean build docker-build deps all
+.PHONY: help test test-verbose test-coverage test-race lint fmt clean build run install-local deps all
 
 help:
 	@echo "rara-scribe - Makefile Commands"
+	@echo ""
+	@echo "Local execution:"
+	@echo "  make run               Build and run one batch (requires .env)"
+	@echo "  make install-local     Install binary + launchd agent (first-time setup)"
 	@echo ""
 	@echo "Testing:"
 	@echo "  make test              Run all tests"
@@ -15,7 +19,6 @@ help:
 	@echo ""
 	@echo "Build:"
 	@echo "  make build             Build binary for current OS"
-	@echo "  make docker-build      Build Docker image"
 	@echo ""
 	@echo "Maintenance:"
 	@echo "  make clean             Clean build artifacts"
@@ -54,10 +57,21 @@ build:
 	go build -ldflags="-w -s" -o scribe-job .
 	@echo "Built: scribe-job"
 
-docker-build:
-	@echo "Building Docker image..."
-	docker build -t rara-scribe:latest .
-	@echo "Docker image built: rara-scribe:latest"
+# Run one batch locally. Requires a .env file in this directory.
+# Copy .env.example → .env and fill in your values before running.
+run: build
+	@if [ ! -f .env ]; then \
+		echo "Missing .env — copy .env.example and fill in real values:"; \
+		echo "  cp .env.example .env && \$$EDITOR .env"; \
+		exit 1; \
+	fi
+	@echo "Running scribe batch..."
+	@set -a; . ./.env; set +a; ./scribe-job
+
+# Install the binary as a macOS launchd agent that runs daily at 02:00.
+# Re-run after `make build` to update the installed binary.
+install-local:
+	@bash install-local.sh
 
 clean:
 	@echo "Cleaning build artifacts..."
