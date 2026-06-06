@@ -17,21 +17,26 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
     -o scribe-job .
 
 # Debian (glibc) runtime: unlike the other agents, rara-scribe shells out to
-# ffmpeg (audio decode/resample/segment) and yt-dlp (download). The self-contained
-# yt-dlp_linux binary is glibc-based, so Alpine/musl is not an option here.
+# ffmpeg (audio decode/resample/segment) and yt-dlp (download).
 FROM debian:stable-slim
 
-# Pinned yt-dlp release. YouTube breaks extractors often — bump this periodically
-# (same maintenance as `pip install -U yt-dlp`).
-ARG YT_DLP_VERSION=2026.03.17
+# yt-dlp is installed via pip (not the standalone binary).
+# The standalone binary omits the EJS solver scripts that decode YouTube's
+# n-parameter challenge. Without them yt-dlp cannot bypass the challenge and
+# Cloud Run IPs are rejected with "Sign in to confirm you're not a bot".
+# pip install "yt-dlp[default]" pulls in brotli, pycryptodomex, websockets,
+# etc. and places the solver scripts alongside the package — the same path
+# yt-dlp looks for them at runtime.
+#
+# Node.js provides the JavaScript runtime yt-dlp uses to execute the solver;
+# priority order is deno → node → phantomjs. Bump YT_DLP_VERSION periodically
+# (same maintenance as before — YouTube breaks extractors often).
+ARG YT_DLP_VERSION=2026.3.17
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates ffmpeg curl \
-    && curl -fsSL "https://github.com/yt-dlp/yt-dlp/releases/download/${YT_DLP_VERSION}/yt-dlp_linux" \
-         -o /usr/local/bin/yt-dlp \
-    && chmod +x /usr/local/bin/yt-dlp \
-    && apt-get purge -y curl \
-    && apt-get autoremove -y \
+    && apt-get install -y --no-install-recommends \
+       ca-certificates ffmpeg python3 python3-pip nodejs \
+    && pip3 install --break-system-packages "yt-dlp[default]==${YT_DLP_VERSION}" \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

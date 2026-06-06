@@ -335,6 +335,11 @@ func (a *ytDlpAcquirer) Acquire(ctx context.Context, src Source) ([]AudioChunk, 
 		args := []string{
 			"-x", "--audio-format", "mp3",
 			"--no-playlist", "--no-progress",
+			// Force the web player client (full cookie support) and fall back to
+			// mweb then android. The ios client uses OAuth tokens instead of
+			// browser cookies and silently ignores the --cookies flag, making it
+			// useless for authenticated downloads.
+			"--extractor-args", "youtube:player_client=web,mweb,android",
 			"-o", filepath.Join(workDir, "audio.%(ext)s"),
 		}
 		if a.cookieFile != "" {
