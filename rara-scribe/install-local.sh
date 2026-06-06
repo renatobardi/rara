@@ -11,6 +11,16 @@ LOG_DIR="$HOME/Library/Logs/rara-scribe"
 LABEL="com.rara.scribe"
 
 # ---------------------------------------------------------------------------
+# 0. Guarda de directório — deve correr a partir de rara-scribe/
+# ---------------------------------------------------------------------------
+if [ ! -f "go.mod" ] || [ ! -f ".env.example" ]; then
+    echo "!! Corre este script a partir da directoria rara-scribe/:"
+    echo "   cd rara-scribe && bash install-local.sh"
+    echo "   (ou: make install-local)"
+    exit 1
+fi
+
+# ---------------------------------------------------------------------------
 # 1. Pré-requisitos
 # ---------------------------------------------------------------------------
 echo "==> Verificando pré-requisitos..."
@@ -32,24 +42,12 @@ echo "   yt-dlp: $(command -v yt-dlp)"
 echo "   ffmpeg: $(command -v ffmpeg)"
 
 # ---------------------------------------------------------------------------
-# 2. Compilar o binário
-# ---------------------------------------------------------------------------
-echo ""
-echo "==> Compilando rara-scribe..."
-go build -ldflags="-w -s" -o "$INSTALL_DIR/rara-scribe" . 2>/dev/null || {
-    # Garante que o diretório existe antes de compilar
-    mkdir -p "$INSTALL_DIR"
-    go build -ldflags="-w -s" -o "$INSTALL_DIR/rara-scribe" .
-}
-echo "   Binário: $INSTALL_DIR/rara-scribe"
-
-# ---------------------------------------------------------------------------
-# 3. Criar directórios
+# 2. Criar directórios
 # ---------------------------------------------------------------------------
 mkdir -p "$INSTALL_DIR" "$LOG_DIR"
 
 # ---------------------------------------------------------------------------
-# 4. Criar .env se não existir
+# 3. Criar .env se não existir (termina aqui na primeira execução)
 # ---------------------------------------------------------------------------
 if [ ! -f "$INSTALL_DIR/.env" ]; then
     echo ""
@@ -70,6 +68,14 @@ if [ ! -f "$INSTALL_DIR/.env" ]; then
     echo "   Depois corre de novo: bash install-local.sh"
     exit 0
 fi
+
+# ---------------------------------------------------------------------------
+# 4. Compilar o binário
+# ---------------------------------------------------------------------------
+echo ""
+echo "==> Compilando rara-scribe..."
+go build -ldflags="-w -s" -o "$INSTALL_DIR/rara-scribe" .
+echo "   Binário: $INSTALL_DIR/rara-scribe"
 
 # ---------------------------------------------------------------------------
 # 5. Wrapper script chamado pelo launchd
