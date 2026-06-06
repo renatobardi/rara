@@ -1,0 +1,476 @@
+package main
+
+import (
+	"context"
+	"errors"
+	"testing"
+)
+
+// ---------------------------------------------------------------------------
+// Pure helpers
+// ---------------------------------------------------------------------------
+
+func TestDetectSourceType(t *testing.T) {
+	cases := map[string]string{
+		"https://www.youtube.com/watch?v=dQw4w9WgXcQ": "youtube",
+		"https://youtu.be/dQw4w9WgXcQ":                "youtube",
+		"http://youtube.com/shorts/abc":               "youtube",
+		"https://vimeo.com/123456789":                 "url",
+		"https://example.com/video.mp4":               "url",
+		"/Users/bardi/Videos/talk.mp4":                "local",
+		"talk.mp4":                                    "local",
+	}
+	for ref, want := range cases {
+		if got := detectSourceType(ref); got != want {
+			t.Errorf("detectSourceType(%q) = %q, want %q", ref, got, want)
+		}
+	}
+}
+
+func TestExtractVideoID(t *testing.T) {
+	cases := map[string]string{
+		"https://www.youtube.com/watch?v=dQw4w9WgXcQ":     "dQw4w9WgXcQ",
+		"https://youtu.be/dQw4w9WgXcQ":                    "dQw4w9WgXcQ",
+		"https://www.youtube.com/shorts/dQw4w9WgXcQ":      "dQw4w9WgXcQ",
+		"https://www.youtube.com/embed/dQw4w9WgXcQ?rel=0": "dQw4w9WgXcQ",
+		"https://www.youtube.com/live/dQw4w9WgXcQ":        "dQw4w9WgXcQ",
+		"dQw4w9WgXcQ":                    "dQw4w9WgXcQ",
+		"https://example.com/no-id-here": "",
+	}
+	for in, want := range cases {
+		if got := extractVideoID(in); got != want {
+			t.Errorf("extractVideoID(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestVideoURL(t *testing.T) {
+	if got, want := videoURL("abc123"), "https://www.youtube.com/watch?v=abc123"; got != want {
+		t.Errorf("videoURL = %q, want %q", got, want)
+	}
+}
+
+func TestReindexSegments(t *testing.T) {
+	in := []Segment{{Start: 0, End: 5, Text: "a"}, {Start: 5, End: 12.5, Text: "b"}}
+	out := reindexSegments(in, 600)
+	if out[0].Start != 600 || out[0].End != 605 {
+		t.Errorf("segment 0 = %+v, want start=600 end=605", out[0])
+	}
+	if out[1].Start != 605 || out[1].End != 612.5 {
+		t.Errorf("segment 1 = %+v, want start=605 end=612.5", out[1])
+	}
+	// Reindex must not mutate the input.
+	if in[0].Start != 0 {
+		t.Errorf("input mutated: %+v", in[0])
+	}
+}
+
+func TestDurationFromSegments(t *testing.T) {
+	segs := []Segment{{Start: 0, End: 10}, {Start: 10, End: 23.4}}
+	if got := durationFromSegments(segs); got != 23 {
+		t.Errorf("durationFromSegments = %d, want 23", got)
+	}
+	if got := durationFromSegments(nil); got != 0 {
+		t.Errorf("durationFromSegments(nil) = %d, want 0", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Engine factory
+// ---------------------------------------------------------------------------
+
+func TestNewTranscriberFactory(t *testing.T) {
+	// Default ("") and explicit groq both select Groq, given a key.
+	for _, engine := range []string{"", engineGroq} {
+		tr, name, err := NewTranscriber(Config{Engine: engine, GroqAPIKey: "k"})
+		if err != nil || tr == nil {
+			t.Fatalf("engine %q: unexpected err=%v tr=%v", engine, err, tr)
+		}
+		if name != groqModelName {
+			t.Errorf("engine %q: name = %q, want %q", engine, name, groqModelName)
+		}
+	}
+
+	// Gemini selected with its key.
+	tr, name, err := NewTranscriber(Config{Engine: engineGemini, GeminiAPIKey: "k"})
+	if err != nil || tr == nil || name != geminiModelName {
+		t.Fatalf("gemini: err=%v tr=%v name=%q", err, tr, name)
+	}
+
+	// Missing key → error.
+	if _, _, err := NewTranscriber(Config{Engine: engineGroq}); err == nil {
+		t.Error("expected error for groq without key")
+	}
+	if _, _, err := NewTranscriber(Config{Engine: engineGemini}); err == nil {
+		t.Error("expected error for gemini without key")
+	}
+
+	// Unknown engine → error.
+	if _, _, err := NewTranscriber(Config{Engine: "whisperx", GroqAPIKey: "k"}); err == nil {
+		t.Error("expected error for unknown engine")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Mocks
+// ---------------------------------------------------------------------------
+
+// MockDatabase mirrors the SQL contract: idempotent on youtube_video_id, and
+// PendingVideos excludes anything already transcribed with status 'done'.
+type MockDatabase struct {
+	pending     []VideoRef
+	transcripts map[string]Transcript // keyed by dedup key
+	segments    map[string][]Segment
+	saveErr     error
+	pendingErr  error
+}
+
+func newMockDatabase() *MockDatabase {
+	return &MockDatabase{
+		transcripts: make(map[string]Transcript),
+		segments:    make(map[string][]Segment),
+	}
+}
+
+// dedupKey mirrors the uniqueness contract: youtube id when present, else the
+// source ref (distinct per local/url source).
+func dedupKey(t Transcript) string {
+	if t.YoutubeVideoID != "" {
+		return "yt:" + t.YoutubeVideoID
+	}
+	return "ref:" + t.SourceRef
+}
+
+func (m *MockDatabase) PendingVideos(ctx context.Context, limit int) ([]VideoRef, error) {
+	if m.pendingErr != nil {
+		return nil, m.pendingErr
+	}
+	// Mirror the SQL contract: exclude 'done', and order never-attempted videos
+	// before previously-failed ones so failures can't starve the backlog.
+	var fresh, retry []VideoRef
+	for _, ref := range m.pending {
+		existing, ok := m.transcripts["yt:"+ref.YoutubeVideoID]
+		switch {
+		case ok && existing.Status == "done":
+			continue
+		case ok && existing.Status == "failed":
+			retry = append(retry, ref)
+		default:
+			fresh = append(fresh, ref)
+		}
+	}
+	out := append(fresh, retry...)
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+func (m *MockDatabase) SaveTranscript(ctx context.Context, t Transcript, segs []Segment) error {
+	if m.saveErr != nil {
+		return m.saveErr
+	}
+	key := dedupKey(t)
+	m.transcripts[key] = t // upsert: replaces, mirroring ON CONFLICT DO UPDATE
+	m.segments[key] = segs // replace segments
+	return nil
+}
+
+// MockAcquirer returns preconfigured chunks per source ref, or an error.
+type MockAcquirer struct {
+	chunks map[string][]AudioChunk
+	err    error
+}
+
+func newMockAcquirer() *MockAcquirer {
+	return &MockAcquirer{chunks: make(map[string][]AudioChunk)}
+}
+
+func (a *MockAcquirer) Acquire(ctx context.Context, src Source) ([]AudioChunk, error) {
+	if a.err != nil {
+		return nil, a.err
+	}
+	return a.chunks[src.Ref], nil
+}
+
+// MockTranscriber returns a preconfigured result per chunk path, or an error.
+type mockResult struct {
+	text     string
+	language string
+	segs     []Segment
+}
+
+type MockTranscriber struct {
+	results map[string]mockResult
+	err     error
+}
+
+func newMockTranscriber() *MockTranscriber {
+	return &MockTranscriber{results: make(map[string]mockResult)}
+}
+
+func (tr *MockTranscriber) Transcribe(ctx context.Context, audioPath string) (string, string, []Segment, error) {
+	if tr.err != nil {
+		return "", "", nil, tr.err
+	}
+	r := tr.results[audioPath]
+	return r.text, r.language, r.segs, nil
+}
+
+// TestPendingVideosPrioritizesFreshOverFailed: with limited capacity, a
+// never-attempted video is returned before a previously-failed one, so a
+// permanently-failing video cannot starve the backlog.
+func TestPendingVideosPrioritizesFreshOverFailed(t *testing.T) {
+	m := newMockDatabase()
+	m.pending = []VideoRef{
+		{YoutubeVideoID: "failed1", URL: videoURL("failed1")},
+		{YoutubeVideoID: "fresh1", URL: videoURL("fresh1")},
+	}
+	m.transcripts["yt:failed1"] = Transcript{YoutubeVideoID: "failed1", Status: "failed"}
+
+	got, err := m.PendingVideos(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("PendingVideos failed: %v", err)
+	}
+	if len(got) != 1 || got[0].YoutubeVideoID != "fresh1" {
+		t.Errorf("PendingVideos = %+v, want only [fresh1]", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Fluent harness
+// ---------------------------------------------------------------------------
+
+type ScribeHarness struct {
+	t          *testing.T
+	db         *MockDatabase
+	acq        *MockAcquirer
+	tr         *MockTranscriber
+	engineName string
+}
+
+func NewScribeHarness(t *testing.T) *ScribeHarness {
+	return &ScribeHarness{
+		t:          t,
+		db:         newMockDatabase(),
+		acq:        newMockAcquirer(),
+		tr:         newMockTranscriber(),
+		engineName: groqModelName,
+	}
+}
+
+// WithPendingVideos registers the videos discovered from the collector tables.
+func (h *ScribeHarness) WithPendingVideos(refs ...VideoRef) *ScribeHarness {
+	h.db.pending = append(h.db.pending, refs...)
+	return h
+}
+
+// WithChunks attaches the audio chunks a source ref will produce.
+func (h *ScribeHarness) WithChunks(ref string, chunks ...AudioChunk) *ScribeHarness {
+	h.acq.chunks[ref] = append(h.acq.chunks[ref], chunks...)
+	return h
+}
+
+// WithTranscription sets the ASR result for a given chunk path.
+func (h *ScribeHarness) WithTranscription(path, text, language string, segs ...Segment) *ScribeHarness {
+	h.tr.results[path] = mockResult{text: text, language: language, segs: segs}
+	return h
+}
+
+func (h *ScribeHarness) WithAcquireError(err error) *ScribeHarness {
+	h.acq.err = err
+	return h
+}
+
+func (h *ScribeHarness) WithTranscribeError(err error) *ScribeHarness {
+	h.tr.err = err
+	return h
+}
+
+func (h *ScribeHarness) Execute(ctx context.Context, limit int) error {
+	return runBatch(ctx, h.db, h.acq, h.tr, h.engineName, limit)
+}
+
+func (h *ScribeHarness) get(videoID string) (Transcript, bool) {
+	t, ok := h.db.transcripts["yt:"+videoID]
+	return t, ok
+}
+
+func (h *ScribeHarness) AssertTranscriptCount(expected int) {
+	if len(h.db.transcripts) != expected {
+		h.t.Errorf("transcript count = %d, want %d", len(h.db.transcripts), expected)
+	}
+}
+
+func (h *ScribeHarness) AssertStatus(videoID, status string) {
+	t, ok := h.get(videoID)
+	if !ok {
+		h.t.Errorf("transcript %q not found", videoID)
+		return
+	}
+	if t.Status != status {
+		h.t.Errorf("transcript %q status = %q, want %q", videoID, t.Status, status)
+	}
+}
+
+func (h *ScribeHarness) AssertText(videoID, text string) {
+	t, ok := h.get(videoID)
+	if !ok {
+		h.t.Errorf("transcript %q not found", videoID)
+		return
+	}
+	if t.Text != text {
+		h.t.Errorf("transcript %q text = %q, want %q", videoID, t.Text, text)
+	}
+}
+
+func (h *ScribeHarness) AssertLanguage(videoID, lang string) {
+	t, ok := h.get(videoID)
+	if !ok {
+		h.t.Errorf("transcript %q not found", videoID)
+		return
+	}
+	if t.Language != lang {
+		h.t.Errorf("transcript %q language = %q, want %q", videoID, t.Language, lang)
+	}
+}
+
+func (h *ScribeHarness) AssertSegmentCount(videoID string, expected int) {
+	if got := len(h.db.segments["yt:"+videoID]); got != expected {
+		h.t.Errorf("transcript %q segment count = %d, want %d", videoID, got, expected)
+	}
+}
+
+func (h *ScribeHarness) AssertSegmentStart(videoID string, seq int, start float64) {
+	segs := h.db.segments["yt:"+videoID]
+	if seq >= len(segs) {
+		h.t.Errorf("transcript %q has no segment %d", videoID, seq)
+		return
+	}
+	if segs[seq].Start != start {
+		h.t.Errorf("transcript %q segment %d start = %v, want %v", videoID, seq, segs[seq].Start, start)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Harness tests
+// ---------------------------------------------------------------------------
+
+// TestHarnessSingleVideoSingleChunk: the happy path for one short video.
+func TestHarnessSingleVideoSingleChunk(t *testing.T) {
+	url := videoURL("vid1")
+	h := NewScribeHarness(t).
+		WithPendingVideos(VideoRef{YoutubeVideoID: "vid1", URL: url}).
+		WithChunks(url, AudioChunk{Path: "/tmp/x/chunk_000.mp3", Offset: 0}).
+		WithTranscription("/tmp/x/chunk_000.mp3", "olá mundo", "pt",
+			Segment{Start: 0, End: 2, Text: "olá"}, Segment{Start: 2, End: 4, Text: "mundo"})
+
+	if err := h.Execute(context.Background(), 25); err != nil {
+		t.Fatalf("execute failed: %v", err)
+	}
+	h.AssertTranscriptCount(1)
+	h.AssertStatus("vid1", "done")
+	h.AssertLanguage("vid1", "pt")
+	h.AssertText("vid1", "olá mundo")
+	h.AssertSegmentCount("vid1", 2)
+}
+
+// TestHarnessMultiChunkStitchAndReindex: two chunks → text stitched and the
+// second chunk's segment timestamps shifted by the chunk offset.
+func TestHarnessMultiChunkStitchAndReindex(t *testing.T) {
+	url := videoURL("long1")
+	h := NewScribeHarness(t).
+		WithPendingVideos(VideoRef{YoutubeVideoID: "long1", URL: url}).
+		WithChunks(url,
+			AudioChunk{Path: "/tmp/y/chunk_000.mp3", Offset: 0},
+			AudioChunk{Path: "/tmp/y/chunk_001.mp3", Offset: 600}).
+		WithTranscription("/tmp/y/chunk_000.mp3", "primeira parte", "pt",
+			Segment{Start: 0, End: 30, Text: "primeira parte"}).
+		WithTranscription("/tmp/y/chunk_001.mp3", "segunda parte", "pt",
+			Segment{Start: 10, End: 40, Text: "segunda parte"})
+
+	if err := h.Execute(context.Background(), 25); err != nil {
+		t.Fatalf("execute failed: %v", err)
+	}
+	h.AssertText("long1", "primeira parte\nsegunda parte")
+	h.AssertSegmentCount("long1", 2)
+	h.AssertSegmentStart("long1", 1, 610) // 10 + 600 offset
+}
+
+// TestHarnessAcquireFailureContinues: a download failure is recorded as failed
+// and the batch carries on to the next video.
+func TestHarnessAcquireFailureContinues(t *testing.T) {
+	good := videoURL("good")
+	h := NewScribeHarness(t).
+		WithPendingVideos(
+			VideoRef{YoutubeVideoID: "bad", URL: videoURL("bad")},
+			VideoRef{YoutubeVideoID: "good", URL: good}).
+		WithChunks(good, AudioChunk{Path: "/tmp/z/chunk_000.mp3", Offset: 0}).
+		WithTranscription("/tmp/z/chunk_000.mp3", "ok", "en", Segment{Start: 0, End: 1, Text: "ok"}).
+		WithAcquireError(errors.New("yt-dlp: Sign in to confirm you're not a bot"))
+
+	if err := h.Execute(context.Background(), 25); err != nil {
+		t.Fatalf("execute failed: %v", err)
+	}
+	// Both rows persisted; one failed, one done.
+	h.AssertTranscriptCount(2)
+	h.AssertStatus("bad", "failed")
+	h.AssertSegmentCount("bad", 0)
+}
+
+// TestHarnessFailedTranscriptHasNoSegments verifies a transcribe error is
+// captured with the message and no segments.
+func TestHarnessFailedTranscriptHasNoSegments(t *testing.T) {
+	url := videoURL("vid1")
+	h := NewScribeHarness(t).
+		WithPendingVideos(VideoRef{YoutubeVideoID: "vid1", URL: url}).
+		WithChunks(url, AudioChunk{Path: "/tmp/x/chunk_000.mp3", Offset: 0}).
+		WithTranscribeError(errors.New("groq 429"))
+
+	if err := h.Execute(context.Background(), 25); err != nil {
+		t.Fatalf("execute failed: %v", err)
+	}
+	h.AssertStatus("vid1", "failed")
+	h.AssertSegmentCount("vid1", 0)
+	if tr, _ := h.get("vid1"); tr.Error == "" {
+		t.Error("expected failed transcript to carry an error message")
+	}
+}
+
+// TestHarnessIdempotentReRun: re-running does not re-transcribe an already-done
+// video (PendingVideos excludes it), so the count stays stable.
+func TestHarnessIdempotentReRun(t *testing.T) {
+	url := videoURL("vid1")
+	h := NewScribeHarness(t).
+		WithPendingVideos(VideoRef{YoutubeVideoID: "vid1", URL: url}).
+		WithChunks(url, AudioChunk{Path: "/tmp/x/chunk_000.mp3", Offset: 0}).
+		WithTranscription("/tmp/x/chunk_000.mp3", "olá", "pt", Segment{Start: 0, End: 1, Text: "olá"})
+
+	ctx := context.Background()
+	if err := h.Execute(ctx, 25); err != nil {
+		t.Fatalf("first run failed: %v", err)
+	}
+	h.AssertTranscriptCount(1)
+	h.AssertSegmentCount("vid1", 1)
+
+	if err := h.Execute(ctx, 25); err != nil {
+		t.Fatalf("second run failed: %v", err)
+	}
+	h.AssertTranscriptCount(1) // still 1 — already done, excluded from pending
+}
+
+// TestHarnessBatchSizeLimit: only `limit` videos are processed per run.
+func TestHarnessBatchSizeLimit(t *testing.T) {
+	h := NewScribeHarness(t)
+	for _, id := range []string{"a", "b", "c"} {
+		u := videoURL(id)
+		h.WithPendingVideos(VideoRef{YoutubeVideoID: id, URL: u}).
+			WithChunks(u, AudioChunk{Path: "/tmp/" + id + "/chunk_000.mp3", Offset: 0}).
+			WithTranscription("/tmp/"+id+"/chunk_000.mp3", id, "en", Segment{Start: 0, End: 1, Text: id})
+	}
+
+	if err := h.Execute(context.Background(), 2); err != nil {
+		t.Fatalf("execute failed: %v", err)
+	}
+	h.AssertTranscriptCount(2) // limited to 2 of 3
+}
