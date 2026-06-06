@@ -42,15 +42,60 @@ jobs:
         with:
           workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
           service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+          # WIF external_account credentials are not fully compatible with all
+          # gcloud operations (e.g. Cloud Build source upload to GCS). Requesting
+          # an access_token exchanges the WIF token for a standard OAuth2 token
+          # that works with every gcloud command and client library.
+          token_format: access_token
 
       - name: Set up Cloud SDK
         uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f # v2
 
       - name: Build image with Cloud Build
         run: |
-          gcloud builds submit rara-harvest \
-            --tag "$IMAGE" \
-            --project "${{ vars.GCP_PROJECT_ID }}"
+          # gcloud builds submit's internal GCS upload fails with external_account
+          # (WIF) credentials. Upload source ourselves (gcloud storage works fine),
+          # then submit with --no-source referencing the pre-uploaded object.
+          tar -czf /tmp/source.tgz -C rara-harvest .
+          gcloud storage cp /tmp/source.tgz \
+            "gs://oute-rara_cloudbuild/source/${GITHUB_SHA}.tgz"
+
+          cat > /tmp/cloudbuild.yaml << YAML
+          steps:
+          - name: 'gcr.io/cloud-builders/docker'
+            args: ['build', '-t', '${IMAGE}', '.']
+          source:
+            storageSource:
+              bucket: oute-rara_cloudbuild
+              object: source/${GITHUB_SHA}.tgz
+          images: ['${IMAGE}']
+          YAML
+
+          # --async avoids log streaming (SA lacks log viewer); we poll status instead.
+          BUILD_ID=$(gcloud builds submit \
+            --no-source \
+            --config=/tmp/cloudbuild.yaml \
+            --project "${{ vars.GCP_PROJECT_ID }}" \
+            --async \
+            --format='value(id)')
+          echo "Cloud Build ID: $BUILD_ID"
+
+          while true; do
+            STATUS=$(gcloud builds describe "$BUILD_ID" \
+              --project "${{ vars.GCP_PROJECT_ID }}" \
+              --format='value(status)')
+            echo "Build status: $STATUS"
+            case "$STATUS" in
+              SUCCESS) echo "Image built successfully"; break ;;
+              FAILURE|CANCELLED|TIMEOUT|INTERNAL_ERROR)
+                echo "Build failed: $STATUS"
+                gcloud builds describe "$BUILD_ID" \
+                  --project "${{ vars.GCP_PROJECT_ID }}" \
+                  --format='table(steps.name,steps.status,steps.args)' 2>/dev/null || true
+                exit 1 ;;
+              *) sleep 15 ;;
+            esac
+          done
 
       - name: Deploy Cloud Run Job
         run: |
