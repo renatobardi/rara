@@ -30,13 +30,17 @@ portanto o secret novo fica acessível **sem alterações de IAM**.
 
 ## 2. Deploy
 
+> **Pré-requisito:** o secret `yt-dlp-cookies` tem de existir **antes** do deploy (ver secção 4),
+> senão o `gcloud run jobs create/update` falha. `groq-api-key` (secção 1) e `database-url` também.
+
 - **Automático**: merge de qualquer coisa em `rara-scribe/**` para `main` dispara o
   `deploy-scribe.yml`.
 - **Manual**: Actions → **Deploy rara-scribe to Cloud Run** → *Run workflow*.
 
 O workflow builda a imagem (Go + ffmpeg + yt-dlp), cria/atualiza o Cloud Run Job
-`rara-scribe` (montando `database-url` + `groq-api-key`, com `TRANSCRIBE_ENGINE=groq` e
-`BATCH_SIZE=25`) e executa uma vez. Recursos: `--memory 2Gi --cpu 2 --task-timeout 3600s`.
+`rara-scribe` (montando `database-url` + `groq-api-key` + `yt-dlp-cookies`, com
+`TRANSCRIBE_ENGINE=groq` e `BATCH_SIZE` — `5` na validação inicial, depois `25`) e executa uma
+vez. Recursos: `--memory 2Gi --cpu 2 --task-timeout 3600s`.
 
 Cada execução transcreve até `BATCH_SIZE` vídeos ainda sem transcript. É idempotente: re-runs
 continuam o backlog. Agenda execuções regulares (secção 5) para esgotar a fila ao longo do tempo.
@@ -59,26 +63,39 @@ Tradeoff: Gemini 2.5 Flash é ~½ do custo, mas os timestamps dos segmentos são
 
 ---
 
-## 4. Cookies do YouTube (opcional — contra bloqueio de bot)
+## 4. Cookies do YouTube (necessário — IPs da Cloud Run são bloqueados)
 
-O yt-dlp a partir de IPs de datacenter (Cloud Run) pode apanhar "Sign in to confirm you're not
-a bot". Sem mitigação, vídeos bloqueados ficam `status='failed'` e são re-tentados no run
-seguinte (o batch nunca pára por causa de um vídeo).
+A partir de IPs de datacenter (Cloud Run) o YouTube bloqueia o yt-dlp com "Sign in to confirm
+you're not a bot" — na prática **100% dos downloads** falham sem cookies. Por isso o job monta
+`YT_DLP_COOKIES` a partir do secret `yt-dlp-cookies` e passa-o a `yt-dlp --cookies`. O secret
+**tem de existir antes do deploy** (senão `gcloud run jobs create/update` falha).
 
-> **Nota de segurança:** um `cookies.txt` do YouTube é essencialmente a tua sessão Google —
-> guardá-lo como secret é uma superfície de risco. Por isso **não** é montado por defeito.
+> **Segurança:** um `cookies.txt` do YouTube é a tua sessão Google. Gera-o com uma **conta
+> descartável/secundária** logada só no YouTube — se o secret vazar, é só uma conta-isca.
 
-Se mais tarde quiseres ativá-lo (de preferência com uma conta Google secundária), exporta o
-`cookies.txt`, cria o secret e monta-o no job — e acrescenta `YT_DLP_COOKIES=yt-dlp-cookies:latest`
-ao `--set-secrets` do `deploy-scribe.yml`:
-
+Gerar e guardar (ver passos detalhados no README do agente):
 ```bash
+# Exportar os cookies da conta-isca (browser onde ela está logada).
+# --cookies-from-browser aceita: chrome | safari | firefox | brave | edge.
+# No macOS, o Safari precisa de Full Disk Access no terminal; o Firefox é o de menor atrito.
+yt-dlp --cookies-from-browser safari --cookies cookies.txt --skip-download \
+  "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+
 gcloud secrets create yt-dlp-cookies --replication-policy=automatic \
   --data-file=cookies.txt --project "${PROJECT_ID}"
-
-gcloud run jobs update rara-scribe --region us-central1 --project "${PROJECT_ID}" \
-  --update-secrets "YT_DLP_COOKIES=yt-dlp-cookies:latest"
 ```
+
+**Cookies expiram → degradação silenciosa.** Quando a sessão expira, o bot-check volta e os
+vídeos voltam a sair `failed` **sem nenhum alerta**. Monitoriza a taxa de falha recentes:
+
+```sql
+SELECT COUNT(*) FILTER (WHERE status='failed') AS falhados_recentes
+FROM transcripts
+WHERE updated_at > NOW() - INTERVAL '1 day';
+```
+
+Se disparar, regenera os cookies e adiciona uma nova versão (o job usa `:latest` automaticamente):
+`gcloud secrets versions add yt-dlp-cookies --data-file=cookies.txt --project "${PROJECT_ID}"`.
 
 ---
 
