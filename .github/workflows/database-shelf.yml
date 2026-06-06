@@ -1,5 +1,8 @@
 name: Database Migrations (shelf)
 
+permissions:
+  contents: read
+
 on:
   push:
     branches:

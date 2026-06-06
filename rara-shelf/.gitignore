@@ -3,6 +3,13 @@ coverage.out
 *.out
 .env
 .env.local
+# secrets / credentials (never commit; .env.example is allowed)
+*.pem
+*.key
+*.p12
+*-credentials.json
+service-account*.json
+secrets/
 *.swp
 *.swo
 *~

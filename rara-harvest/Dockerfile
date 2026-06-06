@@ -15,12 +15,14 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
     -ldflags="-w -s" \
     -o etl-job .
 
-FROM alpine:latest
+FROM alpine:3.21
 
 RUN apk add --no-cache ca-certificates
 
 WORKDIR /app
 
 COPY --from=builder /build/etl-job /app/etl-job
+
+USER nobody
 
 ENTRYPOINT ["/app/etl-job"]

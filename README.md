@@ -58,12 +58,12 @@ cd rara-shelf && make test
 
 | Component | Detail |
 |-----------|--------|
-| **GCP Project** | `oute-rara` |
-| **Region** | `us-central1` |
-| **Artifact Registry** | `us-central1-docker.pkg.dev/oute-rara/rara/` |
+| **GCP Project** | `<PROJECT_ID>` (real value in GitHub Variable `GCP_PROJECT_ID`) |
+| **Region** | `<REGION>` (real value in GitHub Variable `GCP_REGION`) |
+| **Artifact Registry** | `<REGION>-docker.pkg.dev/<PROJECT_ID>/rara/` |
 | **Database** | Neon PostgreSQL (free tier) |
 | **Auth to GCP** | Workload Identity Federation — no SA key files |
-| **Service Account** | `rara-deployer@oute-rara.iam.gserviceaccount.com` |
+| **Service Account** | `rara-deployer@<PROJECT_ID>.iam.gserviceaccount.com` |
 | **Secrets** | GCP Secret Manager (`youtube-api-key`, `database-url`, `shelf-oauth-*`) |
 | **CI/CD** | GitHub Actions — path-filtered per agent, actions pinned by SHA |
 
@@ -82,10 +82,10 @@ cd rara-shelf && make test
 | Name | Type | Purpose |
 |------|------|---------|
 | `GCP_WORKLOAD_IDENTITY_PROVIDER` | Secret | WIF provider resource name |
-| `GCP_SERVICE_ACCOUNT` | Secret | `rara-deployer@oute-rara.iam.gserviceaccount.com` |
+| `GCP_SERVICE_ACCOUNT` | Secret | `rara-deployer@<PROJECT_ID>.iam.gserviceaccount.com` |
 | `NEON_HOST/PORT/DATABASE/USERNAME/PASSWORD` | Secret | Neon DB credentials for CI migrations |
-| `GCP_PROJECT_ID` | Variable | `oute-rara` |
-| `GCP_REGION` | Variable | `us-central1` |
+| `GCP_PROJECT_ID` | Variable | the GCP project ID |
+| `GCP_REGION` | Variable | the GCP region |
 
 ---
 
