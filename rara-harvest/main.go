@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -46,18 +47,21 @@ func main() {
 		log.Fatalf("DATABASE_URL environment variable is required")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	// Connection has its own short budget, independent of per-channel work.
+	connectCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	conn, err := pgx.Connect(ctx, databaseURL)
+	conn, err := pgx.Connect(connectCtx, databaseURL)
 	if err != nil {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
-	defer conn.Close(ctx)
+	defer conn.Close(context.Background())
 
 	log.Println("Connected to database successfully")
 
-	channels, err := fetchActiveChannels(ctx, conn)
+	fetchCtx, fetchCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	channels, err := fetchActiveChannels(fetchCtx, conn)
+	fetchCancel()
 	if err != nil {
 		log.Fatalf("Failed to fetch channels: %v", err)
 	}
@@ -70,7 +74,11 @@ func main() {
 	log.Printf("Processing %d channels\n", len(channels))
 
 	for _, channel := range channels {
-		err := processChannel(ctx, conn, channel, apiKey)
+		// Each channel gets its own timeout budget so one slow channel
+		// cannot starve the rest of the job.
+		channelCtx, channelCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		err := processChannel(channelCtx, conn, channel, apiKey)
+		channelCancel()
 		if err != nil {
 			log.Printf("Error processing channel %s: %v\n", channel.YoutubeChannelID, err)
 			continue
@@ -107,7 +115,7 @@ func processChannel(ctx context.Context, conn *pgx.Conn, channel Channel, apiKey
 	uploadPlaylistID := convertToUploadPlaylistID(channel.YoutubeChannelID)
 	log.Printf("Processing channel: %s (playlist: %s)\n", channel.ChannelName, uploadPlaylistID)
 
-	videos, err := fetchLatestVideos(apiKey, uploadPlaylistID)
+	videos, err := fetchLatestVideos(ctx, apiKey, uploadPlaylistID)
 	if err != nil {
 		return fmt.Errorf("failed to fetch videos: %w", err)
 	}
@@ -130,22 +138,31 @@ func processChannel(ctx context.Context, conn *pgx.Conn, channel Channel, apiKey
 }
 
 func convertToUploadPlaylistID(channelID string) string {
-	if len(channelID) < 2 {
+	// Only "UC..." channel IDs map to an uploads playlist ("UU...").
+	// Anything else is returned unchanged rather than silently corrupted.
+	if !strings.HasPrefix(channelID, "UC") {
 		return channelID
 	}
-	return "U" + "U" + channelID[2:]
+	return "UU" + channelID[2:]
 }
 
-func fetchLatestVideos(apiKey, uploadPlaylistID string) ([]PlaylistItem, error) {
+func fetchLatestVideos(ctx context.Context, apiKey, uploadPlaylistID string) ([]PlaylistItem, error) {
 	params := url.Values{}
 	params.Set("playlistId", uploadPlaylistID)
 	params.Set("part", "snippet,contentDetails")
 	params.Set("maxResults", "5")
 	params.Set("key", apiKey)
 
+	// reqURL carries the API key as a query param — never log it.
 	reqURL := "https://www.googleapis.com/youtube/v3/playlistItems?" + params.Encode()
 
-	resp, err := http.Get(reqURL)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}

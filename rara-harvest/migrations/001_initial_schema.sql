@@ -24,11 +24,11 @@ CREATE TABLE IF NOT EXISTS channel_videos (
     collected_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
 
--- Create indexes for performance
-CREATE INDEX IF NOT EXISTS idx_channels_youtube_id ON target_channels(youtube_channel_id);
+-- Create indexes for performance.
+-- Note: youtube_channel_id and youtube_video_id are UNIQUE, which already
+-- creates a backing index for each — no explicit index is needed for them.
 CREATE INDEX IF NOT EXISTS idx_videos_published_at ON channel_videos(published_at DESC);
 CREATE INDEX IF NOT EXISTS idx_videos_channel_id ON channel_videos(channel_id);
-CREATE INDEX IF NOT EXISTS idx_videos_youtube_id ON channel_videos(youtube_video_id);
 
 -- Add comments for documentation
 COMMENT ON TABLE target_channels IS 'YouTube channels to harvest videos from';

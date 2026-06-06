@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"testing"
 	"time"
 )
@@ -118,22 +117,37 @@ func (m *MockDatabase) FetchActiveChannels(ctx context.Context) ([]Channel, erro
 	return m.channels, nil
 }
 
-// MockUpsertVideo simulates database insert with idempotency
+// MockUpsertVideo simulates database insert with idempotency.
+//
+// This mirrors the real schema exactly: youtube_video_id is globally UNIQUE
+// and upsertVideo uses ON CONFLICT (youtube_video_id) DO NOTHING. A video is
+// therefore keyed by its video ID alone — not by channel — so the same video
+// is stored once regardless of how many channels reference it.
 func (m *MockDatabase) UpsertVideo(ctx context.Context, v Video) error {
 	if m.err != nil {
 		return m.err
 	}
-	key := videoKey(v.ChannelID, v.VideoID)
+	key := videoKey(v.VideoID)
 	if _, exists := m.videos[key]; exists {
-		return nil // Idempotent: video already exists for this channel
+		return nil // Idempotent: video already exists (global UNIQUE)
 	}
 	m.videos[key] = v
 	return nil
 }
 
-// videoKey creates unique key for channel+video combination
-func videoKey(channelID int, videoID string) string {
-	return fmt.Sprintf("%d:%s", channelID, videoID)
+// videoKey creates the unique key for a video, matching the DB's
+// UNIQUE(youtube_video_id) constraint.
+func videoKey(videoID string) string {
+	return videoID
+}
+
+// makePlaylistItem builds a PlaylistItem for tests with minimal boilerplate.
+func makePlaylistItem(videoID, title string) PlaylistItem {
+	item := PlaylistItem{}
+	item.ContentDetails.VideoID = videoID
+	item.Snippet.Title = title
+	item.Snippet.PublishedAt = time.Now()
+	return item
 }
 
 // TestMockDatabaseIdempotency tests that upserting same video twice is safe
@@ -198,18 +212,18 @@ func TestMockDatabaseMultipleVideos(t *testing.T) {
 
 // TestETLHarness is the main integration test harness
 type ETLHarness struct {
-	db       *MockDatabase
-	channels []Channel
-	videos   []PlaylistItem
-	t        *testing.T
+	db            *MockDatabase
+	channels      []Channel
+	channelVideos map[int][]PlaylistItem
+	t             *testing.T
 }
 
 // NewETLHarness creates a new test harness
 func NewETLHarness(t *testing.T) *ETLHarness {
 	return &ETLHarness{
-		db:     &MockDatabase{videos: make(map[string]Video)},
-		t:      t,
-		videos: []PlaylistItem{},
+		db:            &MockDatabase{videos: make(map[string]Video)},
+		t:             t,
+		channelVideos: make(map[int][]PlaylistItem),
 	}
 }
 
@@ -220,9 +234,11 @@ func (h *ETLHarness) WithChannels(channels []Channel) *ETLHarness {
 	return h
 }
 
-// WithVideo adds a test video
-func (h *ETLHarness) WithVideo(item PlaylistItem) *ETLHarness {
-	h.videos = append(h.videos, item)
+// WithVideosForChannel attaches videos to a specific channel. This mirrors
+// reality: a channel's uploads playlist contains only that channel's own
+// (globally unique) videos — distinct channels do not share video IDs.
+func (h *ETLHarness) WithVideosForChannel(channelID int, items ...PlaylistItem) *ETLHarness {
+	h.channelVideos[channelID] = append(h.channelVideos[channelID], items...)
 	return h
 }
 
@@ -239,7 +255,7 @@ func (h *ETLHarness) Execute(ctx context.Context) error {
 	}
 
 	for _, channel := range channels {
-		for _, video := range h.videos {
+		for _, video := range h.channelVideos[channel.ID] {
 			v := Video{
 				ChannelID:   channel.ID,
 				VideoID:     video.ContentDetails.VideoID,
@@ -263,11 +279,10 @@ func (h *ETLHarness) AssertVideoCount(expected int) {
 	}
 }
 
-// AssertVideoExists verifies a specific video was stored for first channel
+// AssertVideoExists verifies a specific video was stored
 func (h *ETLHarness) AssertVideoExists(videoID string) {
-	key := videoKey(1, videoID)
-	if _, exists := h.db.videos[key]; !exists {
-		h.t.Errorf("Video %q not found in database (key: %q)", videoID, key)
+	if _, exists := h.db.videos[videoKey(videoID)]; !exists {
+		h.t.Errorf("Video %q not found in database", videoID)
 	}
 }
 
@@ -282,15 +297,7 @@ func TestETLHarnessSingleChannel(t *testing.T) {
 				Active:           true,
 			},
 		}).
-		WithVideo(PlaylistItem{
-			ContentDetails: struct {
-				VideoID string `json:"videoId"`
-			}{VideoID: "dQw4w9WgXcQ"},
-			Snippet: struct {
-				Title       string    `json:"title"`
-				PublishedAt time.Time `json:"publishedAt"`
-			}{Title: "Test Video", PublishedAt: time.Now()},
-		})
+		WithVideosForChannel(1, makePlaylistItem("dQw4w9WgXcQ", "Test Video"))
 
 	ctx := context.Background()
 	if err := harness.Execute(ctx); err != nil {
@@ -301,40 +308,44 @@ func TestETLHarnessSingleChannel(t *testing.T) {
 	harness.AssertVideoExists("dQw4w9WgXcQ")
 }
 
-// TestETLHarnessMultipleChannels tests ETL with multiple channels
+// TestETLHarnessMultipleChannels tests ETL with multiple channels, each
+// harvesting its own distinct videos (as happens in production).
 func TestETLHarnessMultipleChannels(t *testing.T) {
 	harness := NewETLHarness(t).
 		WithChannels([]Channel{
 			{ID: 1, YoutubeChannelID: "UCchannel1", ChannelName: "Channel 1", Active: true},
 			{ID: 2, YoutubeChannelID: "UCchannel2", ChannelName: "Channel 2", Active: true},
 		}).
-		WithVideo(PlaylistItem{
-			ContentDetails: struct {
-				VideoID string `json:"videoId"`
-			}{VideoID: "vid1"},
-			Snippet: struct {
-				Title       string    `json:"title"`
-				PublishedAt time.Time `json:"publishedAt"`
-			}{Title: "Video 1", PublishedAt: time.Now()},
-		}).
-		WithVideo(PlaylistItem{
-			ContentDetails: struct {
-				VideoID string `json:"videoId"`
-			}{VideoID: "vid2"},
-			Snippet: struct {
-				Title       string    `json:"title"`
-				PublishedAt time.Time `json:"publishedAt"`
-			}{Title: "Video 2", PublishedAt: time.Now()},
-		})
+		WithVideosForChannel(1, makePlaylistItem("vid1", "Video 1"), makePlaylistItem("vid2", "Video 2")).
+		WithVideosForChannel(2, makePlaylistItem("vid3", "Video 3"), makePlaylistItem("vid4", "Video 4"))
 
 	ctx := context.Background()
 	if err := harness.Execute(ctx); err != nil {
 		t.Fatalf("Execute failed: %v", err)
 	}
 
-	harness.AssertVideoCount(4) // 2 channels × 2 videos
+	harness.AssertVideoCount(4) // 4 distinct, globally-unique videos across 2 channels
 	harness.AssertVideoExists("vid1")
-	harness.AssertVideoExists("vid2")
+	harness.AssertVideoExists("vid4")
+}
+
+// TestETLHarnessGlobalVideoUniqueness documents the schema contract: because
+// youtube_video_id is globally UNIQUE, the same video referenced by two
+// channels is stored exactly once.
+func TestETLHarnessGlobalVideoUniqueness(t *testing.T) {
+	harness := NewETLHarness(t).
+		WithChannels([]Channel{
+			{ID: 1, YoutubeChannelID: "UCchannel1", ChannelName: "Channel 1", Active: true},
+			{ID: 2, YoutubeChannelID: "UCchannel2", ChannelName: "Channel 2", Active: true},
+		}).
+		WithVideosForChannel(1, makePlaylistItem("shared", "Shared Video")).
+		WithVideosForChannel(2, makePlaylistItem("shared", "Shared Video"))
+
+	if err := harness.Execute(context.Background()); err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+
+	harness.AssertVideoCount(1) // global UNIQUE(youtube_video_id) → stored once
 }
 
 // TestETLHarnessIdempotentExecution tests that running ETL twice is safe
@@ -343,15 +354,7 @@ func TestETLHarnessIdempotentExecution(t *testing.T) {
 		WithChannels([]Channel{
 			{ID: 1, YoutubeChannelID: "UCchannel1", ChannelName: "Channel 1", Active: true},
 		}).
-		WithVideo(PlaylistItem{
-			ContentDetails: struct {
-				VideoID string `json:"videoId"`
-			}{VideoID: "vid1"},
-			Snippet: struct {
-				Title       string    `json:"title"`
-				PublishedAt time.Time `json:"publishedAt"`
-			}{Title: "Video 1", PublishedAt: time.Now()},
-		})
+		WithVideosForChannel(1, makePlaylistItem("vid1", "Video 1"))
 
 	ctx := context.Background()
 
