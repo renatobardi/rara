@@ -130,7 +130,9 @@ func (m *MockDatabase) UpsertVideo(ctx context.Context, v Video) error {
 	return nil
 }
 
-// videoKey is the composite dedup key matching UNIQUE(playlist_id, youtube_video_id).
+// videoKey is the composite dedup key used only in tests — there is no production
+// equivalent in main.go because the uniqueness contract lives in the SQL schema as
+// UNIQUE(playlist_id, youtube_video_id). The mock mirrors that constraint here.
 func videoKey(playlistID int, videoID string) string {
 	return fmt.Sprintf("%d:%s", playlistID, videoID)
 }

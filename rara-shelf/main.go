@@ -15,6 +15,10 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+// httpClient is shared across all API calls to reuse TCP connections (keep-alive).
+// Creating a new client per call bypasses connection pooling and defeats keep-alive.
+var httpClient = &http.Client{Timeout: 15 * time.Second}
+
 // Playlist is a YouTube playlist owned by the authenticated user.
 type Playlist struct {
 	ID                int
@@ -121,9 +125,18 @@ func main() {
 	log.Printf("Discovered %d playlists\n", len(playlists))
 
 	for _, pl := range playlists {
-		// Each playlist gets its own timeout budget so one slow/large playlist
-		// cannot starve the rest of the job.
-		plCtx, plCancel := context.WithTimeout(context.Background(), 60*time.Second)
+		// Give each playlist its own timeout proportional to its item count.
+		// Base of 60s + 1s per item; minimum 60s, maximum 600s.
+		// This prevents large playlists (500+ items, 10 paginated API calls)
+		// from being cut off by a fixed budget suited only for small playlists.
+		estimated := time.Duration(pl.ItemCount) * time.Second
+		if estimated < 60*time.Second {
+			estimated = 60 * time.Second
+		}
+		if estimated > 600*time.Second {
+			estimated = 600 * time.Second
+		}
+		plCtx, plCancel := context.WithTimeout(context.Background(), estimated)
 		err := processPlaylist(plCtx, conn, pl, accessToken)
 		plCancel()
 		if err != nil {
@@ -150,16 +163,16 @@ func getAccessToken(ctx context.Context, clientID, clientSecret, refreshToken st
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	client := &http.Client{Timeout: 15 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return "", err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("token endpoint error (status %d): %s", resp.StatusCode, string(body))
+		// Do NOT log the full response body: Google may echo back client_secret
+		// in certain error payloads. Surface only the status code.
+		return "", fmt.Errorf("token endpoint returned unexpected status %d (check client_id, client_secret and refresh_token)", resp.StatusCode)
 	}
 
 	var tok tokenResponse
@@ -225,17 +238,21 @@ func processPlaylist(ctx context.Context, conn *pgx.Conn, pl Playlist, accessTok
 		return fmt.Errorf("failed to fetch playlist videos: %w", err)
 	}
 
+	catalogued, skipped := 0, 0
 	for _, item := range items {
 		if item.ContentDetails.VideoID == "" {
-			continue // deleted/private items can lack a video id
+			skipped++ // deleted/private items can lack a video id
+			continue
 		}
 		if err := upsertPlaylistVideo(ctx, conn, playlistID, item); err != nil {
 			log.Printf("Warning: failed to upsert video %s: %v\n", item.ContentDetails.VideoID, err)
 			continue
 		}
+		catalogued++
 	}
 
-	log.Printf("Catalogued %d videos for playlist %s\n", len(items), pl.Title)
+	log.Printf("Catalogued %d/%d videos for playlist %s (%d skipped — deleted/private)\n",
+		catalogued, len(items), pl.Title, skipped)
 	return nil
 }
 
@@ -278,8 +295,7 @@ func getJSON(ctx context.Context, accessToken, reqURL string, out interface{}) e
 	}
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 
-	client := &http.Client{Timeout: 15 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return err
 	}

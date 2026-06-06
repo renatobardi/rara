@@ -23,7 +23,7 @@ CREATE TABLE IF NOT EXISTS playlist_videos (
     id SERIAL PRIMARY KEY,
     playlist_id INT NOT NULL REFERENCES playlists(id) ON DELETE CASCADE,
     youtube_video_id VARCHAR(50) NOT NULL,
-    title TEXT NOT NULL,
+    title TEXT NOT NULL DEFAULT '',   -- deleted/private items may return empty string; NOT NULL with default avoids false NULLs
     url TEXT NOT NULL,
     published_at TIMESTAMPTZ,             -- nullable: private/deleted items lack it
     position INT,                         -- order within the playlist

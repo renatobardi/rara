@@ -113,7 +113,10 @@ jobs:
       - name: Execute job once
         if: github.event_name == 'push' || github.event.inputs.run_after_deploy == 'true'
         run: |
-          gcloud run jobs execute "$JOB_NAME" \
+          # --wait blocks until the execution completes, but gcloud itself has no
+          # built-in timeout flag for jobs execute. Wrap with `timeout` (1000s > the
+          # 900s task-timeout) so the runner never hangs indefinitely on a stuck job.
+          timeout 1000 gcloud run jobs execute "$JOB_NAME" \
             --region "$REGION" \
             --project "${{ vars.GCP_PROJECT_ID }}" \
             --wait
