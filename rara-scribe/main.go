@@ -331,9 +331,11 @@ func (a *ytDlpAcquirer) Acquire(ctx context.Context, src Source) ([]AudioChunk, 
 
 	input := src.Ref
 	if src.Type != "local" {
-		input = filepath.Join(workDir, "audio.mp3")
+		// Download best native audio format; ffmpeg conversion happens in the
+		// next step via our own explicit binary path. Avoids yt-dlp postprocessing
+		// which requires ffmpeg in PATH (broken under launchd's minimal environment).
 		args := []string{
-			"-x", "--audio-format", "mp3",
+			"-x",
 			"--no-playlist", "--no-progress",
 			// Force the web player client (full cookie support) and fall back to
 			// mweb then android. The ios client uses OAuth tokens instead of
@@ -351,6 +353,13 @@ func (a *ytDlpAcquirer) Acquire(ctx context.Context, src Source) ([]AudioChunk, 
 			_ = os.RemoveAll(workDir)
 			return nil, fmt.Errorf("yt-dlp failed: %w: %s", err, lastLine(out))
 		}
+		// Resolve the actual downloaded filename (extension varies by format).
+		matches, err := filepath.Glob(filepath.Join(workDir, "audio.*"))
+		if err != nil || len(matches) == 0 {
+			_ = os.RemoveAll(workDir)
+			return nil, fmt.Errorf("yt-dlp produced no audio file for %s", src.Ref)
+		}
+		input = matches[0]
 	}
 
 	// Decode to 16 kHz mono and split into fixed-length chunks.
