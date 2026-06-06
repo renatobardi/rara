@@ -1,88 +1,87 @@
 # Deploy — rara-shelf (Cloud Run via GitHub Actions)
 
-O [`deploy-shelf.yml`](../.github/workflows/deploy-shelf.yml) builda a imagem com
-**Cloud Build** e faz deploy de um **Cloud Run Job** `rara-shelf`, autenticando no GCP
-via **Workload Identity Federation** (sem chaves de service account).
+The [`deploy-shelf.yml`](../.github/workflows/deploy-shelf.yml) builds the image with
+**Cloud Build** and deploys a **Cloud Run Job** `rara-shelf`, authenticating to GCP
+via **Workload Identity Federation** (no service account keys).
 
-Reaproveita toda a infra do rara-harvest (projeto `${PROJECT_ID}`, Artifact Registry `rara`,
-WIF, service account `rara-deployer`, bucket `${PROJECT_ID}_cloudbuild`, base Neon). A única
-coisa nova é **autenticação OAuth** para ler as tuas playlists — 3 secrets no Secret Manager.
+Reuses all rara-harvest infrastructure (project `${PROJECT_ID}`, Artifact Registry `rara`,
+WIF, service account `rara-deployer`, bucket `${PROJECT_ID}_cloudbuild`, Neon database). The
+only new piece is **OAuth authentication** to read your playlists — 3 secrets in Secret Manager.
 
-> Define `export PROJECT_ID=<o-teu-projeto>` antes de correr os comandos abaixo. O valor real
-> vive na GitHub Variable `GCP_PROJECT_ID`, não neste ficheiro.
+> Set `export PROJECT_ID=<your-project>` before running the commands below. The actual value
+> lives in the GitHub Variable `GCP_PROJECT_ID`, not in this file.
 
-Diferente do harvest (API key pública), o shelf precisa de OAuth porque lê as **tuas**
-playlists (incl. privadas), o que exige login Google. **Watch Later / History não são
-acessíveis pela Data API** e são ignorados pelo app.
+Unlike harvest (public API key), shelf requires OAuth because it reads **your** playlists
+(including private ones), which requires a Google login. **Watch Later / History are not
+accessible via the Data API** and are skipped by the app.
 
 ---
 
-## 1. Criar credenciais OAuth (uma vez)
+## 1. Create OAuth credentials (once)
 
-No console GCP do projeto `${PROJECT_ID}`:
+In the GCP console for project `${PROJECT_ID}`:
 
 ### 1.1 OAuth consent screen
 APIs & Services → **OAuth consent screen**:
 - User type: **External**
-- Preenche app name / email de suporte
-- Em **Test users**, adiciona o teu próprio email Google (o dono das playlists)
-- Scope necessário: `https://www.googleapis.com/auth/youtube.readonly`
+- Fill in app name and support email
+- Under **Test users**, add your own Google email (the playlist owner)
+- Required scope: `https://www.googleapis.com/auth/youtube.readonly`
 
-### 1.2 OAuth Client
+### 1.2 OAuth client
 APIs & Services → **Credentials** → **Create credentials** → **OAuth client ID**:
 - Application type: **Desktop app**
-- Copia o **Client ID** e o **Client secret**
+- Copy the **Client ID** and **Client secret**
 
-### 1.3 Ativar a API
-Garante que a **YouTube Data API v3** está ativada:
+### 1.3 Enable the API
+Make sure the **YouTube Data API v3** is enabled:
 ```bash
 gcloud services enable youtube.googleapis.com --project "${PROJECT_ID}"
 ```
 
 ---
 
-## 2. Obter o refresh token (uma vez)
+## 2. Obtain the refresh token (once)
 
-Via **OAuth 2.0 Playground** (sem código):
-1. Abre https://developers.google.com/oauthplayground
-2. Engrenagem (⚙) → marca **Use your own OAuth credentials** → cola Client ID + Secret
-3. No painel esquerdo, em "Input your own scopes", escreve:
+Via **OAuth 2.0 Playground** (no code needed):
+1. Open https://developers.google.com/oauthplayground
+2. Gear icon (⚙) → check **Use your own OAuth credentials** → paste Client ID + Secret
+3. In the left panel, under "Input your own scopes", enter:
    `https://www.googleapis.com/auth/youtube.readonly`
-4. **Authorize APIs** → faz login com a tua conta → consente
-5. **Exchange authorization code for tokens** → copia o **Refresh token**
+4. **Authorize APIs** → sign in with your account → consent
+5. **Exchange authorization code for tokens** → copy the **Refresh token**
 
-> O refresh token é de longa duração; o app troca-o por um access token a cada execução.
+> The refresh token is long-lived; the app exchanges it for an access token on each run.
 
 ---
 
-## 3. Guardar os secrets (Cloud Shell)
+## 3. Store the secrets (Cloud Shell)
 
 ```bash
-printf '%s' 'SEU_CLIENT_ID'     | gcloud secrets create shelf-oauth-client-id     --replication-policy=automatic --data-file=- --project "${PROJECT_ID}"
-printf '%s' 'SEU_CLIENT_SECRET' | gcloud secrets create shelf-oauth-client-secret --replication-policy=automatic --data-file=- --project "${PROJECT_ID}"
-printf '%s' 'SEU_REFRESH_TOKEN' | gcloud secrets create shelf-oauth-refresh-token --replication-policy=automatic --data-file=- --project "${PROJECT_ID}"
+printf '%s' 'YOUR_CLIENT_ID'     | gcloud secrets create shelf-oauth-client-id     --replication-policy=automatic --data-file=- --project "${PROJECT_ID}"
+printf '%s' 'YOUR_CLIENT_SECRET' | gcloud secrets create shelf-oauth-client-secret --replication-policy=automatic --data-file=- --project "${PROJECT_ID}"
+printf '%s' 'YOUR_REFRESH_TOKEN' | gcloud secrets create shelf-oauth-refresh-token --replication-policy=automatic --data-file=- --project "${PROJECT_ID}"
 ```
 
-`database-url` já existe (reutilizado do harvest). A service account `rara-deployer` e a
-SA de runtime (compute default) já têm `secretmanager.secretAccessor` a nível de projeto,
-portanto os 3 secrets novos ficam acessíveis **sem alterações de IAM**.
+`database-url` already exists (reused from harvest). The `rara-deployer` service account and
+the runtime SA (compute default) already have `secretmanager.secretAccessor` at project level,
+so the 3 new secrets are accessible **without any IAM changes**.
 
-Rotação futura: `gcloud secrets versions add shelf-oauth-refresh-token --data-file=-`.
+Future rotation: `gcloud secrets versions add shelf-oauth-refresh-token --data-file=-`.
 
 ---
 
 ## 4. Deploy
 
-- **Automático**: merge de qualquer coisa em `rara-shelf/**` para `main` dispara o
-  `deploy-shelf.yml`.
+- **Automatic**: merging anything under `rara-shelf/**` to `main` triggers `deploy-shelf.yml`.
 - **Manual**: Actions → **Deploy rara-shelf to Cloud Run** → *Run workflow*.
 
-O workflow builda a imagem, cria/atualiza o Cloud Run Job `rara-shelf` (montando os 4
-secrets) e executa uma vez.
+The workflow builds the image, creates/updates the Cloud Run Job `rara-shelf` (mounting the
+4 secrets), and executes it once.
 
 ---
 
-## 5. Verificar
+## 5. Verify
 
 ```sql
 SELECT p.title, p.privacy_status, COUNT(pv.id) AS videos
@@ -92,7 +91,7 @@ GROUP BY p.id
 ORDER BY videos DESC;
 ```
 
-## 6. Agendamento (opcional)
+## 6. Scheduling (optional)
 
 ```bash
 gcloud scheduler jobs create http rara-shelf-daily \
