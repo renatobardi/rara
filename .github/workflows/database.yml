@@ -8,7 +8,7 @@ on:
       - 'rara-harvest/migrations/**'
       - 'rara-harvest/cleanup.sql'
       - 'rara-harvest/seed.sql'
-      - 'rara-harvest/.github/workflows/database.yml'
+      - '.github/workflows/database.yml'
   pull_request:
     branches:
       - main
@@ -32,7 +32,10 @@ jobs:
   validate:
     name: Validate Schema
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request' || github.event.inputs.action == 'validate'
+    # Always run before migrate (on push and PR), and on a manual validate/migrate.
+    # Skipped only on a manual seed. This keeps `migrate`'s `needs: validate`
+    # satisfied so it isn't skipped on merges to main.
+    if: github.event_name != 'workflow_dispatch' || github.event.inputs.action != 'seed'
 
     steps:
       - name: Checkout code
@@ -88,7 +91,10 @@ jobs:
   migrate:
     name: Apply Migrations
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    # Auto-apply on merge to main, or on a manual "migrate" dispatch.
+    if: >-
+      (github.ref == 'refs/heads/main' && github.event_name == 'push') ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.action == 'migrate')
     needs: validate
 
     steps:
