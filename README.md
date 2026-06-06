@@ -1,174 +1,167 @@
 # rara
 
-**Autonomous Agent Ecosystem** - A collection of independently deployable agents for data collection, processing, and delivery.
+**Autonomous Agent Ecosystem** — Agents for collecting, cataloguing and processing YouTube data, built with Go, TDD, and deployed serverless on GCP Cloud Run.
 
 ## About
 
-`rara` is an umbrella repository for the kura ecosystem of agents. Each agent is:
-- 🔒 **Isolated**: Independent codebase, dependencies, and deployment
-- 🧪 **Fully Tested**: TDD-built with comprehensive test suites
-- ☁️ **Cloud-Native**: Containerized and serverless-ready
-- 💰 **Cost-Efficient**: Pay only for what you use
-- 📈 **Scalable**: Deploy to any region, any time
+`rara` is an umbrella repository where each agent is:
+- 🔒 **Isolated** — independent codebase, tables, Cloud Run Job and workflows
+- 🧪 **TDD-built** — Red-Green-Refactor with fluent harness, 100% business logic coverage
+- ☁️ **Cloud-Native** — Docker (amd64), GCP Cloud Run Jobs, Neon PostgreSQL
+- 💰 **Cost-Efficient** — pay-per-execution, ~$0.02/month per agent
+- 🔐 **Secure** — Workload Identity Federation (no SA key files), Secret Manager, pinned action SHAs
 
-## Agents
+## Production Agents
 
 ### 🎬 rara-harvest
-Video harvesting pipeline for YouTube, TikTok, and more.
-- **Status**: ✅ Production Ready
-- **Tests**: 13/13 passing
-- **Cost**: ~$0.02/month (daily execution)
+Harvests the latest videos from **external YouTube channels** (public) and stores them in Neon.
 
-**Quick Start**:
+- **Auth**: YouTube Data API v3 key (1 quota point per channel via `/playlistItems`)
+- **Source**: `target_channels` table — 102 channels seeded
+- **Tables**: `target_channels`, `channel_videos`
+- **Uniqueness**: global `UNIQUE(youtube_video_id)` — one video per row
+- **Tests**: 14/14 passing
+- **Status**: ✅ Production — collecting daily
+
 ```bash
-cd rara-harvest
-make test
-./deploy.sh
+cd rara-harvest && make test
 ```
 
-[Read More →](./rara-harvest/README.md)
+[README →](./rara-harvest/README.md) | [DEPLOY →](./rara-harvest/DEPLOY.md)
+
+---
 
 ### 📚 rara-shelf
-Catalogs the user's own YouTube playlists (public, unlisted and private) and the videos in each, recording which playlist each video belongs to. Uses OAuth (the user's account) instead of an API key.
-- **Status**: ✅ Production Ready
-- **Tests**: 12/12 passing
-- **Cost**: ~$0.02/month (daily execution)
+Catalogues the **owner's own YouTube playlists** (public, unlisted and private) and the videos in each, recording which playlist each video belongs to.
 
-**Quick Start**:
+- **Auth**: OAuth 2.0 refresh token (scope `youtube.readonly`) — reads private playlists
+- **Discovery**: automatic via `playlists.list?mine=true` — no seed table needed
+- **Tables**: `playlists`, `playlist_videos`
+- **Uniqueness**: composite `UNIQUE(playlist_id, youtube_video_id)` — same video can be in many playlists
+- **Tests**: 12/12 passing
+- **Status**: ✅ Production — first run completed
+
 ```bash
-cd rara-shelf
-make test
+cd rara-shelf && make test
 ```
 
-[Read More →](./rara-shelf/README.md)
+[README →](./rara-shelf/README.md) | [DEPLOY →](./rara-shelf/DEPLOY.md)
 
-### 🔮 rara-pulse (Coming Soon)
-Metrics and data aggregation agent.
+---
 
-### 🌊 rara-stream (Coming Soon)
-Real-time event streaming agent.
+### 🔮 rara-pulse *(coming soon)*
+### 🌊 rara-stream *(coming soon)*
 
-## Project Structure
+---
+
+## Infrastructure
+
+| Component | Detail |
+|-----------|--------|
+| **GCP Project** | `oute-rara` |
+| **Region** | `us-central1` |
+| **Artifact Registry** | `us-central1-docker.pkg.dev/oute-rara/rara/` |
+| **Database** | Neon PostgreSQL (free tier) |
+| **Auth to GCP** | Workload Identity Federation — no SA key files |
+| **Service Account** | `rara-deployer@oute-rara.iam.gserviceaccount.com` |
+| **Secrets** | GCP Secret Manager (`youtube-api-key`, `database-url`, `shelf-oauth-*`) |
+| **CI/CD** | GitHub Actions — path-filtered per agent, actions pinned by SHA |
+
+### GCP Secrets in Secret Manager
+
+| Secret | Used by |
+|--------|---------|
+| `youtube-api-key` | rara-harvest (YouTube Data API v3) |
+| `database-url` | rara-harvest + rara-shelf (Neon connection string) |
+| `shelf-oauth-client-id` | rara-shelf (OAuth Web app client) |
+| `shelf-oauth-client-secret` | rara-shelf |
+| `shelf-oauth-refresh-token` | rara-shelf (scope: youtube.readonly) |
+
+### GitHub Secrets / Variables
+
+| Name | Type | Purpose |
+|------|------|---------|
+| `GCP_WORKLOAD_IDENTITY_PROVIDER` | Secret | WIF provider resource name |
+| `GCP_SERVICE_ACCOUNT` | Secret | `rara-deployer@oute-rara.iam.gserviceaccount.com` |
+| `NEON_HOST/PORT/DATABASE/USERNAME/PASSWORD` | Secret | Neon DB credentials for CI migrations |
+| `GCP_PROJECT_ID` | Variable | `oute-rara` |
+| `GCP_REGION` | Variable | `us-central1` |
+
+---
+
+## Repository Structure
 
 ```
 rara/
-├── rara-harvest/          # Video harvesting agent
+├── .github/workflows/
+│   ├── ci.yml              # Code quality + tests (rara-harvest)
+│   ├── ci-shelf.yml        # Code quality + tests (rara-shelf)
+│   ├── database.yml        # Migrations (rara-harvest)
+│   ├── database-shelf.yml  # Migrations (rara-shelf)
+│   ├── deploy.yml          # Cloud Run deploy (rara-harvest)
+│   └── deploy-shelf.yml    # Cloud Run deploy (rara-shelf)
+├── rara-harvest/           # YouTube channel video harvester
 │   ├── main.go
-│   ├── main_test.go
-│   ├── Dockerfile
-│   ├── deploy.sh
-│   ├── Makefile
-│   ├── README.md
+│   ├── main_test.go        # 14 TDD tests, ETLHarness
+│   ├── migrations/
+│   │   ├── 001_initial_schema.sql
+│   │   └── 002_schema_refinements.sql
 │   └── ...
-│
-├── rara-pulse/            # Metrics agent (future)
+├── rara-shelf/             # Personal playlist cataloguer
+│   ├── main.go
+│   ├── main_test.go        # 12 TDD tests, ShelfHarness
+│   ├── migrations/
+│   │   └── 001_initial_schema.sql
 │   └── ...
-│
-├── rara-stream/           # Streaming agent (future)
-│   └── ...
-│
-├── shared/                # Shared utilities (optional)
-│   ├── config/
-│   └── utils/
-│
-└── README.md (this file)
+└── README.md
 ```
 
-## Getting Started
+---
 
-### Clone the Repository
+## TDD Pattern (all agents)
 
-```bash
-git clone https://github.com/renatobardi/rara.git
-cd rara
+Every agent uses the same **Red-Green-Refactor** cycle with a **fluent harness**:
+
+```go
+// Example: ShelfHarness (rara-shelf)
+harness := NewShelfHarness(t).
+    WithPlaylists([]Playlist{{YoutubePlaylistID: "PL1", Title: "My List"}}).
+    WithVideosForPlaylist("PL1", makePlaylistItem("vid1", "Video 1"))
+
+harness.Execute(context.Background())
+harness.AssertPlaylistCount(1)
+harness.AssertVideoCount(1)
 ```
 
-### Work on an Agent
+- `MockDatabase` — in-memory, mirrors real SQL constraints
+- Zero I/O in tests — all external deps mocked
+- 100% business logic coverage
 
-```bash
-# Navigate to agent
-cd rara-harvest
+---
 
-# Run tests
-make test
+## Adding a New Agent
 
-# Run coverage
-make test-coverage
+1. `mkdir rara-<name>` — create directory
+2. Write failing tests first (Red)
+3. Implement until tests pass (Green)
+4. Add `migrations/`, `Dockerfile`, `Makefile`
+5. Copy and adapt `deploy.yml` → `deploy-<name>.yml` (path filter, JOB_NAME, IMAGE, secrets)
+6. Copy and adapt `database.yml` → `database-<name>.yml`
+7. Update this README
 
-# Deploy
-./deploy.sh
-```
+---
 
-## Architecture & Design
+## Cost
 
-Each agent in rara is designed as an autonomous system:
-
-```
-┌─────────────────────────────────────────┐
-│           Agent (rara-harvest)          │
-├─────────────────────────────────────────┤
-│ • Independent tests & CI/CD             │
-│ • Isolated dependencies (go.mod)        │
-│ • Self-contained deployment (Dockerfile)│
-│ • Own pipeline configuration (deploy.sh)│
-│ • Serverless execution (Cloud Run)      │
-└─────────────────────────────────────────┘
-```
-
-## Documentation
-
-- 📖 [rara-harvest/README.md](./rara-harvest/README.md) - Agent setup guide
-- 🧪 [rara-harvest/TESTING.md](./rara-harvest/TESTING.md) - TDD workflow
-- 🏗️ [ARCHITECTURE.md](./ARCHITECTURE.md) - Ecosystem architecture
-
-## Development
-
-### Running Tests (All Agents)
-
-```bash
-# Test rara-harvest
-cd rara-harvest && make test
-
-# Test other agents as they're added
-cd rara-pulse && make test
-```
-
-### Code Standards
-
-- Language: Go 1.23+
-- Testing: TDD with 100% business logic coverage
-- Quality: go vet, go fmt required
-- Documentation: Comprehensive README per agent
-
-## Deployment
-
-Each agent has its own deployment pipeline:
-
-```bash
-cd rara-harvest
-./deploy.sh  # Deploys to GCP Cloud Run
-
-# Customize deployment variables in deploy.sh
-PROJECT_ID="your-gcp-project-id"
-REGION="us-central1"
-```
-
-## Cost Analysis
-
-| Agent | Execution | Monthly Cost |
+| Agent | Execution | Est. monthly |
 |-------|-----------|--------------|
 | rara-harvest | Daily | ~$0.02 |
 | rara-shelf | Daily | ~$0.02 |
-| (More agents coming) | - | - |
+| Cloud Build | Per deploy | ~$0.00 (free tier) |
+| Neon DB | Always-on | ~$0.00 (free tier) |
+| **Total** | | **< $0.10/month** |
 
-## Contributing
-
-When adding new agents:
-1. Create a directory: `mkdir rara-<name>`
-2. Follow TDD pattern (tests first)
-3. Include Dockerfile & deploy.sh
-4. Update root README.md
-5. Document in agent's README.md
+---
 
 ## License
 
