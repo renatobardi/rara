@@ -142,6 +142,30 @@ make docker-build                          # Build Docker image
 ./deploy.sh                                # Deploy to GCP
 ```
 
+## Security Controls (WIF / IAM)
+
+This is a **public** repository. No secret values are committed — secrets live in GitHub
+Secrets + GCP Secret Manager, and GCP auth is keyless via Workload Identity Federation.
+Because the GCP project ID and the `rara-deployer` service-account email appear in git
+history, the control that actually prevents abuse of that SA is the **WIF attribute
+condition**, not the secrecy of those identifiers. Verify periodically:
+
+- [ ] The WIF provider restricts token issuance to this repo only, e.g.
+      `attribute.repository == 'renatobardi/rara'` (a missing/loose condition would let
+      any GitHub repo impersonate `rara-deployer`).
+- [ ] `rara-deployer` holds only the minimal roles it needs (Cloud Run deploy, Artifact
+      Registry write, Secret Manager accessor, Cloud Build) — **never** `roles/editor` or
+      `roles/owner`.
+- [ ] Secret Manager secrets (`youtube-api-key`, `database-url`, `shelf-oauth-*`) are
+      readable only by the runtime SA, and OAuth refresh tokens are rotated periodically.
+
+Verify the WIF condition with:
+```bash
+gcloud iam workload-identity-pools providers describe <PROVIDER> \
+  --location=global --workload-identity-pool=<POOL> --project <PROJECT_ID> \
+  --format='value(attributeCondition)'
+```
+
 ## Documentation
 
 - [README.md](rara-harvest/README.md) - Project overview

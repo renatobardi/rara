@@ -4,9 +4,12 @@ O [`deploy-shelf.yml`](../.github/workflows/deploy-shelf.yml) builda a imagem co
 **Cloud Build** e faz deploy de um **Cloud Run Job** `rara-shelf`, autenticando no GCP
 via **Workload Identity Federation** (sem chaves de service account).
 
-Reaproveita toda a infra do rara-harvest (projeto `oute-rara`, Artifact Registry `rara`,
-WIF, service account `rara-deployer`, bucket `oute-rara_cloudbuild`, base Neon). A única
+Reaproveita toda a infra do rara-harvest (projeto `${PROJECT_ID}`, Artifact Registry `rara`,
+WIF, service account `rara-deployer`, bucket `${PROJECT_ID}_cloudbuild`, base Neon). A única
 coisa nova é **autenticação OAuth** para ler as tuas playlists — 3 secrets no Secret Manager.
+
+> Define `export PROJECT_ID=<o-teu-projeto>` antes de correr os comandos abaixo. O valor real
+> vive na GitHub Variable `GCP_PROJECT_ID`, não neste ficheiro.
 
 Diferente do harvest (API key pública), o shelf precisa de OAuth porque lê as **tuas**
 playlists (incl. privadas), o que exige login Google. **Watch Later / History não são
@@ -16,7 +19,7 @@ acessíveis pela Data API** e são ignorados pelo app.
 
 ## 1. Criar credenciais OAuth (uma vez)
 
-No console GCP do projeto `oute-rara`:
+No console GCP do projeto `${PROJECT_ID}`:
 
 ### 1.1 OAuth consent screen
 APIs & Services → **OAuth consent screen**:
@@ -33,7 +36,7 @@ APIs & Services → **Credentials** → **Create credentials** → **OAuth clien
 ### 1.3 Ativar a API
 Garante que a **YouTube Data API v3** está ativada:
 ```bash
-gcloud services enable youtube.googleapis.com --project oute-rara
+gcloud services enable youtube.googleapis.com --project "${PROJECT_ID}"
 ```
 
 ---
@@ -55,9 +58,9 @@ Via **OAuth 2.0 Playground** (sem código):
 ## 3. Guardar os secrets (Cloud Shell)
 
 ```bash
-printf '%s' 'SEU_CLIENT_ID'     | gcloud secrets create shelf-oauth-client-id     --replication-policy=automatic --data-file=- --project oute-rara
-printf '%s' 'SEU_CLIENT_SECRET' | gcloud secrets create shelf-oauth-client-secret --replication-policy=automatic --data-file=- --project oute-rara
-printf '%s' 'SEU_REFRESH_TOKEN' | gcloud secrets create shelf-oauth-refresh-token --replication-policy=automatic --data-file=- --project oute-rara
+printf '%s' 'SEU_CLIENT_ID'     | gcloud secrets create shelf-oauth-client-id     --replication-policy=automatic --data-file=- --project "${PROJECT_ID}"
+printf '%s' 'SEU_CLIENT_SECRET' | gcloud secrets create shelf-oauth-client-secret --replication-policy=automatic --data-file=- --project "${PROJECT_ID}"
+printf '%s' 'SEU_REFRESH_TOKEN' | gcloud secrets create shelf-oauth-refresh-token --replication-policy=automatic --data-file=- --project "${PROJECT_ID}"
 ```
 
 `database-url` já existe (reutilizado do harvest). A service account `rara-deployer` e a
@@ -94,7 +97,7 @@ ORDER BY videos DESC;
 ```bash
 gcloud scheduler jobs create http rara-shelf-daily \
   --location=us-central1 --schedule="0 3 * * *" \
-  --uri="https://us-central1-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/oute-rara/jobs/rara-shelf:run" \
+  --uri="https://us-central1-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/${PROJECT_ID}/jobs/rara-shelf:run" \
   --http-method=POST \
-  --oauth-service-account-email="rara-deployer@oute-rara.iam.gserviceaccount.com"
+  --oauth-service-account-email="rara-deployer@${PROJECT_ID}.iam.gserviceaccount.com"
 ```

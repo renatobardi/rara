@@ -58,7 +58,7 @@ jobs:
           # then submit with --no-source referencing the pre-uploaded object.
           tar -czf /tmp/source.tgz -C rara-harvest .
           gcloud storage cp /tmp/source.tgz \
-            "gs://oute-rara_cloudbuild/source/${GITHUB_SHA}.tgz"
+            "gs://${{ vars.GCP_PROJECT_ID }}_cloudbuild/source/${GITHUB_SHA}.tgz"
 
           cat > /tmp/cloudbuild.yaml << YAML
           steps:
@@ -66,7 +66,7 @@ jobs:
             args: ['build', '-t', '${IMAGE}', '.']
           source:
             storageSource:
-              bucket: oute-rara_cloudbuild
+              bucket: ${{ vars.GCP_PROJECT_ID }}_cloudbuild
               object: source/${GITHUB_SHA}.tgz
           images: ['${IMAGE}']
           YAML

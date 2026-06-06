@@ -51,7 +51,7 @@ jobs:
         run: |
           tar -czf /tmp/shelf-source.tgz -C rara-shelf .
           gcloud storage cp /tmp/shelf-source.tgz \
-            "gs://oute-rara_cloudbuild/source/shelf-${GITHUB_SHA}.tgz"
+            "gs://${{ vars.GCP_PROJECT_ID }}_cloudbuild/source/shelf-${GITHUB_SHA}.tgz"
 
           cat > /tmp/cloudbuild-shelf.yaml << YAML
           steps:
@@ -59,7 +59,7 @@ jobs:
             args: ['build', '-t', '${IMAGE}', '.']
           source:
             storageSource:
-              bucket: oute-rara_cloudbuild
+              bucket: ${{ vars.GCP_PROJECT_ID }}_cloudbuild
               object: source/shelf-${GITHUB_SHA}.tgz
           images: ['${IMAGE}']
           YAML
