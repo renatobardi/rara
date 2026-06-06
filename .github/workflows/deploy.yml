@@ -51,6 +51,15 @@ jobs:
       - name: Set up Cloud SDK
         uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f # v2
 
+      - name: Diagnose auth identity
+        run: |
+          echo "=== Active account ==="
+          gcloud auth list
+          echo "=== Test GCS access ==="
+          gcloud storage ls gs://oute-rara_cloudbuild && echo "GCS OK" || echo "GCS FAILED"
+          echo "=== Credential file type ==="
+          cat "$CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE" | python3 -c "import sys,json; d=json.load(sys.stdin); print('type:', d.get('type'), '| SA:', d.get('service_account_impersonation_url','N/A'))"
+
       - name: Build image with Cloud Build
         run: |
           gcloud builds submit rara-harvest \
