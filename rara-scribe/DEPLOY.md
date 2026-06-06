@@ -30,13 +30,17 @@ portanto o secret novo fica acessível **sem alterações de IAM**.
 
 ## 2. Deploy
 
+> **Pré-requisito:** o secret `yt-dlp-cookies` tem de existir **antes** do deploy (ver secção 4),
+> senão o `gcloud run jobs create/update` falha. `groq-api-key` (secção 1) e `database-url` também.
+
 - **Automático**: merge de qualquer coisa em `rara-scribe/**` para `main` dispara o
   `deploy-scribe.yml`.
 - **Manual**: Actions → **Deploy rara-scribe to Cloud Run** → *Run workflow*.
 
 O workflow builda a imagem (Go + ffmpeg + yt-dlp), cria/atualiza o Cloud Run Job
-`rara-scribe` (montando `database-url` + `groq-api-key`, com `TRANSCRIBE_ENGINE=groq` e
-`BATCH_SIZE=25`) e executa uma vez. Recursos: `--memory 2Gi --cpu 2 --task-timeout 3600s`.
+`rara-scribe` (montando `database-url` + `groq-api-key` + `yt-dlp-cookies`, com
+`TRANSCRIBE_ENGINE=groq` e `BATCH_SIZE` — `5` na validação inicial, depois `25`) e executa uma
+vez. Recursos: `--memory 2Gi --cpu 2 --task-timeout 3600s`.
 
 Cada execução transcreve até `BATCH_SIZE` vídeos ainda sem transcript. É idempotente: re-runs
 continuam o backlog. Agenda execuções regulares (secção 5) para esgotar a fila ao longo do tempo.
@@ -71,15 +75,26 @@ you're not a bot" — na prática **100% dos downloads** falham sem cookies. Por
 
 Gerar e guardar (ver passos detalhados no README do agente):
 ```bash
-# Exportar os cookies da conta-isca (browser onde ela está logada)
-yt-dlp --cookies-from-browser chrome --cookies cookies.txt --skip-download \
+# Exportar os cookies da conta-isca (browser onde ela está logada).
+# --cookies-from-browser aceita: chrome | safari | firefox | brave | edge.
+# No macOS, o Safari precisa de Full Disk Access no terminal; o Firefox é o de menor atrito.
+yt-dlp --cookies-from-browser safari --cookies cookies.txt --skip-download \
   "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
 
 gcloud secrets create yt-dlp-cookies --replication-policy=automatic \
   --data-file=cookies.txt --project "${PROJECT_ID}"
 ```
 
-Os cookies expiram. Quando o bot-check voltar, regenera e roda:
+**Cookies expiram → degradação silenciosa.** Quando a sessão expira, o bot-check volta e os
+vídeos voltam a sair `failed` **sem nenhum alerta**. Monitoriza a taxa de falha recentes:
+
+```sql
+SELECT COUNT(*) FILTER (WHERE status='failed') AS falhados_recentes
+FROM transcripts
+WHERE updated_at > NOW() - INTERVAL '1 day';
+```
+
+Se disparar, regenera os cookies e adiciona uma nova versão (o job usa `:latest` automaticamente):
 `gcloud secrets versions add yt-dlp-cookies --data-file=cookies.txt --project "${PROJECT_ID}"`.
 
 ---
