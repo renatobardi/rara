@@ -51,18 +51,29 @@ jobs:
       - name: Set up Cloud SDK
         uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f # v2
 
-      - name: Activate gcloud identity
-        # WIF external_account credentials must be explicitly registered with
-        # gcloud so that commands like `builds submit` see an active account.
-        # Without this, `gcloud auth list` shows no active account and Cloud
-        # Build rejects the request even though GCS access works.
-        run: gcloud auth login --cred-file="$GOOGLE_APPLICATION_CREDENTIALS" --quiet
-
       - name: Build image with Cloud Build
         run: |
-          gcloud builds submit rara-harvest \
-            --tag "$IMAGE" \
-            --project "${{ vars.GCP_PROJECT_ID }}"
+          # gcloud builds submit's internal GCS upload fails with external_account
+          # (WIF) credentials. Workaround: upload source ourselves via gcloud storage
+          # (which uses the same creds and works), then submit with --no-source
+          # referencing the pre-uploaded tarball from a cloudbuild.yaml config.
+          tar -czf /tmp/source.tgz -C rara-harvest .
+          gcloud storage cp /tmp/source.tgz \
+            "gs://oute-rara_cloudbuild/source/${GITHUB_SHA}.tgz"
+
+          gcloud builds submit \
+            --no-source \
+            --project "${{ vars.GCP_PROJECT_ID }}" \
+            --config=- << EOF
+          steps:
+          - name: 'gcr.io/cloud-builders/docker'
+            args: ['build', '-t', '$IMAGE', '.']
+          source:
+            storageSource:
+              bucket: oute-rara_cloudbuild
+              object: source/${GITHUB_SHA}.tgz
+          images: ['$IMAGE']
+          EOF
 
       - name: Deploy Cloud Run Job
         run: |
