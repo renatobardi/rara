@@ -1,15 +1,18 @@
 # rara
 
-**Autonomous Agent Ecosystem** — Agents for collecting, cataloguing and processing YouTube data, built with Go, TDD, and deployed serverless on GCP Cloud Run.
+**Autonomous Agent Ecosystem** — Agents for collecting, cataloging, and processing YouTube data, built with Go and TDD.
 
 ## About
 
 `rara` is an umbrella repository where each agent is:
-- 🔒 **Isolated** — independent codebase, tables, Cloud Run Job and workflows
-- 🧪 **TDD-built** — Red-Green-Refactor with fluent harness, 100% business logic coverage
-- ☁️ **Cloud-Native** — Docker (amd64), GCP Cloud Run Jobs, Neon PostgreSQL
-- 💰 **Cost-Efficient** — pay-per-execution, ~$0.02/month per agent
+- 🔒 **Isolated** — independent codebase, tables, and workflows
+- 🧪 **TDD-built** — Red-Green-Refactor with a fluent harness, 100% business-logic coverage
+- 🗄️ **Shared storage** — one Neon PostgreSQL database, isolated tables per agent
 - 🔐 **Secure** — Workload Identity Federation (no SA key files), Secret Manager, pinned action SHAs
+
+Runtime differs per agent: the **collectors** (harvest, shelf) run serverless on GCP Cloud Run
+Jobs; the **transcriber** (scribe) runs locally on a Mac via `launchd`, because YouTube blocks
+audio downloads from datacenter IPs (see [rara-scribe](#-rara-scribe)).
 
 ## Production Agents
 
@@ -20,32 +23,41 @@ Harvests the latest videos from **external YouTube channels** (public) and store
 - **Source**: `target_channels` table — 102 channels seeded
 - **Tables**: `target_channels`, `channel_videos`
 - **Uniqueness**: global `UNIQUE(youtube_video_id)` — one video per row
+- **Runtime**: GCP Cloud Run Job (daily)
 - **Tests**: 14/14 passing
 - **Status**: ✅ Production — collecting daily
-
-```bash
-cd rara-harvest && make test
-```
 
 [README →](./rara-harvest/README.md) | [DEPLOY →](./rara-harvest/DEPLOY.md)
 
 ---
 
 ### 📚 rara-shelf
-Catalogues the **owner's own YouTube playlists** (public, unlisted and private) and the videos in each, recording which playlist each video belongs to.
+Catalogs the **owner's own YouTube playlists** (public, unlisted, and private) and the videos in each, recording which playlist each video belongs to.
 
 - **Auth**: OAuth 2.0 refresh token (scope `youtube.readonly`) — reads private playlists
 - **Discovery**: automatic via `playlists.list?mine=true` — no seed table needed
 - **Tables**: `playlists`, `playlist_videos`
 - **Uniqueness**: composite `UNIQUE(playlist_id, youtube_video_id)` — same video can be in many playlists
+- **Runtime**: GCP Cloud Run Job (daily)
 - **Tests**: 12/12 passing
-- **Status**: ✅ Production — first run completed
-
-```bash
-cd rara-shelf && make test
-```
+- **Status**: ✅ Production — collecting daily
 
 [README →](./rara-shelf/README.md) | [DEPLOY →](./rara-shelf/DEPLOY.md)
+
+---
+
+### ✍️ rara-scribe
+Produces **high-quality transcripts in the audio's native language** for the videos collected by harvest (`channel_videos`) and shelf (`playlist_videos`), replacing YouTube's weak auto-captions with specialist ASR.
+
+- **Engine**: Groq `whisper-large-v3` (default) or Gemini `gemini-2.5-flash` — pluggable via `TRANSCRIBE_ENGINE`
+- **Pipeline**: `yt-dlp` (download) → `ffmpeg` (16 kHz mono, 10-min chunks) → ASR → stitched transcript
+- **Tables**: `transcripts`, `transcript_segments`
+- **Uniqueness**: global `UNIQUE(youtube_video_id)` — idempotent, resumes the backlog
+- **Runtime**: **local Mac via `launchd`** (daily at 02:00) — residential IPs bypass YouTube's datacenter bot-check
+- **Tests**: 13/13 passing
+- **Status**: ✅ Production — running locally
+
+[README →](./rara-scribe/README.md) | [DEPLOY →](./rara-scribe/DEPLOY.md)
 
 ---
 
@@ -60,12 +72,14 @@ cd rara-shelf && make test
 |-----------|--------|
 | **GCP Project** | `<PROJECT_ID>` (real value in GitHub Variable `GCP_PROJECT_ID`) |
 | **Region** | `<REGION>` (real value in GitHub Variable `GCP_REGION`) |
-| **Artifact Registry** | `<REGION>-docker.pkg.dev/<PROJECT_ID>/rara/` |
-| **Database** | Neon PostgreSQL (free tier) |
+| **Artifact Registry** | `<REGION>-docker.pkg.dev/<PROJECT_ID>/rara/` (harvest + shelf images) |
+| **Database** | Neon PostgreSQL (free tier) — shared by all agents, isolated tables |
 | **Auth to GCP** | Workload Identity Federation — no SA key files |
 | **Service Account** | `rara-deployer@<PROJECT_ID>.iam.gserviceaccount.com` |
-| **Secrets** | GCP Secret Manager (`youtube-api-key`, `database-url`, `shelf-oauth-*`) |
+| **Secrets** | GCP Secret Manager (harvest/shelf); local `~/.rara-scribe/.env` (scribe) |
 | **CI/CD** | GitHub Actions — path-filtered per agent, actions pinned by SHA |
+
+See [INFRASTRUCTURE.md](./INFRASTRUCTURE.md) for the full layout and [ARCHITECTURE.md](./ARCHITECTURE.md) for the system design.
 
 ### GCP Secrets in Secret Manager
 
@@ -76,6 +90,10 @@ cd rara-shelf && make test
 | `shelf-oauth-client-id` | rara-shelf (OAuth Web app client) |
 | `shelf-oauth-client-secret` | rara-shelf |
 | `shelf-oauth-refresh-token` | rara-shelf (scope: youtube.readonly) |
+
+> **rara-scribe does not use Secret Manager.** It runs locally and reads `DATABASE_URL` and
+> `GROQ_API_KEY` from `~/.rara-scribe/.env`. The old `groq-api-key` and `yt-dlp-cookies`
+> Secret Manager entries from its Cloud Run era can be deleted (see scribe DEPLOY.md).
 
 ### GitHub Secrets / Variables
 
@@ -96,23 +114,36 @@ rara/
 ├── .github/workflows/
 │   ├── ci.yml              # Code quality + tests (rara-harvest)
 │   ├── ci-shelf.yml        # Code quality + tests (rara-shelf)
+│   ├── ci-scribe.yml       # Code quality + tests (rara-scribe)
 │   ├── database.yml        # Migrations (rara-harvest)
 │   ├── database-shelf.yml  # Migrations (rara-shelf)
+│   ├── database-scribe.yml # Migrations (rara-scribe)
 │   ├── deploy.yml          # Cloud Run deploy (rara-harvest)
 │   └── deploy-shelf.yml    # Cloud Run deploy (rara-shelf)
-├── rara-harvest/           # YouTube channel video harvester
+│                           # (no deploy-scribe.yml — scribe runs locally)
+├── rara-harvest/           # YouTube channel video harvester (Cloud Run)
 │   ├── main.go
 │   ├── main_test.go        # 14 TDD tests, ETLHarness
 │   ├── migrations/
 │   │   ├── 001_initial_schema.sql
 │   │   └── 002_schema_refinements.sql
 │   └── ...
-├── rara-shelf/             # Personal playlist cataloguer
+├── rara-shelf/             # Personal playlist cataloger (Cloud Run)
 │   ├── main.go
 │   ├── main_test.go        # 12 TDD tests, ShelfHarness
 │   ├── migrations/
 │   │   └── 001_initial_schema.sql
 │   └── ...
+├── rara-scribe/            # Transcriber (local Mac via launchd)
+│   ├── main.go
+│   ├── main_test.go        # 13 TDD tests, ScribeHarness
+│   ├── install-local.sh    # launchd installer (no Dockerfile/deploy)
+│   ├── migrations/
+│   │   ├── 001_initial_schema.sql
+│   │   └── 002_widen_language.sql
+│   └── ...
+├── ARCHITECTURE.md
+├── INFRASTRUCTURE.md
 └── README.md
 ```
 
@@ -135,7 +166,7 @@ harness.AssertVideoCount(1)
 
 - `MockDatabase` — in-memory, mirrors real SQL constraints
 - Zero I/O in tests — all external deps mocked
-- 100% business logic coverage
+- 100% business-logic coverage
 
 ---
 
@@ -144,10 +175,13 @@ harness.AssertVideoCount(1)
 1. `mkdir rara-<name>` — create directory
 2. Write failing tests first (Red)
 3. Implement until tests pass (Green)
-4. Add `migrations/`, `Dockerfile`, `Makefile`
-5. Copy and adapt `deploy.yml` → `deploy-<name>.yml` (path filter, JOB_NAME, IMAGE, secrets)
-6. Copy and adapt `database.yml` → `database-<name>.yml`
-7. Update this README
+4. Add `migrations/`, `Makefile`
+5. Choose a runtime:
+   - **Cloud Run** (like harvest/shelf): add a `Dockerfile`, copy `deploy.yml` → `deploy-<name>.yml`
+   - **Local** (like scribe): add an `install-local.sh` + launchd plist — no Dockerfile, no deploy workflow
+6. Copy and adapt `database.yml` → `database-<name>.yml` (migrations apply to Neon regardless of runtime)
+7. Copy and adapt `ci.yml` → `ci-<name>.yml`
+8. Update this README
 
 ---
 
@@ -155,11 +189,14 @@ harness.AssertVideoCount(1)
 
 | Agent | Execution | Est. monthly |
 |-------|-----------|--------------|
-| rara-harvest | Daily | ~$0.02 |
-| rara-shelf | Daily | ~$0.02 |
+| rara-harvest | Daily (Cloud Run) | ~$0.02 |
+| rara-shelf | Daily (Cloud Run) | ~$0.02 |
+| rara-scribe | Daily (local Mac) | $0 compute + Groq ASR (~$0.111/h of audio) |
 | Cloud Build | Per deploy | ~$0.00 (free tier) |
 | Neon DB | Always-on | ~$0.00 (free tier) |
-| **Total** | | **< $0.10/month** |
+
+rara-scribe's only ongoing cost is the Groq API. The one-time backlog (~1,200 videos) is a few
+tens of dollars; incremental daily runs are cents.
 
 ---
 

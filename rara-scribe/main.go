@@ -765,11 +765,11 @@ func main() {
 
 	db := &pgxDatabase{conn: conn}
 	// Resolve the external binaries to absolute paths (no $PATH lookup, which
-	// could be hijacked). Container defaults match the Dockerfile; override with
-	// YT_DLP_BIN / FFMPEG_BIN for local development.
+	// could be hijacked). Local runs set YT_DLP_BIN / FFMPEG_BIN (Homebrew paths)
+	// via ~/.rara-scribe/.env; the fallbacks below are last-resort defaults.
 	acq := newYtDlpAcquirer(
-		resolveBin("YT_DLP_BIN", "/usr/local/bin/yt-dlp"),
-		resolveBin("FFMPEG_BIN", "/usr/bin/ffmpeg"),
+		resolveBin("YT_DLP_BIN", "/opt/homebrew/bin/yt-dlp"),
+		resolveBin("FFMPEG_BIN", "/opt/homebrew/bin/ffmpeg"),
 		cookieFile,
 	)
 	ctx := context.Background()

@@ -80,7 +80,7 @@ The `engine` column records which engine produced each row.
 | `TRANSCRIBE_ENGINE` | no | `groq` | `groq` or `gemini` |
 | `GROQ_API_KEY` | if engine=groq | — | https://console.groq.com |
 | `GEMINI_API_KEY` | if engine=gemini | — | https://aistudio.google.com |
-| `BATCH_SIZE` | no | `25` | Videos per run |
+| `BATCH_SIZE` | no | `25` | Videos per run (default; raise freely — e.g. 100, 1000 — to drain the backlog faster, no hard cap) |
 | `YT_DLP_BIN` | yes (local) | — | Absolute path to `yt-dlp` |
 | `FFMPEG_BIN` | yes (local) | — | Absolute path to `ffmpeg` |
 | `YT_DLP_COOKIES` | no | — | cookies.txt (rarely needed from a residential IP) |
@@ -110,5 +110,8 @@ gcloud run jobs delete rara-scribe --region us-central1 --project oute-rara
 
 ## Migrations
 
-`migrations/001_initial_schema.sql` creates `transcripts` + `transcript_segments`. Applied
-by the `database-scribe.yml` workflow. See [DEPLOY.md](DEPLOY.md).
+- `migrations/001_initial_schema.sql` creates `transcripts` + `transcript_segments`.
+- `migrations/002_widen_language.sql` widens `transcripts.language` to `TEXT` (Whisper returns
+  full language names like `azerbaijani` that overflow the original `VARCHAR(10)`).
+
+Applied by the `database-scribe.yml` workflow. See [DEPLOY.md](DEPLOY.md).
