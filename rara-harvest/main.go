@@ -87,7 +87,7 @@ func fetchActiveChannels(ctx context.Context, conn *pgx.Conn) ([]Channel, error)
 	}
 	defer rows.Close()
 
-	var channels []Channel
+	channels := make([]Channel, 0, 10)
 	for rows.Next() {
 		var ch Channel
 		if err := rows.Scan(&ch.ID, &ch.YoutubeChannelID, &ch.ChannelName, &ch.Active); err != nil {
@@ -152,8 +152,12 @@ func fetchLatestVideos(apiKey, uploadPlaylistID string) ([]PlaylistItem, error) 
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("YouTube API error (status %d): %s", resp.StatusCode, string(body))
+		body, err := io.ReadAll(resp.Body)
+		errMsg := string(body)
+		if err != nil {
+			errMsg = fmt.Sprintf("(unable to read body: %v)", err)
+		}
+		return nil, fmt.Errorf("YouTube API error (status %d): %s", resp.StatusCode, errMsg)
 	}
 
 	var playlistResp PlaylistResponse
