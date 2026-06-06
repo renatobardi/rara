@@ -42,6 +42,11 @@ jobs:
         with:
           workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
           service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+          # WIF external_account credentials are not fully compatible with all
+          # gcloud operations (e.g. Cloud Build source upload to GCS). Requesting
+          # an access_token exchanges the WIF token for a standard OAuth2 token
+          # that works with every gcloud command and client library.
+          token_format: access_token
 
       - name: Set up Cloud SDK
         uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f # v2
