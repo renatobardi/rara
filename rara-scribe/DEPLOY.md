@@ -13,27 +13,18 @@ A única coisa nova é **a chave da API de transcrição** — 1 secret no Secre
 
 ---
 
-## 1. Criar os secrets (uma vez)
+## 1. Criar o secret da Groq (uma vez)
 
-O `deploy-scribe.yml` monta **dois secrets novos** no job, por isso ambos têm de existir
-**antes** do deploy correr (senão `gcloud run jobs create/update` falha):
+Cria uma API key em https://console.groq.com → **API Keys**, depois (Cloud Shell):
 
 ```bash
-# Groq API key (https://console.groq.com → API Keys)
 printf '%s' 'gsk_a-tua-groq-key' | gcloud secrets create groq-api-key \
   --replication-policy=automatic --data-file=- --project "${PROJECT_ID}"
-
-# Cookies do YouTube (cookies.txt formato Netscape, exportado de um browser autenticado).
-# Contorna o bot-check do YouTube nos IPs de datacenter da Cloud Run.
-gcloud secrets create yt-dlp-cookies \
-  --replication-policy=automatic --data-file=cookies.txt --project "${PROJECT_ID}"
 ```
 
 `database-url` já existe (reutilizado dos outros agentes). A service account `rara-deployer`
 e a SA de runtime (compute default) já têm `secretmanager.secretAccessor` a nível de projeto,
-portanto os secrets novos ficam acessíveis **sem alterações de IAM**.
-
-> Rotação dos cookies (expiram): `gcloud secrets versions add yt-dlp-cookies --data-file=cookies.txt`.
+portanto o secret novo fica acessível **sem alterações de IAM**.
 
 ---
 
@@ -68,12 +59,26 @@ Tradeoff: Gemini 2.5 Flash é ~½ do custo, mas os timestamps dos segmentos são
 
 ---
 
-## 4. Cookies do YouTube (montados por defeito)
+## 4. Cookies do YouTube (opcional — contra bloqueio de bot)
 
 O yt-dlp a partir de IPs de datacenter (Cloud Run) pode apanhar "Sign in to confirm you're not
-a bot". O job monta `YT_DLP_COOKIES` a partir do secret `yt-dlp-cookies` (criado na secção 1) e
-passa-o a `yt-dlp --cookies`. Vídeos persistentemente bloqueados ficam `status='failed'` e são
-re-tentados no run seguinte (o batch nunca pára por causa de um vídeo).
+a bot". Sem mitigação, vídeos bloqueados ficam `status='failed'` e são re-tentados no run
+seguinte (o batch nunca pára por causa de um vídeo).
+
+> **Nota de segurança:** um `cookies.txt` do YouTube é essencialmente a tua sessão Google —
+> guardá-lo como secret é uma superfície de risco. Por isso **não** é montado por defeito.
+
+Se mais tarde quiseres ativá-lo (de preferência com uma conta Google secundária), exporta o
+`cookies.txt`, cria o secret e monta-o no job — e acrescenta `YT_DLP_COOKIES=yt-dlp-cookies:latest`
+ao `--set-secrets` do `deploy-scribe.yml`:
+
+```bash
+gcloud secrets create yt-dlp-cookies --replication-policy=automatic \
+  --data-file=cookies.txt --project "${PROJECT_ID}"
+
+gcloud run jobs update rara-scribe --region us-central1 --project "${PROJECT_ID}" \
+  --update-secrets "YT_DLP_COOKIES=yt-dlp-cookies:latest"
+```
 
 ---
 
