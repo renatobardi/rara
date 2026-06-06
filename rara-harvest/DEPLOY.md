@@ -41,14 +41,16 @@ gcloud iam service-accounts create rara-deployer \
 export SA="rara-deployer@${PROJECT_ID}.iam.gserviceaccount.com"
 
 # Roles for the deployer: build, push, deploy Cloud Run, act as runtime SA, read secrets
-# roles/storage.objectAdmin is required for Cloud Build to stage source in its GCS bucket
+# roles/storage.objectAdmin  — Cloud Build stages source in a GCS bucket
+# roles/serviceusage.serviceUsageConsumer — required for any SA to call GCP APIs
 for ROLE in \
   roles/run.admin \
   roles/cloudbuild.builds.editor \
   roles/artifactregistry.writer \
   roles/iam.serviceAccountUser \
   roles/secretmanager.secretAccessor \
-  roles/storage.objectAdmin; do
+  roles/storage.objectAdmin \
+  roles/serviceusage.serviceUsageConsumer; do
   gcloud projects add-iam-policy-binding "$PROJECT_ID" \
     --member="serviceAccount:${SA}" --role="$ROLE" --condition=None
 done
