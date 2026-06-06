@@ -59,26 +59,28 @@ Tradeoff: Gemini 2.5 Flash é ~½ do custo, mas os timestamps dos segmentos são
 
 ---
 
-## 4. Cookies do YouTube (opcional — contra bloqueio de bot)
+## 4. Cookies do YouTube (necessário — IPs da Cloud Run são bloqueados)
 
-O yt-dlp a partir de IPs de datacenter (Cloud Run) pode apanhar "Sign in to confirm you're not
-a bot". Sem mitigação, vídeos bloqueados ficam `status='failed'` e são re-tentados no run
-seguinte (o batch nunca pára por causa de um vídeo).
+A partir de IPs de datacenter (Cloud Run) o YouTube bloqueia o yt-dlp com "Sign in to confirm
+you're not a bot" — na prática **100% dos downloads** falham sem cookies. Por isso o job monta
+`YT_DLP_COOKIES` a partir do secret `yt-dlp-cookies` e passa-o a `yt-dlp --cookies`. O secret
+**tem de existir antes do deploy** (senão `gcloud run jobs create/update` falha).
 
-> **Nota de segurança:** um `cookies.txt` do YouTube é essencialmente a tua sessão Google —
-> guardá-lo como secret é uma superfície de risco. Por isso **não** é montado por defeito.
+> **Segurança:** um `cookies.txt` do YouTube é a tua sessão Google. Gera-o com uma **conta
+> descartável/secundária** logada só no YouTube — se o secret vazar, é só uma conta-isca.
 
-Se mais tarde quiseres ativá-lo (de preferência com uma conta Google secundária), exporta o
-`cookies.txt`, cria o secret e monta-o no job — e acrescenta `YT_DLP_COOKIES=yt-dlp-cookies:latest`
-ao `--set-secrets` do `deploy-scribe.yml`:
-
+Gerar e guardar (ver passos detalhados no README do agente):
 ```bash
+# Exportar os cookies da conta-isca (browser onde ela está logada)
+yt-dlp --cookies-from-browser chrome --cookies cookies.txt --skip-download \
+  "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+
 gcloud secrets create yt-dlp-cookies --replication-policy=automatic \
   --data-file=cookies.txt --project "${PROJECT_ID}"
-
-gcloud run jobs update rara-scribe --region us-central1 --project "${PROJECT_ID}" \
-  --update-secrets "YT_DLP_COOKIES=yt-dlp-cookies:latest"
 ```
+
+Os cookies expiram. Quando o bot-check voltar, regenera e roda:
+`gcloud secrets versions add yt-dlp-cookies --data-file=cookies.txt --project "${PROJECT_ID}"`.
 
 ---
 
