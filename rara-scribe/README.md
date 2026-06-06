@@ -1,113 +1,114 @@
 # rara-scribe
 
-Terceiro agente do ecossistema **rara**. Produz **transcripts de excelente qualidade, na
-língua nativa do áudio**, para os vídeos colhidos pelo `rara-harvest` (`channel_videos`) e
-catalogados pelo `rara-shelf` (`playlist_videos`).
+Third agent in the **rara** ecosystem. Produces **high-quality transcripts, in the audio's
+native language**, for videos collected by `rara-harvest` (`channel_videos`) and cataloged
+by `rara-shelf` (`playlist_videos`).
 
-Substitui as legendas automáticas (fracas) do YouTube por ASR especialista. **Agnóstico à
-fonte**: YouTube, outro site de vídeo (1800+ via yt-dlp) ou um ficheiro local.
+Replaces weak YouTube auto-captions with specialist ASR. **Source-agnostic**: YouTube, any
+other video site (1800+ via yt-dlp), or a local file.
 
-Tabelas próprias no mesmo Neon (isolado dos outros agentes). **Corre localmente no Mac**
-(agendado por `launchd`), o que evita o bot-check do YouTube que bloqueia IPs de datacenter.
+Own tables in the same Neon database (isolated from the other agents). **Runs locally on
+your Mac** (scheduled by `launchd`), which avoids the YouTube bot-check that blocks
+datacenter IPs.
 
-## Como funciona
+## How it works
 
-1. **Descoberta** (modo batch): selecciona até `BATCH_SIZE` vídeos presentes em
-   `channel_videos` ∪ `playlist_videos` que ainda não têm transcript `done` (idempotente).
-2. **Áudio**: `yt-dlp` descarrega o áudio; `ffmpeg` converte para 16 kHz mono e fatia em
-   segmentos de 10 min (cada chunk < 25 MB, dentro do limite da API Groq).
-3. **Transcrição**: cada chunk vai para o motor ASR; os timestamps dos segmentos são
-   reindexados para a timeline global e o texto é costurado.
-4. **Persistência**: cabeçalho (`transcripts`) + segmentos (`transcript_segments`) numa
-   transacção. Falha num vídeo → `status='failed'` e o batch continua.
+1. **Discovery** (batch mode): selects up to `BATCH_SIZE` videos present in
+   `channel_videos` ∪ `playlist_videos` that do not yet have a `done` transcript (idempotent).
+2. **Audio**: `yt-dlp` downloads the audio; `ffmpeg` converts to 16 kHz mono and splits into
+   10-minute segments (each chunk < 25 MB, within the Groq API limit).
+3. **Transcription**: each chunk is sent to the ASR engine; segment timestamps are re-indexed
+   to the global timeline and the text is stitched together.
+4. **Persistence**: header row (`transcripts`) + segments (`transcript_segments`) in a single
+   transaction. A failure on one video → `status='failed'` and the batch continues.
 
-## Instalação local (uma vez)
+## Local installation (once)
 
-Pré-requisito: `yt-dlp` e `ffmpeg` instalados (provavelmente já tens via Homebrew).
+Prerequisites: `yt-dlp` and `ffmpeg` installed (most likely via Homebrew).
 
 ```bash
 cd rara-scribe
 
-# 1ª vez: cria ~/.rara-scribe/.env a partir do template e termina com instruções
+# First run: creates ~/.rara-scribe/.env from template and exits with instructions
 bash install-local.sh
 
-# Preenche os valores (DATABASE_URL e GROQ_API_KEY obrigatórios)
+# Fill in the values (DATABASE_URL and GROQ_API_KEY are required)
 $EDITOR ~/.rara-scribe/.env
 
-# Instalar de facto (compila binário + activa agente launchd)
+# Actual install (compiles binary + activates launchd agent)
 bash install-local.sh
 ```
 
-O agente fica agendado **diariamente às 02:00**. O Mac processa o backlog durante a noite.
-Para alterar o horário, edita `~/Library/LaunchAgents/com.rara.scribe.plist`.
+The agent is scheduled **daily at 02:00**. The Mac processes the backlog overnight.
+To change the schedule, edit `~/Library/LaunchAgents/com.rara.scribe.plist`.
 
-## Uso diário
+## Daily usage
 
 ```bash
-# Forçar um run imediato
+# Force an immediate run
 launchctl start com.rara.scribe
 
-# Ver logs em tempo real
+# Watch logs in real time
 tail -f ~/Library/Logs/rara-scribe/output.log
 
-# Run manual único (sem launchd, a partir do repo)
+# Single manual run (without launchd, from the repo)
 cd rara-scribe && make run
 
-# Fonte única ad-hoc
+# Ad-hoc single source
 cd rara-scribe && source ~/.rara-scribe/.env && ./scribe-job --source "https://youtu.be/VIDEO_ID"
 
-# Actualizar após novo build
+# Update after a new build
 cd rara-scribe && make build && bash install-local.sh
 ```
 
-## Motor de transcrição (plugável)
+## Transcription engine (pluggable)
 
-Escolhido por `TRANSCRIBE_ENGINE` no `.env`:
+Chosen by `TRANSCRIBE_ENGINE` in `.env`:
 
-| Engine | Modelo | Custo aprox. | Notas |
-|--------|--------|--------------|-------|
-| `groq` (default) | `whisper-large-v3` | ~$0.111/h | Melhor qualidade/custo; timestamps precisos. |
-| `gemini` | `gemini-2.5-flash` | ~$0.045/h (batch) | Mais barato; timestamps aproximados. |
+| Engine | Model | Approx. cost | Notes |
+|--------|-------|--------------|-------|
+| `groq` (default) | `whisper-large-v3` | ~$0.111/h | Best quality/cost; precise timestamps. |
+| `gemini` | `gemini-2.5-flash` | ~$0.045/h (batch) | Cheaper; approximate timestamps. |
 
-A coluna `engine` regista qual motor produziu cada linha.
+The `engine` column records which engine produced each row.
 
-## Configuração (env)
+## Configuration (env)
 
-| Var | Obrigatória | Default | Descrição |
-|-----|-------------|---------|-----------|
-| `DATABASE_URL` | sim | — | Neon PostgreSQL (partilhado) |
-| `TRANSCRIBE_ENGINE` | não | `groq` | `groq` ou `gemini` |
-| `GROQ_API_KEY` | se engine groq | — | https://console.groq.com |
-| `GEMINI_API_KEY` | se engine gemini | — | https://aistudio.google.com |
-| `BATCH_SIZE` | não | `25` | Vídeos por execução |
-| `YT_DLP_BIN` | sim (local) | — | Caminho absoluto para `yt-dlp` |
-| `FFMPEG_BIN` | sim (local) | — | Caminho absoluto para `ffmpeg` |
-| `YT_DLP_COOKIES` | não | — | cookies.txt (raramente necessário de IP residencial) |
+| Var | Required | Default | Description |
+|-----|----------|---------|-------------|
+| `DATABASE_URL` | yes | — | Neon PostgreSQL (shared) |
+| `TRANSCRIBE_ENGINE` | no | `groq` | `groq` or `gemini` |
+| `GROQ_API_KEY` | if engine=groq | — | https://console.groq.com |
+| `GEMINI_API_KEY` | if engine=gemini | — | https://aistudio.google.com |
+| `BATCH_SIZE` | no | `25` | Videos per run |
+| `YT_DLP_BIN` | yes (local) | — | Absolute path to `yt-dlp` |
+| `FFMPEG_BIN` | yes (local) | — | Absolute path to `ffmpeg` |
+| `YT_DLP_COOKIES` | no | — | cookies.txt (rarely needed from a residential IP) |
 
-## Desenvolvimento
+## Development
 
 ```bash
-make test          # testes (TDD)
-make test-race     # testes com race detector
+make test          # tests (TDD)
+make test-race     # tests with race detector
 make lint          # go vet + staticcheck
-make build         # binário local (scribe-job)
-make run           # compilar + correr um batch (requer .env nesta directoria)
+make build         # local binary (scribe-job)
+make run           # build + run one batch (requires .env in this directory)
 ```
 
-## Limpeza da infra GCP (Cloud Run removido)
+## GCP infrastructure cleanup (Cloud Run removed)
 
-O Cloud Run Job `rara-scribe` já não é usado. Para limpar:
+The Cloud Run Job `rara-scribe` is no longer in use. To clean up:
 
 ```bash
-# Eliminar o Cloud Run Job
+# Delete the Cloud Run Job
 gcloud run jobs delete rara-scribe --region us-central1 --project oute-rara
 
-# Opcional: eliminar o secret de cookies (já não necessário localmente)
+# Optional: delete the cookies secret (no longer needed locally)
 # gcloud secrets delete yt-dlp-cookies --project oute-rara
-# groq-api-key e database-url ficam (usados por outros agentes)
+# groq-api-key and database-url remain (used by the other agents)
 ```
 
-## Migrações
+## Migrations
 
-`migrations/001_initial_schema.sql` cria `transcripts` + `transcript_segments`. Aplicadas pelo
-workflow `database-scribe.yml`. Ver [DEPLOY.md](DEPLOY.md).
+`migrations/001_initial_schema.sql` creates `transcripts` + `transcript_segments`. Applied
+by the `database-scribe.yml` workflow. See [DEPLOY.md](DEPLOY.md).
