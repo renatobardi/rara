@@ -8,7 +8,7 @@ on:
       - 'rara-harvest/migrations/**'
       - 'rara-harvest/cleanup.sql'
       - 'rara-harvest/seed.sql'
-      - 'rara-harvest/.github/workflows/database.yml'
+      - '.github/workflows/database.yml'
   pull_request:
     branches:
       - main
@@ -32,11 +32,14 @@ jobs:
   validate:
     name: Validate Schema
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request' || github.event.inputs.action == 'validate'
+    # Skipped only on a manual seed dispatch (seed doesn't need schema validation).
+    # Runs on every push, PR, and manual validate/migrate — keeping migrate's
+    # `needs: validate` satisfied so it isn't skipped on merges to main.
+    if: "!(github.event_name == 'workflow_dispatch' && github.event.inputs.action == 'seed')"
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Install PostgreSQL client
         run: |
@@ -88,12 +91,15 @@ jobs:
   migrate:
     name: Apply Migrations
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    # Auto-apply on merge to main, or on a manual "migrate" dispatch.
+    if: >-
+      (github.ref == 'refs/heads/main' && github.event_name == 'push') ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.action == 'migrate')
     needs: validate
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Install PostgreSQL client
         run: |
@@ -154,7 +160,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Install PostgreSQL client
         run: |
