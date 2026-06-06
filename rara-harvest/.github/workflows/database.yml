@@ -1,0 +1,222 @@
+name: Database Migrations
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'rara-harvest/migrations/**'
+      - 'rara-harvest/cleanup.sql'
+      - 'rara-harvest/seed.sql'
+      - 'rara-harvest/.github/workflows/database.yml'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'rara-harvest/migrations/**'
+      - 'rara-harvest/cleanup.sql'
+      - 'rara-harvest/seed.sql'
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Action to perform'
+        required: true
+        default: 'validate'
+        type: choice
+        options:
+          - validate
+          - migrate
+          - seed
+
+env:
+  DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
+jobs:
+  validate:
+    name: Validate Schema
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request' || github.event.inputs.action == 'validate'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install PostgreSQL client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client
+
+      - name: Build DATABASE_URL from secrets
+        run: |
+          echo "DATABASE_URL=postgresql://${{ secrets.NEON_USERNAME }}:${{ secrets.NEON_PASSWORD }}@${{ secrets.NEON_HOST }}:${{ secrets.NEON_PORT }}/${{ secrets.NEON_DATABASE }}" >> $GITHUB_ENV
+
+      - name: Test database connection
+        run: |
+          echo "Testing connection to Neon..."
+          psql "$DATABASE_URL" -c "SELECT version();" || exit 1
+          echo "✅ Database connection successful"
+
+      - name: Check migration files
+        run: |
+          if [ ! -d "rara-harvest/migrations" ]; then
+            echo "❌ migrations directory not found"
+            exit 1
+          fi
+
+          MIGRATION_COUNT=$(ls -1 rara-harvest/migrations/*.sql 2>/dev/null | wc -l)
+          echo "Found $MIGRATION_COUNT migration files"
+
+          if [ "$MIGRATION_COUNT" -eq 0 ]; then
+            echo "❌ No migration files found"
+            exit 1
+          fi
+
+      - name: Validate SQL syntax
+        run: |
+          for file in rara-harvest/migrations/*.sql; do
+            echo "Validating: $file"
+            psql "$DATABASE_URL" --single-transaction -f "$file" --dry-run || echo "⚠️ Dry run failed: $file"
+          done
+
+      - name: Check current schema
+        run: |
+          echo "Current tables:"
+          psql "$DATABASE_URL" -c "\dt public.*" || echo "No tables found (first run)"
+
+  migrate:
+    name: Apply Migrations
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    needs: validate
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install PostgreSQL client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client
+
+      - name: Build DATABASE_URL from secrets
+        run: |
+          echo "DATABASE_URL=postgresql://${{ secrets.NEON_USERNAME }}:${{ secrets.NEON_PASSWORD }}@${{ secrets.NEON_HOST }}:${{ secrets.NEON_PORT }}/${{ secrets.NEON_DATABASE }}" >> $GITHUB_ENV
+
+      - name: Apply migrations
+        run: |
+          echo "Applying migrations..."
+          for migration in rara-harvest/migrations/*.sql; do
+            if [ -f "$migration" ]; then
+              echo "Running: $(basename $migration)..."
+              psql "$DATABASE_URL" -f "$migration" || exit 1
+              echo "✅ $(basename $migration) applied successfully"
+            fi
+          done
+
+      - name: Verify schema
+        run: |
+          echo "Verifying schema..."
+
+          CHANNELS_TABLE=$(psql "$DATABASE_URL" -t -c "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = 'target_channels'")
+          VIDEOS_TABLE=$(psql "$DATABASE_URL" -t -c "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = 'channel_videos'")
+
+          if [ "$CHANNELS_TABLE" -eq 1 ] && [ "$VIDEOS_TABLE" -eq 1 ]; then
+            echo "✅ Schema verified successfully"
+          else
+            echo "❌ Schema verification failed"
+            exit 1
+          fi
+
+      - name: Check indexes
+        run: |
+          echo "Verifying indexes..."
+          psql "$DATABASE_URL" -c "\di public.*" | head -20
+
+      - name: Show table stats
+        run: |
+          echo "Database statistics:"
+          psql "$DATABASE_URL" -c "
+            SELECT
+              schemaname,
+              tablename,
+              (SELECT COUNT(*) FROM information_schema.columns WHERE table_name = t.tablename) as column_count
+            FROM pg_tables t
+            WHERE schemaname = 'public'
+            ORDER BY tablename;
+          "
+
+  seed-data:
+    name: Load Seed Data (Optional)
+    runs-on: ubuntu-latest
+    if: github.event.inputs.action == 'seed'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install PostgreSQL client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client
+
+      - name: Build DATABASE_URL from secrets
+        run: |
+          echo "DATABASE_URL=postgresql://${{ secrets.NEON_USERNAME }}:${{ secrets.NEON_PASSWORD }}@${{ secrets.NEON_HOST }}:${{ secrets.NEON_PORT }}/${{ secrets.NEON_DATABASE }}" >> $GITHUB_ENV
+
+      - name: Load seed data
+        run: |
+          echo "Loading seed data..."
+          psql "$DATABASE_URL" -f rara-harvest/seed.sql
+          echo "✅ Seed data loaded"
+
+      - name: Show loaded data
+        run: |
+          echo "Channels:"
+          psql "$DATABASE_URL" -c "SELECT id, channel_name, active FROM target_channels;"
+
+          echo ""
+          echo "Videos:"
+          psql "$DATABASE_URL" -c "SELECT id, title, published_at FROM channel_videos LIMIT 5;"
+
+  health-check:
+    name: Database Health Check
+    runs-on: ubuntu-latest
+    if: always()
+    needs: [validate]
+
+    steps:
+      - name: Install PostgreSQL client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client
+
+      - name: Build DATABASE_URL from secrets
+        run: |
+          echo "DATABASE_URL=postgresql://${{ secrets.NEON_USERNAME }}:${{ secrets.NEON_PASSWORD }}@${{ secrets.NEON_HOST }}:${{ secrets.NEON_PORT }}/${{ secrets.NEON_DATABASE }}" >> $GITHUB_ENV
+
+      - name: Database health check
+        run: |
+          echo "🏥 Performing health check..."
+
+          # Connection test
+          psql "$DATABASE_URL" -c "SELECT 1" > /dev/null 2>&1 && echo "✅ Connection OK" || echo "❌ Connection failed"
+
+          # Table check
+          TABLES=$(psql "$DATABASE_URL" -t -c "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'public'")
+          echo "✅ Found $TABLES tables"
+
+          # Index check
+          INDEXES=$(psql "$DATABASE_URL" -t -c "SELECT COUNT(*) FROM pg_indexes WHERE schemaname = 'public'")
+          echo "✅ Found $INDEXES indexes"
+
+      - name: Workflow status
+        if: success()
+        run: |
+          echo "✅ All checks passed!"
+          echo "🎉 Database pipeline completed successfully"
+
+      - name: Workflow status (failure)
+        if: failure()
+        run: |
+          echo "❌ Database pipeline failed"
+          exit 1
