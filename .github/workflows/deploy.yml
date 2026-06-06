@@ -54,26 +54,27 @@ jobs:
       - name: Build image with Cloud Build
         run: |
           # gcloud builds submit's internal GCS upload fails with external_account
-          # (WIF) credentials. Workaround: upload source ourselves via gcloud storage
-          # (which uses the same creds and works), then submit with --no-source
-          # referencing the pre-uploaded tarball from a cloudbuild.yaml config.
+          # (WIF) credentials. Upload source ourselves (gcloud storage works fine),
+          # then submit with --no-source referencing the pre-uploaded object.
           tar -czf /tmp/source.tgz -C rara-harvest .
           gcloud storage cp /tmp/source.tgz \
             "gs://oute-rara_cloudbuild/source/${GITHUB_SHA}.tgz"
 
-          gcloud builds submit \
-            --no-source \
-            --project "${{ vars.GCP_PROJECT_ID }}" \
-            --config=- << EOF
+          cat > /tmp/cloudbuild.yaml << YAML
           steps:
           - name: 'gcr.io/cloud-builders/docker'
-            args: ['build', '-t', '$IMAGE', '.']
+            args: ['build', '-t', '${IMAGE}', '.']
           source:
             storageSource:
               bucket: oute-rara_cloudbuild
               object: source/${GITHUB_SHA}.tgz
-          images: ['$IMAGE']
-          EOF
+          images: ['${IMAGE}']
+          YAML
+
+          gcloud builds submit \
+            --no-source \
+            --config=/tmp/cloudbuild.yaml \
+            --project "${{ vars.GCP_PROJECT_ID }}"
 
       - name: Deploy Cloud Run Job
         run: |
