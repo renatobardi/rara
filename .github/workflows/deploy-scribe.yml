@@ -96,7 +96,7 @@ jobs:
             --region "$REGION"
             --project "${{ vars.GCP_PROJECT_ID }}"
             --set-secrets "DATABASE_URL=database-url:latest,GROQ_API_KEY=groq-api-key:latest"
-            --set-env-vars "TRANSCRIBE_ENGINE=groq,BATCH_SIZE=25"
+            --set-env-vars "TRANSCRIBE_ENGINE=groq,BATCH_SIZE=5"
             --max-retries 1
             --task-timeout 3600s
             --memory 2Gi
