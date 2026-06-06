@@ -1,0 +1,98 @@
+name: CI rara-shelf
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+    paths:
+      - 'rara-shelf/**'
+      - '.github/workflows/ci-shelf.yml'
+  pull_request:
+    branches:
+      - main
+      - develop
+    paths:
+      - 'rara-shelf/**'
+      - '.github/workflows/ci-shelf.yml'
+
+jobs:
+  code-quality:
+    name: Code Quality & Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Setup Go
+        uses: actions/setup-go@7b8cf10d4e4a01d4992d18a89f4d7dc5a3e6d6f4 # v4
+        with:
+          go-version-file: rara-shelf/go.mod
+
+      - name: Cache Go modules
+        uses: actions/cache@6f8efc29b200d32929f49075959781ed54ec270c # v3
+        with:
+          path: ~/go/pkg/mod
+          key: ${{ runner.os }}-go-shelf-${{ hashFiles('rara-shelf/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-shelf-
+
+      - name: Download dependencies
+        run: |
+          cd rara-shelf
+          go mod download
+
+      - name: Format check
+        run: |
+          cd rara-shelf
+          if [ -n "$(gofmt -s -l .)" ]; then
+            echo "❌ Code formatting issues found. Run: gofmt -w ."
+            gofmt -s -d .
+            exit 1
+          fi
+          echo "✅ Code format OK"
+
+      - name: Lint
+        run: |
+          cd rara-shelf
+          go vet ./...
+          echo "✅ Vet check passed"
+
+      - name: Run tests
+        run: |
+          cd rara-shelf
+          go test -v -race -coverprofile=coverage.out ./...
+          echo "✅ Tests passed"
+
+      - name: Check coverage
+        run: |
+          cd rara-shelf
+          go tool cover -func=coverage.out | tail -1
+          echo "✅ Coverage report generated"
+
+  security:
+    name: Security Scan
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@7b8cf10d4e4a01d4992d18a89f4d7dc5a3e6d6f4 # v4
+        with:
+          go-version-file: rara-shelf/go.mod
+
+      - name: Vulnerability scan (govulncheck)
+        run: |
+          cd rara-shelf
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          "$(go env GOPATH)/bin/govulncheck" ./...
+
+      - name: Secret scan (gitleaks)
+        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

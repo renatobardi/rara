@@ -28,6 +28,20 @@ make test
 
 [Read More →](./rara-harvest/README.md)
 
+### 📚 rara-shelf
+Catalogs the user's own YouTube playlists (public, unlisted and private) and the videos in each, recording which playlist each video belongs to. Uses OAuth (the user's account) instead of an API key.
+- **Status**: ✅ Production Ready
+- **Tests**: 12/12 passing
+- **Cost**: ~$0.02/month (daily execution)
+
+**Quick Start**:
+```bash
+cd rara-shelf
+make test
+```
+
+[Read More →](./rara-shelf/README.md)
+
 ### 🔮 rara-pulse (Coming Soon)
 Metrics and data aggregation agent.
 
@@ -144,6 +158,7 @@ REGION="us-central1"
 | Agent | Execution | Monthly Cost |
 |-------|-----------|--------------|
 | rara-harvest | Daily | ~$0.02 |
+| rara-shelf | Daily | ~$0.02 |
 | (More agents coming) | - | - |
 
 ## Contributing
