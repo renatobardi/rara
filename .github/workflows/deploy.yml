@@ -25,7 +25,6 @@ permissions:
 
 env:
   REGION: ${{ vars.GCP_REGION }}
-  AR_REPO: rara
   JOB_NAME: rara-harvest
   IMAGE: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/rara/rara-harvest:${{ github.sha }}
 
@@ -36,7 +35,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed # v2
@@ -55,24 +54,29 @@ jobs:
 
       - name: Deploy Cloud Run Job
         run: |
-          # Create the job on first deploy, otherwise update it. Both paths
-          # mount the same Secret Manager secrets as environment variables.
-          if gcloud run jobs describe "$JOB_NAME" --region "$REGION" \
-               --project "${{ vars.GCP_PROJECT_ID }}" >/dev/null 2>&1; then
-            ACTION=update
-          else
-            ACTION=create
+          # Try to update first. If the job doesn't exist yet, create it.
+          # This avoids the TOCTOU race of describe→create/update where two
+          # concurrent deploys could both attempt create and one would fail.
+          if ! gcloud run jobs update "$JOB_NAME" \
+               --image "$IMAGE" \
+               --region "$REGION" \
+               --project "${{ vars.GCP_PROJECT_ID }}" \
+               --set-secrets "YOUTUBE_API_KEY=youtube-api-key:latest,DATABASE_URL=database-url:latest" \
+               --max-retries 1 \
+               --task-timeout 600s \
+               --memory 512Mi \
+               --cpu 1 2>/dev/null; then
+            echo "Job not found — creating for the first time..."
+            gcloud run jobs create "$JOB_NAME" \
+              --image "$IMAGE" \
+              --region "$REGION" \
+              --project "${{ vars.GCP_PROJECT_ID }}" \
+              --set-secrets "YOUTUBE_API_KEY=youtube-api-key:latest,DATABASE_URL=database-url:latest" \
+              --max-retries 1 \
+              --task-timeout 600s \
+              --memory 512Mi \
+              --cpu 1
           fi
-          echo "Job action: $ACTION"
-          gcloud run jobs "$ACTION" "$JOB_NAME" \
-            --image "$IMAGE" \
-            --region "$REGION" \
-            --project "${{ vars.GCP_PROJECT_ID }}" \
-            --set-secrets "YOUTUBE_API_KEY=youtube-api-key:latest,DATABASE_URL=database-url:latest" \
-            --max-retries 1 \
-            --task-timeout 600s \
-            --memory 512Mi \
-            --cpu 1
 
       - name: Execute job once
         if: github.event_name == 'push' || github.event.inputs.run_after_deploy == 'true'

@@ -32,14 +32,14 @@ jobs:
   validate:
     name: Validate Schema
     runs-on: ubuntu-latest
-    # Always run before migrate (on push and PR), and on a manual validate/migrate.
-    # Skipped only on a manual seed. This keeps `migrate`'s `needs: validate`
-    # satisfied so it isn't skipped on merges to main.
-    if: github.event_name != 'workflow_dispatch' || github.event.inputs.action != 'seed'
+    # Skipped only on a manual seed dispatch (seed doesn't need schema validation).
+    # Runs on every push, PR, and manual validate/migrate — keeping migrate's
+    # `needs: validate` satisfied so it isn't skipped on merges to main.
+    if: "!(github.event_name == 'workflow_dispatch' && github.event.inputs.action == 'seed')"
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Install PostgreSQL client
         run: |
@@ -99,7 +99,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Install PostgreSQL client
         run: |
@@ -160,7 +160,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Install PostgreSQL client
         run: |
