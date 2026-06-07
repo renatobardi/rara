@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -140,6 +141,11 @@ type Transcript struct {
 	DurationSeconds int
 	Status          string // "done" | "failed"
 	Error           string
+	// TransientFailure marks a 'failed' save as caused by a transient ASR error (a
+	// 429 rate limit or a 5xx) rather than a permanent one (deleted/private video,
+	// bad request). SaveTranscript keeps attempt_count unchanged for these, so an
+	// exhausted daily quota never counts toward the retry cap.
+	TransientFailure bool
 }
 
 // VideoRef is a video pending transcription, discovered from the collector tables.
@@ -334,6 +340,23 @@ func NewTranscriber(cfg Config) (Transcriber, string, error) {
 // Orchestration (engine/acquirer-agnostic; unit-tested via mocks)
 // ---------------------------------------------------------------------------
 
+// transientError marks an ASR failure as transient (retryable) — a rate limit
+// (HTTP 429) or a server-side 5xx — as opposed to a permanent failure (deleted/
+// private video, bad request, auth). The transcribers wrap their final error in
+// this type so transcribeSource can flag the Transcript and SaveTranscript can
+// keep the retry counter unchanged: a daily-quota exhaustion must not retire an
+// otherwise-fine video.
+type transientError struct{ err error }
+
+func (e *transientError) Error() string { return e.err.Error() }
+func (e *transientError) Unwrap() error { return e.err }
+
+// isTransient reports whether err (or anything it wraps) is a transientError.
+func isTransient(err error) bool {
+	var te *transientError
+	return errors.As(err, &te)
+}
+
 // transcribeSource runs the full pipeline for one source: acquire audio, then
 // transcribe every chunk and stitch the result. It never returns an error —
 // failures are captured as a "failed" Transcript so the batch can persist them
@@ -365,6 +388,7 @@ func transcribeSource(ctx context.Context, acq AudioAcquirer, tr Transcriber, en
 		text, lang, chunkSegs, err := tr.Transcribe(ctx, ch.Path)
 		if err != nil {
 			t.Status, t.Error = statusFailed, err.Error()
+			t.TransientFailure = isTransient(err)
 			return t, nil
 		}
 		if lang != "" {
@@ -639,9 +663,14 @@ func (g *groqTranscriber) Transcribe(ctx context.Context, audioPath string) (str
 		lastErr = fmt.Errorf("groq API error (status %d): %s", resp.StatusCode, truncate(string(body), 500))
 
 		// Retry only transient failures (429 rate limit, 5xx). 4xx other than 429
-		// are permanent (bad request, auth) — fail immediately.
+		// are permanent (bad request, auth) — fail immediately. A transient error
+		// that survives the retries is wrapped so it is not counted toward the
+		// per-video retry cap.
 		transient := resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500
 		if !transient || attempt >= maxASRRetries {
+			if transient {
+				return "", "", nil, &transientError{lastErr}
+			}
 			return "", "", nil, lastErr
 		}
 
@@ -780,7 +809,13 @@ func (g *geminiTranscriber) Transcribe(ctx context.Context, audioPath string) (s
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return "", "", nil, fmt.Errorf("gemini API error (status %d): %s", resp.StatusCode, truncate(string(body), 500))
+		apiErr := fmt.Errorf("gemini API error (status %d): %s", resp.StatusCode, truncate(string(body), 500))
+		// A 429 (rate limit) or 5xx is transient — don't let it count toward the
+		// per-video retry cap.
+		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
+			return "", "", nil, &transientError{apiErr}
+		}
+		return "", "", nil, apiErr
 	}
 
 	var gr struct {
@@ -1010,11 +1045,14 @@ func (d *pgxDatabase) SaveTranscript(ctx context.Context, t Transcript, segs []S
 	}
 	defer tx.Rollback(ctx)
 
-	// attempt_count tracks consecutive failures: start a brand-new failed row at 1,
-	// a done row at 0; on conflict, increment when the new save is 'failed' and
-	// reset to 0 when it is 'done'.
+	// attempt_count tracks consecutive *permanent* failures: start a brand-new
+	// permanent-failed row at 1, every other brand-new row (done/empty, or a
+	// transient failure) at 0. On conflict, a permanent failure increments, a
+	// transient failure (429/5xx) leaves the counter unchanged, and a done/empty
+	// save resets to 0. Transient failures are deliberately excluded so an
+	// exhausted daily quota never retires an otherwise-fine video.
 	initialAttempt := 0
-	if t.Status == "failed" {
+	if t.Status == statusFailed && !t.TransientFailure {
 		initialAttempt = 1
 	}
 	const upsert = `
@@ -1030,9 +1068,10 @@ func (d *pgxDatabase) SaveTranscript(ctx context.Context, t Transcript, segs []S
 			duration_seconds = EXCLUDED.duration_seconds,
 			status = EXCLUDED.status,
 			error = EXCLUDED.error,
-			attempt_count = CASE WHEN EXCLUDED.status = 'failed'
-			                     THEN transcripts.attempt_count + 1
-			                     ELSE 0 END,
+			attempt_count = CASE
+			                  WHEN EXCLUDED.status = 'failed' AND $11 THEN transcripts.attempt_count
+			                  WHEN EXCLUDED.status = 'failed'        THEN transcripts.attempt_count + 1
+			                  ELSE 0 END,
 			updated_at = CURRENT_TIMESTAMP
 		RETURNING id`
 	var id int
@@ -1047,6 +1086,7 @@ func (d *pgxDatabase) SaveTranscript(ctx context.Context, t Transcript, segs []S
 		t.Status,
 		nullStr(t.Error),
 		initialAttempt,
+		t.TransientFailure,
 	).Scan(&id); err != nil {
 		return err
 	}

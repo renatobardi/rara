@@ -507,6 +507,60 @@ func TestGroqDoesNotRetryOn4xx(t *testing.T) {
 	}
 }
 
+// TestGroqClassifiesTransientVsPermanent: after exhausting retries, a persistent
+// 429 is surfaced as a transient error (so SaveTranscript won't count it toward
+// the retry cap), while a permanent 4xx is not.
+func TestGroqClassifiesTransientVsPermanent(t *testing.T) {
+	persistent429 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "0.01")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":{"message":"rate limit"}}`))
+	}))
+	defer persistent429.Close()
+
+	g := &groqTranscriber{apiKey: "k", endpoint: persistent429.URL}
+	_, _, _, err := g.Transcribe(context.Background(), writeTempAudio(t))
+	if err == nil || !isTransient(err) {
+		t.Fatalf("persistent 429 should classify transient, got err=%v transient=%v", err, isTransient(err))
+	}
+
+	badReq := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":{"message":"bad request"}}`))
+	}))
+	defer badReq.Close()
+
+	g = &groqTranscriber{apiKey: "k", endpoint: badReq.URL}
+	_, _, _, err = g.Transcribe(context.Background(), writeTempAudio(t))
+	if err == nil || isTransient(err) {
+		t.Fatalf("400 should classify permanent, got err=%v transient=%v", err, isTransient(err))
+	}
+}
+
+// TestTranscribeSourceFlagsTransientASRFailure: transcribeSource propagates the
+// transient signal onto the failed Transcript so the DB layer can keep the retry
+// counter unchanged; a permanent ASR error leaves the flag false.
+func TestTranscribeSourceFlagsTransientASRFailure(t *testing.T) {
+	url := videoURL("vid")
+	acq := newMockAcquirer()
+	acq.chunks[url] = []AudioChunk{{Path: "/tmp/x/chunk_000.mp3"}}
+	src := Source{Type: "youtube", Ref: url}
+
+	transientTr := newMockTranscriber()
+	transientTr.err = &transientError{errors.New("groq API error (status 429): rate limit")}
+	got, _ := transcribeSource(context.Background(), acq, transientTr, groqModelName, src)
+	if got.Status != statusFailed || !got.TransientFailure {
+		t.Errorf("transient ASR error: status=%q transient=%v, want failed/true", got.Status, got.TransientFailure)
+	}
+
+	permTr := newMockTranscriber()
+	permTr.err = errors.New("groq API error (status 400): bad request")
+	got, _ = transcribeSource(context.Background(), acq, permTr, groqModelName, src)
+	if got.Status != statusFailed || got.TransientFailure {
+		t.Errorf("permanent ASR error: status=%q transient=%v, want failed/false", got.Status, got.TransientFailure)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Mocks
 // ---------------------------------------------------------------------------
@@ -576,10 +630,15 @@ func (m *MockDatabase) SaveTranscript(ctx context.Context, t Transcript, segs []
 	key := dedupKey(t)
 	m.transcripts[key] = t // upsert: replaces, mirroring ON CONFLICT DO UPDATE
 	m.segments[key] = segs // replace segments
-	// Mirror attempt_count: increment on failure, reset otherwise (done/empty).
-	if t.Status == statusFailed {
+	// Mirror attempt_count: a permanent failure increments, a 'done'/'empty' save
+	// resets to 0, and a transient failure (rate limit / 5xx) leaves it unchanged
+	// so a daily-quota starvation never counts toward the retry cap.
+	switch {
+	case t.Status == statusFailed && t.TransientFailure:
+		// leave unchanged
+	case t.Status == statusFailed:
 		m.attempts[key]++
-	} else {
+	default:
 		m.attempts[key] = 0
 	}
 	return nil
@@ -782,6 +841,12 @@ func (h *ScribeHarness) AssertSegmentStart(videoID string, seq int, start float6
 	}
 }
 
+func (h *ScribeHarness) AssertAttemptCount(videoID string, expected int) {
+	if got := h.db.attempts["yt:"+videoID]; got != expected {
+		h.t.Errorf("transcript %q attempt_count = %d, want %d", videoID, got, expected)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Harness tests
 // ---------------------------------------------------------------------------
@@ -976,4 +1041,90 @@ func TestHarnessBatchSizeLimit(t *testing.T) {
 		t.Fatalf("execute failed: %v", err)
 	}
 	h.AssertTranscriptCount(2) // limited to 2 of 3
+}
+
+// TestTransientFailureDoesNotCountTowardCap: a video failing with a transient ASR
+// error (rate limit / 5xx) is recorded failed but its attempt_count is never
+// bumped, so it stays in the backlog and is retried indefinitely — exhausting a
+// daily quota must not retire an otherwise-fine video.
+func TestTransientFailureDoesNotCountTowardCap(t *testing.T) {
+	url := videoURL("ratelimited")
+	h := NewScribeHarness(t).
+		WithPendingVideos(VideoRef{YoutubeVideoID: "ratelimited", URL: url}).
+		WithChunks(url, AudioChunk{Path: "/tmp/r/chunk_000.mp3", Offset: 0}).
+		WithTranscribeError(&transientError{errors.New("groq API error (status 429): rate limit")})
+
+	ctx := context.Background()
+	// Fail well past the cap; a transient failure must never count toward it.
+	for i := 0; i < maxFailedAttempts+2; i++ {
+		if err := h.Execute(ctx, 25); err != nil {
+			t.Fatalf("run %d failed: %v", i, err)
+		}
+	}
+	h.AssertStatus("ratelimited", statusFailed)
+	h.AssertAttemptCount("ratelimited", 0)
+
+	// Still pending despite many failures — not retired.
+	pending, err := h.db.PendingVideos(ctx, 25)
+	if err != nil {
+		t.Fatalf("PendingVideos: %v", err)
+	}
+	if len(pending) != 1 {
+		t.Errorf("rate-limited video should remain pending, got %+v", pending)
+	}
+}
+
+// TestPermanentFailureCountsTowardCap: a permanent ASR error bumps attempt_count
+// each run and the video is retired once the cap is reached.
+func TestPermanentFailureCountsTowardCap(t *testing.T) {
+	url := videoURL("badreq")
+	h := NewScribeHarness(t).
+		WithPendingVideos(VideoRef{YoutubeVideoID: "badreq", URL: url}).
+		WithChunks(url, AudioChunk{Path: "/tmp/b/chunk_000.mp3", Offset: 0}).
+		WithTranscribeError(errors.New("groq API error (status 400): bad request"))
+
+	ctx := context.Background()
+	for i := 0; i < maxFailedAttempts; i++ {
+		if err := h.Execute(ctx, 25); err != nil {
+			t.Fatalf("run %d failed: %v", i, err)
+		}
+	}
+	h.AssertStatus("badreq", statusFailed)
+	h.AssertAttemptCount("badreq", maxFailedAttempts)
+
+	pending, err := h.db.PendingVideos(ctx, 25)
+	if err != nil {
+		t.Fatalf("PendingVideos: %v", err)
+	}
+	if len(pending) != 0 {
+		t.Errorf("permanently-failing video should be retired, got %+v", pending)
+	}
+}
+
+// TestDoneSaveResetsAttemptCount: a previously-failed video (attempt_count > 0)
+// that finally transcribes resets the counter to 0.
+func TestDoneSaveResetsAttemptCount(t *testing.T) {
+	url := videoURL("flap")
+	chunk := "/tmp/f/chunk_000.mp3"
+	h := NewScribeHarness(t).
+		WithPendingVideos(VideoRef{YoutubeVideoID: "flap", URL: url}).
+		WithChunks(url, AudioChunk{Path: chunk, Offset: 0}).
+		WithTranscribeError(errors.New("groq API error (status 400): bad request"))
+
+	ctx := context.Background()
+	for i := 0; i < 2; i++ { // two permanent failures: counter climbs
+		if err := h.Execute(ctx, 25); err != nil {
+			t.Fatalf("failing run %d: %v", i, err)
+		}
+	}
+	h.AssertAttemptCount("flap", 2)
+
+	// Now it transcribes cleanly: the counter resets.
+	h.tr.err = nil
+	h.WithTranscription(chunk, "olá", "pt", Segment{Start: 0, End: 1, Text: "olá"})
+	if err := h.Execute(ctx, 25); err != nil {
+		t.Fatalf("success run: %v", err)
+	}
+	h.AssertStatus("flap", statusDone)
+	h.AssertAttemptCount("flap", 0)
 }
