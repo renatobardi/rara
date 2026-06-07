@@ -74,10 +74,16 @@ const (
 	// burning yt-dlp/ASR calls every run. A 'done' save resets the counter.
 	maxFailedAttempts = 5
 
-	// whisperCppBeamSize is the beam-search width for the local whisper.cpp engine.
-	// 5 is the quality-oriented setting, keeping local large-v3 transcripts on par
-	// with the Groq large-v3 we fall back to.
-	whisperCppBeamSize = 5
+	// whisperCppBeamSize is the default beam-search width for the local whisper.cpp
+	// engine. 1 = greedy (fastest); override with WHISPER_CPP_BEAM_SIZE. large-v3
+	// quality at beam=1 is already on par with Groq for clear speech; use beam=5
+	// only if you see accuracy regressions on noisy/accented audio.
+	whisperCppBeamSize = 1
+
+	// whisperCppThreads is the default CPU thread count for the local whisper.cpp
+	// engine. Override with WHISPER_CPP_THREADS. With Metal enabled (M-series Mac)
+	// most compute runs on the GPU; threads affect CPU pre/post-processing only.
+	whisperCppThreads = 8
 
 	// localCircuitBreakerThreshold disables the local primary (routing to the Groq
 	// fallback) after this many consecutive per-chunk failures, so a fully broken
@@ -164,6 +170,8 @@ type Config struct {
 	WhisperCppBin      string // whisper.cpp CLI (engine "local")
 	WhisperCppModel    string // ggml model file for whisper.cpp
 	WhisperCppVADModel string // optional silero VAD model for whisper.cpp
+	WhisperCppBeam     int    // beam-search width (1=greedy/fast, 5=quality)
+	WhisperCppThreads  int    // CPU threads for pre/post-processing
 	Cookies            string
 	BatchSize          int
 }
@@ -922,7 +930,8 @@ type whisperCppTranscriber struct {
 	bin      string // whisper.cpp CLI (e.g. whisper-cli)
 	model    string // ggml model file (e.g. ggml-large-v3.bin)
 	vadModel string // optional silero VAD model; "" disables VAD
-	beam     int
+	beam     int    // beam-search width (1=greedy/fast, 5=quality)
+	threads  int    // CPU threads for pre/post-processing
 }
 
 func newWhisperCppTranscriber(cfg Config) *whisperCppTranscriber {
@@ -930,7 +939,8 @@ func newWhisperCppTranscriber(cfg Config) *whisperCppTranscriber {
 		bin:      cfg.WhisperCppBin,
 		model:    cfg.WhisperCppModel,
 		vadModel: cfg.WhisperCppVADModel,
-		beam:     whisperCppBeamSize,
+		beam:     cfg.WhisperCppBeam,
+		threads:  cfg.WhisperCppThreads,
 	}
 }
 
@@ -947,6 +957,7 @@ func (w *whisperCppTranscriber) Transcribe(ctx context.Context, audioPath string
 		"-m", w.model,
 		"-f", audioPath,
 		"-l", "auto",
+		"-t", strconv.Itoa(w.threads),
 		"-bs", strconv.Itoa(w.beam),
 		"-oj", "-of", outBase,
 	}
@@ -1220,6 +1231,18 @@ func loadConfig() Config {
 			batch = n
 		}
 	}
+	beam := whisperCppBeamSize
+	if v := os.Getenv("WHISPER_CPP_BEAM_SIZE"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			beam = n
+		}
+	}
+	threads := whisperCppThreads
+	if v := os.Getenv("WHISPER_CPP_THREADS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			threads = n
+		}
+	}
 	return Config{
 		DatabaseURL:        os.Getenv("DATABASE_URL"),
 		Engine:             os.Getenv("TRANSCRIBE_ENGINE"),
@@ -1228,6 +1251,8 @@ func loadConfig() Config {
 		WhisperCppBin:      resolveBin("WHISPER_CPP_BIN", "/opt/homebrew/bin/whisper-cli"),
 		WhisperCppModel:    os.Getenv("WHISPER_CPP_MODEL"),
 		WhisperCppVADModel: os.Getenv("WHISPER_CPP_VAD_MODEL"),
+		WhisperCppBeam:     beam,
+		WhisperCppThreads:  threads,
 		Cookies:            os.Getenv("YT_DLP_COOKIES"),
 		BatchSize:          batch,
 	}
