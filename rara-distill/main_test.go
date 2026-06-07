@@ -128,35 +128,63 @@ func TestParseCurationMalformedPreservesText(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestHashRecipeChangesWithFirstStage(t *testing.T) {
-	base := hashRecipe([][]byte{[]byte("summary-v1"), []byte("wisdom")}, nil, nil, "gemini/x")
-	editFirst := hashRecipe([][]byte{[]byte("summary-v2"), []byte("wisdom")}, nil, nil, "gemini/x")
+	base := hashRecipe([][]byte{[]byte("summary-v1"), []byte("wisdom")}, nil, nil)
+	editFirst := hashRecipe([][]byte{[]byte("summary-v2"), []byte("wisdom")}, nil, nil)
 	if base == editFirst {
 		t.Error("editing the FIRST chain stage must change recipe hash (else silent skip in sessions)")
 	}
-	editLast := hashRecipe([][]byte{[]byte("summary-v1"), []byte("wisdom2")}, nil, nil, "gemini/x")
+	editLast := hashRecipe([][]byte{[]byte("summary-v1"), []byte("wisdom2")}, nil, nil)
 	if base == editLast {
 		t.Error("editing the last chain stage must change recipe hash")
 	}
 }
 
-func TestHashRecipeChangesWithContextStrategyEngine(t *testing.T) {
-	base := hashRecipe([][]byte{[]byte("p")}, nil, nil, "gemini/x")
-	if base == hashRecipe([][]byte{[]byte("p")}, []byte("ctx"), nil, "gemini/x") {
+func TestHashRecipeChangesWithContextStrategy(t *testing.T) {
+	base := hashRecipe([][]byte{[]byte("p")}, nil, nil)
+	if base == hashRecipe([][]byte{[]byte("p")}, []byte("ctx"), nil) {
 		t.Error("adding a context must change the hash")
 	}
-	if base == hashRecipe([][]byte{[]byte("p")}, nil, []byte("strat"), "gemini/x") {
+	if base == hashRecipe([][]byte{[]byte("p")}, nil, []byte("strat")) {
 		t.Error("adding a strategy must change the hash")
 	}
-	if base == hashRecipe([][]byte{[]byte("p")}, nil, nil, "claude/y") {
-		t.Error("changing the engine must change the hash")
+}
+
+// TestHashRecipeGolden pins the exact output of the hashing scheme for a fixed input.
+// The corpus's staleness detection depends on this hash being STABLE: if a refactor
+// silently changes how the bytes are combined, every stored recipe_sha256 would stop
+// matching and the whole corpus would be re-distilled. This known-answer test fails
+// loudly if the scheme drifts. (Value computed as sha256("p" + 0x00 + "ctx:" + "strat:").)
+func TestHashRecipeGolden(t *testing.T) {
+	const want = "f928010e9d27eb393dda903318795444d7e4620e4fb71196ea9e3a711fc7bd8c"
+	if got := hashRecipe([][]byte{[]byte("p")}, nil, nil); got != want {
+		t.Errorf("hash scheme changed: got %s want %s — this invalidates every stored "+
+			"recipe_sha256; intentional? then re-stamp the corpus and update this constant", got, want)
+	}
+}
+
+// TestRecipeHashIndependentOfEngine asserts the production guarantee that two recipes
+// built identically (same pattern/context/strategy) hash the same regardless of which
+// engine/model will run them. NewRecipe no longer even takes an engine, so the property
+// is structural — this guards against it being reintroduced.
+func TestRecipeHashIndependentOfEngine(t *testing.T) {
+	a, err := NewRecipe(Config{Patterns: "extract_wisdom", GeminiModel: "gemini-2.5-pro"})
+	if err != nil {
+		t.Fatalf("NewRecipe a: %v", err)
+	}
+	b, err := NewRecipe(Config{Patterns: "extract_wisdom", Engine: "claude", ClaudeModel: "claude-opus-4-8"})
+	if err != nil {
+		t.Fatalf("NewRecipe b: %v", err)
+	}
+	if a.RecipeSHA != b.RecipeSHA {
+		t.Errorf("recipe hash must not depend on engine/model: %s != %s", a.RecipeSHA, b.RecipeSHA)
 	}
 }
 
 // TestHashRecipeChainOrderMatters: the same two patterns in a different order are a
 // different recipe (the chain is ordered).
 func TestHashRecipeChainOrderMatters(t *testing.T) {
-	ab := hashRecipe([][]byte{[]byte("a"), []byte("b")}, nil, nil, "e")
-	ba := hashRecipe([][]byte{[]byte("b"), []byte("a")}, nil, nil, "e")
+	ab := hashRecipe([][]byte{[]byte("a"), []byte("b")}, nil, nil)
+	ba := hashRecipe([][]byte{[]byte("b"), []byte("a")}, nil, nil)
 	if ab == ba {
 		t.Error("chain order must affect the recipe hash")
 	}
@@ -167,7 +195,7 @@ func TestHashRecipeChainOrderMatters(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestNewRecipeLoadsEmbeddedAssets(t *testing.T) {
-	r, err := NewRecipe(Config{Patterns: "extract_wisdom", ContextName: "software-ai", StrategyName: "cot"}, "gemini/gemini-2.5-flash")
+	r, err := NewRecipe(Config{Patterns: "extract_wisdom", ContextName: "software-ai", StrategyName: "cot"})
 	if err != nil {
 		t.Fatalf("NewRecipe: %v", err)
 	}
@@ -190,19 +218,19 @@ func TestNewRecipeLoadsEmbeddedAssets(t *testing.T) {
 }
 
 func TestNewRecipeUnknownAssetsFail(t *testing.T) {
-	if _, err := NewRecipe(Config{Patterns: "nope"}, "e"); err == nil {
+	if _, err := NewRecipe(Config{Patterns: "nope"}); err == nil {
 		t.Error("expected error for unknown pattern")
 	}
-	if _, err := NewRecipe(Config{Patterns: "summary", ContextName: "nope"}, "e"); err == nil {
+	if _, err := NewRecipe(Config{Patterns: "summary", ContextName: "nope"}); err == nil {
 		t.Error("expected error for unknown context")
 	}
-	if _, err := NewRecipe(Config{Patterns: "summary", StrategyName: "nope"}, "e"); err == nil {
+	if _, err := NewRecipe(Config{Patterns: "summary", StrategyName: "nope"}); err == nil {
 		t.Error("expected error for unknown strategy")
 	}
 }
 
 func TestNewRecipeDefaultsToExtractWisdom(t *testing.T) {
-	r, err := NewRecipe(Config{Patterns: ""}, "e")
+	r, err := NewRecipe(Config{Patterns: ""})
 	if err != nil {
 		t.Fatalf("NewRecipe: %v", err)
 	}
@@ -212,11 +240,11 @@ func TestNewRecipeDefaultsToExtractWisdom(t *testing.T) {
 }
 
 func TestRecipeKeyPattern(t *testing.T) {
-	single, _ := NewRecipe(Config{Patterns: "extract_wisdom"}, "e")
+	single, _ := NewRecipe(Config{Patterns: "extract_wisdom"})
 	if single.keyPattern() != "extract_wisdom" || single.sessionPatterns() != "" {
 		t.Errorf("single: key=%q session=%q", single.keyPattern(), single.sessionPatterns())
 	}
-	session, _ := NewRecipe(Config{Patterns: "summary,extract_wisdom"}, "e")
+	session, _ := NewRecipe(Config{Patterns: "summary,extract_wisdom"})
 	if session.keyPattern() != "summary,extract_wisdom" || session.sessionPatterns() != "summary,extract_wisdom" {
 		t.Errorf("session: key=%q session=%q", session.keyPattern(), session.sessionPatterns())
 	}
@@ -473,7 +501,7 @@ type DistillHarness struct {
 
 func NewDistillHarness(t *testing.T) *DistillHarness {
 	t.Helper()
-	r, err := NewRecipe(Config{Patterns: "extract_wisdom"}, "mock/engine")
+	r, err := NewRecipe(Config{Patterns: "extract_wisdom"})
 	if err != nil {
 		t.Fatalf("recipe: %v", err)
 	}
@@ -488,7 +516,7 @@ func NewDistillHarness(t *testing.T) *DistillHarness {
 
 // WithRecipe overrides the recipe (e.g. to test context/strategy/sessions).
 func (h *DistillHarness) WithRecipe(cfg Config) *DistillHarness {
-	r, err := NewRecipe(cfg, h.engineName)
+	r, err := NewRecipe(cfg)
 	if err != nil {
 		h.t.Fatalf("recipe: %v", err)
 	}
@@ -758,7 +786,7 @@ func TestSessionDoesNotCollideWithStandalone(t *testing.T) {
 
 	// Standalone first.
 	hStandalone := &DistillHarness{t: t, db: db, cur: &MockCurator{results: []string{curationJSON("# a", "d")}}, engineName: "mock/engine"}
-	hStandalone.recipe, _ = NewRecipe(Config{Patterns: "extract_wisdom"}, "mock/engine")
+	hStandalone.recipe, _ = NewRecipe(Config{Patterns: "extract_wisdom"})
 	hStandalone.db.transcripts = []mockTranscript{{doc: doc, status: statusDone}}
 	if err := hStandalone.Execute(context.Background(), 25); err != nil {
 		t.Fatalf("standalone execute: %v", err)
@@ -766,7 +794,7 @@ func TestSessionDoesNotCollideWithStandalone(t *testing.T) {
 
 	// Session over the same source, sharing the DB.
 	hSession := &DistillHarness{t: t, db: db, cur: &MockCurator{results: []string{curationJSON("# s1", "d"), curationJSON("# s2", "d")}}, engineName: "mock/engine"}
-	hSession.recipe, _ = NewRecipe(Config{Patterns: "summary,extract_wisdom"}, "mock/engine")
+	hSession.recipe, _ = NewRecipe(Config{Patterns: "summary,extract_wisdom"})
 	if err := hSession.Execute(context.Background(), 25); err != nil {
 		t.Fatalf("session execute: %v", err)
 	}

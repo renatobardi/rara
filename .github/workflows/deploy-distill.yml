@@ -11,6 +11,11 @@ on:
         options:
           - 'true'
           - 'false'
+      batch_size:
+        description: 'Docs per run for the transcripts lane (use a small value like 3 for a staged validation run)'
+        required: false
+        default: '25'
+        type: string
   push:
     branches:
       - main
@@ -27,6 +32,9 @@ env:
   REGION: ${{ vars.GCP_REGION }}
   JOB_NAME: rara-distill
   IMAGE: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/rara/rara-distill:${{ github.sha }}
+  # Transcripts-lane batch size. Defaults to 25; a manual run can pass a small value
+  # (e.g. 3) for a staged validation deploy without committing a throttled value.
+  BATCH_SIZE: ${{ github.event.inputs.batch_size || '25' }}
 
 jobs:
   deploy:
@@ -115,7 +123,7 @@ jobs:
                --region "$REGION" \
                --project "${{ vars.GCP_PROJECT_ID }}" \
                --set-secrets "DATABASE_URL=database-url:latest,GEMINI_API_KEY=gemini-api-key:latest" \
-               --set-env-vars "CURATE_ENGINE=gemini,DISTILL_PATTERNS=extract_wisdom,DISTILL_BATCH_SIZE=25" \
+               --set-env-vars "CURATE_ENGINE=gemini,DISTILL_PATTERNS=extract_wisdom,DISTILL_BATCH_SIZE=${BATCH_SIZE}" \
                --max-retries 0 \
                --task-timeout 3600s \
                --memory 512Mi \
@@ -126,7 +134,7 @@ jobs:
               --region "$REGION" \
               --project "${{ vars.GCP_PROJECT_ID }}" \
               --set-secrets "DATABASE_URL=database-url:latest,GEMINI_API_KEY=gemini-api-key:latest" \
-              --set-env-vars "CURATE_ENGINE=gemini,DISTILL_PATTERNS=extract_wisdom,DISTILL_BATCH_SIZE=25" \
+              --set-env-vars "CURATE_ENGINE=gemini,DISTILL_PATTERNS=extract_wisdom,DISTILL_BATCH_SIZE=${BATCH_SIZE}" \
               --max-retries 0 \
               --task-timeout 3600s \
               --memory 512Mi \

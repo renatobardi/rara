@@ -33,7 +33,7 @@ const (
 	engineClaude = "claude"
 	engineGroq   = "groq"
 
-	defaultGeminiModel = "gemini-2.5-pro"
+	defaultGeminiModel = "gemini-3.1-pro-preview"
 	defaultClaudeModel = "claude-sonnet-4-6"
 	defaultGroqModel   = "openai/gpt-oss-120b"
 )
@@ -278,8 +278,8 @@ func (r Recipe) buildSystemPrompt(pattern string) string {
 
 // NewRecipe resolves the recipe from config: parses the pattern chain, loads every
 // embedded asset (failing fast if one is missing), and computes the recipe hash from
-// the asset bytes plus the engine string.
-func NewRecipe(cfg Config, engineName string) (Recipe, error) {
+// the asset bytes (pattern chain + context + strategy). The engine is not part of it.
+func NewRecipe(cfg Config) (Recipe, error) {
 	chain := splitCSV(cfg.Patterns)
 	if len(chain) == 0 {
 		chain = []string{"extract_wisdom"}
@@ -320,15 +320,19 @@ func NewRecipe(cfg Config, engineName string) (Recipe, error) {
 		strategyBytes = b
 	}
 
-	r.RecipeSHA = hashRecipe(patternBytes, contextBytes, strategyBytes, engineName)
+	r.RecipeSHA = hashRecipe(patternBytes, contextBytes, strategyBytes)
 	return r, nil
 }
 
-// hashRecipe is a pure function over every input that affects curation output, so a
-// change to ANY stage's pattern (or the context/strategy/engine) yields a new hash
-// and triggers reprocessing. The pattern bytes are concatenated in chain order — the
-// whole chain matters, not just the final stage.
-func hashRecipe(patterns [][]byte, context, strategy []byte, engine string) string {
+// hashRecipe is a pure function over the inputs that define WHAT a distillation must
+// contain — the pattern chain, context, and strategy — so a change to ANY of them
+// yields a new hash and triggers reprocessing. The engine/model is deliberately NOT
+// hashed: swapping models or providers (gemini ↔ claude ↔ a newer gemini) must not
+// invalidate an otherwise-good corpus. Which model produced a row is still recorded in
+// the `engine` column for provenance; it just isn't a staleness trigger. The pattern
+// bytes are concatenated in chain order — the whole chain matters, not just the final
+// stage.
+func hashRecipe(patterns [][]byte, context, strategy []byte) string {
 	h := sha256.New()
 	for _, p := range patterns {
 		h.Write(p)
@@ -338,8 +342,6 @@ func hashRecipe(patterns [][]byte, context, strategy []byte, engine string) stri
 	h.Write(context)
 	h.Write([]byte("strat:"))
 	h.Write(strategy)
-	h.Write([]byte("engine:"))
-	h.Write([]byte(engine))
 	return hex.EncodeToString(h.Sum(nil))
 }
 
@@ -1143,7 +1145,7 @@ func main() {
 		log.Fatalf("Curator init failed: %v", err)
 	}
 
-	recipe, err := NewRecipe(recipeConfig(cfg), engineName)
+	recipe, err := NewRecipe(recipeConfig(cfg))
 	if err != nil {
 		log.Fatalf("Recipe init failed: %v", err)
 	}
