@@ -38,8 +38,19 @@ isolated tables. Two agents **collect** video references; one agent **transcribe
    header row plus N `transcript_segments` (timestamped) in a single transaction.
 
 The collectors and the transcriber are decoupled by the database: scribe never calls harvest or
-shelf, it just reads their tables. Adding a fourth agent (e.g. enrichment over transcripts)
-follows the same pattern — read upstream tables, write your own.
+shelf, it just reads their tables.
+
+4. **rara-distill** is the fourth agent and follows exactly that pattern — it reads the
+   `transcripts` produced by scribe (plus the collector tables for titles) and curates each one,
+   via an LLM and a Fabric-style library of Markdown patterns, into a knowledge document written
+   to its own `distillations` table. It captures structure in a single ("compile once") pass:
+   `content` (human Markdown), `structured` (queryable concepts/insights/entities/claims) and a
+   `doc_context` for Contextual Retrieval. The **Kura** second brain (a separate project,
+   SurrealDB-backed) consumes `distillations` later to build its own RAG (chunk + embed + vector
+   index). distill never calls Kura — total isolation; the contract is just the table.
+
+Unlike scribe, distill downloads no audio (it only reads Neon and calls an LLM HTTP API), so a
+datacenter IP is fine and it runs as a Cloud Run Job like the collectors.
 
 ## Why scribe runs locally
 
@@ -52,15 +63,15 @@ divergence in the system.
 
 ## Per-agent design
 
-| | rara-harvest | rara-shelf | rara-scribe |
-|---|---|---|---|
-| **Purpose** | latest videos from external channels | catalog owner's playlists | transcribe collected videos |
-| **Auth** | API key (public) | OAuth refresh token (private) | none (Groq API key for ASR) |
-| **External I/O** | YouTube Data API | YouTube Data API | yt-dlp, ffmpeg, Groq/Gemini |
-| **Tables** | `target_channels`, `channel_videos` | `playlists`, `playlist_videos` | `transcripts`, `transcript_segments` |
-| **Runtime** | Cloud Run Job | Cloud Run Job | local Mac (launchd, 02:00) |
-| **Pagination** | single recency page (latest N) | full `nextPageToken` loop | n/a (queue from DB) |
-| **Tests** | 14 | 12 | 13 |
+| | rara-harvest | rara-shelf | rara-scribe | rara-distill |
+|---|---|---|---|---|
+| **Purpose** | latest videos from external channels | catalog owner's playlists | transcribe collected videos | curate transcripts → RAG material |
+| **Auth** | API key (public) | OAuth refresh token (private) | none (Groq API key for ASR) | LLM API key (Gemini/Claude/Groq) |
+| **External I/O** | YouTube Data API | YouTube Data API | yt-dlp, ffmpeg, Groq/Gemini | Gemini/Claude/Groq HTTP |
+| **Tables** | `target_channels`, `channel_videos` | `playlists`, `playlist_videos` | `transcripts`, `transcript_segments` | `distillations` |
+| **Runtime** | Cloud Run Job | Cloud Run Job | local Mac (launchd, 02:00) | Cloud Run Job |
+| **Pagination** | single recency page (latest N) | full `nextPageToken` loop | n/a (queue from DB) | n/a (queue from DB) |
+| **Tests** | 14 | 12 | 13 | 32 |
 
 ## Shared conventions
 
@@ -82,6 +93,10 @@ divergence in the system.
   `engine`, `status` `done`/`failed`, full `transcript` text).
 - `transcript_segments` → timestamped segments (`start_seconds`, `end_seconds`, `text`),
   re-indexed to a global timeline across audio chunks.
+- `distillations` → rara-distill's curated knowledge docs, one row per
+  `(source_key, COALESCE(session_patterns, pattern))`. Holds `content` (Markdown), `structured`
+  (JSONB), `doc_context`, `structured_status`, and two staleness hashes (`source_sha256`,
+  `recipe_sha256`). Consumed by the Kura second brain.
 
 ## Technology stack
 
