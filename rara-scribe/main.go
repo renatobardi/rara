@@ -1282,14 +1282,17 @@ func main() {
 	}
 	// A single-worker batch needs only a connection or two; cap the pool to stay
 	// well under Neon's connection limit, and recycle idle connections before
-	// Neon's pooler drops them (a long video can sit minutes between saves).
+	// Neon's pooler drops them. MaxConnIdleTime applies to the *gap between
+	// database calls* — a long local chunk sits minutes between saves, so 5min
+	// recycles the connection proactively before Neon's pooler does it first.
 	poolCfg.MaxConns = 2
 	poolCfg.MaxConnIdleTime = 5 * time.Minute
 	poolCfg.MaxConnLifetime = 30 * time.Minute
 
-	// context.Background() for the pool's lifetime; the 15s ctx only bounds the
-	// startup Ping (which forces and validates a real connection, so bad
-	// creds/host still fail fast). pgxpool.New does not retain the ctx.
+	// NewWithConfig validates config only; Ping below forces a real connection
+	// so bad creds/host still fail fast at startup. context.Background() is
+	// intentional: the pool lives until defer pool.Close(), not until any
+	// request ctx is cancelled.
 	pool, err := pgxpool.NewWithConfig(context.Background(), poolCfg)
 	if err != nil {
 		log.Fatalf("Failed to create database pool: %v", err)
