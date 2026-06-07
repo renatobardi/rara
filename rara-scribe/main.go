@@ -326,7 +326,7 @@ func NewTranscriber(cfg Config) (Transcriber, string, error) {
 		}
 		return local, whisperCppModelName, nil
 	default:
-		return nil, "", fmt.Errorf("unknown TRANSCRIBE_ENGINE %q (use %q, %q or %q)", cfg.Engine, engineGroq, engineGemini, engineLocal)
+		return nil, "", fmt.Errorf("unknown engine %q (set TRANSCRIBE_ENGINE or --engine to %q, %q or %q)", cfg.Engine, engineGroq, engineGemini, engineLocal)
 	}
 }
 
@@ -1122,11 +1122,29 @@ func loadConfig() Config {
 	}
 }
 
+// applyOverrides lets a single manual run override the .env-sourced engine and
+// batch size via CLI flags, without editing the file the scheduled run reads. An
+// empty engine or non-positive limit leaves that field untouched.
+func applyOverrides(cfg Config, engine string, limit int) Config {
+	if engine != "" {
+		cfg.Engine = engine
+	}
+	if limit > 0 {
+		cfg.BatchSize = limit
+	}
+	return cfg
+}
+
 func main() {
 	sourceFlag := flag.String("source", "", "Transcribe a single source (YouTube/url/local path) instead of the batch")
+	engineFlag := flag.String("engine", "", "override TRANSCRIBE_ENGINE for this run (groq|gemini|local)")
+	limitFlag := flag.Int("limit", 0, "override how many videos to process this run (default: BATCH_SIZE)")
 	flag.Parse()
 
-	cfg := loadConfig()
+	cfg := applyOverrides(loadConfig(), *engineFlag, *limitFlag)
+	if *engineFlag != "" || *limitFlag > 0 {
+		log.Printf("CLI overrides applied: engine=%s limit=%d (this run only)\n", cfg.Engine, cfg.BatchSize)
+	}
 	if cfg.DatabaseURL == "" {
 		log.Fatalf("DATABASE_URL environment variable is required")
 	}

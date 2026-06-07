@@ -45,13 +45,17 @@ To change the schedule, edit `~/Library/LaunchAgents/com.rara.scribe.plist`.
 ## Daily usage
 
 ```bash
-# Force an immediate run
+# Force an immediate run with the .env defaults (engine + BATCH_SIZE)
 launchctl start com.rara.scribe
 
-# Watch logs in real time
-tail -f ~/Library/Logs/rara-scribe/output.log
+# Watch logs in real time (Go logs to stderr → error.log; output.log stays empty)
+tail -f ~/Library/Logs/rara-scribe/error.log
 
-# Single manual run (without launchd, from the repo)
+# Manual run overriding the .env for this run only — e.g. switch to the local
+# engine and process 20 videos when Groq's daily quota is exhausted:
+bash ~/.rara-scribe/run.sh --engine local --limit 20
+
+# Single manual run from the repo (uses .env defaults)
 cd rara-scribe && make run
 
 # Ad-hoc single source
@@ -60,6 +64,22 @@ cd rara-scribe && source ~/.rara-scribe/.env && ./scribe-job --source "https://y
 # Update after a new build
 cd rara-scribe && make build && bash install-local.sh
 ```
+
+### Runtime flags
+
+`run.sh` forwards CLI flags to the binary, so a manual run can override the
+`.env` without editing it (the scheduled launchd run takes no flags and uses the
+`.env` defaults):
+
+| Flag | Overrides | Example |
+|------|-----------|---------|
+| `--engine` | `TRANSCRIBE_ENGINE` | `--engine local` |
+| `--limit` | `BATCH_SIZE` (videos this run) | `--limit 20` |
+| `--source` | batch mode → one source | `--source "https://youtu.be/ID"` |
+
+Operating model: keep `TRANSCRIBE_ENGINE=groq` in `.env` (fast, scheduled daily),
+and fire a manual `--engine local --limit N` run when Groq's 2000 req/day quota
+is exhausted — no quota, fully local.
 
 ## Transcription engine (pluggable)
 

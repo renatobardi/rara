@@ -382,6 +382,30 @@ func TestChunkSecondsFor(t *testing.T) {
 	}
 }
 
+// TestApplyOverrides: CLI flags override the .env-sourced engine and batch size
+// for a single run (empty engine / non-positive limit leave the config untouched),
+// so the scheduled run keeps its .env defaults while a manual run can pick the
+// engine and how many videos to process.
+func TestApplyOverrides(t *testing.T) {
+	base := Config{Engine: "groq", BatchSize: 25}
+
+	if got := applyOverrides(base, "", 0); got != base {
+		t.Errorf("no override should leave cfg unchanged, got %+v", got)
+	}
+	if got := applyOverrides(base, "local", 0); got.Engine != "local" || got.BatchSize != 25 {
+		t.Errorf("engine-only override: got %+v", got)
+	}
+	if got := applyOverrides(base, "", 20); got.BatchSize != 20 || got.Engine != "groq" {
+		t.Errorf("limit-only override: got %+v", got)
+	}
+	if got := applyOverrides(base, "local", 5); got.Engine != "local" || got.BatchSize != 5 {
+		t.Errorf("both overrides: got %+v", got)
+	}
+	if got := applyOverrides(base, "", -3); got.BatchSize != 25 {
+		t.Errorf("non-positive limit should be ignored: got %+v", got)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Groq transient-error retry (429 / 5xx)
 // ---------------------------------------------------------------------------
