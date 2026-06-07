@@ -88,7 +88,10 @@ export PATH="/opt/homebrew/bin:/usr/local/bin:\$PATH"
 set -a
 source "$INSTALL_DIR/.env"
 set +a
-exec "$INSTALL_DIR/rara-scribe"
+# "\$@" forwards CLI flags so a manual run can override the .env defaults, e.g.
+#   bash run.sh --engine local --limit 20
+# while the scheduled launchd run (no args) uses the .env engine/BATCH_SIZE.
+exec "$INSTALL_DIR/rara-scribe" "\$@"
 WRAPPER
 chmod +x "$INSTALL_DIR/run.sh"
 
@@ -153,8 +156,8 @@ echo "   Plist:   $PLIST_PATH"
 echo ""
 echo "Useful commands:"
 echo "  Force a run now:     launchctl start $LABEL"
-echo "  Watch logs (live):   tail -f $LOG_DIR/output.log"
-echo "  Watch errors:        tail -f $LOG_DIR/error.log"
+echo "  Manual local run:    bash $INSTALL_DIR/run.sh --engine local --limit 20"
+echo "  Watch logs (live):   tail -f $LOG_DIR/error.log   # Go logs to stderr, not output.log"
 echo "  Stop service:        launchctl unload $PLIST_PATH"
 echo "  Update binary:       cd rara-scribe && make build && bash install-local.sh"
 echo ""

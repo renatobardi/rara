@@ -1122,11 +1122,26 @@ func loadConfig() Config {
 	}
 }
 
+// applyOverrides lets a single manual run override the .env-sourced engine and
+// batch size via CLI flags, without editing the file the scheduled run reads. An
+// empty engine or non-positive limit leaves that field untouched.
+func applyOverrides(cfg Config, engine string, limit int) Config {
+	if engine != "" {
+		cfg.Engine = engine
+	}
+	if limit > 0 {
+		cfg.BatchSize = limit
+	}
+	return cfg
+}
+
 func main() {
 	sourceFlag := flag.String("source", "", "Transcribe a single source (YouTube/url/local path) instead of the batch")
+	engineFlag := flag.String("engine", "", "override TRANSCRIBE_ENGINE for this run (groq|gemini|local)")
+	limitFlag := flag.Int("limit", 0, "override how many videos to process this run (default: BATCH_SIZE)")
 	flag.Parse()
 
-	cfg := loadConfig()
+	cfg := applyOverrides(loadConfig(), *engineFlag, *limitFlag)
 	if cfg.DatabaseURL == "" {
 		log.Fatalf("DATABASE_URL environment variable is required")
 	}
