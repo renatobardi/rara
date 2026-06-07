@@ -1046,3 +1046,59 @@ func TestPendingDocsIntegration(t *testing.T) {
 		t.Errorf("failed_under.TranscriptTimestamped = %q, want flat-transcript fallback", ts)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// News lane (DISTILL_SOURCE=news)
+// ---------------------------------------------------------------------------
+
+// TestNewsLaneRecipe: the news source mode resolves to the summarize_news pattern
+// with the software-ai context (no strategy), and a news item is curated under that
+// recipe with its source_type carried through to the distillation.
+func TestNewsLaneRecipe(t *testing.T) {
+	newsCfg := recipeConfig(Config{Source: sourceModeNews})
+	if newsCfg.Patterns != newsPattern {
+		t.Fatalf("news recipe patterns = %q, want %q", newsCfg.Patterns, newsPattern)
+	}
+	if newsCfg.ContextName != newsContext {
+		t.Errorf("news recipe context = %q, want %q", newsCfg.ContextName, newsContext)
+	}
+	if newsCfg.StrategyName != "" {
+		t.Errorf("news recipe strategy = %q, want empty", newsCfg.StrategyName)
+	}
+
+	const key = "https://openai.com/blog/x"
+	h := NewDistillHarness(t).WithRecipe(newsCfg).
+		WithTranscript(SourceDoc{
+			SourceType: "news", SourceRef: key, SourceKey: key, Title: "GPT-5",
+			Transcript: "OpenAI shipped GPT-5.", SourceSHA256: "h1",
+		}).
+		WithResponses(curationJSON("## TL;DR\nGPT-5 shipped.", "OpenAI news."))
+
+	if err := h.Execute(context.Background(), 25); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	h.AssertCount(1)
+	h.AssertStatus(key, statusDone)
+
+	d, ok := h.get(key)
+	if !ok {
+		t.Fatal("news distillation not found")
+	}
+	if d.SourceType != "news" {
+		t.Errorf("source_type = %q, want news", d.SourceType)
+	}
+	if d.Pattern != newsPattern {
+		t.Errorf("pattern = %q, want %q", d.Pattern, newsPattern)
+	}
+
+	// The summarize_news system prompt must reach the curator, with the AI/ML context.
+	if len(h.cur.calls) == 0 {
+		t.Fatal("curator was not called")
+	}
+	if !strings.Contains(h.cur.calls[0].system, "news editor") {
+		t.Error("expected the summarize_news system prompt to be used")
+	}
+	if !strings.Contains(h.cur.calls[0].system, "REFERENCE CONTEXT") {
+		t.Error("expected the software-ai context to be injected")
+	}
+}

@@ -51,6 +51,18 @@ const (
 	structParseFailed = "parse_failed" // the model output was not the expected JSON
 )
 
+// Source modes (DISTILL_SOURCE): which upstream the work-queue reads. Each mode runs
+// as its own lane (its own recipe), so the transcripts hot path stays untouched.
+const (
+	sourceModeTranscripts = "transcripts" // default: rara-scribe transcripts
+	sourceModeNews        = "news"        // rara-feed news_items
+
+	// newsPattern/newsContext are the fixed recipe for the news lane: a short news
+	// brief, reusing the AI/ML reference context, with no reasoning strategy.
+	newsPattern = "summarize_news"
+	newsContext = "software-ai"
+)
+
 const (
 	defaultBatchSize = 1
 
@@ -187,6 +199,7 @@ type Config struct {
 	ContextName     string
 	StrategyName    string
 	BatchSize       int
+	Source          string // DISTILL_SOURCE: 'transcripts' (default) | 'news'
 }
 
 // ---------------------------------------------------------------------------
@@ -858,7 +871,10 @@ func curationResponseSchema() map[string]any {
 // Real database: Neon PostgreSQL via pgx
 // ---------------------------------------------------------------------------
 
-type pgxDatabase struct{ conn *pgx.Conn }
+type pgxDatabase struct {
+	conn   *pgx.Conn
+	source string // sourceModeTranscripts | sourceModeNews
+}
 
 // PendingDocs returns transcripts that need (re)distilling for the current recipe.
 // A transcript is pending when there is no distillation for this recipe key, or the
@@ -872,7 +888,7 @@ func (d *pgxDatabase) PendingDocs(ctx context.Context, limit int, keyPattern, re
 	// run the per-segment string_agg for every done transcript (the whole backlog),
 	// because the ORDER BY ... LIMIT forces all matching rows to be projected before
 	// the cut — wasteful when the batch is small.
-	const query = `
+	const transcriptsQuery = `
 		WITH src AS (
 			SELECT
 				t.id AS transcript_id,
@@ -928,6 +944,53 @@ func (d *pgxDatabase) PendingDocs(ctx context.Context, limit int, keyPattern, re
 		       p.source_sha256
 		FROM pending p
 		ORDER BY p.youtube_video_id`
+
+	// News lane: read rara-feed's news_items instead of transcripts. Same column
+	// shape and staleness logic; source_type='news', no segments (transcript_ts is
+	// the flat text), and source_sha256 is recomputed here over COALESCE(body,excerpt)
+	// — the feed's own content_sha256 is its internal staleness key, not used here.
+	const newsQuery = `
+		WITH src AS (
+			SELECT
+				NULL::text AS youtube_video_id,
+				'news'     AS source_type,
+				n.url      AS source_ref,
+				n.url      AS source_key,
+				COALESCE(n.title, '')           AS title,
+				COALESCE(n.body, n.excerpt, '') AS transcript,
+				encode(sha256(convert_to(COALESCE(n.body, n.excerpt, ''), 'UTF8')), 'hex') AS source_sha256
+			FROM news_items n
+			WHERE n.status = 'ready'
+			  AND length(btrim(COALESCE(n.body, n.excerpt, ''))) > 0
+		),
+		pending AS (
+			SELECT src.youtube_video_id, src.source_type, src.source_ref, src.source_key,
+			       src.title, src.transcript, src.source_sha256
+			FROM src
+			LEFT JOIN distillations d
+			       ON d.source_key = src.source_key
+			      AND COALESCE(d.session_patterns, d.pattern) = $2
+			WHERE (
+			        d.id IS NULL
+			        OR d.status <> 'done'
+			        OR d.source_sha256 <> src.source_sha256
+			        OR d.recipe_sha256 <> $3
+			      )
+			  AND (d.status IS DISTINCT FROM 'failed' OR d.attempt_count < $4)
+			ORDER BY (CASE WHEN d.status = 'failed' THEN 1 ELSE 0 END) ASC, src.source_key
+			LIMIT $1
+		)
+		SELECT p.youtube_video_id, p.source_type, p.source_ref, p.source_key,
+		       p.title, p.transcript,
+		       p.transcript AS transcript_ts,
+		       p.source_sha256
+		FROM pending p
+		ORDER BY p.source_key`
+
+	query := transcriptsQuery
+	if d.source == sourceModeNews {
+		query = newsQuery
+	}
 	rows, err := d.conn.Query(ctx, query, limit, keyPattern, recipeSHA, maxFailedAttempts)
 	if err != nil {
 		return nil, err
@@ -1046,7 +1109,22 @@ func loadConfig() Config {
 		ContextName:     os.Getenv("DISTILL_CONTEXT"),
 		StrategyName:    os.Getenv("DISTILL_STRATEGY"),
 		BatchSize:       batch,
+		Source:          orDefault(os.Getenv("DISTILL_SOURCE"), sourceModeTranscripts),
 	}
+}
+
+// recipeConfig returns the recipe configuration for the active source mode. The news
+// lane uses a fixed pattern + the AI/ML context (no strategy); the transcripts lane
+// uses the operator-configured recipe unchanged.
+func recipeConfig(cfg Config) Config {
+	if cfg.Source == sourceModeNews {
+		nc := cfg
+		nc.Patterns = newsPattern
+		nc.ContextName = newsContext
+		nc.StrategyName = ""
+		return nc
+	}
+	return cfg
 }
 
 func main() {
@@ -1056,16 +1134,20 @@ func main() {
 	if cfg.DatabaseURL == "" {
 		log.Fatalf("DATABASE_URL environment variable is required")
 	}
+	if cfg.Source != sourceModeTranscripts && cfg.Source != sourceModeNews {
+		log.Fatalf("unknown DISTILL_SOURCE %q (use %q or %q)", cfg.Source, sourceModeTranscripts, sourceModeNews)
+	}
 
 	cur, engineName, err := NewCurator(cfg)
 	if err != nil {
 		log.Fatalf("Curator init failed: %v", err)
 	}
 
-	recipe, err := NewRecipe(cfg, engineName)
+	recipe, err := NewRecipe(recipeConfig(cfg), engineName)
 	if err != nil {
 		log.Fatalf("Recipe init failed: %v", err)
 	}
+	log.Printf("Source mode: %s [recipe %s]\n", cfg.Source, recipe.keyPattern())
 
 	connectCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	conn, err := pgx.Connect(connectCtx, cfg.DatabaseURL)
@@ -1076,7 +1158,7 @@ func main() {
 	defer conn.Close(context.Background())
 	log.Println("Connected to database successfully")
 
-	db := &pgxDatabase{conn: conn}
+	db := &pgxDatabase{conn: conn, source: cfg.Source}
 	if err := runBatch(context.Background(), db, cur, engineName, recipe, cfg.BatchSize); err != nil {
 		log.Fatalf("Batch failed: %v", err)
 	}

@@ -1,13 +1,13 @@
 # Architecture — rara ecosystem
 
-How the four production agents fit together, the data they share, and why each one runs where
-it does.
+How the agents fit together, the data they share, and why each one runs where it does.
 
 ## Overview
 
 `rara` is a set of independent Go agents that share a single Neon PostgreSQL database but own
 isolated tables. Two agents **collect** video references, one **transcribes** them, and one
-**curates** the transcripts into RAG-ready knowledge documents.
+**curates** the transcripts into RAG-ready knowledge documents. A fifth agent (**rara-feed**)
+**collects AI/ML news** into `news_items`, which the curator reads through a second source lane.
 
 ```
                       ┌──────────────────────────────────────────┐
@@ -53,6 +53,15 @@ shelf, it just reads their tables.
 Unlike scribe, distill downloads no audio (it only reads Neon and calls an LLM HTTP API), so a
 datacenter IP is fine and it runs as a Cloud Run Job like the collectors.
 
+5. **rara-feed** is a second collector, but of **text news** rather than video. It reads its work
+   queue from `feed_sources` (RSS feeds, Hacker News search terms, HTML pages) and upserts every
+   discovered item into `news_items` (deduped on `url`). It is the upstream for distill's **news
+   lane**: running with `DISTILL_SOURCE=news`, distill treats `news_items WHERE status='ready'`
+   exactly like transcripts — `url → source_key`, `COALESCE(body, excerpt) → transcript`,
+   `source_type='news'` — and curates each with a fixed `summarize_news` + `software-ai` recipe.
+   The two lanes are separate Cloud Run Jobs so news can never starve the transcript backlog. As
+   with scribe→distill, the coupling is just the table: distill never calls feed.
+
 ## Why scribe runs locally
 
 harvest and shelf hit the YouTube **Data API** (JSON, key/OAuth) — datacenter IPs are fine, so
@@ -72,7 +81,11 @@ divergence in the system.
 | **Tables** | `target_channels`, `channel_videos` | `playlists`, `playlist_videos` | `transcripts`, `transcript_segments` | `distillations` |
 | **Runtime** | Cloud Run Job | Cloud Run Job | local Mac (launchd, 02:00) | Cloud Run Job |
 | **Pagination** | single recency page (latest N) | full `nextPageToken` loop | n/a (queue from DB) | n/a (queue from DB) |
-| **Tests** | 14 | 12 | 13 | 34 |
+| **Tests** | 14 | 12 | 13 | 35 |
+
+A fifth agent, **rara-feed**, collects AI/ML **news** (RSS / Hacker News / HTML → `news_items`,
+plus its `feed_sources` work queue) with no external auth (HTTP only in v1) as a Cloud Run Job;
+20 tests. It is the upstream for distill's news lane (see step 5 of the data flow).
 
 ## Shared conventions
 
@@ -82,8 +95,9 @@ divergence in the system.
   constraints; zero I/O in tests.
 - **Idempotency**: all writes are upserts (`ON CONFLICT`), so any agent is safe to re-run.
 - **Isolation**: tables, migrations, CI, and (for collectors) deploy workflows are per-agent.
-  Even the `updated_at` trigger functions are namespaced (`set_updated_at` vs `shelf_set_updated_at`)
-  to avoid collisions in the shared database.
+  Even the `updated_at` trigger functions are namespaced (`set_updated_at` / `shelf_set_updated_at`
+  / `scribe_set_updated_at` / `distill_set_updated_at` / `feed_set_updated_at`) to avoid collisions
+  in the shared database.
 
 ## Database schema (high level)
 
@@ -98,6 +112,11 @@ divergence in the system.
   `(source_key, COALESCE(session_patterns, pattern))`. Holds `content` (Markdown), `structured`
   (JSONB), `doc_context`, `structured_status`, and two staleness hashes (`source_sha256`,
   `recipe_sha256`). Consumed by the Kura second brain.
+- `feed_sources` → rara-feed's work queue: one row per source (`source_type` rss/html/hn,
+  `endpoint`, `fetch_strategy`, `enabled`), unique on `(name, endpoint)`.
+- `news_items` → rara-feed's collected news, one row per `url` (HN text posts keyed by permalink).
+  Holds `title`, `excerpt`, `body`, `fetch_status` (full/excerpt/failed coverage), a
+  `content_sha256` staleness hash, and `status` (`ready` for the distill news lane | `failed`).
 
 ## Technology stack
 

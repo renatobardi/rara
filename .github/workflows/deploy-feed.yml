@@ -1,4 +1,4 @@
-name: Deploy distill to Cloud Run
+name: Deploy feed to Cloud Run
 
 on:
   workflow_dispatch:
@@ -15,8 +15,8 @@ on:
     branches:
       - main
     paths:
-      - 'rara-distill/**'
-      - '.github/workflows/deploy-distill.yml'
+      - 'rara-feed/**'
+      - '.github/workflows/deploy-feed.yml'
 
 # Required for Workload Identity Federation (keyless auth to GCP).
 permissions:
@@ -25,8 +25,8 @@ permissions:
 
 env:
   REGION: ${{ vars.GCP_REGION }}
-  JOB_NAME: rara-distill
-  IMAGE: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/rara/rara-distill:${{ github.sha }}
+  JOB_NAME: rara-feed
+  IMAGE: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/rara/rara-feed:${{ github.sha }}
 
 jobs:
   deploy:
@@ -56,7 +56,7 @@ jobs:
           # gcloud builds submit's internal GCS upload fails with external_account
           # (WIF) credentials. Upload source ourselves (gcloud storage works fine),
           # then submit with --no-source referencing the pre-uploaded object.
-          tar -czf /tmp/source.tgz -C rara-distill .
+          tar -czf /tmp/source.tgz -C rara-feed .
           gcloud storage cp /tmp/source.tgz \
             "gs://${{ vars.GCP_PROJECT_ID }}_cloudbuild/source/${GITHUB_SHA}.tgz"
 
@@ -99,19 +99,16 @@ jobs:
 
       - name: Deploy Cloud Run Job
         run: |
-          # Try to update first. If the job doesn't exist yet, create it.
-          # This avoids the TOCTOU race of describe→create/update where two
-          # concurrent deploys could both attempt create and one would fail.
-          #
-          # Non-secret curation config is set via --set-env-vars; secrets via
-          # --set-secrets. To switch engine, add the matching key secret
-          # (anthropic-api-key / groq-api-key) and update CURATE_ENGINE here.
+          # Try to update first. If the job doesn't exist yet, create it. This avoids
+          # the TOCTOU race of describe→create/update. No LLM or Bright Data secrets:
+          # rara-feed only needs the shared database-url. (The unlocker tier and its
+          # brightdata-token are a follow-up — see rara-feed/DEPLOY.md.)
           if ! gcloud run jobs update "$JOB_NAME" \
                --image "$IMAGE" \
                --region "$REGION" \
                --project "${{ vars.GCP_PROJECT_ID }}" \
-               --set-secrets "DATABASE_URL=database-url:latest,GEMINI_API_KEY=gemini-api-key:latest" \
-               --set-env-vars "CURATE_ENGINE=gemini,DISTILL_PATTERNS=extract_wisdom,DISTILL_BATCH_SIZE=25" \
+               --set-secrets "DATABASE_URL=database-url:latest" \
+               --set-env-vars "FEED_BATCH_SIZE=25,FEED_FULLTEXT=true,HN_MIN_POINTS=20,ITEM_MAX_AGE_DAYS=30" \
                --max-retries 0 \
                --task-timeout 3600s \
                --memory 512Mi \
@@ -121,52 +118,18 @@ jobs:
               --image "$IMAGE" \
               --region "$REGION" \
               --project "${{ vars.GCP_PROJECT_ID }}" \
-              --set-secrets "DATABASE_URL=database-url:latest,GEMINI_API_KEY=gemini-api-key:latest" \
-              --set-env-vars "CURATE_ENGINE=gemini,DISTILL_PATTERNS=extract_wisdom,DISTILL_BATCH_SIZE=25" \
+              --set-secrets "DATABASE_URL=database-url:latest" \
+              --set-env-vars "FEED_BATCH_SIZE=25,FEED_FULLTEXT=true,HN_MIN_POINTS=20,ITEM_MAX_AGE_DAYS=30" \
               --max-retries 0 \
               --task-timeout 3600s \
               --memory 512Mi \
               --cpu 1
           fi
 
-      - name: Deploy Cloud Run Job (news lane)
-        run: |
-          # The news lane is the same image with DISTILL_SOURCE=news: it reads
-          # rara-feed's news_items instead of transcripts and curates them with the
-          # fixed summarize_news + software-ai recipe. Separate job so the transcript
-          # lane is never starved; give it its own (earlier) Cloud Scheduler trigger.
-          NEWS_JOB="${JOB_NAME}-news"
-          if ! gcloud run jobs update "$NEWS_JOB" \
-               --image "$IMAGE" \
-               --region "$REGION" \
-               --project "${{ vars.GCP_PROJECT_ID }}" \
-               --set-secrets "DATABASE_URL=database-url:latest,GEMINI_API_KEY=gemini-api-key:latest" \
-               --set-env-vars "CURATE_ENGINE=gemini,DISTILL_SOURCE=news,DISTILL_BATCH_SIZE=25" \
-               --max-retries 0 \
-               --task-timeout 3600s \
-               --memory 512Mi \
-               --cpu 1 2>/dev/null; then
-            echo "News job not found — creating for the first time..."
-            gcloud run jobs create "$NEWS_JOB" \
-              --image "$IMAGE" \
-              --region "$REGION" \
-              --project "${{ vars.GCP_PROJECT_ID }}" \
-              --set-secrets "DATABASE_URL=database-url:latest,GEMINI_API_KEY=gemini-api-key:latest" \
-              --set-env-vars "CURATE_ENGINE=gemini,DISTILL_SOURCE=news,DISTILL_BATCH_SIZE=25" \
-              --max-retries 0 \
-              --task-timeout 3600s \
-              --memory 512Mi \
-              --cpu 1
-          fi
-
-      - name: Execute jobs once
+      - name: Execute job once
         if: github.event_name == 'push' || github.event.inputs.run_after_deploy == 'true'
         run: |
           gcloud run jobs execute "$JOB_NAME" \
-            --region "$REGION" \
-            --project "${{ vars.GCP_PROJECT_ID }}" \
-            --wait
-          gcloud run jobs execute "${JOB_NAME}-news" \
             --region "$REGION" \
             --project "${{ vars.GCP_PROJECT_ID }}" \
             --wait
