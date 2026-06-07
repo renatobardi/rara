@@ -75,6 +75,22 @@ func TestDurationFromSegments(t *testing.T) {
 	}
 }
 
+func TestMajorityLanguage(t *testing.T) {
+	if got := majorityLanguage(map[string]int{"pt": 2, "en": 1}); got != "pt" {
+		t.Errorf("majority = %q, want pt", got)
+	}
+	// Tie → deterministic by language code (alphabetical).
+	if got := majorityLanguage(map[string]int{"pt": 1, "en": 1}); got != "en" {
+		t.Errorf("tie = %q, want en (alphabetical)", got)
+	}
+	if got := majorityLanguage(map[string]int{}); got != "" {
+		t.Errorf("empty = %q, want \"\"", got)
+	}
+	if got := majorityLanguage(map[string]int{"pt": 1}); got != "pt" {
+		t.Errorf("single = %q, want pt", got)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Engine factory
 // ---------------------------------------------------------------------------
@@ -429,6 +445,26 @@ func TestHarnessMultiChunkStitchAndReindex(t *testing.T) {
 	h.AssertText("long1", "primeira parte\nsegunda parte")
 	h.AssertSegmentCount("long1", 2)
 	h.AssertSegmentStart("long1", 1, 610) // 10 + 600 offset
+}
+
+// TestHarnessLanguageByMajority: three chunks detect pt, en, pt → the transcript
+// language is the majority (pt), not whatever the first chunk happened to report.
+func TestHarnessLanguageByMajority(t *testing.T) {
+	url := videoURL("mixed")
+	h := NewScribeHarness(t).
+		WithPendingVideos(VideoRef{YoutubeVideoID: "mixed", URL: url}).
+		WithChunks(url,
+			AudioChunk{Path: "/tmp/m/chunk_000.mp3", Offset: 0},
+			AudioChunk{Path: "/tmp/m/chunk_001.mp3", Offset: 600},
+			AudioChunk{Path: "/tmp/m/chunk_002.mp3", Offset: 1200}).
+		WithTranscription("/tmp/m/chunk_000.mp3", "a", "en", Segment{Start: 0, End: 1, Text: "a"}).
+		WithTranscription("/tmp/m/chunk_001.mp3", "b", "pt", Segment{Start: 0, End: 1, Text: "b"}).
+		WithTranscription("/tmp/m/chunk_002.mp3", "c", "pt", Segment{Start: 0, End: 1, Text: "c"})
+
+	if err := h.Execute(context.Background(), 25); err != nil {
+		t.Fatalf("execute failed: %v", err)
+	}
+	h.AssertLanguage("mixed", "pt") // 2×pt beats 1×en, despite en being first
 }
 
 // TestHarnessAcquireFailureContinues: a download failure is recorded as failed

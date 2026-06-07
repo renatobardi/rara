@@ -243,8 +243,9 @@ func transcribeSource(ctx context.Context, acq AudioAcquirer, tr Transcriber, en
 	defer cleanupChunks(chunks)
 
 	var (
-		parts []string
-		segs  []Segment
+		parts      []string
+		segs       []Segment
+		langCounts = map[string]int{}
 	)
 	for _, ch := range chunks {
 		text, lang, chunkSegs, err := tr.Transcribe(ctx, ch.Path)
@@ -252,8 +253,8 @@ func transcribeSource(ctx context.Context, acq AudioAcquirer, tr Transcriber, en
 			t.Status, t.Error = "failed", err.Error()
 			return t, nil
 		}
-		if t.Language == "" {
-			t.Language = lang
+		if lang != "" {
+			langCounts[lang]++
 		}
 		if s := strings.TrimSpace(text); s != "" {
 			parts = append(parts, s)
@@ -261,9 +262,25 @@ func transcribeSource(ctx context.Context, acq AudioAcquirer, tr Transcriber, en
 		segs = append(segs, reindexSegments(chunkSegs, ch.Offset)...)
 	}
 
+	// Pick the language by majority vote across chunks rather than trusting the
+	// first chunk — an intro of music/silence can make the first chunk mis-detect.
+	t.Language = majorityLanguage(langCounts)
 	t.Text = strings.Join(parts, "\n")
 	t.DurationSeconds = durationFromSegments(segs)
 	return t, segs
+}
+
+// majorityLanguage returns the most frequently detected language across the
+// chunks. Ties break deterministically by language code (so the result never
+// depends on map iteration order). Returns "" when no chunk reported a language.
+func majorityLanguage(counts map[string]int) string {
+	best, bestN := "", 0
+	for lang, n := range counts {
+		if n > bestN || (n == bestN && (best == "" || lang < best)) {
+			best, bestN = lang, n
+		}
+	}
+	return best
 }
 
 // runBatch transcribes the next batch of pending videos from the collector
