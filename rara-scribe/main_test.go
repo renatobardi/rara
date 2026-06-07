@@ -3,7 +3,13 @@ package main
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // ---------------------------------------------------------------------------
@@ -75,6 +81,22 @@ func TestDurationFromSegments(t *testing.T) {
 	}
 }
 
+func TestMajorityLanguage(t *testing.T) {
+	if got := majorityLanguage(map[string]int{"pt": 2, "en": 1}); got != "pt" {
+		t.Errorf("majority = %q, want pt", got)
+	}
+	// Tie → deterministic by language code (alphabetical).
+	if got := majorityLanguage(map[string]int{"pt": 1, "en": 1}); got != "en" {
+		t.Errorf("tie = %q, want en (alphabetical)", got)
+	}
+	if got := majorityLanguage(map[string]int{}); got != "" {
+		t.Errorf("empty = %q, want \"\"", got)
+	}
+	if got := majorityLanguage(map[string]int{"pt": 1}); got != "pt" {
+		t.Errorf("single = %q, want pt", got)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Engine factory
 // ---------------------------------------------------------------------------
@@ -108,6 +130,107 @@ func TestNewTranscriberFactory(t *testing.T) {
 	// Unknown engine → error.
 	if _, _, err := NewTranscriber(Config{Engine: "whisperx", GroqAPIKey: "k"}); err == nil {
 		t.Error("expected error for unknown engine")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Groq transient-error retry (429 / 5xx)
+// ---------------------------------------------------------------------------
+
+func TestParseRetryAfter(t *testing.T) {
+	cases := map[string]time.Duration{
+		"":     0,
+		"  ":   0,
+		"3":    3 * time.Second,
+		"0.05": 50 * time.Millisecond,
+		"-1":   0, // negative → ignored
+		"soon": 0, // unparseable → ignored
+	}
+	for in, want := range cases {
+		if got := parseRetryAfter(in); got != want {
+			t.Errorf("parseRetryAfter(%q) = %v, want %v", in, got, want)
+		}
+	}
+}
+
+// writeTempAudio creates a small fake audio file for the Groq HTTP tests.
+func writeTempAudio(t *testing.T) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "chunk_000.mp3")
+	if err := os.WriteFile(p, []byte("fake audio bytes"), 0o600); err != nil {
+		t.Fatalf("write temp audio: %v", err)
+	}
+	return p
+}
+
+// TestGroqRetriesOn429ThenSucceeds: a 429 with Retry-After is retried, and the
+// following 200 yields the transcript — a transient rate limit must not fail the
+// video.
+func TestGroqRetriesOn429ThenSucceeds(t *testing.T) {
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if atomic.AddInt32(&calls, 1) == 1 {
+			w.Header().Set("Retry-After", "0.02")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"error":{"message":"rate limit"}}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"text":"olá","language":"pt","segments":[{"start":0,"end":1,"text":"olá"}]}`))
+	}))
+	defer srv.Close()
+
+	g := &groqTranscriber{apiKey: "k", endpoint: srv.URL}
+	text, lang, segs, err := g.Transcribe(context.Background(), writeTempAudio(t))
+	if err != nil {
+		t.Fatalf("expected success after retry, got %v", err)
+	}
+	if text != "olá" || lang != "pt" || len(segs) != 1 {
+		t.Errorf("unexpected result: text=%q lang=%q segs=%+v", text, lang, segs)
+	}
+	if got := atomic.LoadInt32(&calls); got != 2 {
+		t.Errorf("expected 2 calls (429 then 200), got %d", got)
+	}
+}
+
+// TestGroqGivesUpAfterMaxRetries: persistent 429 is retried up to the cap and
+// then returns an error (so the video is recorded failed).
+func TestGroqGivesUpAfterMaxRetries(t *testing.T) {
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		w.Header().Set("Retry-After", "0.01")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":{"message":"rate limit"}}`))
+	}))
+	defer srv.Close()
+
+	g := &groqTranscriber{apiKey: "k", endpoint: srv.URL}
+	if _, _, _, err := g.Transcribe(context.Background(), writeTempAudio(t)); err == nil {
+		t.Fatal("expected error after exhausting retries")
+	}
+	if got, want := atomic.LoadInt32(&calls), int32(maxASRRetries+1); got != want {
+		t.Errorf("expected %d calls, got %d", want, got)
+	}
+}
+
+// TestGroqDoesNotRetryOn4xx: a non-429 client error (e.g. 400) is permanent and
+// must not be retried.
+func TestGroqDoesNotRetryOn4xx(t *testing.T) {
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":{"message":"bad request"}}`))
+	}))
+	defer srv.Close()
+
+	g := &groqTranscriber{apiKey: "k", endpoint: srv.URL}
+	if _, _, _, err := g.Transcribe(context.Background(), writeTempAudio(t)); err == nil {
+		t.Fatal("expected error for 400")
+	}
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Errorf("400 must not be retried; expected 1 call, got %d", got)
 	}
 }
 
@@ -429,6 +552,26 @@ func TestHarnessMultiChunkStitchAndReindex(t *testing.T) {
 	h.AssertText("long1", "primeira parte\nsegunda parte")
 	h.AssertSegmentCount("long1", 2)
 	h.AssertSegmentStart("long1", 1, 610) // 10 + 600 offset
+}
+
+// TestHarnessLanguageByMajority: three chunks detect pt, en, pt → the transcript
+// language is the majority (pt), not whatever the first chunk happened to report.
+func TestHarnessLanguageByMajority(t *testing.T) {
+	url := videoURL("mixed")
+	h := NewScribeHarness(t).
+		WithPendingVideos(VideoRef{YoutubeVideoID: "mixed", URL: url}).
+		WithChunks(url,
+			AudioChunk{Path: "/tmp/m/chunk_000.mp3", Offset: 0},
+			AudioChunk{Path: "/tmp/m/chunk_001.mp3", Offset: 600},
+			AudioChunk{Path: "/tmp/m/chunk_002.mp3", Offset: 1200}).
+		WithTranscription("/tmp/m/chunk_000.mp3", "a", "en", Segment{Start: 0, End: 1, Text: "a"}).
+		WithTranscription("/tmp/m/chunk_001.mp3", "b", "pt", Segment{Start: 0, End: 1, Text: "b"}).
+		WithTranscription("/tmp/m/chunk_002.mp3", "c", "pt", Segment{Start: 0, End: 1, Text: "c"})
+
+	if err := h.Execute(context.Background(), 25); err != nil {
+		t.Fatalf("execute failed: %v", err)
+	}
+	h.AssertLanguage("mixed", "pt") // 2×pt beats 1×en, despite en being first
 }
 
 // TestHarnessAcquireFailureContinues: a download failure is recorded as failed

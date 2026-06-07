@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -53,7 +54,18 @@ const (
 	// PendingVideos skips it so permanently-broken videos (deleted/private) stop
 	// burning yt-dlp/ASR calls every run. A 'done' save resets the counter.
 	maxFailedAttempts = 5
+
+	// maxASRRetries bounds how many times a transient ASR error (429 rate limit or
+	// 5xx) is retried within a single chunk before giving up. Groq's free tier is
+	// 20 RPM, so large runs hit 429 routinely — these are transient and must not
+	// fail an otherwise-fine video.
+	maxASRRetries = 4
 )
+
+// asrRetryBase is the base backoff for transient ASR retries (doubles each
+// attempt) when the response carries no Retry-After header. It is a var so tests
+// can shrink it; production keeps the 2s default.
+var asrRetryBase = 2 * time.Second
 
 // transcribeClient is used for the (slower) ASR calls — uploading audio and
 // waiting for transcription takes longer than the metadata calls in the other
@@ -243,8 +255,9 @@ func transcribeSource(ctx context.Context, acq AudioAcquirer, tr Transcriber, en
 	defer cleanupChunks(chunks)
 
 	var (
-		parts []string
-		segs  []Segment
+		parts      []string
+		segs       []Segment
+		langCounts = map[string]int{}
 	)
 	for _, ch := range chunks {
 		text, lang, chunkSegs, err := tr.Transcribe(ctx, ch.Path)
@@ -252,8 +265,8 @@ func transcribeSource(ctx context.Context, acq AudioAcquirer, tr Transcriber, en
 			t.Status, t.Error = "failed", err.Error()
 			return t, nil
 		}
-		if t.Language == "" {
-			t.Language = lang
+		if lang != "" {
+			langCounts[lang]++
 		}
 		if s := strings.TrimSpace(text); s != "" {
 			parts = append(parts, s)
@@ -261,9 +274,25 @@ func transcribeSource(ctx context.Context, acq AudioAcquirer, tr Transcriber, en
 		segs = append(segs, reindexSegments(chunkSegs, ch.Offset)...)
 	}
 
+	// Pick the language by majority vote across chunks rather than trusting the
+	// first chunk — an intro of music/silence can make the first chunk mis-detect.
+	t.Language = majorityLanguage(langCounts)
 	t.Text = strings.Join(parts, "\n")
 	t.DurationSeconds = durationFromSegments(segs)
 	return t, segs
+}
+
+// majorityLanguage returns the most frequently detected language across the
+// chunks. Ties break deterministically by language code (so the result never
+// depends on map iteration order). Returns "" when no chunk reported a language.
+func majorityLanguage(counts map[string]int) string {
+	best, bestN := "", 0
+	for lang, n := range counts {
+		if n > bestN || (n == bestN && (best == "" || lang < best)) {
+			best, bestN = lang, n
+		}
+	}
+	return best
 }
 
 // runBatch transcribes the next batch of pending videos from the collector
@@ -415,9 +444,17 @@ func lastLine(b []byte) string {
 // Real transcriber: Groq whisper-large-v3 (/audio/transcriptions, verbose_json)
 // ---------------------------------------------------------------------------
 
-type groqTranscriber struct{ apiKey string }
+type groqTranscriber struct {
+	apiKey   string
+	endpoint string // overridable for tests; defaults to the Groq API
+}
 
-func newGroqTranscriber(apiKey string) *groqTranscriber { return &groqTranscriber{apiKey: apiKey} }
+func newGroqTranscriber(apiKey string) *groqTranscriber {
+	return &groqTranscriber{
+		apiKey:   apiKey,
+		endpoint: "https://api.groq.com/openai/v1/audio/transcriptions",
+	}
+}
 
 type verboseJSON struct {
 	Text     string `json:"text"`
@@ -430,62 +467,109 @@ type verboseJSON struct {
 }
 
 func (g *groqTranscriber) Transcribe(ctx context.Context, audioPath string) (string, string, []Segment, error) {
-	f, err := os.Open(audioPath)
+	// Build the multipart body once, in memory (chunks are < 25 MB), so it can be
+	// re-sent on each retry attempt without reopening the file.
+	reqBody, contentType, err := buildGroqMultipart(audioPath)
 	if err != nil {
 		return "", "", nil, err
+	}
+
+	var lastErr error
+	for attempt := 0; ; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, g.endpoint, bytes.NewReader(reqBody))
+		if err != nil {
+			return "", "", nil, err
+		}
+		req.Header.Set("Authorization", "Bearer "+g.apiKey)
+		req.Header.Set("Content-Type", contentType)
+
+		resp, err := transcribeClient.Do(req)
+		if err != nil {
+			return "", "", nil, err
+		}
+
+		if resp.StatusCode == http.StatusOK {
+			var vj verboseJSON
+			derr := json.NewDecoder(resp.Body).Decode(&vj)
+			resp.Body.Close()
+			if derr != nil {
+				return "", "", nil, derr
+			}
+			segs := make([]Segment, len(vj.Segments))
+			for i, s := range vj.Segments {
+				segs[i] = Segment{Start: s.Start, End: s.End, Text: strings.TrimSpace(s.Text)}
+			}
+			return vj.Text, vj.Language, segs, nil
+		}
+
+		body, _ := io.ReadAll(resp.Body)
+		retryAfter := parseRetryAfter(resp.Header.Get("Retry-After"))
+		resp.Body.Close()
+		lastErr = fmt.Errorf("groq API error (status %d): %s", resp.StatusCode, string(body))
+
+		// Retry only transient failures (429 rate limit, 5xx). 4xx other than 429
+		// are permanent (bad request, auth) — fail immediately.
+		transient := resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500
+		if !transient || attempt >= maxASRRetries {
+			return "", "", nil, lastErr
+		}
+
+		wait := retryAfter
+		if wait <= 0 {
+			wait = asrRetryBase << attempt // 2s, 4s, 8s, 16s
+		}
+		log.Printf("groq transient error (status %d); retrying in %s (attempt %d/%d)\n",
+			resp.StatusCode, wait, attempt+1, maxASRRetries)
+		select {
+		case <-ctx.Done():
+			return "", "", nil, ctx.Err()
+		case <-time.After(wait):
+		}
+	}
+}
+
+// buildGroqMultipart assembles the transcription request body in memory so it can
+// be replayed across retries.
+func buildGroqMultipart(audioPath string) ([]byte, string, error) {
+	f, err := os.Open(audioPath)
+	if err != nil {
+		return nil, "", err
 	}
 	defer f.Close()
 
-	pr, pw := io.Pipe()
-	mw := multipart.NewWriter(pw)
-	go func() {
-		var werr error
-		defer func() { _ = pw.CloseWithError(werr) }()
-		if werr = mw.WriteField("model", "whisper-large-v3"); werr != nil {
-			return
-		}
-		if werr = mw.WriteField("response_format", "verbose_json"); werr != nil {
-			return
-		}
-		fw, e := mw.CreateFormFile("file", filepath.Base(audioPath))
-		if e != nil {
-			werr = e
-			return
-		}
-		if _, werr = io.Copy(fw, f); werr != nil {
-			return
-		}
-		werr = mw.Close()
-	}()
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		"https://api.groq.com/openai/v1/audio/transcriptions", pr)
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	if err := mw.WriteField("model", "whisper-large-v3"); err != nil {
+		return nil, "", err
+	}
+	if err := mw.WriteField("response_format", "verbose_json"); err != nil {
+		return nil, "", err
+	}
+	fw, err := mw.CreateFormFile("file", filepath.Base(audioPath))
 	if err != nil {
-		return "", "", nil, err
+		return nil, "", err
 	}
-	req.Header.Set("Authorization", "Bearer "+g.apiKey)
-	req.Header.Set("Content-Type", mw.FormDataContentType())
+	if _, err := io.Copy(fw, f); err != nil {
+		return nil, "", err
+	}
+	if err := mw.Close(); err != nil {
+		return nil, "", err
+	}
+	return buf.Bytes(), mw.FormDataContentType(), nil
+}
 
-	resp, err := transcribeClient.Do(req)
-	if err != nil {
-		return "", "", nil, err
+// parseRetryAfter reads a Retry-After header in delta-seconds form (Groq sends
+// seconds, sometimes fractional). Returns 0 when absent/unparseable, so the
+// caller falls back to its own exponential backoff.
+func parseRetryAfter(v string) time.Duration {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return 0
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return "", "", nil, fmt.Errorf("groq API error (status %d): %s", resp.StatusCode, string(body))
+	if secs, err := strconv.ParseFloat(v, 64); err == nil && secs >= 0 {
+		return time.Duration(secs * float64(time.Second))
 	}
-
-	var vj verboseJSON
-	if err := json.NewDecoder(resp.Body).Decode(&vj); err != nil {
-		return "", "", nil, err
-	}
-	segs := make([]Segment, len(vj.Segments))
-	for i, s := range vj.Segments {
-		segs[i] = Segment{Start: s.Start, End: s.End, Text: strings.TrimSpace(s.Text)}
-	}
-	return vj.Text, vj.Language, segs, nil
+	return 0
 }
 
 // ---------------------------------------------------------------------------

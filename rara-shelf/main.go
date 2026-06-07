@@ -13,11 +13,20 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // httpClient is shared across all API calls to reuse TCP connections (keep-alive).
 // Creating a new client per call bypasses connection pooling and defeats keep-alive.
 var httpClient = &http.Client{Timeout: 15 * time.Second}
+
+// pgxExecutor is the subset of pgx used by the upsert helpers, satisfied by both
+// *pgx.Conn and pgx.Tx — so the same helper runs standalone or inside a
+// transaction.
+type pgxExecutor interface {
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
 
 // Playlist is a YouTube playlist owned by the authenticated user.
 type Playlist struct {
@@ -227,15 +236,27 @@ func fetchMyPlaylists(ctx context.Context, accessToken string) ([]Playlist, erro
 
 // processPlaylist upserts the playlist row, then upserts every video in it.
 func processPlaylist(ctx context.Context, conn *pgx.Conn, pl Playlist, accessToken string) error {
-	playlistID, err := upsertPlaylist(ctx, conn, pl)
-	if err != nil {
-		return fmt.Errorf("failed to upsert playlist: %w", err)
-	}
 	log.Printf("Processing playlist: %s (%s, %d items)\n", pl.Title, pl.PrivacyStatus, pl.ItemCount)
 
+	// Fetch over the network BEFORE opening the transaction, so the DB tx stays
+	// short and never waits on HTTP.
 	items, err := fetchPlaylistVideos(ctx, accessToken, pl.YoutubePlaylistID)
 	if err != nil {
 		return fmt.Errorf("failed to fetch playlist videos: %w", err)
+	}
+
+	// Wrap the playlist row and all its videos in one transaction so a crash
+	// mid-playlist never leaves a playlist with only a partial set of videos —
+	// either the whole playlist lands or none of it does.
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	playlistID, err := upsertPlaylist(ctx, tx, pl)
+	if err != nil {
+		return fmt.Errorf("failed to upsert playlist: %w", err)
 	}
 
 	catalogued, skipped := 0, 0
@@ -244,11 +265,15 @@ func processPlaylist(ctx context.Context, conn *pgx.Conn, pl Playlist, accessTok
 			skipped++ // deleted/private items can lack a video id
 			continue
 		}
-		if err := upsertPlaylistVideo(ctx, conn, playlistID, item); err != nil {
-			log.Printf("Warning: failed to upsert video %s: %v\n", item.ContentDetails.VideoID, err)
-			continue
+		if err := upsertPlaylistVideo(ctx, tx, playlistID, item); err != nil {
+			// Abort the whole playlist for atomicity; the next run retries it.
+			return fmt.Errorf("failed to upsert video %s: %w", item.ContentDetails.VideoID, err)
 		}
 		catalogued++
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("failed to commit playlist %s: %w", pl.YoutubePlaylistID, err)
 	}
 
 	log.Printf("Catalogued %d/%d videos for playlist %s (%d skipped — deleted/private)\n",
@@ -319,7 +344,8 @@ func videoURL(videoID string) string {
 }
 
 // upsertPlaylist inserts or updates a playlist and returns its internal id.
-func upsertPlaylist(ctx context.Context, conn *pgx.Conn, pl Playlist) (int, error) {
+// Accepts any pgx executor (a *pgx.Conn or a pgx.Tx).
+func upsertPlaylist(ctx context.Context, db pgxExecutor, pl Playlist) (int, error) {
 	query := `
 		INSERT INTO playlists (youtube_playlist_id, title, description, privacy_status, item_count)
 		VALUES ($1, $2, $3, $4, $5)
@@ -332,7 +358,7 @@ func upsertPlaylist(ctx context.Context, conn *pgx.Conn, pl Playlist) (int, erro
 		RETURNING id
 	`
 	var id int
-	err := conn.QueryRow(ctx, query,
+	err := db.QueryRow(ctx, query,
 		pl.YoutubePlaylistID,
 		pl.Title,
 		pl.Description,
@@ -345,14 +371,19 @@ func upsertPlaylist(ctx context.Context, conn *pgx.Conn, pl Playlist) (int, erro
 	return id, nil
 }
 
-// upsertPlaylistVideo inserts a video into a playlist, idempotent on the
-// composite (playlist_id, youtube_video_id) — the same video may live in
-// multiple playlists.
-func upsertPlaylistVideo(ctx context.Context, conn *pgx.Conn, playlistID int, item PlaylistItem) error {
+// upsertPlaylistVideo inserts a video into a playlist, idempotent on the composite
+// (playlist_id, youtube_video_id). On conflict it refreshes title/url/published_at
+// and position, so a video's title edit or reordering within the playlist
+// propagates on the next run. Accepts any pgx executor (a *pgx.Conn or a pgx.Tx).
+func upsertPlaylistVideo(ctx context.Context, db pgxExecutor, playlistID int, item PlaylistItem) error {
 	query := `
 		INSERT INTO playlist_videos (playlist_id, youtube_video_id, title, url, published_at, position)
 		VALUES ($1, $2, $3, $4, $5, $6)
-		ON CONFLICT (playlist_id, youtube_video_id) DO NOTHING
+		ON CONFLICT (playlist_id, youtube_video_id) DO UPDATE
+		SET title = EXCLUDED.title,
+		    url = EXCLUDED.url,
+		    published_at = EXCLUDED.published_at,
+		    position = EXCLUDED.position
 	`
 
 	var publishedAt *time.Time
@@ -360,7 +391,7 @@ func upsertPlaylistVideo(ctx context.Context, conn *pgx.Conn, playlistID int, it
 		publishedAt = &item.ContentDetails.VideoPublishedAt
 	}
 
-	commandTag, err := conn.Exec(ctx, query,
+	_, err := db.Exec(ctx, query,
 		playlistID,
 		item.ContentDetails.VideoID,
 		item.Snippet.Title,
@@ -368,12 +399,5 @@ func upsertPlaylistVideo(ctx context.Context, conn *pgx.Conn, playlistID int, it
 		publishedAt,
 		item.Snippet.Position,
 	)
-	if err != nil {
-		return err
-	}
-
-	if commandTag.RowsAffected() > 0 {
-		log.Printf("Inserted video: %s - %s\n", item.ContentDetails.VideoID, item.Snippet.Title)
-	}
-	return nil
+	return err
 }

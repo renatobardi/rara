@@ -130,8 +130,12 @@ func processChannel(ctx context.Context, conn *pgx.Conn, channel Channel, apiKey
 		return nil
 	}
 
-	inserted, skipped, failed := 0, 0, 0
+	inserted, updated, skipped, failed := 0, 0, 0, 0
 	for _, video := range videos {
+		if video.ContentDetails.VideoID == "" {
+			skipped++ // deleted/private items can lack a video id (matches rara-shelf)
+			continue
+		}
 		isNew, err := upsertVideo(ctx, conn, channel.ID, video)
 		switch {
 		case err != nil:
@@ -140,12 +144,12 @@ func processChannel(ctx context.Context, conn *pgx.Conn, channel Channel, apiKey
 		case isNew:
 			inserted++
 		default:
-			skipped++ // already present (ON CONFLICT DO NOTHING)
+			updated++ // already present — metadata refreshed (ON CONFLICT DO UPDATE)
 		}
 	}
 
-	log.Printf("Channel %s: %d inserted, %d skipped, %d failed (of %d fetched)\n",
-		channel.ChannelName, inserted, skipped, failed, len(videos))
+	log.Printf("Channel %s: %d inserted, %d updated, %d skipped, %d failed (of %d fetched)\n",
+		channel.ChannelName, inserted, updated, skipped, failed, len(videos))
 	return nil
 }
 
@@ -196,31 +200,35 @@ func fetchLatestVideos(ctx context.Context, apiKey, uploadPlaylistID string) ([]
 	return playlistResp.Items, nil
 }
 
-// upsertVideo inserts a video, returning whether a new row was actually created
-// (false means it already existed via ON CONFLICT DO NOTHING). The caller uses
-// this to report accurate inserted/skipped counts.
+// upsertVideo inserts a video, refreshing the title/url/published_at if it already
+// exists (so a later title edit on YouTube propagates). Returns whether a new row
+// was created — `(xmax = 0)` is true only for a fresh INSERT, false for an UPDATE,
+// letting the caller report accurate inserted/updated counts.
 func upsertVideo(ctx context.Context, conn *pgx.Conn, channelID int, video PlaylistItem) (bool, error) {
 	videoURL := fmt.Sprintf("https://www.youtube.com/watch?v=%s", video.ContentDetails.VideoID)
 
 	query := `
 		INSERT INTO channel_videos (channel_id, youtube_video_id, title, url, published_at)
 		VALUES ($1, $2, $3, $4, $5)
-		ON CONFLICT (youtube_video_id) DO NOTHING
+		ON CONFLICT (youtube_video_id) DO UPDATE
+		SET title = EXCLUDED.title,
+		    url = EXCLUDED.url,
+		    published_at = EXCLUDED.published_at
+		RETURNING (xmax = 0) AS inserted
 	`
 
-	commandTag, err := conn.Exec(ctx, query,
+	var inserted bool
+	err := conn.QueryRow(ctx, query,
 		channelID,
 		video.ContentDetails.VideoID,
 		video.Snippet.Title,
 		videoURL,
 		video.Snippet.PublishedAt,
-	)
-
+	).Scan(&inserted)
 	if err != nil {
 		return false, err
 	}
 
-	inserted := commandTag.RowsAffected() > 0
 	if inserted {
 		log.Printf("Inserted video: %s - %s\n", video.ContentDetails.VideoID, video.Snippet.Title)
 	}
