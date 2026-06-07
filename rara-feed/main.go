@@ -107,13 +107,14 @@ type NewsItem struct {
 
 // Config is the runtime configuration, sourced from environment variables.
 type Config struct {
-	DatabaseURL    string
-	BatchSize      int      // max items taken per source
-	FullText       bool     // best-effort full-text fetch when the feed has no inline body
-	SourcesFilter  []string // subset of source names (empty = all)
-	HNMinPoints    int
-	ItemMaxAgeDays int
-	Now            func() time.Time // injectable clock (tests); nil = time.Now
+	DatabaseURL     string
+	BatchSize       int      // max items taken per source
+	FullText        bool     // best-effort full-text fetch when the feed has no inline body
+	SourcesFilter   []string // subset of source names (empty = all)
+	HNMinPoints     int
+	ItemMaxAgeDays  int
+	UnlockerEnabled bool             // SCRAPE_PROVIDER configured a Bright Data unlocker
+	Now             func() time.Time // injectable clock (tests); nil = time.Now
 }
 
 func (c Config) now() time.Time {
@@ -451,6 +452,17 @@ func runBatch(ctx context.Context, db Database, fetch Fetcher, cfg Config) error
 	now := cfg.now()
 	log.Printf("Processing %d feed source(s)\n", len(sources))
 
+	// A source flagged fetch_strategy=unlocker is a no-op until the provider is on: it
+	// would fetch via direct HTTP (likely blocked → excerpt) with no other signal. Warn
+	// once so an operator who flipped sources first doesn't think nothing happened.
+	if !cfg.UnlockerEnabled {
+		if n := unlockerSourceCount(sources); n > 0 {
+			log.Printf("Warning: %d source(s) request fetch_strategy=%s but SCRAPE_PROVIDER is off — "+
+				"they fall back to direct HTTP. Set SCRAPE_PROVIDER=brightdata to enable the unlocker.\n",
+				n, fetchStrategyUnlocker)
+		}
+	}
+
 	saved, skippedSources := 0, 0
 	// Per-source-type yield: items upserted and how many are distillable. html index
 	// pages and HN permalink posts often yield title-only rows in v1, so this makes the
@@ -531,6 +543,18 @@ func filterSources(sources []FeedSource, filter []string) []FeedSource {
 		}
 	}
 	return out
+}
+
+// unlockerSourceCount reports how many sources request the unlocker tier — used to warn
+// when they are configured but the provider is off (a silent no-op otherwise).
+func unlockerSourceCount(sources []FeedSource) int {
+	n := 0
+	for _, s := range sources {
+		if s.FetchStrategy == fetchStrategyUnlocker {
+			n++
+		}
+	}
+	return n
 }
 
 // discover fetches a source and parses it into entries, per source_type.
@@ -683,33 +707,52 @@ func (f *HTTPFetcher) Fetch(ctx context.Context, target, _ string) ([]byte, erro
 	if err := validateFetchTarget(target); err != nil {
 		return nil, err
 	}
-	var lastErr error
-	for attempt := 0; ; attempt++ {
+	return doWithRetry(ctx, f.client, f.maxRetries, "fetch "+target, func() (*http.Request, error) {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 		if err != nil {
 			return nil, err
 		}
 		req.Header.Set("User-Agent", feedUserAgent)
+		return req, nil
+	})
+}
 
-		resp, err := f.client.Do(req)
+// maxResponseBytes caps how much of a response body we read, so a hostile or runaway
+// page cannot exhaust memory. 10 MiB is far above any real article or feed.
+const maxResponseBytes = 10 << 20
+
+// doWithRetry runs build()'s request and returns the 200 body, retrying transient
+// failures (429 + 5xx) with Retry-After / exponential backoff up to maxRetries. Both
+// fetch tiers share it, so the unlocker (used for the hardest sites) gets the same
+// resilience as the direct tier. Non-2xx after retries is a permanent error — the
+// caller degrades to excerpt. (With the unlocker's format:raw, Bright Data relays the
+// upstream status, so a target 403/404 surfaces here as a failed fetch.)
+func doWithRetry(ctx context.Context, client *http.Client, maxRetries int, label string, build func() (*http.Request, error)) ([]byte, error) {
+	var lastErr error
+	for attempt := 0; ; attempt++ {
+		req, err := build()
+		if err != nil {
+			return nil, err
+		}
+		resp, err := client.Do(req)
 		if err != nil {
 			return nil, err // transport error — not retried (matches the other agents)
 		}
 
 		if resp.StatusCode == http.StatusOK {
-			body, rerr := io.ReadAll(resp.Body)
+			body, rerr := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
 			resp.Body.Close()
 			return body, rerr
 		}
 
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
 		retryAfter := parseRetryAfter(resp.Header.Get("Retry-After"))
 		resp.Body.Close()
-		lastErr = fmt.Errorf("fetch %s: status %d: %s", target, resp.StatusCode, truncate(string(body), 300))
+		lastErr = fmt.Errorf("%s: status %d: %s", label, resp.StatusCode, truncate(string(body), 300))
 
 		// Retry only transient failures (429 rate limit, 5xx). Other 4xx are permanent.
 		transient := resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500
-		if !transient || attempt >= f.maxRetries {
+		if !transient || attempt >= maxRetries {
 			return nil, lastErr
 		}
 		wait := retryAfter
@@ -809,6 +852,10 @@ const brightDataEndpoint = "https://api.brightdata.com/request"
 // defaultUnlockerZone is the Bright Data zone used when BRIGHTDATA_ZONE is unset.
 const defaultUnlockerZone = "web_unlocker1"
 
+// defaultUnlockerTimeoutSec is the unlocker request timeout (seconds) when BRIGHTDATA_TIMEOUT
+// is unset — longer than the direct tier, since the unlocker renders JS / solves challenges.
+const defaultUnlockerTimeoutSec = 90
+
 // routingFetcher dispatches each fetch to the tier named by the source's fetch_strategy:
 // 'unlocker' goes to Bright Data (when configured), everything else to the cheap direct
 // HTTP tier. A nil unlocker (provider not configured) transparently falls back to http.
@@ -828,18 +875,20 @@ func (r *routingFetcher) Fetch(ctx context.Context, target, strategy string) ([]
 // Bright Data's API (with our zone + token) and returns the unblocked page. Used for
 // sources whose fetch_strategy is 'unlocker' (bot-checks, JS walls, geo-blocks).
 type UnlockerFetcher struct {
-	client   *http.Client
-	endpoint string
-	token    string
-	zone     string
+	client     *http.Client
+	endpoint   string
+	token      string
+	zone       string
+	maxRetries int
 }
 
-func newUnlockerFetcher(token, zone string, timeout time.Duration) *UnlockerFetcher {
+func newUnlockerFetcher(token, zone string, timeout time.Duration, maxRetries int) *UnlockerFetcher {
 	return &UnlockerFetcher{
-		client:   &http.Client{Timeout: timeout},
-		endpoint: brightDataEndpoint,
-		token:    token,
-		zone:     zone,
+		client:     &http.Client{Timeout: timeout},
+		endpoint:   brightDataEndpoint,
+		token:      token,
+		zone:       zone,
+		maxRetries: maxRetries,
 	}
 }
 
@@ -864,26 +913,17 @@ func (u *UnlockerFetcher) Fetch(ctx context.Context, target, _ string) ([]byte, 
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u.endpoint, bytes.NewReader(payload))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Authorization", "Bearer "+u.token)
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := u.client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	body, rerr := io.ReadAll(resp.Body)
-	if rerr != nil {
-		return nil, rerr
-	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("unlocker %s: status %d: %s", target, resp.StatusCode, truncate(string(body), 300))
-	}
-	return body, nil
+	// Same transient-retry/backoff and body cap as the direct tier — the unlocker is
+	// used for the hardest sites, where Bright Data itself returns transient 429/5xx.
+	return doWithRetry(ctx, u.client, u.maxRetries, "unlocker "+target, func() (*http.Request, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, u.endpoint, bytes.NewReader(payload))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Authorization", "Bearer "+u.token)
+		req.Header.Set("Content-Type", "application/json")
+		return req, nil
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -1050,11 +1090,12 @@ func main() {
 
 	db := &pgxDatabase{conn: conn}
 	timeout := time.Duration(envInt("FEED_HTTP_TIMEOUT", 30)) * time.Second
+	maxRetries := envInt("FEED_MAX_RETRIES", defaultMaxRetries)
 
 	// Default to the cheap direct tier. When SCRAPE_PROVIDER=brightdata, wrap it in a
 	// router so sources flagged fetch_strategy=unlocker go through the Bright Data Web
 	// Unlocker; everything else still takes the direct path.
-	var fetch Fetcher = newHTTPFetcher(timeout, envInt("FEED_MAX_RETRIES", defaultMaxRetries))
+	var fetch Fetcher = newHTTPFetcher(timeout, maxRetries)
 	if strings.EqualFold(strings.TrimSpace(os.Getenv("SCRAPE_PROVIDER")), "brightdata") {
 		token := strings.TrimSpace(os.Getenv("BRIGHTDATA_TOKEN"))
 		if token == "" {
@@ -1064,8 +1105,12 @@ func main() {
 		if zone == "" {
 			zone = defaultUnlockerZone
 		}
-		fetch = &routingFetcher{http: fetch, unlocker: newUnlockerFetcher(token, zone, timeout)}
-		log.Printf("Bright Data unlocker enabled (zone %q) for fetch_strategy=%s sources\n", zone, fetchStrategyUnlocker)
+		// The unlocker renders JS / solves challenges and is routinely slower than a
+		// direct GET, so give it its own (longer) timeout budget.
+		unlockerTimeout := time.Duration(envInt("BRIGHTDATA_TIMEOUT", defaultUnlockerTimeoutSec)) * time.Second
+		fetch = &routingFetcher{http: fetch, unlocker: newUnlockerFetcher(token, zone, unlockerTimeout, maxRetries)}
+		cfg.UnlockerEnabled = true
+		log.Printf("Bright Data unlocker enabled (zone %q, timeout %s) for fetch_strategy=%s sources\n", zone, unlockerTimeout, fetchStrategyUnlocker)
 	}
 
 	if err := runBatch(context.Background(), db, fetch, cfg); err != nil {

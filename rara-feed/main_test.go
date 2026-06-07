@@ -789,3 +789,18 @@ func TestBatchRoutesStrategyToFetcher(t *testing.T) {
 		t.Errorf("discover passed strategy %q to fetcher, want unlocker", got)
 	}
 }
+
+func TestUnlockerSourceCount(t *testing.T) {
+	sources := []FeedSource{
+		{Name: "OpenAI", FetchStrategy: "http"},
+		{Name: "Mistral", FetchStrategy: "unlocker"},
+		{Name: "Cursor", FetchStrategy: "unlocker"},
+		{Name: "GitHub", FetchStrategy: ""},
+	}
+	if got := unlockerSourceCount(sources); got != 2 {
+		t.Errorf("unlockerSourceCount = %d, want 2", got)
+	}
+	if got := unlockerSourceCount(nil); got != 0 {
+		t.Errorf("unlockerSourceCount(nil) = %d, want 0", got)
+	}
+}
