@@ -142,9 +142,25 @@ jobs:
         run: |
           echo "DATABASE_URL=postgresql://${{ secrets.NEON_USERNAME }}:${{ secrets.NEON_PASSWORD }}@${{ secrets.NEON_HOST }}:${{ secrets.NEON_PORT }}/${{ secrets.NEON_DATABASE }}" >> $GITHUB_ENV
 
-      - name: Validate database connection
+      - name: Validate database connection (non-blocking smoke check)
         run: |
-          psql "$DATABASE_URL" -c "SELECT 1" > /dev/null 2>&1 && echo "✅ Database connection OK" || echo "❌ Database connection failed"
+          # Non-blocking on purpose: a brief Neon serverless cold-start must not look
+          # like a CI failure, and the real DB gate is the migration workflow. Retry to
+          # absorb cold starts; if still unreachable, surface a GitHub warning (the step
+          # still passes) instead of a scary "❌" that reads like a broken build.
+          ok=""
+          for attempt in 1 2 3; do
+            if psql "$DATABASE_URL" -c "SELECT 1" > /dev/null 2>&1; then
+              ok=1; break
+            fi
+            echo "Attempt $attempt: database not reachable yet, retrying in 5s..."
+            sleep 5
+          done
+          if [ -n "$ok" ]; then
+            echo "✅ Database connection OK"
+          else
+            echo "::warning::Database unreachable after 3 attempts (non-blocking smoke check; the migration workflow is the real DB gate)"
+          fi
 
       - name: Validate schema files
         run: |
