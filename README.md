@@ -86,7 +86,7 @@ Collects **AI/ML news** from RSS feeds, Hacker News (Algolia) and HTML pages int
 - **Full-text**: best-effort article fetch when the feed ships no inline body; `fetch_status` (`full|excerpt|failed`) records coverage
 - **Tables**: `news_items` (own) + `feed_sources` (work queue, seeded); deduped on `url` (HN text posts keyed by permalink)
 - **Runtime**: GCP Cloud Run Job (daily, **before** the distill news lane). No LLM secrets; the Bright Data unlocker tier is a follow-up
-- **Tests**: 20/20 passing (mock Fetcher + MockDatabase + fixtures, zero I/O)
+- **Tests**: 24/24 passing (mock Fetcher + MockDatabase + fixtures, zero I/O)
 - **Status**: 🚧 In review
 
 [README →](./rara-feed/README.md) | [DEPLOY →](./rara-feed/DEPLOY.md)
@@ -195,7 +195,7 @@ rara/
 │   └── ...
 ├── rara-feed/              # AI/ML news collector → news_items (Cloud Run)
 │   ├── main.go
-│   ├── main_test.go        # 20 TDD tests, FeedHarness + mock Fetcher
+│   ├── main_test.go        # 24 TDD tests, FeedHarness + mock Fetcher
 │   ├── migrations/
 │   │   └── 001_initial_schema.sql
 │   └── ...

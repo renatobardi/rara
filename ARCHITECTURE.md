@@ -85,7 +85,7 @@ divergence in the system.
 
 A fifth agent, **rara-feed**, collects AI/ML **news** (RSS / Hacker News / HTML → `news_items`,
 plus its `feed_sources` work queue) with no external auth (HTTP only in v1) as a Cloud Run Job;
-20 tests. It is the upstream for distill's news lane (see step 5 of the data flow).
+24 tests. It is the upstream for distill's news lane (see step 5 of the data flow).
 
 ## Shared conventions
 

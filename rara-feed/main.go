@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -442,6 +443,12 @@ func runBatch(ctx context.Context, db Database, fetch Fetcher, cfg Config) error
 	log.Printf("Processing %d feed source(s)\n", len(sources))
 
 	saved, skippedSources := 0, 0
+	// Per-source-type yield: items upserted and how many are distillable. html index
+	// pages and HN permalink posts often yield title-only rows in v1, so this makes the
+	// unlocker follow-up data-driven instead of a guess.
+	type yield struct{ upserted, distillable int }
+	byType := map[string]*yield{}
+
 	for _, src := range sources {
 		entries, err := discover(ctx, fetch, src, cfg)
 		if err != nil {
@@ -450,9 +457,10 @@ func runBatch(ctx context.Context, db Database, fetch Fetcher, cfg Config) error
 			skippedSources++
 			continue
 		}
-		if cfg.BatchSize > 0 && len(entries) > cfg.BatchSize {
-			entries = entries[:cfg.BatchSize]
-		}
+
+		// Drop unusable (no url) and out-of-window entries BEFORE the per-source cap,
+		// so the cap counts items we'd actually store — not stale ones we'd discard.
+		fresh := make([]FeedEntry, 0, len(entries))
 		for _, e := range entries {
 			if e.Link == "" {
 				continue // no natural key — cannot dedupe/store
@@ -460,17 +468,39 @@ func runBatch(ctx context.Context, db Database, fetch Fetcher, cfg Config) error
 			if !withinAge(e.Published, cfg.ItemMaxAgeDays, now) {
 				continue
 			}
-			ok, err := processEntry(ctx, db, fetch, src, e, cfg)
+			fresh = append(fresh, e)
+		}
+		if cfg.BatchSize > 0 && len(fresh) > cfg.BatchSize {
+			fresh = fresh[:cfg.BatchSize]
+		}
+
+		yt := byType[src.SourceType]
+		if yt == nil {
+			yt = &yield{}
+			byType[src.SourceType] = yt
+		}
+		for _, e := range fresh {
+			item, wrote, err := processEntry(ctx, db, fetch, src, e, cfg)
 			if err != nil {
 				log.Printf("Warning: failed to save %q: %v\n", e.Link, err)
 				continue
 			}
-			if ok {
-				saved++
+			if !wrote {
+				continue
+			}
+			saved++
+			yt.upserted++
+			if distillable(item) {
+				yt.distillable++
 			}
 		}
 	}
 
+	for _, st := range []string{sourceRSS, sourceHN, sourceHTML} {
+		if yt := byType[st]; yt != nil {
+			log.Printf("Yield %-4s: %d upserted, %d distillable\n", st, yt.upserted, yt.distillable)
+		}
+	}
 	log.Printf("Batch complete: %d item(s) upserted, %d source(s) skipped\n", saved, skippedSources)
 	return nil
 }
@@ -485,7 +515,7 @@ func filterSources(sources []FeedSource, filter []string) []FeedSource {
 	for _, f := range filter {
 		want[strings.ToLower(strings.TrimSpace(f))] = true
 	}
-	out := sources[:0]
+	out := make([]FeedSource, 0, len(sources))
 	for _, s := range sources {
 		if want[strings.ToLower(s.Name)] {
 			out = append(out, s)
@@ -529,9 +559,10 @@ func discover(ctx context.Context, fetch Fetcher, src FeedSource, cfg Config) ([
 }
 
 // processEntry builds and upserts one news item, attempting best-effort full-text
-// when the source shipped no inline body. Returns whether a write happened (false
-// when the item is unchanged from a previous run — staleness skip).
-func processEntry(ctx context.Context, db Database, fetch Fetcher, src FeedSource, e FeedEntry, cfg Config) (bool, error) {
+// when the source shipped no inline body. Returns the resolved item and whether a
+// write happened (false when the item is unchanged from a previous run — staleness
+// skip).
+func processEntry(ctx context.Context, db Database, fetch Fetcher, src FeedSource, e FeedEntry, cfg Config) (NewsItem, bool, error) {
 	body := e.Content
 	fetchStatus := fetchExcerpt
 	if body != "" {
@@ -540,7 +571,7 @@ func processEntry(ctx context.Context, db Database, fetch Fetcher, src FeedSourc
 
 	existing, found, err := db.GetItem(ctx, e.Link)
 	if err != nil {
-		return false, err
+		return NewsItem{}, false, err
 	}
 
 	// Best-effort full-text only when we have no inline body yet.
@@ -548,6 +579,11 @@ func processEntry(ctx context.Context, db Database, fetch Fetcher, src FeedSourc
 		switch {
 		case found && existing.FetchStatus == fetchFull && existing.Body != "":
 			body, fetchStatus = existing.Body, fetchFull // reuse prior success; don't refetch
+		case found && existing.Status == statusReady &&
+			existing.ContentSHA256 == contentSHA256(e.Title, e.Summary):
+			// Already settled on the excerpt and the feed's signal is unchanged:
+			// skip the otherwise-every-run, never-succeeding full-text fetch.
+			return existing, false, nil
 		default:
 			if raw, ferr := fetch.Fetch(ctx, e.Link); ferr == nil {
 				if art, ok := extractJSONLD(raw); ok && art.Body != "" {
@@ -586,12 +622,21 @@ func processEntry(ctx context.Context, db Database, fetch Fetcher, src FeedSourc
 
 	// Idempotency: an unchanged, already-ready item is left untouched.
 	if found && existing.ContentSHA256 == item.ContentSHA256 && existing.Status == statusReady {
-		return false, nil
+		return item, false, nil
 	}
 	if err := db.SaveItem(ctx, item); err != nil {
-		return false, err
+		return NewsItem{}, false, err
 	}
-	return true, nil
+	return item, true, nil
+}
+
+// distillable reports whether a stored item carries text the distill news lane will
+// actually pick up (a non-empty body or excerpt). Title-only rows — common for html
+// index pages and HN permalink/text posts in v1 — are stored but not yet distillable;
+// runBatch tallies this so the unlocker follow-up is driven by real coverage numbers.
+func distillable(it NewsItem) bool {
+	return it.Status == statusReady &&
+		(strings.TrimSpace(it.Body) != "" || strings.TrimSpace(it.Excerpt) != "")
 }
 
 // ---------------------------------------------------------------------------
@@ -605,10 +650,26 @@ type HTTPFetcher struct {
 }
 
 func newHTTPFetcher(timeout time.Duration, maxRetries int) *HTTPFetcher {
-	return &HTTPFetcher{client: &http.Client{Timeout: timeout}, maxRetries: maxRetries}
+	return &HTTPFetcher{
+		client: &http.Client{
+			Timeout: timeout,
+			// A public URL can 30x to an internal address (SSRF): re-validate every
+			// redirect hop and cap the chain.
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				if len(via) >= 10 {
+					return errors.New("stopped after 10 redirects")
+				}
+				return validateFetchTarget(req.URL.String())
+			},
+		},
+		maxRetries: maxRetries,
+	}
 }
 
 func (f *HTTPFetcher) Fetch(ctx context.Context, target string) ([]byte, error) {
+	if err := validateFetchTarget(target); err != nil {
+		return nil, err
+	}
 	var lastErr error
 	for attempt := 0; ; attempt++ {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
@@ -661,6 +722,48 @@ func parseRetryAfter(v string) time.Duration {
 		return time.Duration(secs * float64(time.Second))
 	}
 	return 0
+}
+
+// validateFetchTarget is the SSRF guard. The fetcher follows links that come from
+// feed *content* (RSS item links, HN external urls, JSON-LD url) — attacker-influenceable
+// — so we reject non-http(s) schemes and any host that is (or resolves to) a private,
+// loopback, link-local or unspecified address before issuing the request.
+func validateFetchTarget(target string) error {
+	u, err := url.Parse(target)
+	if err != nil {
+		return fmt.Errorf("invalid url %q: %w", target, err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("disallowed url scheme %q", u.Scheme)
+	}
+	host := u.Hostname()
+	if host == "" {
+		return fmt.Errorf("url %q has no host", target)
+	}
+	// IP literal: check directly (no DNS). Hostname: resolve and check every result.
+	if ip := net.ParseIP(host); ip != nil {
+		if !isPublicIP(ip) {
+			return fmt.Errorf("disallowed (non-public) address %s", ip)
+		}
+		return nil
+	}
+	ips, err := net.LookupIP(host)
+	if err != nil {
+		return fmt.Errorf("resolve %s: %w", host, err)
+	}
+	for _, ip := range ips {
+		if !isPublicIP(ip) {
+			return fmt.Errorf("%s resolves to non-public address %s", host, ip)
+		}
+	}
+	return nil
+}
+
+// isPublicIP reports whether an IP is routable on the public internet (not loopback,
+// private, link-local, multicast or unspecified).
+func isPublicIP(ip net.IP) bool {
+	return !(ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() ||
+		ip.IsLinkLocalMulticast() || ip.IsMulticast() || ip.IsUnspecified())
 }
 
 // truncate caps a string to max runes for logging, appending an ellipsis when cut.

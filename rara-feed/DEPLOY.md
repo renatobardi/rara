@@ -48,6 +48,28 @@ gcloud scheduler jobs create http rara-feed-daily \
   --http-method=POST --oauth-service-account-email="${RUNNER_SA}"
 ```
 
+## Coverage in v1 (what actually reaches distill)
+
+Only items with a non-empty body or excerpt feed the distill news lane (the run logs a
+per-type `Yield … upserted, … distillable` line). In v1 the lanes differ sharply:
+
+- **RSS** is the high-yield lane: feeds ship a `description` (excerpt) and usually
+  `content:encoded` (full body), so nearly every item is distillable.
+- **HN** items reach distill only when the linked article exposes JSON-LD (HN gives no
+  body itself); Ask HN / permalink posts become title-only rows distill skips.
+- **html** index pages yield at most one JSON-LD node per run and often only a title —
+  the unlocker/bespoke follow-up is what makes them productive.
+
+After the first real runs, measure coverage to drive that follow-up:
+
+```sql
+SELECT source_type, fetch_status, count(*)
+FROM news_items GROUP BY 1, 2 ORDER BY 1, 2;
+```
+
+A high `excerpt`/`failed` share on `html` (or low distillable HN yield) is the signal to
+prioritise the unlocker tier below.
+
 ## Follow-up (not in v1)
 
 - **Runtime-block check**: run each `html` source from Cloud Run; any that returns an

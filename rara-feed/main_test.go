@@ -228,6 +228,51 @@ func TestHNSearchURL(t *testing.T) {
 	}
 }
 
+func TestDistillable(t *testing.T) {
+	cases := []struct {
+		name string
+		it   NewsItem
+		want bool
+	}{
+		{"body", NewsItem{Status: "ready", Body: "full text"}, true},
+		{"excerpt only", NewsItem{Status: "ready", Excerpt: "snippet"}, true},
+		{"title only", NewsItem{Status: "ready", Title: "headline"}, false},
+		{"blank text", NewsItem{Status: "ready", Body: "   "}, false},
+		{"failed with body", NewsItem{Status: "failed", Body: "x"}, false},
+	}
+	for _, c := range cases {
+		if got := distillable(c.it); got != c.want {
+			t.Errorf("%s: distillable = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+func TestValidateFetchTarget(t *testing.T) {
+	// SSRF guard: private/loopback/link-local targets and non-http(s) schemes are
+	// rejected. Only IP literals are used so the test needs no DNS (zero I/O).
+	bad := []string{
+		"http://127.0.0.1/x",      // loopback
+		"http://10.0.0.1/x",       // private
+		"http://192.168.1.1/",     // private
+		"http://169.254.169.254/", // link-local (cloud metadata)
+		"http://[::1]/",           // IPv6 loopback
+		"https://0.0.0.0/",        // unspecified
+		"ftp://example.com/x",     // scheme
+		"file:///etc/passwd",      // scheme
+		"http:///nohost",          // no host
+	}
+	for _, u := range bad {
+		if err := validateFetchTarget(u); err == nil {
+			t.Errorf("validateFetchTarget(%q) = nil, want error", u)
+		}
+	}
+	for _, u := range []string{"http://1.1.1.1/", "https://93.184.216.34/path"} {
+		if err := validateFetchTarget(u); err != nil {
+			t.Errorf("validateFetchTarget(%q) = %v, want nil", u, err)
+		}
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Mocks
 // ---------------------------------------------------------------------------
@@ -268,17 +313,21 @@ func (m *MockDatabase) SaveItem(ctx context.Context, it NewsItem) error {
 	return nil
 }
 
-// MockFetcher returns preconfigured bytes per URL, or a per-URL error.
+// MockFetcher returns preconfigured bytes per URL, or a per-URL error. calls counts
+// fetches per URL so tests can assert that a never-succeeding full-text URL is not
+// re-fetched on every run.
 type MockFetcher struct {
 	bodies map[string][]byte
 	errs   map[string]error
+	calls  map[string]int
 }
 
 func newMockFetcher() *MockFetcher {
-	return &MockFetcher{bodies: make(map[string][]byte), errs: make(map[string]error)}
+	return &MockFetcher{bodies: make(map[string][]byte), errs: make(map[string]error), calls: make(map[string]int)}
 }
 
 func (f *MockFetcher) Fetch(ctx context.Context, url string) ([]byte, error) {
+	f.calls[url]++
 	if err, ok := f.errs[url]; ok {
 		return nil, err
 	}
@@ -337,6 +386,8 @@ func (h *FeedHarness) get(url string) (NewsItem, bool) {
 	it, ok := h.db.items[url]
 	return it, ok
 }
+
+func (h *FeedHarness) fetchCount(url string) int { return h.fetch.calls[url] }
 
 func (h *FeedHarness) AssertItemCount(want int) {
 	h.t.Helper()
@@ -602,4 +653,63 @@ func TestBatchHTMLJSONLD(t *testing.T) {
 		t.Fatalf("execute: %v", err)
 	}
 	h2.AssertItemCount(0)
+}
+
+// An excerpt-only item whose full-text fetch never succeeds must not be re-fetched on
+// every run: once it has settled on the excerpt and the feed signal is unchanged, the
+// expensive article fetch is skipped.
+func TestBatchExcerptOnlyNotRefetched(t *testing.T) {
+	feed := strings.Replace(rssFixture,
+		"<content:encoded>Full article body here.</content:encoded>", "", 1)
+	src := rssSource()
+	article := "https://openai.com/blog/gpt-5"
+	h := NewFeedHarness(t).WithSource(src).WithFetch(src.Endpoint, feed).
+		WithFetchError(article, errors.New("403 blocked"))
+	if err := h.Execute(); err != nil {
+		t.Fatalf("run 1: %v", err)
+	}
+	if h.fetchCount(article) != 1 {
+		t.Fatalf("run 1 article fetches = %d, want 1", h.fetchCount(article))
+	}
+	if err := h.Execute(); err != nil {
+		t.Fatalf("run 2: %v", err)
+	}
+	if h.fetchCount(article) != 1 {
+		t.Errorf("article re-fetched on unchanged re-run: count = %d, want 1", h.fetchCount(article))
+	}
+	h.AssertItem(article, func(it NewsItem) {
+		if it.FetchStatus != "failed" || it.Status != "ready" {
+			t.Errorf("unexpected item: fetch_status=%q status=%q", it.FetchStatus, it.Status)
+		}
+	})
+}
+
+// The per-source BatchSize cap is applied AFTER the age filter, so a stale item at the
+// head of the feed cannot consume a slot that a fresh item below it would have used.
+func TestBatchAgeFilterBeforeCap(t *testing.T) {
+	// Clock is hnEpoch+24h (~2025-06-05); the first item is far outside the 30-day
+	// window, the next two are inside it.
+	feed := `<?xml version="1.0"?>
+<rss version="2.0"><channel><title>OpenAI</title>
+<item><title>Old</title><link>https://openai.com/old</link><description>x</description><pubDate>Wed, 01 Jan 2025 12:00:00 +0000</pubDate></item>
+<item><title>FreshA</title><link>https://openai.com/a</link><description>a</description><pubDate>Sun, 01 Jun 2025 12:00:00 +0000</pubDate></item>
+<item><title>FreshB</title><link>https://openai.com/b</link><description>b</description><pubDate>Mon, 02 Jun 2025 12:00:00 +0000</pubDate></item>
+</channel></rss>`
+	src := rssSource()
+	h := NewFeedHarness(t).WithSource(src).WithFetch(src.Endpoint, feed)
+	h.cfg.FullText = false
+	h.cfg.BatchSize = 2
+	if err := h.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	// Old-first + cap-first would have yielded only 1 fresh item; age-first yields 2.
+	h.AssertItemCount(2)
+	if _, ok := h.get("https://openai.com/old"); ok {
+		t.Error("stale item should have been discarded")
+	}
+	for _, u := range []string{"https://openai.com/a", "https://openai.com/b"} {
+		if _, ok := h.get(u); !ok {
+			t.Errorf("fresh item %q missing", u)
+		}
+	}
 }
