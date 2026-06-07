@@ -253,6 +253,38 @@ func existsFile(label, path string) error {
 	return nil
 }
 
+// permanentErrorMarkers are substrings that identify a terminally-dead source: a
+// video that is gone and will never transcribe, no matter how many times we retry.
+var permanentErrorMarkers = []string{
+	"unavailable", // "Video unavailable"
+	"no longer available",
+	"terminated",    // account terminated
+	"private video", // "Private video"
+	"members-only",  // join-the-channel gate
+	"members only",
+	"has been removed",
+	"this video has been removed",
+	"account has been closed",
+	"who has blocked it in your country",
+}
+
+// isPermanentError reports whether a failure is terminal (the source is gone), as
+// opposed to transient (429 rate limit, 5xx, empty PO-token download, timeout,
+// network blip — or anything unrecognised). Only permanent failures count toward
+// the retry cap; transient ones are retried indefinitely so a throttled or
+// temporarily-broken download is never retired and lost. Unknown errors default
+// to transient — better to retry a dead video a few extra times than to silently
+// drop a good one.
+func isPermanentError(msg string) bool {
+	m := strings.ToLower(msg)
+	for _, marker := range permanentErrorMarkers {
+		if strings.Contains(m, marker) {
+			return true
+		}
+	}
+	return false
+}
+
 // reindexSegments shifts a chunk's local segment timestamps onto the global
 // timeline by adding the chunk's start offset.
 func reindexSegments(segs []Segment, offset float64) []Segment {
@@ -1010,11 +1042,14 @@ func (d *pgxDatabase) SaveTranscript(ctx context.Context, t Transcript, segs []S
 	}
 	defer tx.Rollback(ctx)
 
-	// attempt_count tracks consecutive failures: start a brand-new failed row at 1,
-	// a done row at 0; on conflict, increment when the new save is 'failed' and
-	// reset to 0 when it is 'done'.
+	// attempt_count caps retries of terminally-dead sources only. A PERMANENT
+	// failure (video gone) increments it; a TRANSIENT failure (429/5xx/empty
+	// download/timeout) leaves it unchanged so the video keeps being retried; a
+	// success resets it to 0. A brand-new failed row starts at 1 only when
+	// permanent, else 0.
+	permanent := t.Status == statusFailed && isPermanentError(t.Error)
 	initialAttempt := 0
-	if t.Status == "failed" {
+	if permanent {
 		initialAttempt = 1
 	}
 	const upsert = `
@@ -1030,8 +1065,9 @@ func (d *pgxDatabase) SaveTranscript(ctx context.Context, t Transcript, segs []S
 			duration_seconds = EXCLUDED.duration_seconds,
 			status = EXCLUDED.status,
 			error = EXCLUDED.error,
-			attempt_count = CASE WHEN EXCLUDED.status = 'failed'
-			                     THEN transcripts.attempt_count + 1
+			attempt_count = CASE
+			                     WHEN EXCLUDED.status = 'failed' AND $11 THEN transcripts.attempt_count + 1
+			                     WHEN EXCLUDED.status = 'failed' THEN transcripts.attempt_count
 			                     ELSE 0 END,
 			updated_at = CURRENT_TIMESTAMP
 		RETURNING id`
@@ -1047,6 +1083,7 @@ func (d *pgxDatabase) SaveTranscript(ctx context.Context, t Transcript, segs []S
 		t.Status,
 		nullStr(t.Error),
 		initialAttempt,
+		permanent,
 	).Scan(&id); err != nil {
 		return err
 	}

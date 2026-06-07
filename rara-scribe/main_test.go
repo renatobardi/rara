@@ -576,10 +576,15 @@ func (m *MockDatabase) SaveTranscript(ctx context.Context, t Transcript, segs []
 	key := dedupKey(t)
 	m.transcripts[key] = t // upsert: replaces, mirroring ON CONFLICT DO UPDATE
 	m.segments[key] = segs // replace segments
-	// Mirror attempt_count: increment on failure, reset otherwise (done/empty).
-	if t.Status == statusFailed {
+	// Mirror attempt_count: only a PERMANENT failure increments the cap; a
+	// transient failure (429/5xx/empty download) leaves it unchanged; a success
+	// (done/empty) resets it.
+	switch {
+	case t.Status == statusFailed && isPermanentError(t.Error):
 		m.attempts[key]++
-	} else {
+	case t.Status == statusFailed:
+		// transient — unchanged
+	default:
 		m.attempts[key] = 0
 	}
 	return nil
@@ -664,6 +669,74 @@ func TestPendingVideosExcludesExhaustedFailures(t *testing.T) {
 	m.attempts["yt:perma"] = maxFailedAttempts
 	if got, _ := m.PendingVideos(context.Background(), 25); len(got) != 0 {
 		t.Errorf("at cap: want video excluded, got %+v", got)
+	}
+}
+
+func TestIsPermanentError(t *testing.T) {
+	permanent := []string{
+		"yt-dlp failed: ERROR: [youtube] x: Video unavailable",
+		"This video is no longer available because the YouTube account associated with this video has been terminated.",
+		"ERROR: [youtube] x: Private video. Sign in if you've been granted access",
+		"ERROR: Join this channel to get access to members-only content",
+		"this video has been removed by the uploader",
+	}
+	for _, e := range permanent {
+		if !isPermanentError(e) {
+			t.Errorf("want permanent: %q", e)
+		}
+	}
+	transient := []string{
+		"groq API error (status 429): rate_limit_exceeded",
+		"groq API error (status 502): <html>bad gateway",
+		"groq API error (status 520): error code 520",
+		"ffmpeg failed: exit status 234: Error opening output files: Invalid argument",
+		"yt-dlp failed: signal: killed: [download]",
+		"This live event will begin in 2 days",
+		"write tcp ...: broken pipe",
+		"some brand-new error we have never seen", // unknown → transient (never retire a good video)
+		"",
+	}
+	for _, e := range transient {
+		if isPermanentError(e) {
+			t.Errorf("want transient: %q", e)
+		}
+	}
+}
+
+// TestAttemptCountOnlyCountsPermanent: a transient failure (429/5xx/empty
+// download) must NOT increment the retry cap — only a permanent failure
+// (unavailable/private/terminated) does; a success resets it. This keeps the
+// nightly Groq run from retiring 429-throttled videos after a few nights.
+func TestAttemptCountOnlyCountsPermanent(t *testing.T) {
+	ctx := context.Background()
+	m := newMockDatabase()
+	base := Transcript{YoutubeVideoID: "v1", SourceType: "youtube", SourceRef: videoURL("v1")}
+	key := dedupKey(base)
+
+	// Three transient (429) failures → counter stays 0 (never retired).
+	transient := base
+	transient.Status, transient.Error = statusFailed, "groq API error (status 429): rate_limit_exceeded"
+	for i := 0; i < 3; i++ {
+		_ = m.SaveTranscript(ctx, transient, nil)
+	}
+	if m.attempts[key] != 0 {
+		t.Errorf("transient failures incremented cap: got %d, want 0", m.attempts[key])
+	}
+
+	// A permanent failure → increments.
+	perm := base
+	perm.Status, perm.Error = statusFailed, "ERROR: [youtube] v1: Video unavailable"
+	_ = m.SaveTranscript(ctx, perm, nil)
+	if m.attempts[key] != 1 {
+		t.Errorf("permanent failure not counted: got %d, want 1", m.attempts[key])
+	}
+
+	// A success resets the counter.
+	done := base
+	done.Status = statusDone
+	_ = m.SaveTranscript(ctx, done, nil)
+	if m.attempts[key] != 0 {
+		t.Errorf("success did not reset: got %d, want 0", m.attempts[key])
 	}
 }
 
