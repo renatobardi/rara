@@ -64,6 +64,30 @@ func TestChunkProgressLabel(t *testing.T) {
 	if !strings.Contains(got, "8osZn55uK7c") || !strings.Contains(got, "3/4") {
 		t.Errorf("chunkProgressLabel = %q, want id and 3/4", got)
 	}
+	// Newlines/CRs in the id (a url/local ref) are flattened so a crafted ref
+	// cannot forge extra log lines.
+	if dirty := chunkProgressLabel("a\nFAKE LOG\rb", 1, 1); strings.ContainsAny(dirty, "\n\r") {
+		t.Errorf("label must not contain newlines: %q", dirty)
+	}
+}
+
+func TestShouldLogChunkProgress(t *testing.T) {
+	cases := []struct {
+		engine string
+		chunks int
+		want   bool
+	}{
+		{whisperCppModelName, 1, true}, // local, single chunk → still slow, log it
+		{whisperCppModelName, 3, true}, // local, multi-chunk
+		{groqModelName, 1, false},      // fast single-chunk API → quiet
+		{groqModelName, 4, true},       // multi-chunk → log regardless of engine
+		{geminiModelName, 1, false},    // fast single-chunk API → quiet
+	}
+	for _, c := range cases {
+		if got := shouldLogChunkProgress(c.engine, c.chunks); got != c.want {
+			t.Errorf("shouldLogChunkProgress(%q, %d) = %v, want %v", c.engine, c.chunks, got, c.want)
+		}
+	}
 }
 
 func TestReindexSegments(t *testing.T) {
