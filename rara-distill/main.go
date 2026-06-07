@@ -69,6 +69,10 @@ const (
 	// maxCurateRetries bounds transient-error (429/5xx) retries within a single LLM
 	// call before giving up.
 	maxCurateRetries = 4
+
+	// HTTP literals shared across the engine clients.
+	headerContentType = "Content-Type"
+	mimeJSON          = "application/json"
 )
 
 // curateRetryBase is the base backoff for transient retries (doubles each attempt)
@@ -346,7 +350,7 @@ func parseCuration(raw string) parsedCuration {
 	var out CurationOutput
 	if err := json.Unmarshal([]byte(s), &out); err != nil {
 		if frag := extractJSONFence(s); frag != "" {
-			if err2 := json.Unmarshal([]byte(frag), &out); err2 == nil {
+			if json.Unmarshal([]byte(frag), &out) == nil {
 				return finishCuration(out)
 			}
 		}
@@ -617,7 +621,7 @@ func (g *geminiCurator) Curate(ctx context.Context, systemPrompt, input string) 
 			"parts": []any{map[string]any{"text": input}},
 		}},
 		"generationConfig": map[string]any{
-			"response_mime_type": "application/json",
+			"response_mime_type": mimeJSON,
 			"response_schema":    curationResponseSchema(),
 		},
 	}
@@ -633,7 +637,7 @@ func (g *geminiCurator) Curate(ctx context.Context, systemPrompt, input string) 
 		if err != nil {
 			return nil, err
 		}
-		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set(headerContentType, mimeJSON)
 		req.Header.Set("x-goog-api-key", g.apiKey)
 		return req, nil
 	})
@@ -707,7 +711,7 @@ func (c *claudeCurator) Curate(ctx context.Context, systemPrompt, input string) 
 		if err != nil {
 			return nil, err
 		}
-		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set(headerContentType, mimeJSON)
 		req.Header.Set("x-api-key", c.apiKey)
 		req.Header.Set("anthropic-version", "2023-06-01")
 		return req, nil
@@ -770,7 +774,7 @@ func (g *groqCurator) Curate(ctx context.Context, systemPrompt, input string) (s
 		if err != nil {
 			return nil, err
 		}
-		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set(headerContentType, mimeJSON)
 		req.Header.Set("Authorization", "Bearer "+g.apiKey)
 		return req, nil
 	})
