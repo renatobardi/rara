@@ -85,6 +85,7 @@ name is `whispercpp/whisper-large-v3` even when a chunk fell back to Groq).
 | `WHISPER_CPP_BIN` | if engine=local | `/opt/homebrew/bin/whisper-cli` | whisper.cpp CLI binary |
 | `WHISPER_CPP_MODEL` | if engine=local | — | Absolute path to the ggml `large-v3` model |
 | `WHISPER_CPP_VAD_MODEL` | no | — | Optional silero VAD model (trims silence/music, cuts hallucinations) |
+| `SOURCE_TIMEOUT_MINUTES` | no | `20` (`60` for local) | Per-video timeout (download + transcribe); raise for very long local videos |
 | `BATCH_SIZE` | no | `25` | Videos per run (default; raise freely — e.g. 100, 1000 — to drain the backlog faster, no hard cap) |
 | `YT_DLP_BIN` | yes (local) | — | Absolute path to `yt-dlp` |
 | `FFMPEG_BIN` | yes (local) | — | Absolute path to `ffmpeg` |

@@ -44,16 +44,24 @@ const (
 )
 
 const (
-	// chunkSeconds is the ffmpeg segment length. Each 10-minute chunk of 16 kHz
-	// mono audio stays well under Groq's 25 MB upload limit, so we never need
-	// GCS/URL uploads. It is also the per-chunk global timestamp offset step.
-	chunkSeconds = 600
+	// remoteChunkSeconds is the ffmpeg segment length for the API engines: each
+	// 10-minute chunk of 16 kHz mono audio stays well under Groq's 25 MB upload
+	// limit, so we never need GCS/URL uploads. localChunkSeconds is larger because
+	// whisper.cpp has no upload limit and each chunk costs a separate process
+	// spawn + 3 GB model load — bigger chunks mean far fewer reloads, bounded at
+	// ~1 h of PCM in memory. Both are the per-chunk global timestamp offset step.
+	remoteChunkSeconds = 600
+	localChunkSeconds  = 3600
 
 	defaultBatchSize = 25
 
-	// sourceTimeout bounds the work on a single video (download + transcribe), so
-	// a stuck yt-dlp/ffmpeg or a hung upload cannot block the whole batch.
-	sourceTimeout = 20 * time.Minute
+	// remoteSourceTimeout / localSourceTimeout bound the work on a single video
+	// (download + transcribe), so a stuck yt-dlp/ffmpeg or a hung upload cannot
+	// block the whole batch. Local large-v3 is wall-clock work (~0.1x real-time on
+	// Apple Silicon, but slower on long/noisy audio), so it gets a larger budget
+	// than the network-bound API engines. Override either with SOURCE_TIMEOUT_MINUTES.
+	remoteSourceTimeout = 20 * time.Minute
+	localSourceTimeout  = 60 * time.Minute
 
 	// saveTimeout bounds the per-video database write, so a hung DB connection
 	// cannot stall the whole batch on its own (the batch ctx is unbounded).
@@ -69,6 +77,11 @@ const (
 	// with the Groq large-v3 we fall back to.
 	whisperCppBeamSize = 5
 
+	// localCircuitBreakerThreshold disables the local primary (routing to the Groq
+	// fallback) after this many consecutive per-chunk failures, so a fully broken
+	// local setup doesn't waste a process spawn on every chunk of every video.
+	localCircuitBreakerThreshold = 3
+
 	// maxASRRetries bounds how many times a transient ASR error (429 rate limit or
 	// 5xx) is retried within a single chunk before giving up. Groq's free tier is
 	// 20 RPM, so large runs hit 429 routinely — these are transient and must not
@@ -80,6 +93,11 @@ const (
 // attempt) when the response carries no Retry-After header. It is a var so tests
 // can shrink it; production keeps the 2s default.
 var asrRetryBase = 2 * time.Second
+
+// sourceTimeout is the active per-video budget. main sets it from the engine via
+// resolveSourceTimeout; it is a var (not const) so tests use the default and main
+// can raise it for the slower local engine.
+var sourceTimeout = remoteSourceTimeout
 
 // transcribeClient is used for the (slower) ASR calls — uploading audio and
 // waiting for transcription takes longer than the metadata calls in the other
@@ -200,6 +218,41 @@ func videoURL(videoID string) string {
 	return "https://www.youtube.com/watch?v=" + videoID
 }
 
+// resolveSourceTimeout picks the per-video budget: a SOURCE_TIMEOUT_MINUTES env
+// override (any engine), else the engine default — larger for local, whose
+// transcription is wall-clock work rather than a network round-trip.
+func resolveSourceTimeout(engine string) time.Duration {
+	if v := os.Getenv("SOURCE_TIMEOUT_MINUTES"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return time.Duration(n) * time.Minute
+		}
+	}
+	if engine == engineLocal {
+		return localSourceTimeout
+	}
+	return remoteSourceTimeout
+}
+
+// chunkSecondsFor picks the audio segment length: small for the API engines
+// (Groq's 25 MB upload limit), large for local (no limit, and fewer chunks means
+// fewer whisper.cpp process spawns + model reloads).
+func chunkSecondsFor(engine string) int {
+	if engine == engineLocal {
+		return localChunkSeconds
+	}
+	return remoteChunkSeconds
+}
+
+// existsFile returns a descriptive error when path is not a readable file, so the
+// engine factory can fail fast on a misconfigured binary/model path instead of
+// failing every chunk at runtime.
+func existsFile(label, path string) error {
+	if _, err := os.Stat(path); err != nil {
+		return fmt.Errorf("%s %q: %w", label, path, err)
+	}
+	return nil
+}
+
 // reindexSegments shifts a chunk's local segment timestamps onto the global
 // timeline by adding the chunk's start offset.
 func reindexSegments(segs []Segment, offset float64) []Segment {
@@ -244,16 +297,31 @@ func NewTranscriber(cfg Config) (Transcriber, string, error) {
 		if cfg.WhisperCppBin == "" || cfg.WhisperCppModel == "" {
 			return nil, "", fmt.Errorf("WHISPER_CPP_BIN and WHISPER_CPP_MODEL are required for engine %q", engineLocal)
 		}
+		// Fail fast on a misconfigured path now, instead of failing every chunk at
+		// runtime (and, under the hybrid, silently burning Groq quota on fallback).
+		if err := existsFile("WHISPER_CPP_BIN", cfg.WhisperCppBin); err != nil {
+			return nil, "", err
+		}
+		if err := existsFile("WHISPER_CPP_MODEL", cfg.WhisperCppModel); err != nil {
+			return nil, "", err
+		}
+		if cfg.WhisperCppVADModel != "" {
+			if err := existsFile("WHISPER_CPP_VAD_MODEL", cfg.WhisperCppVADModel); err != nil {
+				return nil, "", err
+			}
+		}
 		local := newWhisperCppTranscriber(cfg)
 		// Hybrid: with a Groq key present, run local as primary and Groq as the
 		// fallback so a per-chunk local failure still completes via the API. The
-		// stored engine name stays the local one (the primary path).
+		// stored engine name stays the local one (the primary path). A circuit
+		// breaker disables local after repeated failures (see fallbackTranscriber).
 		if cfg.GroqAPIKey != "" {
 			return &fallbackTranscriber{
-				primary:       local,
-				secondary:     newGroqTranscriber(cfg.GroqAPIKey),
-				primaryName:   whisperCppModelName,
-				secondaryName: groqModelName,
+				primary:            local,
+				secondary:          newGroqTranscriber(cfg.GroqAPIKey),
+				primaryName:        whisperCppModelName,
+				secondaryName:      groqModelName,
+				maxPrimaryFailures: localCircuitBreakerThreshold,
 			}, whisperCppModelName, nil
 		}
 		return local, whisperCppModelName, nil
@@ -397,13 +465,14 @@ func cleanupChunks(chunks []AudioChunk) {
 // ---------------------------------------------------------------------------
 
 type ytDlpAcquirer struct {
-	ytDlp      string // absolute path to the yt-dlp binary
-	ffmpeg     string // absolute path to the ffmpeg binary
-	cookieFile string // optional path to a cookies.txt file
+	ytDlp        string // absolute path to the yt-dlp binary
+	ffmpeg       string // absolute path to the ffmpeg binary
+	cookieFile   string // optional path to a cookies.txt file
+	chunkSeconds int    // ffmpeg segment length and global offset step
 }
 
-func newYtDlpAcquirer(ytDlp, ffmpeg, cookieFile string) *ytDlpAcquirer {
-	return &ytDlpAcquirer{ytDlp: ytDlp, ffmpeg: ffmpeg, cookieFile: cookieFile}
+func newYtDlpAcquirer(ytDlp, ffmpeg, cookieFile string, chunkSeconds int) *ytDlpAcquirer {
+	return &ytDlpAcquirer{ytDlp: ytDlp, ffmpeg: ffmpeg, cookieFile: cookieFile, chunkSeconds: chunkSeconds}
 }
 
 func (a *ytDlpAcquirer) Acquire(ctx context.Context, src Source) ([]AudioChunk, error) {
@@ -452,7 +521,7 @@ func (a *ytDlpAcquirer) Acquire(ctx context.Context, src Source) ([]AudioChunk, 
 		"-hide_banner", "-loglevel", "error",
 		"-i", safeFFmpegInput(input),
 		"-ar", "16000", "-ac", "1",
-		"-f", "segment", "-segment_time", strconv.Itoa(chunkSeconds),
+		"-f", "segment", "-segment_time", strconv.Itoa(a.chunkSeconds),
 		"-reset_timestamps", "1",
 		pattern,
 	}
@@ -470,7 +539,7 @@ func (a *ytDlpAcquirer) Acquire(ctx context.Context, src Source) ([]AudioChunk, 
 
 	chunks := make([]AudioChunk, len(matches))
 	for i, m := range matches {
-		chunks[i] = AudioChunk{Path: m, Offset: float64(i * chunkSeconds)}
+		chunks[i] = AudioChunk{Path: m, Offset: float64(i * a.chunkSeconds)}
 	}
 	return chunks, nil
 }
@@ -849,21 +918,41 @@ func parseWhisperCppJSON(data []byte) (string, string, []Segment, error) {
 // fallbackTranscriber runs primary first and, only if it errors while the context
 // is still live, retries the same chunk on secondary. It is the hybrid seam:
 // local whisper.cpp as primary with Groq as the safety net.
+//
+// A circuit breaker disables the primary after maxPrimaryFailures consecutive
+// failures (0 = breaker off), so a fully broken primary doesn't cost a spawn on
+// every chunk. State is plain (no mutex): the pipeline transcribes one chunk at a
+// time, never concurrently.
 type fallbackTranscriber struct {
-	primary, secondary         Transcriber
-	primaryName, secondaryName string
+	primary, secondary Transcriber
+	primaryName        string
+	secondaryName      string
+	maxPrimaryFailures int
+
+	primaryFailures int
+	primaryDisabled bool
 }
 
 func (f *fallbackTranscriber) Transcribe(ctx context.Context, audioPath string) (string, string, []Segment, error) {
-	text, lang, segs, err := f.primary.Transcribe(ctx, audioPath)
-	if err == nil {
-		return text, lang, segs, nil
+	if !f.primaryDisabled {
+		text, lang, segs, err := f.primary.Transcribe(ctx, audioPath)
+		if err == nil {
+			f.primaryFailures = 0
+			return text, lang, segs, nil
+		}
+		// A cancelled/expired context will fail the secondary too, and is not a
+		// primary fault — don't waste the call or count it toward the breaker.
+		if ctx.Err() != nil {
+			return "", "", nil, err
+		}
+		f.primaryFailures++
+		log.Printf("primary ASR (%s) failed: %v; falling back to %s\n", f.primaryName, err, f.secondaryName)
+		if f.maxPrimaryFailures > 0 && f.primaryFailures >= f.maxPrimaryFailures {
+			f.primaryDisabled = true
+			log.Printf("primary ASR (%s) disabled after %d consecutive failures; using %s for the rest of this run\n",
+				f.primaryName, f.primaryFailures, f.secondaryName)
+		}
 	}
-	// A cancelled/expired context will fail the secondary too — don't waste the call.
-	if ctx.Err() != nil {
-		return "", "", nil, err
-	}
-	log.Printf("primary ASR (%s) failed: %v; falling back to %s\n", f.primaryName, err, f.secondaryName)
 	return f.secondary.Transcribe(ctx, audioPath)
 }
 
@@ -1047,6 +1136,11 @@ func main() {
 		log.Fatalf("Transcriber init failed: %v", err)
 	}
 
+	// Engine-aware tuning: local transcription is slower wall-clock work and has no
+	// upload limit, so it gets a larger per-video budget and bigger audio chunks
+	// (fewer whisper.cpp model reloads).
+	sourceTimeout = resolveSourceTimeout(cfg.Engine)
+
 	cookieFile, cleanup, err := writeCookieFile(cfg.Cookies)
 	if err != nil {
 		log.Fatalf("Failed to materialize cookies: %v", err)
@@ -1070,6 +1164,7 @@ func main() {
 		resolveBin("YT_DLP_BIN", "/opt/homebrew/bin/yt-dlp"),
 		resolveBin("FFMPEG_BIN", "/opt/homebrew/bin/ffmpeg"),
 		cookieFile,
+		chunkSecondsFor(cfg.Engine),
 	)
 	ctx := context.Background()
 

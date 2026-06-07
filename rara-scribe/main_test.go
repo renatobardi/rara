@@ -154,17 +154,26 @@ func TestNewTranscriberFactory(t *testing.T) {
 		t.Error("expected error for gemini without key")
 	}
 
-	// Local (whisper.cpp): selected with bin+model. Without a Groq key it is the
-	// bare local engine; with a key it is wrapped as primary with Groq fallback —
-	// but the stored engine name is always the local one.
-	loc, name, err := NewTranscriber(Config{Engine: engineLocal, WhisperCppBin: "wc", WhisperCppModel: "m"})
+	// Local (whisper.cpp): selected with bin+model that exist on disk (the factory
+	// fail-fasts on missing paths). Without a Groq key it is the bare local engine;
+	// with a key it is wrapped as primary with Groq fallback — but the stored
+	// engine name is always the local one.
+	tmp := t.TempDir()
+	binPath := filepath.Join(tmp, "whisper-cli")
+	modelPath := filepath.Join(tmp, "ggml-large-v3.bin")
+	for _, p := range []string{binPath, modelPath} {
+		if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	loc, name, err := NewTranscriber(Config{Engine: engineLocal, WhisperCppBin: binPath, WhisperCppModel: modelPath})
 	if err != nil || loc == nil || name != whisperCppModelName {
 		t.Fatalf("local: err=%v tr=%v name=%q", err, loc, name)
 	}
 	if _, ok := loc.(*whisperCppTranscriber); !ok {
 		t.Errorf("local without groq key: type = %T, want *whisperCppTranscriber", loc)
 	}
-	hyb, name, err := NewTranscriber(Config{Engine: engineLocal, WhisperCppBin: "wc", WhisperCppModel: "m", GroqAPIKey: "k"})
+	hyb, name, err := NewTranscriber(Config{Engine: engineLocal, WhisperCppBin: binPath, WhisperCppModel: modelPath, GroqAPIKey: "k"})
 	if err != nil || name != whisperCppModelName {
 		t.Fatalf("local+groq: err=%v name=%q", err, name)
 	}
@@ -175,6 +184,10 @@ func TestNewTranscriberFactory(t *testing.T) {
 	// Local without bin/model → error.
 	if _, _, err := NewTranscriber(Config{Engine: engineLocal}); err == nil {
 		t.Error("expected error for local without bin/model")
+	}
+	// Local with bin/model paths that don't exist → fail-fast error.
+	if _, _, err := NewTranscriber(Config{Engine: engineLocal, WhisperCppBin: "/no/such/bin", WhisperCppModel: "/no/such/model"}); err == nil {
+		t.Error("expected fail-fast error for nonexistent whisper.cpp paths")
 	}
 
 	// Unknown engine → error.
@@ -292,6 +305,80 @@ func TestFallbackTranscriber(t *testing.T) {
 	}
 	if secondary.calls != 0 {
 		t.Errorf("secondary called %d times on cancelled ctx, want 0", secondary.calls)
+	}
+}
+
+// TestFallbackCircuitBreaker: after maxPrimaryFailures consecutive primary
+// failures, the primary is disabled and every later chunk goes straight to the
+// secondary (no wasted primary spawn on a fully-broken local engine).
+func TestFallbackCircuitBreaker(t *testing.T) {
+	ctx := context.Background()
+	primary := &recordingTranscriber{err: errors.New("local broken")}
+	secondary := &recordingTranscriber{text: "groq"}
+	f := &fallbackTranscriber{
+		primary: primary, secondary: secondary,
+		maxPrimaryFailures: 2,
+	}
+	for i := 0; i < 3; i++ {
+		text, _, _, err := f.Transcribe(ctx, "chunk.mp3")
+		if err != nil || text != "groq" {
+			t.Fatalf("call %d: err=%v text=%q", i, err, text)
+		}
+	}
+	if primary.calls != 2 {
+		t.Errorf("primary tried %d times, want 2 (breaker trips after 2)", primary.calls)
+	}
+	if secondary.calls != 3 {
+		t.Errorf("secondary called %d times, want 3", secondary.calls)
+	}
+	// Once tripped it stays tripped for the run, even if the primary would recover.
+	primary.err, primary.text = nil, "local"
+	text, _, _, _ := f.Transcribe(ctx, "chunk.mp3")
+	if text != "groq" || primary.calls != 2 {
+		t.Errorf("after trip: text=%q primary.calls=%d (want groq, 2)", text, primary.calls)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Engine-aware tuning (timeout + chunk size)
+// ---------------------------------------------------------------------------
+
+func TestResolveSourceTimeout(t *testing.T) {
+	// Default by engine: local gets the larger budget.
+	if got := resolveSourceTimeout(engineGroq); got != remoteSourceTimeout {
+		t.Errorf("groq: got %v, want %v", got, remoteSourceTimeout)
+	}
+	if got := resolveSourceTimeout(""); got != remoteSourceTimeout {
+		t.Errorf("default(\"\"): got %v, want %v", got, remoteSourceTimeout)
+	}
+	if got := resolveSourceTimeout(engineLocal); got != localSourceTimeout {
+		t.Errorf("local: got %v, want %v", got, localSourceTimeout)
+	}
+	if localSourceTimeout <= remoteSourceTimeout {
+		t.Errorf("local timeout should exceed remote: local=%v remote=%v", localSourceTimeout, remoteSourceTimeout)
+	}
+	// Env override wins for any engine; invalid override is ignored.
+	t.Setenv("SOURCE_TIMEOUT_MINUTES", "5")
+	if got := resolveSourceTimeout(engineLocal); got != 5*time.Minute {
+		t.Errorf("override: got %v, want 5m", got)
+	}
+	t.Setenv("SOURCE_TIMEOUT_MINUTES", "nope")
+	if got := resolveSourceTimeout(engineGroq); got != remoteSourceTimeout {
+		t.Errorf("bad override should be ignored: got %v", got)
+	}
+}
+
+func TestChunkSecondsFor(t *testing.T) {
+	if got := chunkSecondsFor(engineGroq); got != remoteChunkSeconds {
+		t.Errorf("groq: got %d, want %d", got, remoteChunkSeconds)
+	}
+	if got := chunkSecondsFor(engineLocal); got != localChunkSeconds {
+		t.Errorf("local: got %d, want %d", got, localChunkSeconds)
+	}
+	// Local chunks must be larger (no upload limit) so whisper.cpp reloads the
+	// model fewer times.
+	if localChunkSeconds <= remoteChunkSeconds {
+		t.Errorf("local chunks should be larger: local=%d remote=%d", localChunkSeconds, remoteChunkSeconds)
 	}
 }
 
