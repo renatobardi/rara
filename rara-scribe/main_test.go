@@ -81,6 +81,33 @@ func TestDurationFromSegments(t *testing.T) {
 	}
 }
 
+func TestSafeFFmpegInput(t *testing.T) {
+	cases := map[string]string{
+		"/tmp/scribe-x/audio.webm": "/tmp/scribe-x/audio.webm", // absolute → unchanged
+		"talk.mp4":                 "./talk.mp4",               // relative → forced path
+		"-malicious.mp4":           "./-malicious.mp4",         // leading dash neutralised
+		"concat:a|b":               "./concat:a|b",             // protocol neutralised
+	}
+	for in, want := range cases {
+		if got := safeFFmpegInput(in); got != want {
+			t.Errorf("safeFFmpegInput(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestTruncate(t *testing.T) {
+	if got := truncate("short", 500); got != "short" {
+		t.Errorf("truncate short = %q, want unchanged", got)
+	}
+	if got := truncate("abcdef", 3); got != "abc…" {
+		t.Errorf("truncate = %q, want abc…", got)
+	}
+	// Rune-safe: must not split a multi-byte rune.
+	if got := truncate("áéíóú", 2); got != "áé…" {
+		t.Errorf("truncate multibyte = %q, want áé…", got)
+	}
+}
+
 func TestMajorityLanguage(t *testing.T) {
 	if got := majorityLanguage(map[string]int{"pt": 2, "en": 1}); got != "pt" {
 		t.Errorf("majority = %q, want pt", got)
@@ -278,9 +305,9 @@ func (m *MockDatabase) PendingVideos(ctx context.Context, limit int) ([]VideoRef
 		key := "yt:" + ref.YoutubeVideoID
 		existing, ok := m.transcripts[key]
 		switch {
-		case ok && existing.Status == "done":
-			continue
-		case ok && existing.Status == "failed":
+		case ok && (existing.Status == statusDone || existing.Status == statusEmpty):
+			continue // terminal: transcribed (with or without speech)
+		case ok && existing.Status == statusFailed:
 			if m.attempts[key] >= maxFailedAttempts {
 				continue // exhausted retries — drop from the backlog
 			}
@@ -303,8 +330,8 @@ func (m *MockDatabase) SaveTranscript(ctx context.Context, t Transcript, segs []
 	key := dedupKey(t)
 	m.transcripts[key] = t // upsert: replaces, mirroring ON CONFLICT DO UPDATE
 	m.segments[key] = segs // replace segments
-	// Mirror attempt_count: increment on failure, reset on success.
-	if t.Status == "failed" {
+	// Mirror attempt_count: increment on failure, reset otherwise (done/empty).
+	if t.Status == statusFailed {
 		m.attempts[key]++
 	} else {
 		m.attempts[key] = 0
@@ -572,6 +599,33 @@ func TestHarnessLanguageByMajority(t *testing.T) {
 		t.Fatalf("execute failed: %v", err)
 	}
 	h.AssertLanguage("mixed", "pt") // 2×pt beats 1×en, despite en being first
+}
+
+// TestHarnessEmptyTranscriptMarkedEmpty: a video with no speech (no text, no
+// segments) is saved as 'empty' — distinguishable from a real transcript and
+// terminal, so PendingVideos does not keep reprocessing it.
+func TestHarnessEmptyTranscriptMarkedEmpty(t *testing.T) {
+	url := videoURL("silent")
+	h := NewScribeHarness(t).
+		WithPendingVideos(VideoRef{YoutubeVideoID: "silent", URL: url}).
+		WithChunks(url, AudioChunk{Path: "/tmp/s/chunk_000.mp3", Offset: 0}).
+		WithTranscription("/tmp/s/chunk_000.mp3", "", "pt") // no text, no segments
+
+	ctx := context.Background()
+	if err := h.Execute(ctx, 25); err != nil {
+		t.Fatalf("execute failed: %v", err)
+	}
+	h.AssertStatus("silent", statusEmpty)
+	h.AssertSegmentCount("silent", 0)
+
+	// Terminal: an empty result is not reprocessed on the next run.
+	pending, err := h.db.PendingVideos(ctx, 25)
+	if err != nil {
+		t.Fatalf("PendingVideos: %v", err)
+	}
+	if len(pending) != 0 {
+		t.Errorf("empty video still pending: %+v", pending)
+	}
 }
 
 // TestHarnessAcquireFailureContinues: a download failure is recorded as failed

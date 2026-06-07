@@ -45,6 +45,19 @@ func TestConvertToUploadPlaylistID(t *testing.T) {
 	}
 }
 
+// TestTruncate verifies the log-bounding helper, including rune safety.
+func TestTruncate(t *testing.T) {
+	if got := truncate("short", 500); got != "short" {
+		t.Errorf("truncate short = %q, want unchanged", got)
+	}
+	if got := truncate("abcdef", 3); got != "abc…" {
+		t.Errorf("truncate = %q, want abc…", got)
+	}
+	if got := truncate("áéíóú", 2); got != "áé…" {
+		t.Errorf("truncate multibyte = %q, want áé…", got)
+	}
+}
+
 // TestPlaylistItemParsing tests YouTube API response parsing
 func TestPlaylistItemParsing(t *testing.T) {
 	item := PlaylistItem{
