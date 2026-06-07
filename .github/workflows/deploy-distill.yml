@@ -115,7 +115,7 @@ jobs:
                --region "$REGION" \
                --project "${{ vars.GCP_PROJECT_ID }}" \
                --set-secrets "DATABASE_URL=database-url:latest,GEMINI_API_KEY=gemini-api-key:latest" \
-               --set-env-vars "CURATE_ENGINE=gemini,DISTILL_PATTERNS=extract_wisdom,DISTILL_BATCH_SIZE=25" \
+               --set-env-vars "CURATE_ENGINE=gemini,DISTILL_PATTERNS=extract_wisdom,DISTILL_BATCH_SIZE=3" \
                --max-retries 0 \
                --task-timeout 3600s \
                --memory 512Mi \
@@ -126,7 +126,7 @@ jobs:
               --region "$REGION" \
               --project "${{ vars.GCP_PROJECT_ID }}" \
               --set-secrets "DATABASE_URL=database-url:latest,GEMINI_API_KEY=gemini-api-key:latest" \
-              --set-env-vars "CURATE_ENGINE=gemini,DISTILL_PATTERNS=extract_wisdom,DISTILL_BATCH_SIZE=25" \
+              --set-env-vars "CURATE_ENGINE=gemini,DISTILL_PATTERNS=extract_wisdom,DISTILL_BATCH_SIZE=3" \
               --max-retries 0 \
               --task-timeout 3600s \
               --memory 512Mi \
