@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // Engine identifiers (TRANSCRIBE_ENGINE) and their display names (stored per row).
@@ -1049,7 +1050,12 @@ func (f *fallbackTranscriber) Transcribe(ctx context.Context, audioPath string) 
 // Real database: Neon PostgreSQL via pgx
 // ---------------------------------------------------------------------------
 
-type pgxDatabase struct{ conn *pgx.Conn }
+// pgxDatabase talks to Neon through a connection pool rather than a single
+// long-lived connection: a batch can sit minutes between saves (a long video),
+// and Neon's pooler drops idle connections — which used to surface as "conn
+// closed" / "broken pipe" and lose an already-transcribed video. The pool
+// validates and recreates connections on acquire, so each save gets a live one.
+type pgxDatabase struct{ pool *pgxpool.Pool }
 
 // PendingVideos returns videos present in either collector table that do not yet
 // have a completed transcript, capped at limit.
@@ -1083,7 +1089,7 @@ func (d *pgxDatabase) PendingVideos(ctx context.Context, limit int) ([]VideoRef,
 			MIN(COALESCE(t.attempt_count, 0)) ASC,
 			MIN(t.updated_at) ASC NULLS FIRST
 		LIMIT $1`
-	rows, err := d.conn.Query(ctx, query, limit, maxFailedAttempts)
+	rows, err := d.pool.Query(ctx, query, limit, maxFailedAttempts)
 	if err != nil {
 		return nil, err
 	}
@@ -1104,7 +1110,7 @@ func (d *pgxDatabase) PendingVideos(ctx context.Context, limit int) ([]VideoRef,
 // Idempotent on youtube_video_id: a re-run replaces the transcript and its
 // segments (e.g. retrying a previously failed video).
 func (d *pgxDatabase) SaveTranscript(ctx context.Context, t Transcript, segs []Segment) error {
-	tx, err := d.conn.Begin(ctx)
+	tx, err := d.pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
@@ -1270,16 +1276,34 @@ func main() {
 	}
 	defer cleanup()
 
+	poolCfg, err := pgxpool.ParseConfig(cfg.DatabaseURL)
+	if err != nil {
+		log.Fatalf("Failed to parse DATABASE_URL: %v", err)
+	}
+	// A single-worker batch needs only a connection or two; cap the pool to stay
+	// well under Neon's connection limit, and recycle idle connections before
+	// Neon's pooler drops them (a long video can sit minutes between saves).
+	poolCfg.MaxConns = 2
+	poolCfg.MaxConnIdleTime = 5 * time.Minute
+	poolCfg.MaxConnLifetime = 30 * time.Minute
+
+	// context.Background() for the pool's lifetime; the 15s ctx only bounds the
+	// startup Ping (which forces and validates a real connection, so bad
+	// creds/host still fail fast). pgxpool.New does not retain the ctx.
+	pool, err := pgxpool.NewWithConfig(context.Background(), poolCfg)
+	if err != nil {
+		log.Fatalf("Failed to create database pool: %v", err)
+	}
 	connectCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	conn, err := pgx.Connect(connectCtx, cfg.DatabaseURL)
+	err = pool.Ping(connectCtx)
 	cancel()
 	if err != nil {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
-	defer conn.Close(context.Background())
+	defer pool.Close()
 	log.Println("Connected to database successfully")
 
-	db := &pgxDatabase{conn: conn}
+	db := &pgxDatabase{pool: pool}
 	// Resolve the external binaries to absolute paths (no $PATH lookup, which
 	// could be hijacked). Local runs set YT_DLP_BIN / FFMPEG_BIN (Homebrew paths)
 	// via ~/.rara-scribe/.env; the fallbacks below are last-resort defaults.
