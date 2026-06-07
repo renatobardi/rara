@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -39,6 +40,13 @@ const (
 	fetchFull    = "full"    // body captured (inline or fetched)
 	fetchExcerpt = "excerpt" // only the source-provided excerpt
 	fetchFailed  = "failed"  // full-text was attempted and failed
+)
+
+// feed_sources.fetch_strategy values: which transport tier fetches the source. A
+// blocked html source is flipped to 'unlocker' by a data UPDATE (no redeploy).
+const (
+	fetchStrategyHTTP     = "http"     // direct GET (default, cheap)
+	fetchStrategyUnlocker = "unlocker" // Bright Data Web Unlocker (bot/JS/geo-walled)
 )
 
 const (
@@ -127,10 +135,11 @@ type Database interface {
 	SaveItem(ctx context.Context, it NewsItem) error
 }
 
-// Fetcher is the HTTP seam — the single point where the cheap HTTP tier and (later)
-// the Bright Data unlocker tier are swapped by fetch_strategy. v1 ships only HTTP.
+// Fetcher is the transport seam. strategy is the source's fetch_strategy ('http' |
+// 'unlocker'); the routing fetcher dispatches on it (cheap HTTP vs Bright Data unlocker),
+// while the leaf fetchers ignore it (each is already one tier).
 type Fetcher interface {
-	Fetch(ctx context.Context, url string) ([]byte, error)
+	Fetch(ctx context.Context, url, strategy string) ([]byte, error)
 }
 
 // ---------------------------------------------------------------------------
@@ -528,19 +537,21 @@ func filterSources(sources []FeedSource, filter []string) []FeedSource {
 func discover(ctx context.Context, fetch Fetcher, src FeedSource, cfg Config) ([]FeedEntry, error) {
 	switch src.SourceType {
 	case sourceRSS:
-		raw, err := fetch.Fetch(ctx, src.Endpoint)
+		raw, err := fetch.Fetch(ctx, src.Endpoint, src.FetchStrategy)
 		if err != nil {
 			return nil, err
 		}
 		return parseFeed(raw)
 	case sourceHN:
-		raw, err := fetch.Fetch(ctx, hnSearchURL(src.Endpoint, cfg.HNMinPoints))
+		// HN search always hits the Algolia JSON API directly (never blocked) — force
+		// the cheap tier regardless of the source's configured strategy.
+		raw, err := fetch.Fetch(ctx, hnSearchURL(src.Endpoint, cfg.HNMinPoints), fetchStrategyHTTP)
 		if err != nil {
 			return nil, err
 		}
 		return parseHN(raw, cfg.HNMinPoints)
 	case sourceHTML:
-		raw, err := fetch.Fetch(ctx, src.Endpoint)
+		raw, err := fetch.Fetch(ctx, src.Endpoint, src.FetchStrategy)
 		if err != nil {
 			return nil, err
 		}
@@ -585,7 +596,7 @@ func processEntry(ctx context.Context, db Database, fetch Fetcher, src FeedSourc
 			// skip the otherwise-every-run, never-succeeding full-text fetch.
 			return existing, false, nil
 		default:
-			if raw, ferr := fetch.Fetch(ctx, e.Link); ferr == nil {
+			if raw, ferr := fetch.Fetch(ctx, e.Link, src.FetchStrategy); ferr == nil {
 				if art, ok := extractJSONLD(raw); ok && art.Body != "" {
 					body, fetchStatus = art.Body, fetchFull
 				} else {
@@ -666,7 +677,9 @@ func newHTTPFetcher(timeout time.Duration, maxRetries int) *HTTPFetcher {
 	}
 }
 
-func (f *HTTPFetcher) Fetch(ctx context.Context, target string) ([]byte, error) {
+// Fetch does a direct GET. The strategy arg is ignored — HTTPFetcher is already the
+// cheap tier; the router decides whether a source comes here or to the unlocker.
+func (f *HTTPFetcher) Fetch(ctx context.Context, target, _ string) ([]byte, error) {
 	if err := validateFetchTarget(target); err != nil {
 		return nil, err
 	}
@@ -724,22 +737,33 @@ func parseRetryAfter(v string) time.Duration {
 	return 0
 }
 
-// validateFetchTarget is the SSRF guard. The fetcher follows links that come from
-// feed *content* (RSS item links, HN external urls, JSON-LD url) — attacker-influenceable
-// — so we reject non-http(s) schemes and any host that is (or resolves to) a private,
-// loopback, link-local or unspecified address before issuing the request.
-func validateFetchTarget(target string) error {
+// parseHTTPURL parses target and enforces the basic shape every fetch must satisfy:
+// an http(s) scheme and a non-empty host. Shared by the direct and unlocker tiers.
+func parseHTTPURL(target string) (*url.URL, error) {
 	u, err := url.Parse(target)
 	if err != nil {
-		return fmt.Errorf("invalid url %q: %w", target, err)
+		return nil, fmt.Errorf("invalid url %q: %w", target, err)
 	}
 	if u.Scheme != "http" && u.Scheme != "https" {
-		return fmt.Errorf("disallowed url scheme %q", u.Scheme)
+		return nil, fmt.Errorf("disallowed url scheme %q", u.Scheme)
+	}
+	if u.Hostname() == "" {
+		return nil, fmt.Errorf("url %q has no host", target)
+	}
+	return u, nil
+}
+
+// validateFetchTarget is the SSRF guard for the DIRECT tier. HTTPFetcher follows links
+// that come from feed *content* (RSS item links, HN external urls, JSON-LD url) —
+// attacker-influenceable — so on top of the scheme/host check we reject any host that
+// is (or resolves to) a private, loopback, link-local or unspecified address. (The
+// unlocker tier doesn't need the IP check: Bright Data egresses, not us.)
+func validateFetchTarget(target string) error {
+	u, err := parseHTTPURL(target)
+	if err != nil {
+		return err
 	}
 	host := u.Hostname()
-	if host == "" {
-		return fmt.Errorf("url %q has no host", target)
-	}
 	// IP literal: check directly (no DNS). Hostname: resolve and check every result.
 	if ip := net.ParseIP(host); ip != nil {
 		if !isPublicIP(ip) {
@@ -773,6 +797,93 @@ func truncate(s string, max int) string {
 		return s
 	}
 	return string(r[:max]) + "…"
+}
+
+// ---------------------------------------------------------------------------
+// Routing + Bright Data unlocker tier
+// ---------------------------------------------------------------------------
+
+// brightDataEndpoint is the Bright Data Web Unlocker request API.
+const brightDataEndpoint = "https://api.brightdata.com/request"
+
+// defaultUnlockerZone is the Bright Data zone used when BRIGHTDATA_ZONE is unset.
+const defaultUnlockerZone = "web_unlocker1"
+
+// routingFetcher dispatches each fetch to the tier named by the source's fetch_strategy:
+// 'unlocker' goes to Bright Data (when configured), everything else to the cheap direct
+// HTTP tier. A nil unlocker (provider not configured) transparently falls back to http.
+type routingFetcher struct {
+	http     Fetcher
+	unlocker Fetcher
+}
+
+func (r *routingFetcher) Fetch(ctx context.Context, target, strategy string) ([]byte, error) {
+	if strategy == fetchStrategyUnlocker && r.unlocker != nil {
+		return r.unlocker.Fetch(ctx, target, strategy)
+	}
+	return r.http.Fetch(ctx, target, strategy)
+}
+
+// UnlockerFetcher fetches through the Bright Data Web Unlocker: it POSTs the target to
+// Bright Data's API (with our zone + token) and returns the unblocked page. Used for
+// sources whose fetch_strategy is 'unlocker' (bot-checks, JS walls, geo-blocks).
+type UnlockerFetcher struct {
+	client   *http.Client
+	endpoint string
+	token    string
+	zone     string
+}
+
+func newUnlockerFetcher(token, zone string, timeout time.Duration) *UnlockerFetcher {
+	return &UnlockerFetcher{
+		client:   &http.Client{Timeout: timeout},
+		endpoint: brightDataEndpoint,
+		token:    token,
+		zone:     zone,
+	}
+}
+
+// unlockerPayload builds the Bright Data request body: raw page bytes from the zone.
+func unlockerPayload(zone, target string) ([]byte, error) {
+	return json.Marshal(map[string]string{
+		"zone":   zone,
+		"url":    target,
+		"format": "raw",
+	})
+}
+
+// Fetch retrieves target through Bright Data. strategy is ignored — this fetcher is
+// already the unlocker tier (the router selected it).
+func (u *UnlockerFetcher) Fetch(ctx context.Context, target, _ string) ([]byte, error) {
+	// Scheme/host check only: the request egresses from Bright Data, not from us, so the
+	// direct tier's private-IP SSRF check doesn't apply here.
+	if _, err := parseHTTPURL(target); err != nil {
+		return nil, err
+	}
+	payload, err := unlockerPayload(u.zone, target)
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u.endpoint, bytes.NewReader(payload))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+u.token)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := u.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, rerr := io.ReadAll(resp.Body)
+	if rerr != nil {
+		return nil, rerr
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("unlocker %s: status %d: %s", target, resp.StatusCode, truncate(string(body), 300))
+	}
+	return body, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -939,7 +1050,23 @@ func main() {
 
 	db := &pgxDatabase{conn: conn}
 	timeout := time.Duration(envInt("FEED_HTTP_TIMEOUT", 30)) * time.Second
-	fetch := newHTTPFetcher(timeout, envInt("FEED_MAX_RETRIES", defaultMaxRetries))
+
+	// Default to the cheap direct tier. When SCRAPE_PROVIDER=brightdata, wrap it in a
+	// router so sources flagged fetch_strategy=unlocker go through the Bright Data Web
+	// Unlocker; everything else still takes the direct path.
+	var fetch Fetcher = newHTTPFetcher(timeout, envInt("FEED_MAX_RETRIES", defaultMaxRetries))
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("SCRAPE_PROVIDER")), "brightdata") {
+		token := strings.TrimSpace(os.Getenv("BRIGHTDATA_TOKEN"))
+		if token == "" {
+			log.Fatalf("SCRAPE_PROVIDER=brightdata requires BRIGHTDATA_TOKEN")
+		}
+		zone := strings.TrimSpace(os.Getenv("BRIGHTDATA_ZONE"))
+		if zone == "" {
+			zone = defaultUnlockerZone
+		}
+		fetch = &routingFetcher{http: fetch, unlocker: newUnlockerFetcher(token, zone, timeout)}
+		log.Printf("Bright Data unlocker enabled (zone %q) for fetch_strategy=%s sources\n", zone, fetchStrategyUnlocker)
+	}
 
 	if err := runBatch(context.Background(), db, fetch, cfg); err != nil {
 		log.Fatalf("Batch failed: %v", err)
