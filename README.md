@@ -70,6 +70,7 @@ Curates the **raw transcripts** produced by scribe into **knowledge documents re
 - **Tables**: `distillations` (own); reads `transcripts`, `channel_videos`, `playlist_videos`
 - **Uniqueness**: `UNIQUE(source_key, COALESCE(session_patterns, pattern))` — idempotent; reprocesses when the transcript or the recipe changes (dual hash)
 - **Runtime**: GCP Cloud Run Job (daily, after scribe)
+- **Tests**: 32/32 passing (+ an opt-in Postgres integration test for the pending-queue SQL)
 - **Status**: ✅ Production
 
 [README →](./rara-distill/README.md) | [DEPLOY →](./rara-distill/DEPLOY.md)
@@ -164,7 +165,7 @@ rara/
 │   └── ...
 ├── rara-distill/           # Transcript curator → RAG material (Cloud Run)
 │   ├── main.go
-│   ├── main_test.go        # TDD tests, DistillHarness + mock LLM
+│   ├── main_test.go        # 32 TDD tests, DistillHarness + mock LLM
 │   ├── patterns/           # Fabric-style curation library (go:embed)
 │   ├── contexts/
 │   ├── strategies/
@@ -221,7 +222,7 @@ harness.AssertVideoCount(1)
 | rara-harvest | Daily (Cloud Run) | ~$0.02 |
 | rara-shelf | Daily (Cloud Run) | ~$0.02 |
 | rara-scribe | Daily (local Mac) | $0 compute + Groq ASR (~$0.111/h of audio) |
-| rara-distill | Daily (Cloud Run) | ~$0.02 compute + curation LLM (per transcript, cheap on Gemini Flash) |
+| rara-distill | Daily (Cloud Run) | ~$0.02 compute + curation LLM per transcript (default `gemini-2.5-pro`; cheaper on a Flash model) |
 | Cloud Build | Per deploy | ~$0.00 (free tier) |
 | Neon DB | Always-on | ~$0.00 (free tier) |
 

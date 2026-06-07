@@ -10,11 +10,14 @@ to one agent never triggers another's pipeline.
 | `ci.yml` | rara-harvest | `rara-harvest/**` | Code quality, tests, security scan |
 | `ci-shelf.yml` | rara-shelf | `rara-shelf/**` | Code quality, tests, security scan |
 | `ci-scribe.yml` | rara-scribe | `rara-scribe/**` | Code quality, tests, security scan |
+| `ci-distill.yml` | rara-distill | `rara-distill/**` | Code quality, tests, security scan |
 | `database.yml` | rara-harvest | `rara-harvest/migrations/**` | Validate + apply migrations |
 | `database-shelf.yml` | rara-shelf | `rara-shelf/migrations/**` | Validate + apply migrations |
 | `database-scribe.yml` | rara-scribe | `rara-scribe/migrations/**` | Validate + apply migrations |
+| `database-distill.yml` | rara-distill | `rara-distill/migrations/**` | Validate + apply migrations |
 | `deploy.yml` | rara-harvest | `rara-harvest/**` | Build image + deploy Cloud Run Job |
 | `deploy-shelf.yml` | rara-shelf | `rara-shelf/**` | Build image + deploy Cloud Run Job |
+| `deploy-distill.yml` | rara-distill | `rara-distill/**` | Build image + deploy Cloud Run Job |
 
 > **rara-scribe has no deploy workflow.** It runs locally on a Mac via `launchd`, not on Cloud
 > Run. Updating it is `cd rara-scribe && make build && bash install-local.sh` — there is no image
@@ -43,10 +46,10 @@ keeps its tables in sync even though the agent itself runs on a local Mac.
 
 ### Deploy (`deploy*.yml`)
 
-Only for the Cloud Run collectors (harvest, shelf). Authenticates to GCP via Workload Identity
-Federation (no SA keys), builds an amd64 image with Cloud Build, pushes to Artifact Registry, and
-creates/updates the Cloud Run Job. Triggered automatically on merge to `main` for the agent's
-path, or manually via *Run workflow*.
+Only for the Cloud Run agents (harvest, shelf, distill). Authenticates to GCP via Workload
+Identity Federation (no SA keys), builds an amd64 image with Cloud Build, pushes to Artifact
+Registry, and creates/updates the Cloud Run Job. Triggered automatically on merge to `main` for
+the agent's path, or manually via *Run workflow*.
 
 ## Secrets & variables
 
