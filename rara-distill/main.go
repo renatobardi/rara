@@ -33,7 +33,7 @@ const (
 	engineClaude = "claude"
 	engineGroq   = "groq"
 
-	defaultGeminiModel = "gemini-2.5-pro"
+	defaultGeminiModel = "gemini-3.1-pro-preview"
 	defaultClaudeModel = "claude-sonnet-4-6"
 	defaultGroqModel   = "openai/gpt-oss-120b"
 )
