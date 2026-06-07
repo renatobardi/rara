@@ -152,6 +152,6 @@ go run .                      # distill DISTILL_BATCH_SIZE transcripts
 | `DISTILL_PATTERNS` | `extract_wisdom` | CSV; many = session chain |
 | `DISTILL_CONTEXT` | (none) | context file in `contexts/<name>.md` |
 | `DISTILL_STRATEGY` | (none) | strategy file in `strategies/<name>.md` |
-| `DISTILL_BATCH_SIZE` | `1` | transcripts per run (code default `1`; the deployed Cloud Run Job uses `100` to drain the backlog) |
+| `DISTILL_BATCH_SIZE` | `1` | transcripts per run (code default `1`; the deployed Cloud Run Job uses `25` — balanced for ~13 min runs with Gemini Pro) |
 
 See [DEPLOY.md](./DEPLOY.md) for the Cloud Run Job deployment.
