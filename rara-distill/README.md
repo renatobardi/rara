@@ -81,6 +81,41 @@ extraction or fall back to the markdown. Stable `source_id`:
 SELECT structured_status, count(*) FROM distillations GROUP BY 1;
 ```
 
+## Inspecting the generated data
+
+The curated rows live in the `distillations` table on the shared Neon database. To
+query them, connect with any Postgres client using the same `DATABASE_URL` the job
+uses — the Neon web console SQL editor (zero install) or `psql`
+(`brew install libpq`, then `psql "$DATABASE_URL"`).
+
+```sql
+-- Overview of what has been distilled
+SELECT id, youtube_video_id, title, pattern, engine,
+       structured_status, status, created_at
+FROM distillations
+ORDER BY created_at DESC;
+
+-- Read the latest curated document (human Markdown + situational context)
+SELECT title, doc_context, content
+FROM distillations
+ORDER BY created_at DESC
+LIMIT 1;
+
+-- Inspect the queryable extraction (pretty-printed JSON)
+SELECT title, jsonb_pretty(structured)
+FROM distillations
+ORDER BY created_at DESC
+LIMIT 1;
+
+-- Extraction-quality breakdown
+SELECT structured_status, count(*) FROM distillations GROUP BY 1;
+
+-- Any failures, with the captured error
+SELECT source_key, attempt_count, error
+FROM distillations
+WHERE status = 'failed';
+```
+
 ### source_key normalization
 
 `source_key` is the stable dedup key, never NULL. For YouTube sources it is the
@@ -117,6 +152,6 @@ go run .                      # distill DISTILL_BATCH_SIZE transcripts
 | `DISTILL_PATTERNS` | `extract_wisdom` | CSV; many = session chain |
 | `DISTILL_CONTEXT` | (none) | context file in `contexts/<name>.md` |
 | `DISTILL_STRATEGY` | (none) | strategy file in `strategies/<name>.md` |
-| `DISTILL_BATCH_SIZE` | `25` | transcripts per run |
+| `DISTILL_BATCH_SIZE` | `1` | transcripts per run (kept at 1 while validating; raise to drain the backlog) |
 
 See [DEPLOY.md](./DEPLOY.md) for the Cloud Run Job deployment.

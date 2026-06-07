@@ -28,6 +28,11 @@ Grant the deployer/runtime SA `roles/secretmanager.secretAccessor` on the new
 secret(s) if you use a hardened runtime SA (the default compute SA already has access
 via the project-level grant from the harvest setup).
 
+> **Create the secret before merging.** The Cloud Run Job mounts `gemini-api-key` at
+> boot via `--set-secrets`, so the deploy fails (`Secret .../gemini-api-key/versions/latest
+> was not found`) if the secret does not exist yet. If you hit this, create the secret
+> and re-run the failed deploy: `gh run rerun <run_id> --failed`.
+
 ## 2. Deploy
 
 - **Automatic**: merge anything under `rara-distill/**` to `main`.
@@ -36,8 +41,17 @@ via the project-level grant from the harvest setup).
 The workflow builds the image, creates/updates the `rara-distill` Cloud Run Job, and
 executes it once. The job is configured with `--set-secrets` for `DATABASE_URL`,
 `GEMINI_API_KEY` (and the other LLM keys if present) and the non-secret env
-(`CURATE_ENGINE`, `DISTILL_PATTERNS`, etc.) via `--set-env-vars` — adjust in the
-workflow as needed. View logs:
+(`CURATE_ENGINE`, `DISTILL_PATTERNS`, `DISTILL_BATCH_SIZE`, etc.) via `--set-env-vars` —
+adjust in the workflow as needed. `DISTILL_BATCH_SIZE` defaults to `1` while validating;
+raise it (in the workflow or with a one-off `gcloud run jobs update`) to drain the
+backlog:
+
+```bash
+gcloud run jobs update rara-distill --region "$REGION" \
+  --update-env-vars DISTILL_BATCH_SIZE=25
+```
+
+View executions and logs:
 
 ```bash
 gcloud run jobs executions list --job rara-distill --region "$REGION"
