@@ -33,12 +33,16 @@ fields:
   - `connections` (string[]): the broader topics (names only, no markup).
   - `entities` (object[]): `{ "name": string, "type": "person"|"tech"|"org"|"concept" }`.
   - `claims` (object[]): `{ "text": string, "evidence": string, "ts_start": number }`
-    — notable factual claims with a supporting quote/snippet and, when a timestamp is
-    available in the transcript, the start time in seconds (else 0).
+    — notable factual claims with a supporting quote/snippet and `ts_start`, the start
+    time in seconds where the claim is made. The transcript may be prefixed with
+    per-segment `[seconds]` markers (e.g. `[123] ...`); set `ts_start` to the number in
+    the marker at or just before the evidence. Use 0 only when no markers are present.
 
 # RULES
 
 - Write in the same language as the transcript (do not translate).
 - Be faithful to the source. Do not invent references, entities, or claims.
 - Keep `content_markdown` and `structured` consistent with each other.
+- The `[seconds]` markers are metadata: use them only to set `ts_start`. Never copy a
+  marker into `content_markdown`, `evidence`, or any other text.
 - Output ONLY the JSON object — no preamble, no code fences, no trailing commentary.

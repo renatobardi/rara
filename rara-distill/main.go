@@ -95,8 +95,13 @@ type SourceDoc struct {
 	SourceRef      string
 	SourceKey      string // stable dedup key, never empty
 	Title          string
-	Transcript     string // raw transcript text
-	SourceSHA256   string // hash of the transcript text
+	Transcript     string // raw transcript text (flat; hashed for staleness)
+	// TranscriptTimestamped is the transcript with per-segment "[seconds] text"
+	// prefixes, built from transcript_segments. Fed to the model (when available) so
+	// it can anchor claims[].ts_start; falls back to Transcript when there are no
+	// segments. Not hashed — staleness tracks the flat Transcript.
+	TranscriptTimestamped string
+	SourceSHA256          string // hash of the transcript text
 }
 
 // Entity is one named thing extracted from the source.
@@ -483,11 +488,18 @@ func distillDoc(ctx context.Context, cur Curator, engineName string, r Recipe, d
 		StructuredStatus: structEmpty,
 	}
 
+	// Prefer the timestamped transcript so the model can fill claims[].ts_start; fall
+	// back to the flat text when no segments are available.
+	base := doc.Transcript
+	if doc.TranscriptTimestamped != "" {
+		base = doc.TranscriptTimestamped
+	}
+
 	var prev parsedCuration
 	for i, p := range r.Patterns {
-		input := doc.Transcript
+		input := base
 		if i > 0 {
-			input = doc.Transcript + "\n\n---\nPrevious stage output:\n" + prev.Content
+			input = base + "\n\n---\nPrevious stage output:\n" + prev.Content
 		}
 		raw, err := cur.Curate(ctx, r.buildSystemPrompt(p), input)
 		if err != nil {
@@ -864,6 +876,13 @@ func (d *pgxDatabase) PendingDocs(ctx context.Context, limit int, keyPattern, re
 				COALESCE(t.youtube_video_id, t.source_ref) AS source_key,
 				COALESCE(cv.title, pv.title, '')           AS title,
 				t.transcript,
+				-- Per-segment "[seconds] text", so the model can anchor claims to a
+				-- timestamp. Falls back to the flat transcript when there are no segments.
+				COALESCE(
+					(SELECT string_agg('[' || floor(s.start_seconds)::int || '] ' || s.text, E'\n' ORDER BY s.seq)
+					 FROM transcript_segments s WHERE s.transcript_id = t.id),
+					t.transcript
+				) AS transcript_ts,
 				encode(sha256(convert_to(t.transcript, 'UTF8')), 'hex') AS source_sha256
 			FROM transcripts t
 			LEFT JOIN LATERAL (
@@ -879,7 +898,7 @@ func (d *pgxDatabase) PendingDocs(ctx context.Context, limit int, keyPattern, re
 			  AND length(btrim(t.transcript)) > 0
 		)
 		SELECT src.youtube_video_id, src.source_type, src.source_ref, src.source_key,
-		       src.title, src.transcript, src.source_sha256
+		       src.title, src.transcript, src.transcript_ts, src.source_sha256
 		FROM src
 		LEFT JOIN distillations d
 		       ON d.source_key = src.source_key
@@ -907,7 +926,7 @@ func (d *pgxDatabase) PendingDocs(ctx context.Context, limit int, keyPattern, re
 		var doc SourceDoc
 		var ytID *string
 		if err := rows.Scan(&ytID, &doc.SourceType, &doc.SourceRef, &doc.SourceKey,
-			&doc.Title, &doc.Transcript, &doc.SourceSHA256); err != nil {
+			&doc.Title, &doc.Transcript, &doc.TranscriptTimestamped, &doc.SourceSHA256); err != nil {
 			return nil, err
 		}
 		if ytID != nil {

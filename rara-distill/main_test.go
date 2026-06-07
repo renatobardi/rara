@@ -711,6 +711,45 @@ func TestSessionChainsOutput(t *testing.T) {
 	}
 }
 
+// TestFirstStageUsesTimestampedTranscript: when timestamped segments are available, the
+// model is fed the [seconds]-prefixed transcript so it can populate claims[].ts_start.
+func TestFirstStageUsesTimestampedTranscript(t *testing.T) {
+	h := NewDistillHarness(t).
+		WithTranscript(SourceDoc{
+			SourceKey: "vid1", SourceType: "youtube", SourceRef: "r",
+			Transcript:            "flat text",
+			TranscriptTimestamped: "[0] hello\n[12] world",
+			SourceSHA256:          "h",
+		}).
+		WithResponses(curationJSON("# n", "d"))
+	if err := h.Execute(context.Background(), 25); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	in := h.cur.calls[0].input
+	if !strings.Contains(in, "[12] world") {
+		t.Errorf("first-stage input should use the timestamped transcript, got %q", in)
+	}
+	if strings.Contains(in, "flat text") {
+		t.Errorf("timestamped transcript present but flat text was used: %q", in)
+	}
+}
+
+// TestFirstStageFallsBackToFlatTranscript: with no segments, the flat transcript is used.
+func TestFirstStageFallsBackToFlatTranscript(t *testing.T) {
+	h := NewDistillHarness(t).
+		WithTranscript(SourceDoc{
+			SourceKey: "vid1", SourceType: "youtube", SourceRef: "r",
+			Transcript: "flat only", SourceSHA256: "h",
+		}).
+		WithResponses(curationJSON("# n", "d"))
+	if err := h.Execute(context.Background(), 25); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if !strings.Contains(h.cur.calls[0].input, "flat only") {
+		t.Errorf("expected flat transcript fallback, got %q", h.cur.calls[0].input)
+	}
+}
+
 // TestSessionDoesNotCollideWithStandalone: a standalone extract_wisdom and a session
 // ending in extract_wisdom over the same source are two distinct rows.
 func TestSessionDoesNotCollideWithStandalone(t *testing.T) {
@@ -922,8 +961,12 @@ func TestPendingDocsIntegration(t *testing.T) {
 	exec("SET search_path TO " + schema)
 
 	exec(`CREATE TABLE transcripts (
-		youtube_video_id TEXT, source_type TEXT NOT NULL, source_ref TEXT NOT NULL,
-		transcript TEXT, status TEXT NOT NULL)`)
+		id SERIAL PRIMARY KEY, youtube_video_id TEXT, source_type TEXT NOT NULL,
+		source_ref TEXT NOT NULL, transcript TEXT, status TEXT NOT NULL)`)
+	exec(`CREATE TABLE transcript_segments (
+		id SERIAL PRIMARY KEY, transcript_id INT NOT NULL, seq INT NOT NULL,
+		start_seconds NUMERIC(10,3) NOT NULL, end_seconds NUMERIC(10,3) NOT NULL,
+		text TEXT NOT NULL)`)
 	exec(`CREATE TABLE channel_videos (youtube_video_id TEXT, title TEXT)`)
 	exec(`CREATE TABLE playlist_videos (youtube_video_id TEXT, title TEXT)`)
 	exec(`CREATE TABLE distillations (
@@ -938,9 +981,19 @@ func TestPendingDocsIntegration(t *testing.T) {
 
 	all := []string{"never", "fresh_done", "failed_under", "failed_over"}
 	for _, v := range all {
-		exec(`INSERT INTO transcripts (youtube_video_id, source_type, source_ref, transcript, status)
-			VALUES ($1, 'youtube', $2, $3, 'done')`, v, "https://y/"+v, "body of "+v)
+		var tid int
+		if err := conn.QueryRow(ctx,
+			`INSERT INTO transcripts (youtube_video_id, source_type, source_ref, transcript, status)
+			 VALUES ($1, 'youtube', $2, $3, 'done') RETURNING id`,
+			v, "https://y/"+v, "body of "+v).Scan(&tid); err != nil {
+			t.Fatalf("insert transcript: %v", err)
+		}
 		exec("INSERT INTO channel_videos (youtube_video_id, title) VALUES ($1, $2)", v, "Title "+v)
+		// Give "never" two timestamped segments so we can assert the [seconds] build.
+		if v == "never" {
+			exec(`INSERT INTO transcript_segments (transcript_id, seq, start_seconds, end_seconds, text)
+				VALUES ($1, 0, 0, 5, 'hello'), ($1, 1, 12, 18, 'world')`, tid)
+		}
 	}
 
 	const recipe = "recipe-hash-v1"
@@ -972,13 +1025,24 @@ func TestPendingDocsIntegration(t *testing.T) {
 		t.Fatalf("PendingDocs: %v", err)
 	}
 	got := map[string]bool{}
+	byID := map[string]SourceDoc{}
 	for _, d := range docs {
 		got[d.YoutubeVideoID] = true
+		byID[d.YoutubeVideoID] = d
 	}
 	want := map[string]bool{"never": true, "failed_under": true}
 	for _, v := range all {
 		if got[v] != want[v] {
 			t.Errorf("PendingDocs include[%q] = %v, want %v", v, got[v], want[v])
 		}
+	}
+
+	// "never" has segments -> the timestamped transcript is built with [seconds] markers.
+	if ts := byID["never"].TranscriptTimestamped; ts != "[0] hello\n[12] world" {
+		t.Errorf("never.TranscriptTimestamped = %q, want the [seconds]-prefixed build", ts)
+	}
+	// "failed_under" has no segments -> falls back to the flat transcript.
+	if ts := byID["failed_under"].TranscriptTimestamped; ts != "body of failed_under" {
+		t.Errorf("failed_under.TranscriptTimestamped = %q, want flat-transcript fallback", ts)
 	}
 }
