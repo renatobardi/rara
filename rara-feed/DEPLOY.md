@@ -70,10 +70,41 @@ FROM news_items GROUP BY 1, 2 ORDER BY 1, 2;
 A high `excerpt`/`failed` share on `html` (or low distillable HN yield) is the signal to
 prioritise the unlocker tier below.
 
-## Follow-up (not in v1)
+## Bright Data unlocker tier (optional)
 
-- **Runtime-block check**: run each `html` source from Cloud Run; any that returns an
-  empty/blocked page → `UPDATE feed_sources SET fetch_strategy='unlocker' WHERE …`
-  (data change, no redeploy).
-- **Unlocker tier**: add the `UnlockerFetcher`, wire `--set-secrets brightdata-token`,
-  set `SCRAPE_PROVIDER=brightdata`, and smoke a protected site (e.g. Mistral).
+The `UnlockerFetcher` is implemented. The job runs **direct HTTP by default** and only
+uses Bright Data when `SCRAPE_PROVIDER=brightdata` is set — and even then only for
+sources whose `feed_sources.fetch_strategy='unlocker'`. Everything else stays on the
+cheap direct path. To enable it:
+
+1. **Create the token secret first** (the deploy mounts it at boot — it must exist, see
+   the secret-before-deploy lesson):
+
+   ```bash
+   printf %s 'YOUR_BRIGHTDATA_TOKEN' | gcloud secrets create brightdata-token \
+     --data-file=- --replication-policy=automatic --project oute-rara
+   ```
+
+2. **Add the secret + env to the job** (update `deploy-feed.yml`'s `--set-secrets` /
+   `--set-env-vars`, or one-off on the existing job):
+
+   ```bash
+   gcloud run jobs update rara-feed --region "$REGION" --project oute-rara \
+     --update-secrets "BRIGHTDATA_TOKEN=brightdata-token:latest" \
+     --update-env-vars "SCRAPE_PROVIDER=brightdata,BRIGHTDATA_ZONE=web_unlocker1"
+   ```
+
+3. **Flip the blocked sources** (data change, no redeploy) — driven by the coverage
+   query above:
+
+   ```sql
+   UPDATE feed_sources SET fetch_strategy='unlocker'
+   WHERE source_type='html' AND name IN ('Mistral', 'Cursor');  -- whichever are blocked
+   ```
+
+4. Re-run and confirm those sources now report `fetch_status='full'`.
+
+## Follow-up (still open)
+
+- **Runtime-block check**: run each `html` source from Cloud Run egress and use the
+  `fetch_status` coverage query to decide which to flip to `unlocker`.

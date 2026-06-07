@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -273,6 +274,59 @@ func TestValidateFetchTarget(t *testing.T) {
 	}
 }
 
+func TestUnlockerPayload(t *testing.T) {
+	b, err := unlockerPayload("web_unlocker1", "https://mistral.ai/news")
+	if err != nil {
+		t.Fatalf("unlockerPayload: %v", err)
+	}
+	var m map[string]string
+	if err := json.Unmarshal(b, &m); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if m["zone"] != "web_unlocker1" {
+		t.Errorf("zone = %q", m["zone"])
+	}
+	if m["url"] != "https://mistral.ai/news" {
+		t.Errorf("url = %q", m["url"])
+	}
+	if m["format"] != "raw" {
+		t.Errorf("format = %q, want raw", m["format"])
+	}
+}
+
+func TestRoutingFetcher(t *testing.T) {
+	ctx := context.Background()
+	httpF := newMockFetcher()
+	httpF.bodies["u"] = []byte("HTTP")
+	unlF := newMockFetcher()
+	unlF.bodies["u"] = []byte("UNLOCKER")
+
+	r := &routingFetcher{http: httpF, unlocker: unlF}
+	for _, c := range []struct{ strategy, want string }{
+		{"unlocker", "UNLOCKER"},
+		{"http", "HTTP"},
+		{"", "HTTP"},
+	} {
+		got, err := r.Fetch(ctx, "u", c.strategy)
+		if err != nil {
+			t.Fatalf("strategy %q: %v", c.strategy, err)
+		}
+		if string(got) != c.want {
+			t.Errorf("strategy %q routed to %q, want %q", c.strategy, got, c.want)
+		}
+	}
+
+	// With no unlocker configured, 'unlocker' must fall back to the http tier.
+	r2 := &routingFetcher{http: httpF, unlocker: nil}
+	got, err := r2.Fetch(ctx, "u", "unlocker")
+	if err != nil {
+		t.Fatalf("fallback: %v", err)
+	}
+	if string(got) != "HTTP" {
+		t.Errorf("nil unlocker should fall back to http, got %q", got)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Mocks
 // ---------------------------------------------------------------------------
@@ -315,19 +369,27 @@ func (m *MockDatabase) SaveItem(ctx context.Context, it NewsItem) error {
 
 // MockFetcher returns preconfigured bytes per URL, or a per-URL error. calls counts
 // fetches per URL so tests can assert that a never-succeeding full-text URL is not
-// re-fetched on every run.
+// re-fetched on every run; strat records the last fetch_strategy seen per URL so tests
+// can assert discover threads the source's strategy down to the fetcher.
 type MockFetcher struct {
 	bodies map[string][]byte
 	errs   map[string]error
 	calls  map[string]int
+	strat  map[string]string
 }
 
 func newMockFetcher() *MockFetcher {
-	return &MockFetcher{bodies: make(map[string][]byte), errs: make(map[string]error), calls: make(map[string]int)}
+	return &MockFetcher{
+		bodies: make(map[string][]byte),
+		errs:   make(map[string]error),
+		calls:  make(map[string]int),
+		strat:  make(map[string]string),
+	}
 }
 
-func (f *MockFetcher) Fetch(ctx context.Context, url string) ([]byte, error) {
+func (f *MockFetcher) Fetch(ctx context.Context, url, strategy string) ([]byte, error) {
 	f.calls[url]++
+	f.strat[url] = strategy
 	if err, ok := f.errs[url]; ok {
 		return nil, err
 	}
@@ -711,5 +773,34 @@ func TestBatchAgeFilterBeforeCap(t *testing.T) {
 		if _, ok := h.get(u); !ok {
 			t.Errorf("fresh item %q missing", u)
 		}
+	}
+}
+
+// discover threads the source's fetch_strategy down to the fetcher, so a source marked
+// 'unlocker' is dispatched to the Bright Data tier in production.
+func TestBatchRoutesStrategyToFetcher(t *testing.T) {
+	src := FeedSource{ID: 7, Name: "Mistral", SourceType: "html",
+		Endpoint: "https://mistral.ai/news", Cls: "b-mistral", FetchStrategy: "unlocker"}
+	h := NewFeedHarness(t).WithSource(src).WithFetch(src.Endpoint, jsonLDFixture)
+	if err := h.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if got := h.fetch.strat[src.Endpoint]; got != "unlocker" {
+		t.Errorf("discover passed strategy %q to fetcher, want unlocker", got)
+	}
+}
+
+func TestUnlockerSourceCount(t *testing.T) {
+	sources := []FeedSource{
+		{Name: "OpenAI", FetchStrategy: "http"},
+		{Name: "Mistral", FetchStrategy: "unlocker"},
+		{Name: "Cursor", FetchStrategy: "unlocker"},
+		{Name: "GitHub", FetchStrategy: ""},
+	}
+	if got := unlockerSourceCount(sources); got != 2 {
+		t.Errorf("unlockerSourceCount = %d, want 2", got)
+	}
+	if got := unlockerSourceCount(nil); got != 0 {
+		t.Errorf("unlockerSourceCount(nil) = %d, want 0", got)
 	}
 }
