@@ -61,6 +61,21 @@ Produces **high-quality transcripts in the audio's native language** for the vid
 
 ---
 
+### 🧪 rara-distill
+Curates the **raw transcripts** produced by scribe into **knowledge documents ready for RAG ingestion**, using a Fabric-style library of editable Markdown patterns. Reads `transcripts`, writes its own `distillations` table. The **Kura** "second brain" (separate project) consumes `distillations` later to build its own RAG — total isolation: distill never calls Kura.
+
+- **Engine**: pluggable via `CURATE_ENGINE` — `gemini` (default), `claude` or `groq`
+- **Curation**: Fabric-style **patterns** + optional **contexts** + **strategies** + **sessions** (pattern chains), all Markdown embedded via `go:embed`
+- **Output**: per `(source, recipe)` — human `content` (Markdown) **plus** queryable `structured` and a `doc_context` for Contextual Retrieval, in a single LLM pass ("compile once")
+- **Tables**: `distillations` (own); reads `transcripts`, `channel_videos`, `playlist_videos`
+- **Uniqueness**: `UNIQUE(source_key, COALESCE(session_patterns, pattern))` — idempotent; reprocesses when the transcript or the recipe changes (dual hash)
+- **Runtime**: GCP Cloud Run Job (daily, after scribe)
+- **Status**: ✅ Production
+
+[README →](./rara-distill/README.md) | [DEPLOY →](./rara-distill/DEPLOY.md)
+
+---
+
 ### 🔮 rara-pulse *(coming soon)*
 ### 🌊 rara-stream *(coming soon)*
 
@@ -90,6 +105,8 @@ See [INFRASTRUCTURE.md](./INFRASTRUCTURE.md) for the full layout and [ARCHITECTU
 | `shelf-oauth-client-id` | rara-shelf (OAuth Web app client) |
 | `shelf-oauth-client-secret` | rara-shelf |
 | `shelf-oauth-refresh-token` | rara-shelf (scope: youtube.readonly) |
+| `gemini-api-key` | rara-distill (curation LLM; default engine) |
+| `anthropic-api-key` / `groq-api-key` | rara-distill (only if `CURATE_ENGINE` switched) |
 
 > **rara-scribe does not use Secret Manager.** It runs locally and reads `DATABASE_URL` and
 > `GROQ_API_KEY` from `~/.rara-scribe/.env`. The old `groq-api-key` and `yt-dlp-cookies`
@@ -115,11 +132,14 @@ rara/
 │   ├── ci.yml              # Code quality + tests (rara-harvest)
 │   ├── ci-shelf.yml        # Code quality + tests (rara-shelf)
 │   ├── ci-scribe.yml       # Code quality + tests (rara-scribe)
+│   ├── ci-distill.yml      # Code quality + tests (rara-distill)
 │   ├── database.yml        # Migrations (rara-harvest)
 │   ├── database-shelf.yml  # Migrations (rara-shelf)
 │   ├── database-scribe.yml # Migrations (rara-scribe)
+│   ├── database-distill.yml# Migrations (rara-distill)
 │   ├── deploy.yml          # Cloud Run deploy (rara-harvest)
-│   └── deploy-shelf.yml    # Cloud Run deploy (rara-shelf)
+│   ├── deploy-shelf.yml    # Cloud Run deploy (rara-shelf)
+│   └── deploy-distill.yml  # Cloud Run deploy (rara-distill)
 │                           # (no deploy-scribe.yml — scribe runs locally)
 ├── rara-harvest/           # YouTube channel video harvester (Cloud Run)
 │   ├── main.go
@@ -141,6 +161,15 @@ rara/
 │   ├── migrations/
 │   │   ├── 001_initial_schema.sql
 │   │   └── 002_widen_language.sql
+│   └── ...
+├── rara-distill/           # Transcript curator → RAG material (Cloud Run)
+│   ├── main.go
+│   ├── main_test.go        # TDD tests, DistillHarness + mock LLM
+│   ├── patterns/           # Fabric-style curation library (go:embed)
+│   ├── contexts/
+│   ├── strategies/
+│   ├── migrations/
+│   │   └── 001_initial_schema.sql
 │   └── ...
 ├── ARCHITECTURE.md
 ├── INFRASTRUCTURE.md
@@ -192,6 +221,7 @@ harness.AssertVideoCount(1)
 | rara-harvest | Daily (Cloud Run) | ~$0.02 |
 | rara-shelf | Daily (Cloud Run) | ~$0.02 |
 | rara-scribe | Daily (local Mac) | $0 compute + Groq ASR (~$0.111/h of audio) |
+| rara-distill | Daily (Cloud Run) | ~$0.02 compute + curation LLM (per transcript, cheap on Gemini Flash) |
 | Cloud Build | Per deploy | ~$0.00 (free tier) |
 | Neon DB | Always-on | ~$0.00 (free tier) |
 

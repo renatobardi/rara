@@ -1,0 +1,879 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
+)
+
+// ---------------------------------------------------------------------------
+// Pure helpers
+// ---------------------------------------------------------------------------
+
+func TestSplitCSV(t *testing.T) {
+	cases := map[string][]string{
+		"":                           nil,
+		"extract_wisdom":             {"extract_wisdom"},
+		"summary,extract_wisdom":     {"summary", "extract_wisdom"},
+		" summary , extract_wisdom ": {"summary", "extract_wisdom"},
+		"a,,b,":                      {"a", "b"},
+	}
+	for in, want := range cases {
+		got := splitCSV(in)
+		if len(got) != len(want) {
+			t.Errorf("splitCSV(%q) = %v, want %v", in, got, want)
+			continue
+		}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Errorf("splitCSV(%q)[%d] = %q, want %q", in, i, got[i], want[i])
+			}
+		}
+	}
+}
+
+func TestParseRetryAfter(t *testing.T) {
+	cases := map[string]time.Duration{
+		"":     0,
+		"  ":   0,
+		"3":    3 * time.Second,
+		"0.05": 50 * time.Millisecond,
+		"-1":   0,
+		"soon": 0,
+	}
+	for in, want := range cases {
+		if got := parseRetryAfter(in); got != want {
+			t.Errorf("parseRetryAfter(%q) = %v, want %v", in, got, want)
+		}
+	}
+}
+
+func TestTruncate(t *testing.T) {
+	if got := truncate("short", 500); got != "short" {
+		t.Errorf("truncate short = %q, want unchanged", got)
+	}
+	if got := truncate("abcdef", 3); got != "abc…" {
+		t.Errorf("truncate = %q, want abc…", got)
+	}
+	if got := truncate("áéíóú", 2); got != "áé…" {
+		t.Errorf("truncate multibyte = %q, want áé…", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// parseCuration: native JSON, fenced JSON, malformed (graceful + visible)
+// ---------------------------------------------------------------------------
+
+func TestParseCurationNativeObject(t *testing.T) {
+	raw := `{"content_markdown":"# Note","doc_context":"A talk about X.","structured":{"concepts":["x"],"insights":["do x"]}}`
+	got := parseCuration(raw)
+	if got.Status != structOK {
+		t.Errorf("status = %q, want %q", got.Status, structOK)
+	}
+	if got.Content != "# Note" {
+		t.Errorf("content = %q", got.Content)
+	}
+	if got.DocContext != "A talk about X." {
+		t.Errorf("doc_context = %q", got.DocContext)
+	}
+	if len(got.Structured.Concepts) != 1 || got.Structured.Concepts[0] != "x" {
+		t.Errorf("structured.concepts = %v", got.Structured.Concepts)
+	}
+}
+
+func TestParseCurationFencedBlock(t *testing.T) {
+	raw := "Here you go:\n```json\n{\"content_markdown\":\"# N\",\"doc_context\":\"d\",\"structured\":{\"insights\":[\"i\"]}}\n```\nthanks"
+	got := parseCuration(raw)
+	if got.Status != structOK {
+		t.Errorf("status = %q, want ok (fenced should be recovered)", got.Status)
+	}
+	if got.Content != "# N" {
+		t.Errorf("content = %q", got.Content)
+	}
+}
+
+func TestParseCurationEmptyStructured(t *testing.T) {
+	raw := `{"content_markdown":"# N","doc_context":"d","structured":{}}`
+	got := parseCuration(raw)
+	if got.Status != structEmpty {
+		t.Errorf("status = %q, want %q", got.Status, structEmpty)
+	}
+	if got.Content != "# N" {
+		t.Errorf("content = %q, want preserved", got.Content)
+	}
+}
+
+func TestParseCurationMalformedPreservesText(t *testing.T) {
+	raw := "totally not json, just prose"
+	got := parseCuration(raw)
+	if got.Status != structParseFailed {
+		t.Errorf("status = %q, want %q", got.Status, structParseFailed)
+	}
+	if got.Content != raw {
+		t.Errorf("content = %q, want raw preserved", got.Content)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Recipe hashing: every chain stage (not just the last) affects the hash
+// ---------------------------------------------------------------------------
+
+func TestHashRecipeChangesWithFirstStage(t *testing.T) {
+	base := hashRecipe([][]byte{[]byte("summary-v1"), []byte("wisdom")}, nil, nil, "gemini/x")
+	editFirst := hashRecipe([][]byte{[]byte("summary-v2"), []byte("wisdom")}, nil, nil, "gemini/x")
+	if base == editFirst {
+		t.Error("editing the FIRST chain stage must change recipe hash (else silent skip in sessions)")
+	}
+	editLast := hashRecipe([][]byte{[]byte("summary-v1"), []byte("wisdom2")}, nil, nil, "gemini/x")
+	if base == editLast {
+		t.Error("editing the last chain stage must change recipe hash")
+	}
+}
+
+func TestHashRecipeChangesWithContextStrategyEngine(t *testing.T) {
+	base := hashRecipe([][]byte{[]byte("p")}, nil, nil, "gemini/x")
+	if base == hashRecipe([][]byte{[]byte("p")}, []byte("ctx"), nil, "gemini/x") {
+		t.Error("adding a context must change the hash")
+	}
+	if base == hashRecipe([][]byte{[]byte("p")}, nil, []byte("strat"), "gemini/x") {
+		t.Error("adding a strategy must change the hash")
+	}
+	if base == hashRecipe([][]byte{[]byte("p")}, nil, nil, "claude/y") {
+		t.Error("changing the engine must change the hash")
+	}
+}
+
+// TestHashRecipeChainOrderMatters: the same two patterns in a different order are a
+// different recipe (the chain is ordered).
+func TestHashRecipeChainOrderMatters(t *testing.T) {
+	ab := hashRecipe([][]byte{[]byte("a"), []byte("b")}, nil, nil, "e")
+	ba := hashRecipe([][]byte{[]byte("b"), []byte("a")}, nil, nil, "e")
+	if ab == ba {
+		t.Error("chain order must affect the recipe hash")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Recipe building from the embedded library
+// ---------------------------------------------------------------------------
+
+func TestNewRecipeLoadsEmbeddedAssets(t *testing.T) {
+	r, err := NewRecipe(Config{Patterns: "extract_wisdom", ContextName: "software-ai", StrategyName: "cot"}, "gemini/gemini-2.5-flash")
+	if err != nil {
+		t.Fatalf("NewRecipe: %v", err)
+	}
+	if len(r.Patterns) != 1 || r.Patterns[0] != "extract_wisdom" {
+		t.Errorf("patterns = %v", r.Patterns)
+	}
+	if r.RecipeSHA == "" {
+		t.Error("recipe sha empty")
+	}
+	prompt := r.buildSystemPrompt("extract_wisdom")
+	if !strings.Contains(prompt, "knowledge curator") {
+		t.Error("system prompt missing pattern body")
+	}
+	if !strings.Contains(prompt, "REFERENCE CONTEXT") || !strings.Contains(prompt, "Platform Engineering") {
+		t.Error("system prompt missing injected context")
+	}
+	if !strings.Contains(prompt, "Chain of Thought") {
+		t.Error("system prompt missing strategy wrapper")
+	}
+}
+
+func TestNewRecipeUnknownAssetsFail(t *testing.T) {
+	if _, err := NewRecipe(Config{Patterns: "nope"}, "e"); err == nil {
+		t.Error("expected error for unknown pattern")
+	}
+	if _, err := NewRecipe(Config{Patterns: "summary", ContextName: "nope"}, "e"); err == nil {
+		t.Error("expected error for unknown context")
+	}
+	if _, err := NewRecipe(Config{Patterns: "summary", StrategyName: "nope"}, "e"); err == nil {
+		t.Error("expected error for unknown strategy")
+	}
+}
+
+func TestNewRecipeDefaultsToExtractWisdom(t *testing.T) {
+	r, err := NewRecipe(Config{Patterns: ""}, "e")
+	if err != nil {
+		t.Fatalf("NewRecipe: %v", err)
+	}
+	if len(r.Patterns) != 1 || r.Patterns[0] != "extract_wisdom" {
+		t.Errorf("default patterns = %v, want [extract_wisdom]", r.Patterns)
+	}
+}
+
+func TestRecipeKeyPattern(t *testing.T) {
+	single, _ := NewRecipe(Config{Patterns: "extract_wisdom"}, "e")
+	if single.keyPattern() != "extract_wisdom" || single.sessionPatterns() != "" {
+		t.Errorf("single: key=%q session=%q", single.keyPattern(), single.sessionPatterns())
+	}
+	session, _ := NewRecipe(Config{Patterns: "summary,extract_wisdom"}, "e")
+	if session.keyPattern() != "summary,extract_wisdom" || session.sessionPatterns() != "summary,extract_wisdom" {
+		t.Errorf("session: key=%q session=%q", session.keyPattern(), session.sessionPatterns())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Engine factory
+// ---------------------------------------------------------------------------
+
+func TestNewCuratorFactory(t *testing.T) {
+	// Default ("") and explicit gemini both select Gemini, given a key.
+	for _, engine := range []string{"", engineGemini} {
+		cur, name, err := NewCurator(Config{Engine: engine, GeminiAPIKey: "k"})
+		if err != nil || cur == nil {
+			t.Fatalf("engine %q: err=%v cur=%v", engine, err, cur)
+		}
+		if name != "gemini/"+defaultGeminiModel {
+			t.Errorf("engine %q: name = %q", engine, name)
+		}
+	}
+
+	cur, name, err := NewCurator(Config{Engine: engineClaude, AnthropicAPIKey: "k"})
+	if err != nil || cur == nil || name != "claude/"+defaultClaudeModel {
+		t.Fatalf("claude: err=%v cur=%v name=%q", err, cur, name)
+	}
+
+	cur, name, err = NewCurator(Config{Engine: engineGroq, GroqAPIKey: "k"})
+	if err != nil || cur == nil || name != "groq/"+defaultGroqModel {
+		t.Fatalf("groq: err=%v cur=%v name=%q", err, cur, name)
+	}
+
+	// Model override is reflected in the engine string.
+	_, name, _ = NewCurator(Config{Engine: engineGemini, GeminiAPIKey: "k", GeminiModel: "gemini-2.5-pro"})
+	if name != "gemini/gemini-2.5-pro" {
+		t.Errorf("model override name = %q", name)
+	}
+
+	// Missing keys → error.
+	if _, _, err := NewCurator(Config{Engine: engineGemini}); err == nil {
+		t.Error("expected error for gemini without key")
+	}
+	if _, _, err := NewCurator(Config{Engine: engineClaude}); err == nil {
+		t.Error("expected error for claude without key")
+	}
+	if _, _, err := NewCurator(Config{Engine: engineGroq}); err == nil {
+		t.Error("expected error for groq without key")
+	}
+	// Unknown engine → error.
+	if _, _, err := NewCurator(Config{Engine: "ollama", GeminiAPIKey: "k"}); err == nil {
+		t.Error("expected error for unknown engine")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Shared HTTP retry (429/5xx) via the Groq curator over httptest
+// ---------------------------------------------------------------------------
+
+func TestCurateRetriesOn429ThenSucceeds(t *testing.T) {
+	curateRetryBase = time.Millisecond // shrink backoff for the test
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if atomic.AddInt32(&calls, 1) == 1 {
+			w.Header().Set("Retry-After", "0.01")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"error":"rate limit"}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"content_markdown\":\"ok\"}"}}]}`))
+	}))
+	defer srv.Close()
+
+	g := &groqCurator{apiKey: "k", model: "m", endpoint: srv.URL}
+	out, err := g.Curate(context.Background(), "sys", "in")
+	if err != nil {
+		t.Fatalf("expected success after retry, got %v", err)
+	}
+	if !strings.Contains(out, "content_markdown") {
+		t.Errorf("unexpected output: %q", out)
+	}
+	if got := atomic.LoadInt32(&calls); got != 2 {
+		t.Errorf("expected 2 calls (429 then 200), got %d", got)
+	}
+}
+
+func TestCurateGivesUpAfterMaxRetries(t *testing.T) {
+	curateRetryBase = time.Millisecond
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer srv.Close()
+
+	g := &groqCurator{apiKey: "k", model: "m", endpoint: srv.URL}
+	if _, err := g.Curate(context.Background(), "s", "i"); err == nil {
+		t.Fatal("expected error after exhausting retries")
+	}
+	if got, want := atomic.LoadInt32(&calls), int32(maxCurateRetries+1); got != want {
+		t.Errorf("expected %d calls, got %d", want, got)
+	}
+}
+
+func TestCurateDoesNotRetryOn4xx(t *testing.T) {
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		w.WriteHeader(http.StatusBadRequest)
+	}))
+	defer srv.Close()
+
+	g := &groqCurator{apiKey: "k", model: "m", endpoint: srv.URL}
+	if _, err := g.Curate(context.Background(), "s", "i"); err == nil {
+		t.Fatal("expected error for 400")
+	}
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Errorf("400 must not be retried; expected 1 call, got %d", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Mocks
+// ---------------------------------------------------------------------------
+
+// mockTranscript mirrors a row of the upstream transcripts table.
+type mockTranscript struct {
+	doc    SourceDoc
+	status string // done | failed | empty
+}
+
+// MockDatabase mirrors the SQL contract: PendingDocs filters to done/non-empty
+// transcripts and skips a doc only when a fresh distillation exists for the recipe
+// (done, same source hash, same recipe hash); SaveDistillation upserts on
+// (source_key, COALESCE(session_patterns, pattern)).
+type MockDatabase struct {
+	transcripts   []mockTranscript
+	distillations map[string]Distillation // keyed by source_key|keyPattern
+	attempts      map[string]int
+	saveErr       error
+	pendingErr    error
+}
+
+func newMockDatabase() *MockDatabase {
+	return &MockDatabase{
+		distillations: make(map[string]Distillation),
+		attempts:      make(map[string]int),
+	}
+}
+
+func distKey(sourceKey, keyPattern string) string { return sourceKey + "|" + keyPattern }
+
+func (m *MockDatabase) PendingDocs(ctx context.Context, limit int, keyPattern, recipeSHA string) ([]SourceDoc, error) {
+	if m.pendingErr != nil {
+		return nil, m.pendingErr
+	}
+	var fresh, retry []SourceDoc
+	for _, mt := range m.transcripts {
+		if mt.status != statusDone || strings.TrimSpace(mt.doc.Transcript) == "" {
+			continue // mirror: only done, non-empty transcripts are eligible
+		}
+		key := distKey(mt.doc.SourceKey, keyPattern)
+		d, ok := m.distillations[key]
+		switch {
+		case ok && d.Status == statusDone && d.SourceSHA256 == mt.doc.SourceSHA256 && d.RecipeSHA256 == recipeSHA:
+			continue // fresh: nothing changed
+		case ok && d.Status == statusFailed && m.attempts[key] >= maxFailedAttempts:
+			continue // exhausted retries
+		case ok && d.Status == statusFailed:
+			retry = append(retry, mt.doc)
+		default:
+			fresh = append(fresh, mt.doc) // never distilled, or stale source/recipe
+		}
+	}
+	out := append(fresh, retry...)
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+func (m *MockDatabase) SaveDistillation(ctx context.Context, d Distillation) error {
+	if m.saveErr != nil {
+		return m.saveErr
+	}
+	keyPattern := d.Pattern
+	if d.SessionPatterns != "" {
+		keyPattern = d.SessionPatterns
+	}
+	key := distKey(d.SourceKey, keyPattern)
+	m.distillations[key] = d
+	if d.Status == statusFailed {
+		m.attempts[key]++
+	} else {
+		m.attempts[key] = 0
+	}
+	return nil
+}
+
+// curateCall records one invocation of the mock curator.
+type curateCall struct {
+	system string
+	input  string
+}
+
+// MockCurator returns preconfigured responses in call order and records every call,
+// so tests can assert prompt assembly and session chaining.
+type MockCurator struct {
+	results []string
+	calls   []curateCall
+	err     error
+	idx     int
+}
+
+func (m *MockCurator) Curate(ctx context.Context, system, input string) (string, error) {
+	if m.err != nil {
+		return "", m.err
+	}
+	m.calls = append(m.calls, curateCall{system: system, input: input})
+	r := ""
+	if m.idx < len(m.results) {
+		r = m.results[m.idx]
+	} else if len(m.results) > 0 {
+		r = m.results[len(m.results)-1]
+	}
+	m.idx++
+	return r, nil
+}
+
+// curationJSON builds a valid model response with the given markdown and one concept.
+func curationJSON(markdown, docContext string) string {
+	b, _ := json.Marshal(CurationOutput{
+		ContentMarkdown: markdown,
+		DocContext:      docContext,
+		Structured:      Structured{Concepts: []string{"c"}, Insights: []string{"i"}},
+	})
+	return string(b)
+}
+
+// ---------------------------------------------------------------------------
+// Fluent harness
+// ---------------------------------------------------------------------------
+
+type DistillHarness struct {
+	t          *testing.T
+	db         *MockDatabase
+	cur        *MockCurator
+	recipe     Recipe
+	engineName string
+}
+
+func NewDistillHarness(t *testing.T) *DistillHarness {
+	t.Helper()
+	r, err := NewRecipe(Config{Patterns: "extract_wisdom"}, "mock/engine")
+	if err != nil {
+		t.Fatalf("recipe: %v", err)
+	}
+	return &DistillHarness{
+		t:          t,
+		db:         newMockDatabase(),
+		cur:        &MockCurator{},
+		recipe:     r,
+		engineName: "mock/engine",
+	}
+}
+
+// WithRecipe overrides the recipe (e.g. to test context/strategy/sessions).
+func (h *DistillHarness) WithRecipe(cfg Config) *DistillHarness {
+	r, err := NewRecipe(cfg, h.engineName)
+	if err != nil {
+		h.t.Fatalf("recipe: %v", err)
+	}
+	h.recipe = r
+	return h
+}
+
+// WithTranscript registers an upstream transcript (done, non-empty by default).
+func (h *DistillHarness) WithTranscript(doc SourceDoc) *DistillHarness {
+	h.db.transcripts = append(h.db.transcripts, mockTranscript{doc: doc, status: statusDone})
+	return h
+}
+
+// WithRawTranscript registers an upstream transcript with an explicit status.
+func (h *DistillHarness) WithRawTranscript(doc SourceDoc, status string) *DistillHarness {
+	h.db.transcripts = append(h.db.transcripts, mockTranscript{doc: doc, status: status})
+	return h
+}
+
+// WithResponses sets the curator responses returned in call order.
+func (h *DistillHarness) WithResponses(responses ...string) *DistillHarness {
+	h.cur.results = append(h.cur.results, responses...)
+	return h
+}
+
+func (h *DistillHarness) WithCurateError(err error) *DistillHarness {
+	h.cur.err = err
+	return h
+}
+
+func (h *DistillHarness) Execute(ctx context.Context, limit int) error {
+	return runBatch(ctx, h.db, h.cur, h.engineName, h.recipe, limit)
+}
+
+func (h *DistillHarness) get(sourceKey string) (Distillation, bool) {
+	d, ok := h.db.distillations[distKey(sourceKey, h.recipe.keyPattern())]
+	return d, ok
+}
+
+func (h *DistillHarness) AssertCount(expected int) {
+	h.t.Helper()
+	if len(h.db.distillations) != expected {
+		h.t.Errorf("distillation count = %d, want %d", len(h.db.distillations), expected)
+	}
+}
+
+func (h *DistillHarness) AssertStatus(sourceKey, status string) {
+	h.t.Helper()
+	d, ok := h.get(sourceKey)
+	if !ok {
+		h.t.Errorf("distillation %q not found", sourceKey)
+		return
+	}
+	if d.Status != status {
+		h.t.Errorf("distillation %q status = %q, want %q", sourceKey, d.Status, status)
+	}
+}
+
+func (h *DistillHarness) AssertStructuredStatus(sourceKey, status string) {
+	h.t.Helper()
+	d, ok := h.get(sourceKey)
+	if !ok {
+		h.t.Errorf("distillation %q not found", sourceKey)
+		return
+	}
+	if d.StructuredStatus != status {
+		h.t.Errorf("distillation %q structured_status = %q, want %q", sourceKey, d.StructuredStatus, status)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Harness tests
+// ---------------------------------------------------------------------------
+
+// TestHappyPath: a single transcript is curated into one distillation with the
+// structured payload and doc_context persisted.
+func TestHappyPath(t *testing.T) {
+	h := NewDistillHarness(t).
+		WithTranscript(SourceDoc{YoutubeVideoID: "vid1", SourceType: "youtube", SourceRef: videoRef("vid1"), SourceKey: "vid1", Title: "Talk", Transcript: "hello world", SourceSHA256: "h1"}).
+		WithResponses(curationJSON("# Curated note", "A talk about hello."))
+
+	if err := h.Execute(context.Background(), 25); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	h.AssertCount(1)
+	h.AssertStatus("vid1", statusDone)
+	h.AssertStructuredStatus("vid1", structOK)
+
+	d, _ := h.get("vid1")
+	if d.Content != "# Curated note" {
+		t.Errorf("content = %q", d.Content)
+	}
+	if d.DocContext != "A talk about hello." {
+		t.Errorf("doc_context = %q", d.DocContext)
+	}
+	var s Structured
+	if err := json.Unmarshal(d.Structured, &s); err != nil || len(s.Concepts) != 1 {
+		t.Errorf("structured persisted wrong: %s (err %v)", d.Structured, err)
+	}
+	if d.Engine != "mock/engine" {
+		t.Errorf("engine = %q", d.Engine)
+	}
+}
+
+// TestOnlyDoneNonEmptyAreQueued: failed/empty transcripts are excluded from the
+// work queue.
+func TestOnlyDoneNonEmptyAreQueued(t *testing.T) {
+	h := NewDistillHarness(t).
+		WithRawTranscript(SourceDoc{SourceKey: "failed1", SourceType: "youtube", SourceRef: "r", Transcript: "x", SourceSHA256: "h"}, statusFailed).
+		WithRawTranscript(SourceDoc{SourceKey: "empty1", SourceType: "youtube", SourceRef: "r", Transcript: "", SourceSHA256: "h"}, statusDone).
+		WithTranscript(SourceDoc{SourceKey: "good1", SourceType: "youtube", SourceRef: "r", Transcript: "real", SourceSHA256: "h"}).
+		WithResponses(curationJSON("# ok", "d"))
+
+	if err := h.Execute(context.Background(), 25); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	h.AssertCount(1) // only good1
+	h.AssertStatus("good1", statusDone)
+}
+
+// TestMalformedOutputIsVisibleNotFatal: a non-JSON model response keeps the row
+// (status done) but flags structured_status=parse_failed and keeps content='{}'.
+func TestMalformedOutputIsVisibleNotFatal(t *testing.T) {
+	h := NewDistillHarness(t).
+		WithTranscript(SourceDoc{SourceKey: "vid1", SourceType: "youtube", SourceRef: "r", Transcript: "x", SourceSHA256: "h"}).
+		WithResponses("oops, not json")
+
+	if err := h.Execute(context.Background(), 25); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	h.AssertStatus("vid1", statusDone)
+	h.AssertStructuredStatus("vid1", structParseFailed)
+	d, _ := h.get("vid1")
+	if string(d.Structured) != "{}" {
+		t.Errorf("structured = %s, want {}", d.Structured)
+	}
+	if d.Content != "oops, not json" {
+		t.Errorf("content = %q, want raw text preserved", d.Content)
+	}
+}
+
+// TestCurateErrorMarksFailed: a curator error is captured and the row is failed.
+func TestCurateErrorMarksFailed(t *testing.T) {
+	h := NewDistillHarness(t).
+		WithTranscript(SourceDoc{SourceKey: "vid1", SourceType: "youtube", SourceRef: "r", Transcript: "x", SourceSHA256: "h"}).
+		WithCurateError(errors.New("gemini 500"))
+
+	if err := h.Execute(context.Background(), 25); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	h.AssertStatus("vid1", statusFailed)
+	d, _ := h.get("vid1")
+	if d.Error == "" {
+		t.Error("expected failed distillation to carry an error")
+	}
+}
+
+// TestContextInjectedIntoPrompt: the configured context appears in the system prompt.
+func TestContextInjectedIntoPrompt(t *testing.T) {
+	h := NewDistillHarness(t).
+		WithRecipe(Config{Patterns: "extract_wisdom", ContextName: "software-ai"}).
+		WithTranscript(SourceDoc{SourceKey: "vid1", SourceType: "youtube", SourceRef: "r", Transcript: "x", SourceSHA256: "h"}).
+		WithResponses(curationJSON("# ok", "d"))
+
+	if err := h.Execute(context.Background(), 25); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if len(h.cur.calls) != 1 {
+		t.Fatalf("expected 1 curate call, got %d", len(h.cur.calls))
+	}
+	if !strings.Contains(h.cur.calls[0].system, "Platform Engineering") {
+		t.Error("context not injected into system prompt")
+	}
+}
+
+// TestStrategyWrapsPattern: the configured strategy appears in the system prompt.
+func TestStrategyWrapsPattern(t *testing.T) {
+	h := NewDistillHarness(t).
+		WithRecipe(Config{Patterns: "extract_wisdom", StrategyName: "cot"}).
+		WithTranscript(SourceDoc{SourceKey: "vid1", SourceType: "youtube", SourceRef: "r", Transcript: "x", SourceSHA256: "h"}).
+		WithResponses(curationJSON("# ok", "d"))
+
+	if err := h.Execute(context.Background(), 25); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if !strings.Contains(h.cur.calls[0].system, "Chain of Thought") {
+		t.Error("strategy not applied to system prompt")
+	}
+}
+
+// TestSessionChainsOutput: a two-pattern session runs twice and the second stage's
+// input contains the first stage's output.
+func TestSessionChainsOutput(t *testing.T) {
+	h := NewDistillHarness(t).
+		WithRecipe(Config{Patterns: "summary,extract_wisdom"}).
+		WithTranscript(SourceDoc{SourceKey: "vid1", SourceType: "youtube", SourceRef: "r", Transcript: "original transcript", SourceSHA256: "h"}).
+		WithResponses(
+			curationJSON("STAGE-ONE-SUMMARY", "d1"),
+			curationJSON("# Final note", "d2"),
+		)
+
+	if err := h.Execute(context.Background(), 25); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if len(h.cur.calls) != 2 {
+		t.Fatalf("expected 2 curate calls (session), got %d", len(h.cur.calls))
+	}
+	// Stage 2 sees the original transcript AND stage 1's output.
+	if !strings.Contains(h.cur.calls[1].input, "original transcript") ||
+		!strings.Contains(h.cur.calls[1].input, "STAGE-ONE-SUMMARY") {
+		t.Errorf("stage 2 input missing prior output: %q", h.cur.calls[1].input)
+	}
+	// The final distillation uses stage 2's output.
+	d, _ := h.get("vid1")
+	if d.Content != "# Final note" {
+		t.Errorf("final content = %q, want stage-2 output", d.Content)
+	}
+	if d.SessionPatterns != "summary,extract_wisdom" {
+		t.Errorf("session_patterns = %q", d.SessionPatterns)
+	}
+}
+
+// TestSessionDoesNotCollideWithStandalone: a standalone extract_wisdom and a session
+// ending in extract_wisdom over the same source are two distinct rows.
+func TestSessionDoesNotCollideWithStandalone(t *testing.T) {
+	doc := SourceDoc{SourceKey: "vid1", SourceType: "youtube", SourceRef: "r", Transcript: "x", SourceSHA256: "h"}
+	db := newMockDatabase()
+
+	// Standalone first.
+	hStandalone := &DistillHarness{t: t, db: db, cur: &MockCurator{results: []string{curationJSON("# a", "d")}}, engineName: "mock/engine"}
+	hStandalone.recipe, _ = NewRecipe(Config{Patterns: "extract_wisdom"}, "mock/engine")
+	hStandalone.db.transcripts = []mockTranscript{{doc: doc, status: statusDone}}
+	if err := hStandalone.Execute(context.Background(), 25); err != nil {
+		t.Fatalf("standalone execute: %v", err)
+	}
+
+	// Session over the same source, sharing the DB.
+	hSession := &DistillHarness{t: t, db: db, cur: &MockCurator{results: []string{curationJSON("# s1", "d"), curationJSON("# s2", "d")}}, engineName: "mock/engine"}
+	hSession.recipe, _ = NewRecipe(Config{Patterns: "summary,extract_wisdom"}, "mock/engine")
+	if err := hSession.Execute(context.Background(), 25); err != nil {
+		t.Fatalf("session execute: %v", err)
+	}
+
+	if len(db.distillations) != 2 {
+		t.Errorf("want 2 distinct rows (standalone + session), got %d", len(db.distillations))
+	}
+}
+
+// TestUrlSourceNoDuplicate: a url source (NULL youtube id) dedups by source_key — a
+// re-run replaces the row rather than creating a second one.
+func TestUrlSourceNoDuplicate(t *testing.T) {
+	doc := SourceDoc{YoutubeVideoID: "", SourceType: "url", SourceRef: "https://x/y", SourceKey: "https://x/y", Transcript: "x", SourceSHA256: "h"}
+	h := NewDistillHarness(t).
+		WithTranscript(doc).
+		WithResponses(curationJSON("# a", "d"), curationJSON("# b", "d"))
+
+	if err := h.Execute(context.Background(), 25); err != nil {
+		t.Fatalf("first execute: %v", err)
+	}
+	// Force a re-run by clearing the recipe match (simulate stale): bump the saved
+	// row's recipe so it is pending again, then re-run.
+	key := distKey(doc.SourceKey, h.recipe.keyPattern())
+	saved := h.db.distillations[key]
+	saved.RecipeSHA256 = "old"
+	h.db.distillations[key] = saved
+
+	if err := h.Execute(context.Background(), 25); err != nil {
+		t.Fatalf("second execute: %v", err)
+	}
+	if len(h.db.distillations) != 1 {
+		t.Errorf("url source duplicated: want 1 row, got %d", len(h.db.distillations))
+	}
+}
+
+// TestIdempotentReRun: re-running with the same recipe and unchanged source does not
+// re-curate (PendingDocs excludes the fresh row).
+func TestIdempotentReRun(t *testing.T) {
+	h := NewDistillHarness(t).
+		WithTranscript(SourceDoc{SourceKey: "vid1", SourceType: "youtube", SourceRef: "r", Transcript: "x", SourceSHA256: "h1"}).
+		WithResponses(curationJSON("# ok", "d"))
+
+	ctx := context.Background()
+	if err := h.Execute(ctx, 25); err != nil {
+		t.Fatalf("first run: %v", err)
+	}
+	h.AssertCount(1)
+	callsAfterFirst := len(h.cur.calls)
+
+	if err := h.Execute(ctx, 25); err != nil {
+		t.Fatalf("second run: %v", err)
+	}
+	h.AssertCount(1)
+	if len(h.cur.calls) != callsAfterFirst {
+		t.Errorf("idempotent re-run should not re-curate: calls %d -> %d", callsAfterFirst, len(h.cur.calls))
+	}
+}
+
+// TestRecipeChangeReprocesses: changing the recipe (e.g. editing a pattern, swapping
+// engine) re-curates the same unchanged transcript.
+func TestRecipeChangeReprocesses(t *testing.T) {
+	doc := SourceDoc{SourceKey: "vid1", SourceType: "youtube", SourceRef: "r", Transcript: "x", SourceSHA256: "h1"}
+	h := NewDistillHarness(t).
+		WithTranscript(doc).
+		WithResponses(curationJSON("# v1", "d"))
+
+	ctx := context.Background()
+	if err := h.Execute(ctx, 25); err != nil {
+		t.Fatalf("first run: %v", err)
+	}
+	callsAfterFirst := len(h.cur.calls)
+
+	// Simulate a recipe edit: a different recipe hash for the same patterns.
+	h.recipe.RecipeSHA = "different-recipe-hash"
+	h.cur.results = append(h.cur.results, curationJSON("# v2", "d"))
+
+	pending, err := h.db.PendingDocs(ctx, 25, h.recipe.keyPattern(), h.recipe.RecipeSHA)
+	if err != nil {
+		t.Fatalf("pending: %v", err)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("recipe change should make the doc pending again, got %d", len(pending))
+	}
+	if err := h.Execute(ctx, 25); err != nil {
+		t.Fatalf("second run: %v", err)
+	}
+	if len(h.cur.calls) <= callsAfterFirst {
+		t.Error("recipe change must re-curate")
+	}
+	h.AssertCount(1) // still one row, updated in place
+}
+
+// TestSourceChangeReprocesses: an updated transcript (new source hash) re-curates.
+func TestSourceChangeReprocesses(t *testing.T) {
+	h := NewDistillHarness(t).
+		WithTranscript(SourceDoc{SourceKey: "vid1", SourceType: "youtube", SourceRef: "r", Transcript: "old", SourceSHA256: "h1"}).
+		WithResponses(curationJSON("# ok", "d"), curationJSON("# ok2", "d"))
+
+	ctx := context.Background()
+	if err := h.Execute(ctx, 25); err != nil {
+		t.Fatalf("first run: %v", err)
+	}
+	callsAfterFirst := len(h.cur.calls)
+
+	// The transcript changed upstream.
+	h.db.transcripts[0].doc.Transcript = "new content"
+	h.db.transcripts[0].doc.SourceSHA256 = "h2"
+
+	if err := h.Execute(ctx, 25); err != nil {
+		t.Fatalf("second run: %v", err)
+	}
+	if len(h.cur.calls) <= callsAfterFirst {
+		t.Error("source change must re-curate")
+	}
+}
+
+// TestExhaustedFailureLeavesBacklog: a doc that fails every run is retried up to the
+// cap and then drops out of the pending set.
+func TestExhaustedFailureLeavesBacklog(t *testing.T) {
+	h := NewDistillHarness(t).
+		WithTranscript(SourceDoc{SourceKey: "perma", SourceType: "youtube", SourceRef: "r", Transcript: "x", SourceSHA256: "h"}).
+		WithCurateError(errors.New("permanent boom"))
+
+	ctx := context.Background()
+	for i := 0; i < maxFailedAttempts; i++ {
+		if err := h.Execute(ctx, 25); err != nil {
+			t.Fatalf("run %d: %v", i, err)
+		}
+	}
+	h.AssertStatus("perma", statusFailed)
+
+	pending, err := h.db.PendingDocs(ctx, 25, h.recipe.keyPattern(), h.recipe.RecipeSHA)
+	if err != nil {
+		t.Fatalf("pending: %v", err)
+	}
+	if len(pending) != 0 {
+		t.Errorf("exhausted doc still pending: %+v", pending)
+	}
+}
+
+// TestBatchSizeLimit: only `limit` docs are processed per run.
+func TestBatchSizeLimit(t *testing.T) {
+	h := NewDistillHarness(t)
+	for _, id := range []string{"a", "b", "c"} {
+		h.WithTranscript(SourceDoc{SourceKey: id, SourceType: "youtube", SourceRef: "r", Transcript: "x", SourceSHA256: "h"})
+	}
+	h.WithResponses(curationJSON("# ok", "d"))
+
+	if err := h.Execute(context.Background(), 2); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	h.AssertCount(2) // limited to 2 of 3
+}
+
+// videoRef is a tiny helper mirroring the canonical watch URL for test readability.
+func videoRef(id string) string { return "https://www.youtube.com/watch?v=" + id }
