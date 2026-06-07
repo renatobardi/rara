@@ -326,7 +326,7 @@ func NewTranscriber(cfg Config) (Transcriber, string, error) {
 		}
 		return local, whisperCppModelName, nil
 	default:
-		return nil, "", fmt.Errorf("unknown TRANSCRIBE_ENGINE %q (use %q, %q or %q)", cfg.Engine, engineGroq, engineGemini, engineLocal)
+		return nil, "", fmt.Errorf("unknown engine %q (set TRANSCRIBE_ENGINE or --engine to %q, %q or %q)", cfg.Engine, engineGroq, engineGemini, engineLocal)
 	}
 }
 
@@ -1142,6 +1142,9 @@ func main() {
 	flag.Parse()
 
 	cfg := applyOverrides(loadConfig(), *engineFlag, *limitFlag)
+	if *engineFlag != "" || *limitFlag > 0 {
+		log.Printf("CLI overrides applied: engine=%s limit=%d (this run only)\n", cfg.Engine, cfg.BatchSize)
+	}
 	if cfg.DatabaseURL == "" {
 		log.Fatalf("DATABASE_URL environment variable is required")
 	}

@@ -55,6 +55,9 @@ tail -f ~/Library/Logs/rara-scribe/error.log
 # engine and process 20 videos when Groq's daily quota is exhausted:
 bash ~/.rara-scribe/run.sh --engine local --limit 20
 
+# Single manual run from the repo (uses .env defaults)
+cd rara-scribe && make run
+
 # Ad-hoc single source
 cd rara-scribe && source ~/.rara-scribe/.env && ./scribe-job --source "https://youtu.be/VIDEO_ID"
 
