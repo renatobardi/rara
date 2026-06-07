@@ -39,7 +39,7 @@ Catalogs the **owner's own YouTube playlists** (public, unlisted, and private) a
 - **Tables**: `playlists`, `playlist_videos`
 - **Uniqueness**: composite `UNIQUE(playlist_id, youtube_video_id)` — same video can be in many playlists
 - **Runtime**: GCP Cloud Run Job (daily)
-- **Tests**: 12/12 passing
+- **Tests**: 13/13 passing
 - **Status**: ✅ Production — collecting daily
 
 [README →](./rara-shelf/README.md) | [DEPLOY →](./rara-shelf/DEPLOY.md)
@@ -49,12 +49,12 @@ Catalogs the **owner's own YouTube playlists** (public, unlisted, and private) a
 ### ✍️ rara-scribe
 Produces **high-quality transcripts in the audio's native language** for the videos collected by harvest (`channel_videos`) and shelf (`playlist_videos`), replacing YouTube's weak auto-captions with specialist ASR.
 
-- **Engine**: Groq `whisper-large-v3` (default) or Gemini `gemini-2.5-flash` — pluggable via `TRANSCRIBE_ENGINE`
-- **Pipeline**: `yt-dlp` (download) → `ffmpeg` (16 kHz mono, 10-min chunks) → ASR → stitched transcript
+- **Engine**: pluggable via `TRANSCRIBE_ENGINE` — `local` (default in prod: whisper.cpp large-v3, Metal, ~11× real-time), `groq` (whisper-large-v3, fallback per-chunk), `gemini` (gemini-2.5-flash)
+- **Pipeline**: `yt-dlp` (download) → `ffmpeg` (16 kHz mono, 60-min chunks for local / 10-min for API) → ASR → stitched transcript
 - **Tables**: `transcripts`, `transcript_segments`
 - **Uniqueness**: global `UNIQUE(youtube_video_id)` — idempotent, resumes the backlog
 - **Runtime**: **local Mac via `launchd`** (daily at 02:00) — residential IPs bypass YouTube's datacenter bot-check
-- **Tests**: 13/13 passing
+- **Tests**: 29/29 passing
 - **Status**: ✅ Production — running locally
 
 [README →](./rara-scribe/README.md) | [DEPLOY →](./rara-scribe/DEPLOY.md)
@@ -84,10 +84,11 @@ Collects **AI/ML news** from RSS feeds, Hacker News (Algolia) and HTML pages int
 - **Sources**: RSS 2.0 **and** Atom (auto-detected), Hacker News by search term, HTML via a generic **JSON-LD** extractor (v1)
 - **Resilience**: a source that fails (block / JS / timeout) is skipped — never brings down the batch; idempotent re-runs via `content_sha256` staleness
 - **Full-text**: best-effort article fetch when the feed ships no inline body; `fetch_status` (`full|excerpt|failed`) records coverage
+- **Fetcher seam**: 3-tier transport — `HTTPFetcher` (default) | `UnlockerFetcher` (Bright Data Web Unlocker, opt-in via `SCRAPE_PROVIDER=brightdata`) | `routingFetcher` dispatcher — per-source `fetch_strategy` column routes each URL to the right tier
 - **Tables**: `news_items` (own) + `feed_sources` (work queue, seeded); deduped on `url` (HN text posts keyed by permalink)
-- **Runtime**: GCP Cloud Run Job (daily, **before** the distill news lane). No LLM secrets. Optional Bright Data Web Unlocker tier (`SCRAPE_PROVIDER=brightdata`) for sources flagged `fetch_strategy='unlocker'`; direct HTTP by default
-- **Tests**: 27/27 passing (mock Fetcher + MockDatabase + fixtures, zero I/O)
-- **Status**: 🚧 In review
+- **Runtime**: GCP Cloud Run Job (daily, **before** the distill news lane). Only `database-url` secret needed in v1; Bright Data unlocker is an opt-in follow-up
+- **Tests**: 28/28 passing (MockFetcher with call/strategy tracking + MockDatabase, zero I/O)
+- **Status**: ✅ Production
 
 [README →](./rara-feed/README.md) | [DEPLOY →](./rara-feed/DEPLOY.md)
 
@@ -118,13 +119,13 @@ See [INFRASTRUCTURE.md](./INFRASTRUCTURE.md) for the full layout and [ARCHITECTU
 | Secret | Used by |
 |--------|---------|
 | `youtube-api-key` | rara-harvest (YouTube Data API v3) |
-| `database-url` | rara-harvest + rara-shelf (Neon connection string) |
+| `database-url` | rara-harvest, rara-shelf, rara-feed, rara-distill (shared Neon connection string) |
 | `shelf-oauth-client-id` | rara-shelf (OAuth Web app client) |
 | `shelf-oauth-client-secret` | rara-shelf |
 | `shelf-oauth-refresh-token` | rara-shelf (scope: youtube.readonly) |
-| `database-url` | + rara-feed (same Neon connection string) |
 | `gemini-api-key` | rara-distill (curation LLM; default engine — both lanes) |
 | `anthropic-api-key` / `groq-api-key` | rara-distill (only if `CURATE_ENGINE` switched) |
+| `brightdata-token` | rara-feed (only if `SCRAPE_PROVIDER=brightdata`; unlocker tier — not in v1) |
 
 > **rara-scribe does not use Secret Manager.** It runs locally and reads `DATABASE_URL` and
 > `GROQ_API_KEY` from `~/.rara-scribe/.env`. The old `groq-api-key` and `yt-dlp-cookies`
@@ -171,17 +172,18 @@ rara/
 │   └── ...
 ├── rara-shelf/             # Personal playlist cataloger (Cloud Run)
 │   ├── main.go
-│   ├── main_test.go        # 12 TDD tests, ShelfHarness
+│   ├── main_test.go        # 13 TDD tests, ShelfHarness
 │   ├── migrations/
 │   │   └── 001_initial_schema.sql
 │   └── ...
 ├── rara-scribe/            # Transcriber (local Mac via launchd)
 │   ├── main.go
-│   ├── main_test.go        # 13 TDD tests, ScribeHarness
+│   ├── main_test.go        # 29 TDD tests, ScribeHarness
 │   ├── install-local.sh    # launchd installer (no Dockerfile/deploy)
 │   ├── migrations/
 │   │   ├── 001_initial_schema.sql
-│   │   └── 002_widen_language.sql
+│   │   ├── 002_widen_language.sql
+│   │   └── 003_attempt_count.sql
 │   └── ...
 ├── rara-distill/           # Transcript curator → RAG material (Cloud Run)
 │   ├── main.go
@@ -195,9 +197,10 @@ rara/
 │   └── ...
 ├── rara-feed/              # AI/ML news collector → news_items (Cloud Run)
 │   ├── main.go
-│   ├── main_test.go        # 27 TDD tests, FeedHarness + mock Fetcher
+│   ├── main_test.go        # 28 TDD tests, FeedHarness + MockFetcher
 │   ├── migrations/
-│   │   └── 001_initial_schema.sql
+│   │   ├── 001_initial_schema.sql  # schema + seed (feed_sources, news_items)
+│   │   └── 002_semi_rss.sql        # SemiAnalysis html → rss
 │   └── ...
 ├── ARCHITECTURE.md
 ├── INFRASTRUCTURE.md

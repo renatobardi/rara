@@ -76,17 +76,18 @@ divergence in the system.
 | | rara-harvest | rara-shelf | rara-scribe | rara-distill |
 |---|---|---|---|---|
 | **Purpose** | latest videos from external channels | catalog owner's playlists | transcribe collected videos | curate transcripts → RAG material |
-| **Auth** | API key (public) | OAuth refresh token (private) | none (Groq API key for ASR) | LLM API key (Gemini/Claude/Groq) |
-| **External I/O** | YouTube Data API | YouTube Data API | yt-dlp, ffmpeg, Groq/Gemini | Gemini/Claude/Groq HTTP |
+| **Auth** | API key (public) | OAuth refresh token (private) | whisper.cpp (local); Groq key (fallback) | LLM API key (Gemini/Claude/Groq) |
+| **External I/O** | YouTube Data API | YouTube Data API | yt-dlp, ffmpeg, whisper.cpp/Groq | Gemini/Claude/Groq HTTP |
 | **Tables** | `target_channels`, `channel_videos` | `playlists`, `playlist_videos` | `transcripts`, `transcript_segments` | `distillations` |
 | **Runtime** | Cloud Run Job | Cloud Run Job | local Mac (launchd, 02:00) | Cloud Run Job |
 | **Pagination** | single recency page (latest N) | full `nextPageToken` loop | n/a (queue from DB) | n/a (queue from DB) |
-| **Tests** | 14 | 12 | 13 | 35 |
+| **Tests** | 14 | 13 | 29 | 35 |
 
 A fifth agent, **rara-feed**, collects AI/ML **news** (RSS / Hacker News / HTML → `news_items`,
-plus its `feed_sources` work queue) with no external auth (direct HTTP, plus an optional
-Bright Data unlocker tier per `fetch_strategy`) as a Cloud Run Job; 27 tests. It is the
-upstream for distill's news lane (see step 5 of the data flow).
+plus its `feed_sources` work queue) as a Cloud Run Job; 28 tests. Transport is a 3-tier
+`Fetcher` interface: direct HTTP (default) | Bright Data Web Unlocker (opt-in, `SCRAPE_PROVIDER=brightdata`) |
+routing dispatcher — selected per source via the `fetch_strategy` column in `feed_sources`.
+rara-feed is the upstream for distill's news lane (see step 5 of the data flow).
 
 ## Shared conventions
 
