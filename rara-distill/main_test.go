@@ -149,16 +149,34 @@ func TestHashRecipeChangesWithContextStrategy(t *testing.T) {
 	}
 }
 
-// TestHashRecipeIgnoresEngine: the engine/model is provenance, not a staleness trigger.
-// Swapping models or providers must NOT change the recipe hash (that's the whole point —
-// it keeps a good corpus from being re-distilled just because we changed the model).
-func TestHashRecipeIgnoresEngine(t *testing.T) {
-	// hashRecipe no longer takes an engine argument at all; this test documents the
-	// guarantee that the recipe is independent of which model runs it.
-	a := hashRecipe([][]byte{[]byte("p")}, nil, nil)
-	b := hashRecipe([][]byte{[]byte("p")}, nil, nil)
-	if a != b {
-		t.Error("recipe hash must be stable and independent of the engine")
+// TestHashRecipeGolden pins the exact output of the hashing scheme for a fixed input.
+// The corpus's staleness detection depends on this hash being STABLE: if a refactor
+// silently changes how the bytes are combined, every stored recipe_sha256 would stop
+// matching and the whole corpus would be re-distilled. This known-answer test fails
+// loudly if the scheme drifts. (Value computed as sha256("p" + 0x00 + "ctx:" + "strat:").)
+func TestHashRecipeGolden(t *testing.T) {
+	const want = "f928010e9d27eb393dda903318795444d7e4620e4fb71196ea9e3a711fc7bd8c"
+	if got := hashRecipe([][]byte{[]byte("p")}, nil, nil); got != want {
+		t.Errorf("hash scheme changed: got %s want %s — this invalidates every stored "+
+			"recipe_sha256; intentional? then re-stamp the corpus and update this constant", got, want)
+	}
+}
+
+// TestRecipeHashIndependentOfEngine asserts the production guarantee that two recipes
+// built identically (same pattern/context/strategy) hash the same regardless of which
+// engine/model will run them. NewRecipe no longer even takes an engine, so the property
+// is structural — this guards against it being reintroduced.
+func TestRecipeHashIndependentOfEngine(t *testing.T) {
+	a, err := NewRecipe(Config{Patterns: "extract_wisdom", GeminiModel: "gemini-2.5-pro"})
+	if err != nil {
+		t.Fatalf("NewRecipe a: %v", err)
+	}
+	b, err := NewRecipe(Config{Patterns: "extract_wisdom", Engine: "claude", ClaudeModel: "claude-opus-4-8"})
+	if err != nil {
+		t.Fatalf("NewRecipe b: %v", err)
+	}
+	if a.RecipeSHA != b.RecipeSHA {
+		t.Errorf("recipe hash must not depend on engine/model: %s != %s", a.RecipeSHA, b.RecipeSHA)
 	}
 }
 
