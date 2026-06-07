@@ -1276,11 +1276,26 @@ func main() {
 	}
 	defer cleanup()
 
-	connectCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	pool, err := pgxpool.New(connectCtx, cfg.DatabaseURL)
-	if err == nil {
-		err = pool.Ping(connectCtx) // force + validate a real connection at startup
+	poolCfg, err := pgxpool.ParseConfig(cfg.DatabaseURL)
+	if err != nil {
+		log.Fatalf("Failed to parse DATABASE_URL: %v", err)
 	}
+	// A single-worker batch needs only a connection or two; cap the pool to stay
+	// well under Neon's connection limit, and recycle idle connections before
+	// Neon's pooler drops them (a long video can sit minutes between saves).
+	poolCfg.MaxConns = 2
+	poolCfg.MaxConnIdleTime = 5 * time.Minute
+	poolCfg.MaxConnLifetime = 30 * time.Minute
+
+	// context.Background() for the pool's lifetime; the 15s ctx only bounds the
+	// startup Ping (which forces and validates a real connection, so bad
+	// creds/host still fail fast). pgxpool.New does not retain the ctx.
+	pool, err := pgxpool.NewWithConfig(context.Background(), poolCfg)
+	if err != nil {
+		log.Fatalf("Failed to create database pool: %v", err)
+	}
+	connectCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	err = pool.Ping(connectCtx)
 	cancel()
 	if err != nil {
 		log.Fatalf("Failed to connect to database: %v", err)
