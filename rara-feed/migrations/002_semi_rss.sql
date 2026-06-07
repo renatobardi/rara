@@ -12,14 +12,16 @@ SET source_type = 'rss',
 WHERE name = 'SemiAnalysis'
   AND source_type = 'html';
 
--- Verify
+-- Verify: both source_type and endpoint must reflect the new values.
 DO $$
 BEGIN
     IF NOT EXISTS (
         SELECT 1 FROM feed_sources
-        WHERE name = 'SemiAnalysis' AND source_type = 'rss'
+        WHERE name        = 'SemiAnalysis'
+          AND source_type = 'rss'
+          AND endpoint    = 'https://semianalysis.com/feed/'
     ) THEN
-        RAISE EXCEPTION 'Migration 002: SemiAnalysis rss update not applied';
+        RAISE EXCEPTION 'Migration 002: SemiAnalysis rss update not applied or endpoint mismatch';
     END IF;
 END $$;
 
