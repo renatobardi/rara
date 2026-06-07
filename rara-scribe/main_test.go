@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -55,6 +56,13 @@ func TestExtractVideoID(t *testing.T) {
 func TestVideoURL(t *testing.T) {
 	if got, want := videoURL("abc123"), "https://www.youtube.com/watch?v=abc123"; got != want {
 		t.Errorf("videoURL = %q, want %q", got, want)
+	}
+}
+
+func TestChunkProgressLabel(t *testing.T) {
+	got := chunkProgressLabel("8osZn55uK7c", 3, 4)
+	if !strings.Contains(got, "8osZn55uK7c") || !strings.Contains(got, "3/4") {
+		t.Errorf("chunkProgressLabel = %q, want id and 3/4", got)
 	}
 }
 
