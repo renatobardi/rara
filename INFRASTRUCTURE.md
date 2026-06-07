@@ -1,7 +1,8 @@
 # Infrastructure — rara ecosystem
 
-The concrete infrastructure behind the three agents: GCP (for the Cloud Run collectors), the
-shared Neon database, GitHub Actions CI/CD, and the local Mac setup (for the scribe transcriber).
+The concrete infrastructure behind the four agents: GCP (for the Cloud Run agents harvest,
+shelf and distill), the shared Neon database, GitHub Actions CI/CD, and the local Mac setup
+(for the scribe transcriber).
 
 > Placeholders `<PROJECT_ID>` and `<REGION>` are stored in GitHub Variables `GCP_PROJECT_ID` and
 > `GCP_REGION`; real values are not committed.
@@ -13,10 +14,11 @@ shared Neon database, GitHub Actions CI/CD, and the local Mac setup (for the scr
 | rara-harvest | GCP Cloud Run Job | daily | GCP datacenter |
 | rara-shelf | GCP Cloud Run Job | daily | GCP datacenter |
 | rara-scribe | macOS `launchd` agent | daily at 02:00 | owner's Mac (residential IP) |
+| rara-distill | GCP Cloud Run Job | daily, after scribe | GCP datacenter |
 
-All three read/write the **same Neon database**, using isolated tables.
+All four read/write the **same Neon database**, using isolated tables.
 
-## GCP (collectors: harvest + shelf)
+## GCP (Cloud Run: harvest + shelf + distill)
 
 | Component | Value |
 |-----------|-------|
@@ -39,9 +41,13 @@ Images are built **amd64** (the early arm64 default was a bug, corrected in
 | `shelf-oauth-client-id` | rara-shelf |
 | `shelf-oauth-client-secret` | rara-shelf |
 | `shelf-oauth-refresh-token` | rara-shelf |
+| `gemini-api-key` | rara-distill (curation LLM, default engine) |
+| `anthropic-api-key` / `groq-api-key` | rara-distill (only if `CURATE_ENGINE` is switched) |
 
 The runtime SA (compute default) and `rara-deployer` hold `secretmanager.secretAccessor` at
-project level, so adding a new secret needs no IAM change.
+project level, so adding a new secret needs no IAM change — but the secret value itself must
+exist **before** the first deploy. The first distill deploy failed precisely because
+`gemini-api-key` had not been created yet; the job mounts it at boot via `--set-secrets`.
 
 ## Local Mac (transcriber: scribe)
 
@@ -89,7 +95,7 @@ merge to `main`). Storage usage is tiny — the full transcript backlog is well 
 
 ## CI/CD (GitHub Actions)
 
-Eight workflows, path-filtered per agent. See [.github/workflows/README.md](./.github/workflows/README.md)
+Eleven workflows, path-filtered per agent. See [.github/workflows/README.md](./.github/workflows/README.md)
 for details.
 
 | Workflow | Agent | Purpose |
@@ -97,11 +103,14 @@ for details.
 | `ci.yml` | harvest | fmt/vet/test/security |
 | `ci-shelf.yml` | shelf | fmt/vet/test/security |
 | `ci-scribe.yml` | scribe | fmt/vet/test/security |
+| `ci-distill.yml` | distill | fmt/vet/test/security |
 | `database.yml` | harvest | migrations |
 | `database-shelf.yml` | shelf | migrations |
 | `database-scribe.yml` | scribe | migrations |
+| `database-distill.yml` | distill | migrations |
 | `deploy.yml` | harvest | Cloud Run deploy |
 | `deploy-shelf.yml` | shelf | Cloud Run deploy |
+| `deploy-distill.yml` | distill | Cloud Run deploy |
 
 scribe has **no deploy workflow** — it is installed and updated locally with
 `make build && bash install-local.sh`.
@@ -135,7 +144,8 @@ gcloud iam workload-identity-pools providers describe <PROVIDER> \
 |------|------|
 | GitHub Actions | Free (public repo) |
 | Neon DB | Free tier |
-| Cloud Run (harvest + shelf) | ~$0.02/month each |
+| Cloud Run (harvest + shelf + distill) | ~$0.02/month each |
 | Cloud Build | Free tier |
 | rara-scribe compute | $0 (local Mac) |
 | Groq ASR | ~$0.111/h of audio (backlog is a one-time few tens of dollars) |
+| Curation LLM (distill) | per transcript; cheap on Gemini Flash, more on `gemini-2.5-pro` |

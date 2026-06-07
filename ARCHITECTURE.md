@@ -1,12 +1,13 @@
 # Architecture — rara ecosystem
 
-How the three production agents fit together, the data they share, and why each one runs where
+How the four production agents fit together, the data they share, and why each one runs where
 it does.
 
 ## Overview
 
 `rara` is a set of independent Go agents that share a single Neon PostgreSQL database but own
-isolated tables. Two agents **collect** video references; one agent **transcribes** them.
+isolated tables. Two agents **collect** video references, one **transcribes** them, and one
+**curates** the transcripts into RAG-ready knowledge documents.
 
 ```
                       ┌──────────────────────────────────────────┐
@@ -100,12 +101,14 @@ divergence in the system.
 
 ## Technology stack
 
-- **Go 1.23+** — minimal, fast, single binary per agent.
+- **Go 1.26** — minimal, fast, single binary per agent.
 - **Neon PostgreSQL** — serverless Postgres, free tier, shared across agents.
-- **GCP Cloud Run Jobs** — harvest + shelf runtime (amd64 images via Cloud Build).
+- **GCP Cloud Run Jobs** — harvest + shelf + distill runtime (amd64 images via Cloud Build).
 - **launchd** — scribe runtime on macOS (daily schedule, local logs).
 - **yt-dlp + ffmpeg** — audio acquisition and resampling for scribe.
-- **Groq `whisper-large-v3` / Gemini `gemini-2.5-flash`** — pluggable ASR engines.
+- **Groq `whisper-large-v3` / Gemini `gemini-2.5-flash`** — pluggable ASR engines (scribe).
+- **Gemini / Claude / Groq** — pluggable curation LLMs (distill), via each provider's
+  native JSON mode.
 
 See [INFRASTRUCTURE.md](./INFRASTRUCTURE.md) for the concrete infrastructure layout (GCP, WIF,
 secrets, local Mac setup).
