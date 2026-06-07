@@ -121,6 +121,7 @@ type MockDatabase struct {
 	pending     []VideoRef
 	transcripts map[string]Transcript // keyed by dedup key
 	segments    map[string][]Segment
+	attempts    map[string]int // failed-attempt counter per dedup key
 	saveErr     error
 	pendingErr  error
 }
@@ -129,6 +130,7 @@ func newMockDatabase() *MockDatabase {
 	return &MockDatabase{
 		transcripts: make(map[string]Transcript),
 		segments:    make(map[string][]Segment),
+		attempts:    make(map[string]int),
 	}
 }
 
@@ -145,15 +147,20 @@ func (m *MockDatabase) PendingVideos(ctx context.Context, limit int) ([]VideoRef
 	if m.pendingErr != nil {
 		return nil, m.pendingErr
 	}
-	// Mirror the SQL contract: exclude 'done', and order never-attempted videos
-	// before previously-failed ones so failures can't starve the backlog.
+	// Mirror the SQL contract: exclude 'done', exclude failed videos past the
+	// retry cap, and order never-attempted videos before previously-failed ones
+	// so failures can't starve the backlog.
 	var fresh, retry []VideoRef
 	for _, ref := range m.pending {
-		existing, ok := m.transcripts["yt:"+ref.YoutubeVideoID]
+		key := "yt:" + ref.YoutubeVideoID
+		existing, ok := m.transcripts[key]
 		switch {
 		case ok && existing.Status == "done":
 			continue
 		case ok && existing.Status == "failed":
+			if m.attempts[key] >= maxFailedAttempts {
+				continue // exhausted retries — drop from the backlog
+			}
 			retry = append(retry, ref)
 		default:
 			fresh = append(fresh, ref)
@@ -173,6 +180,12 @@ func (m *MockDatabase) SaveTranscript(ctx context.Context, t Transcript, segs []
 	key := dedupKey(t)
 	m.transcripts[key] = t // upsert: replaces, mirroring ON CONFLICT DO UPDATE
 	m.segments[key] = segs // replace segments
+	// Mirror attempt_count: increment on failure, reset on success.
+	if t.Status == "failed" {
+		m.attempts[key]++
+	} else {
+		m.attempts[key] = 0
+	}
 	return nil
 }
 
@@ -234,6 +247,27 @@ func TestPendingVideosPrioritizesFreshOverFailed(t *testing.T) {
 	}
 	if len(got) != 1 || got[0].YoutubeVideoID != "fresh1" {
 		t.Errorf("PendingVideos = %+v, want only [fresh1]", got)
+	}
+}
+
+// TestPendingVideosExcludesExhaustedFailures: a video that has failed
+// maxFailedAttempts times drops out of the backlog, so permanently-broken
+// videos (deleted/private) stop being retried every run.
+func TestPendingVideosExcludesExhaustedFailures(t *testing.T) {
+	m := newMockDatabase()
+	m.pending = []VideoRef{{YoutubeVideoID: "perma", URL: videoURL("perma")}}
+	m.transcripts["yt:perma"] = Transcript{YoutubeVideoID: "perma", Status: "failed"}
+
+	// One short of the cap: still retried.
+	m.attempts["yt:perma"] = maxFailedAttempts - 1
+	if got, _ := m.PendingVideos(context.Background(), 25); len(got) != 1 {
+		t.Fatalf("below cap: want video retried, got %+v", got)
+	}
+
+	// At the cap: excluded.
+	m.attempts["yt:perma"] = maxFailedAttempts
+	if got, _ := m.PendingVideos(context.Background(), 25); len(got) != 0 {
+		t.Errorf("at cap: want video excluded, got %+v", got)
 	}
 }
 
@@ -457,6 +491,32 @@ func TestHarnessIdempotentReRun(t *testing.T) {
 		t.Fatalf("second run failed: %v", err)
 	}
 	h.AssertTranscriptCount(1) // still 1 — already done, excluded from pending
+}
+
+// TestHarnessExhaustedFailureLeavesBacklog: a video that fails every run is
+// retried up to the cap and then drops out of the pending set entirely.
+func TestHarnessExhaustedFailureLeavesBacklog(t *testing.T) {
+	url := videoURL("perma")
+	h := NewScribeHarness(t).
+		WithPendingVideos(VideoRef{YoutubeVideoID: "perma", URL: url}).
+		WithAcquireError(errors.New("yt-dlp: Video unavailable"))
+
+	ctx := context.Background()
+	for i := 0; i < maxFailedAttempts; i++ {
+		if err := h.Execute(ctx, 25); err != nil {
+			t.Fatalf("run %d failed: %v", i, err)
+		}
+	}
+	h.AssertStatus("perma", "failed")
+
+	// Retries exhausted → no longer pending.
+	pending, err := h.db.PendingVideos(ctx, 25)
+	if err != nil {
+		t.Fatalf("PendingVideos: %v", err)
+	}
+	if len(pending) != 0 {
+		t.Errorf("exhausted video still pending: %+v", pending)
+	}
 }
 
 // TestHarnessBatchSizeLimit: only `limit` videos are processed per run.

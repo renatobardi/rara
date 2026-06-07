@@ -117,22 +117,24 @@ func (m *MockDatabase) FetchActiveChannels(ctx context.Context) ([]Channel, erro
 	return m.channels, nil
 }
 
-// MockUpsertVideo simulates database insert with idempotency.
+// MockUpsertVideo simulates database insert with idempotency, returning whether
+// a new row was created (false = already existed), mirroring the real
+// upsertVideo's (bool, error) contract.
 //
 // This mirrors the real schema exactly: youtube_video_id is globally UNIQUE
 // and upsertVideo uses ON CONFLICT (youtube_video_id) DO NOTHING. A video is
 // therefore keyed by its video ID alone — not by channel — so the same video
 // is stored once regardless of how many channels reference it.
-func (m *MockDatabase) UpsertVideo(ctx context.Context, v Video) error {
+func (m *MockDatabase) UpsertVideo(ctx context.Context, v Video) (bool, error) {
 	if m.err != nil {
-		return m.err
+		return false, m.err
 	}
 	key := videoKey(v.VideoID)
 	if _, exists := m.videos[key]; exists {
-		return nil // Idempotent: video already exists (global UNIQUE)
+		return false, nil // Idempotent: video already exists (global UNIQUE)
 	}
 	m.videos[key] = v
-	return nil
+	return true, nil
 }
 
 // videoKey creates the unique key for a video, matching the DB's
@@ -166,18 +168,24 @@ func TestMockDatabaseIdempotency(t *testing.T) {
 
 	ctx := context.Background()
 
-	err1 := db.UpsertVideo(ctx, video)
+	isNew, err1 := db.UpsertVideo(ctx, video)
 	if err1 != nil {
 		t.Fatalf("First upsert failed: %v", err1)
+	}
+	if !isNew {
+		t.Error("First upsert: want isNew=true")
 	}
 
 	if len(db.videos) != 1 {
 		t.Errorf("After first upsert: videos count = %d, want 1", len(db.videos))
 	}
 
-	err2 := db.UpsertVideo(ctx, video)
+	isNew, err2 := db.UpsertVideo(ctx, video)
 	if err2 != nil {
 		t.Fatalf("Second upsert failed: %v", err2)
+	}
+	if isNew {
+		t.Error("Second upsert: want isNew=false (already exists)")
 	}
 
 	if len(db.videos) != 1 {
@@ -200,7 +208,7 @@ func TestMockDatabaseMultipleVideos(t *testing.T) {
 	}
 
 	for _, v := range videos {
-		if err := db.UpsertVideo(ctx, v); err != nil {
+		if _, err := db.UpsertVideo(ctx, v); err != nil {
 			t.Fatalf("Failed to upsert video %s: %v", v.VideoID, err)
 		}
 	}
@@ -216,6 +224,8 @@ type ETLHarness struct {
 	channels      []Channel
 	channelVideos map[int][]PlaylistItem
 	t             *testing.T
+	inserted      int // new rows created across the run
+	skipped       int // rows that already existed (idempotent)
 }
 
 // NewETLHarness creates a new test harness
@@ -254,6 +264,9 @@ func (h *ETLHarness) Execute(ctx context.Context) error {
 		return nil
 	}
 
+	// Reset per-run counters so re-running Execute reports that run's outcome,
+	// mirroring processChannel's per-run inserted/skipped tallies.
+	h.inserted, h.skipped = 0, 0
 	for _, channel := range channels {
 		for _, video := range h.channelVideos[channel.ID] {
 			v := Video{
@@ -263,13 +276,34 @@ func (h *ETLHarness) Execute(ctx context.Context) error {
 				URL:         "https://www.youtube.com/watch?v=" + video.ContentDetails.VideoID,
 				PublishedAt: video.Snippet.PublishedAt,
 			}
-			if err := h.db.UpsertVideo(ctx, v); err != nil {
+			isNew, err := h.db.UpsertVideo(ctx, v)
+			if err != nil {
 				return err
+			}
+			if isNew {
+				h.inserted++
+			} else {
+				h.skipped++
 			}
 		}
 	}
 
 	return nil
+}
+
+// AssertInsertedCount verifies how many new rows the last Execute created.
+func (h *ETLHarness) AssertInsertedCount(expected int) {
+	if h.inserted != expected {
+		h.t.Errorf("inserted count = %d, want %d", h.inserted, expected)
+	}
+}
+
+// AssertSkippedCount verifies how many videos the last Execute skipped as
+// already-present (the bug: this used to be reported as inserted).
+func (h *ETLHarness) AssertSkippedCount(expected int) {
+	if h.skipped != expected {
+		h.t.Errorf("skipped count = %d, want %d", h.skipped, expected)
+	}
 }
 
 // AssertVideoCount verifies the number of videos stored
@@ -368,6 +402,32 @@ func TestETLHarnessIdempotentExecution(t *testing.T) {
 	}
 
 	harness.AssertVideoCount(1) // Still 1, not 2 (idempotent)
+}
+
+// TestETLHarnessReportsRealInsertedSkipped verifies the run reports accurate
+// inserted vs skipped counts. The first run inserts both videos; the second run
+// inserts nothing and skips both (the previous bug reported len(videos) as
+// "inserted/updated" regardless of what actually changed).
+func TestETLHarnessReportsRealInsertedSkipped(t *testing.T) {
+	harness := NewETLHarness(t).
+		WithChannels([]Channel{
+			{ID: 1, YoutubeChannelID: "UCchannel1", ChannelName: "Channel 1", Active: true},
+		}).
+		WithVideosForChannel(1, makePlaylistItem("vid1", "Video 1"), makePlaylistItem("vid2", "Video 2"))
+
+	ctx := context.Background()
+
+	if err := harness.Execute(ctx); err != nil {
+		t.Fatalf("First execution failed: %v", err)
+	}
+	harness.AssertInsertedCount(2)
+	harness.AssertSkippedCount(0)
+
+	if err := harness.Execute(ctx); err != nil {
+		t.Fatalf("Second execution failed: %v", err)
+	}
+	harness.AssertInsertedCount(0) // nothing new
+	harness.AssertSkippedCount(2)  // both already present
 }
 
 // TestETLHarnessEmptyChannels tests ETL with no channels
