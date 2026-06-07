@@ -1,163 +1,126 @@
-# Infrastructure Setup Complete ✅
+# Infrastructure — rara ecosystem
 
-Complete infrastructure setup for rara-harvest ecosystem.
+The concrete infrastructure behind the three agents: GCP (for the Cloud Run collectors), the
+shared Neon database, GitHub Actions CI/CD, and the local Mac setup (for the scribe transcriber).
 
-## What Was Implemented
+> Placeholders `<PROJECT_ID>` and `<REGION>` are stored in GitHub Variables `GCP_PROJECT_ID` and
+> `GCP_REGION`; real values are not committed.
 
-### 1. Database Migrations
-- **Location**: `rara-harvest/migrations/`
-- **Files**:
-  - `001_initial_schema.sql` - Creates `target_channels` and `channel_videos` tables
-  - `migrate.sh` - Migration runner (migrate, cleanup, reset)
-  - `validate.sh` - Schema validator
-  - `cleanup.sql` - Destructive cleanup script
-  - `seed.sql` - Test data seeding
+## Runtime topology
 
-**Status**: ✅ Neon DB Configured
-```
-Tables:
-  ✓ target_channels (YouTube channels)
-  ✓ channel_videos (Harvested videos)
+| Agent | Runtime | Trigger | Where |
+|-------|---------|---------|-------|
+| rara-harvest | GCP Cloud Run Job | daily | GCP datacenter |
+| rara-shelf | GCP Cloud Run Job | daily | GCP datacenter |
+| rara-scribe | macOS `launchd` agent | daily at 02:00 | owner's Mac (residential IP) |
 
-Indexes:
-  ✓ idx_channels_youtube_id
-  ✓ idx_videos_published_at
-  ✓ idx_videos_channel_id
-  ✓ idx_videos_youtube_id
-```
+All three read/write the **same Neon database**, using isolated tables.
 
-### 2. GitHub Actions CI/CD Pipeline
-- **Location**: `rara-harvest/.github/workflows/`
-- **Files**:
-  - `database.yml` - Database migrations + validation
-  - `ci.yml` - Code quality, security, Docker build
-  - `README.md` - Workflow documentation
+## GCP (collectors: harvest + shelf)
 
-**Jobs**:
-- Code Quality & Tests (go fmt, go vet, go test -race)
-- Security Scan (secrets, dependencies)
-- Docker Build (ARM64 image)
-- Database Validation (connection, migrations)
-- Health Checks
+| Component | Value |
+|-----------|-------|
+| Project | `<PROJECT_ID>` |
+| Region | `<REGION>` |
+| Artifact Registry | `<REGION>-docker.pkg.dev/<PROJECT_ID>/rara/` |
+| Deployer SA | `rara-deployer@<PROJECT_ID>.iam.gserviceaccount.com` |
+| Auth | Workload Identity Federation (no SA key files) |
+| Build | Cloud Build → amd64 images → Cloud Run Job |
 
-**Status**: ✅ Ready for CI/CD
+Images are built **amd64** (the early arm64 default was a bug, corrected in
+[rara-harvest/DEPLOY.md](./rara-harvest/DEPLOY.md)).
 
-### 3. Environment Setup
-**GitHub Secrets Configured** (Opção A):
-- ✅ NEON_HOST
-- ✅ NEON_PORT
-- ✅ NEON_DATABASE
-- ✅ NEON_USERNAME
-- ✅ NEON_PASSWORD
+### Secret Manager
 
-**Status**: ✅ All secrets in place
-
-## Architecture
-
-```
-rara/ (Ecosystem umbrella)
-├── rara-harvest/ (First agent - Production Ready)
-│   ├── main.go (193 lines)
-│   ├── main_test.go (13 comprehensive tests)
-│   ├── migrations/
-│   │   └── 001_initial_schema.sql
-│   ├── .github/workflows/
-│   │   ├── database.yml
-│   │   └── ci.yml
-│   ├── migrate.sh (runner)
-│   ├── validate.sh (validator)
-│   ├── cleanup.sql
-│   ├── seed.sql
-│   ├── Dockerfile (ARM64)
-│   └── deploy.sh (GCP Cloud Run)
-└── README.md (Ecosystem overview)
-```
-
-## Recent Commits
-
-| Commit | Message |
+| Secret | Used by |
 |--------|---------|
-| b76aa1f | feat: Add GitHub Actions CI/CD pipelines |
-| 77671b5 | feat: Add database migrations and management scripts |
-| b0d0800 | feat: Complete rara ecosystem architecture setup |
+| `youtube-api-key` | rara-harvest |
+| `database-url` | rara-harvest + rara-shelf |
+| `shelf-oauth-client-id` | rara-shelf |
+| `shelf-oauth-client-secret` | rara-shelf |
+| `shelf-oauth-refresh-token` | rara-shelf |
 
-## Next Steps
+The runtime SA (compute default) and `rara-deployer` hold `secretmanager.secretAccessor` at
+project level, so adding a new secret needs no IAM change.
 
-1. **Test Locally**
-   ```bash
-   export DATABASE_URL='postgresql://...'
-   cd rara-harvest
-   go run main.go
-   ```
+## Local Mac (transcriber: scribe)
 
-2. **Push & Test via GitHub Actions**
-   ```bash
-   git push origin main
-   # Workflows trigger automatically
-   ```
+rara-scribe is **not** on GCP. It is installed by `rara-scribe/install-local.sh`, which builds
+the binary, writes config, and registers a `launchd` agent.
 
-3. **Deploy to GCP**
-   ```bash
-   cd rara-harvest
-   ./deploy.sh
-   ```
+### On-disk layout
 
-## Status
+```
+~/.rara-scribe/
+  rara-scribe        # compiled binary
+  .env               # DATABASE_URL, GROQ_API_KEY, YT_DLP_BIN, FFMPEG_BIN, BATCH_SIZE
+  run.sh             # wrapper: exports Homebrew PATH, sources .env, execs the binary
+~/Library/LaunchAgents/com.rara.scribe.plist   # launchd job (daily 02:00)
+~/Library/Logs/rara-scribe/{output,error}.log  # logs
+```
 
-- ✅ TDD-built with 13 passing tests
-- ✅ Database schema ready (Neon DB)
-- ✅ CI/CD pipelines configured
-- ✅ Secrets configured
-- ✅ Docker build ready (ARM64)
-- ✅ GCP deployment scripts ready
-- ✅ Production-ready code
+### Why the wrapper exports PATH
 
-## Cost Analysis
+`launchd` runs with a minimal `PATH` that excludes `/opt/homebrew/bin`. yt-dlp needs to find
+`ffmpeg`/`ffprobe` at runtime, so `run.sh` exports `PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"`
+before exec. The binary paths in `.env` (`YT_DLP_BIN`, `FFMPEG_BIN`) are absolute for the same
+reason — no reliance on `$PATH` lookup.
 
-- GitHub Actions: **FREE** (2000 min/month, we use ~50 min/month)
-- Neon DB: **FREE** (500 MB free tier, estimated cost < $1/month)
-- GCP Cloud Run: **PAY-PER-EXECUTION** (~$0.02/month for daily harvest)
+### Secrets
 
-**Total Estimated Cost**: < $1/month ✅
+scribe reads `DATABASE_URL` and `GROQ_API_KEY` from `~/.rara-scribe/.env` (gitignored, never
+committed). It does **not** use GCP Secret Manager. The `groq-api-key` and `yt-dlp-cookies`
+secrets from its old Cloud Run deployment can be deleted — see
+[rara-scribe/DEPLOY.md](./rara-scribe/DEPLOY.md).
 
-## Commands Reference
+### Useful commands
 
 ```bash
-# Database
-./rara-harvest/migrate.sh migrate          # Apply migrations
-./rara-harvest/migrate.sh cleanup          # Delete all data
-./rara-harvest/migrate.sh reset            # Cleanup + migrate
-./rara-harvest/validate.sh                 # Validate schema
-
-# Local testing
-go test -v ./...                           # Run tests
-go run main.go                             # Run locally
-
-# Build
-make build                                 # Build binary
-make build-arm64                           # Build for cloud
-make docker-build                          # Build Docker image
-
-# Deploy
-./deploy.sh                                # Deploy to GCP
+launchctl start com.rara.scribe              # force a run now
+tail -f ~/Library/Logs/rara-scribe/output.log
+launchctl unload ~/Library/LaunchAgents/com.rara.scribe.plist  # stop
 ```
 
-## Security Controls (WIF / IAM)
+## Database (Neon, shared)
 
-This is a **public** repository. No secret values are committed — secrets live in GitHub
-Secrets + GCP Secret Manager, and GCP auth is keyless via Workload Identity Federation.
-Because the GCP project ID and the `rara-deployer` service-account email appear in git
-history, the control that actually prevents abuse of that SA is the **WIF attribute
-condition**, not the secrecy of those identifiers. Verify periodically:
+One Neon PostgreSQL instance (free tier, 0.5 GB). Tables are isolated per agent; migrations are
+applied per agent by the `database-*.yml` workflows (BEGIN/ROLLBACK validation on PR, apply on
+merge to `main`). Storage usage is tiny — the full transcript backlog is well under 20 MB.
+
+## CI/CD (GitHub Actions)
+
+Eight workflows, path-filtered per agent. See [.github/workflows/README.md](./.github/workflows/README.md)
+for details.
+
+| Workflow | Agent | Purpose |
+|----------|-------|---------|
+| `ci.yml` | harvest | fmt/vet/test/security |
+| `ci-shelf.yml` | shelf | fmt/vet/test/security |
+| `ci-scribe.yml` | scribe | fmt/vet/test/security |
+| `database.yml` | harvest | migrations |
+| `database-shelf.yml` | shelf | migrations |
+| `database-scribe.yml` | scribe | migrations |
+| `deploy.yml` | harvest | Cloud Run deploy |
+| `deploy-shelf.yml` | shelf | Cloud Run deploy |
+
+scribe has **no deploy workflow** — it is installed and updated locally with
+`make build && bash install-local.sh`.
+
+## Security controls (WIF / IAM)
+
+This is a **public** repository. No secret values are committed — secrets live in GitHub Secrets
++ GCP Secret Manager, and GCP auth is keyless via Workload Identity Federation. Because the GCP
+project ID and the `rara-deployer` SA email appear in git history, the control that prevents
+abuse is the **WIF attribute condition**, not the secrecy of those identifiers. Verify
+periodically:
 
 - [ ] The WIF provider restricts token issuance to this repo only, e.g.
-      `attribute.repository == 'renatobardi/rara'` (a missing/loose condition would let
-      any GitHub repo impersonate `rara-deployer`).
-- [ ] `rara-deployer` holds only the minimal roles it needs (Cloud Run deploy, Artifact
-      Registry write, Secret Manager accessor, Cloud Build) — **never** `roles/editor` or
-      `roles/owner`.
-- [ ] Secret Manager secrets (`youtube-api-key`, `database-url`, `shelf-oauth-*`) are
-      readable only by the runtime SA, and OAuth refresh tokens are rotated periodically.
+      `attribute.repository == 'renatobardi/rara'` (a missing/loose condition would let any
+      GitHub repo impersonate `rara-deployer`).
+- [ ] `rara-deployer` holds only the minimal roles it needs (Cloud Run deploy, Artifact Registry
+      write, Secret Manager accessor, Cloud Build) — **never** `roles/editor` or `roles/owner`.
+- [ ] Secret Manager secrets are readable only by the runtime SA, and the OAuth refresh token is
+      rotated periodically.
 
 Verify the WIF condition with:
 ```bash
@@ -166,15 +129,13 @@ gcloud iam workload-identity-pools providers describe <PROVIDER> \
   --format='value(attributeCondition)'
 ```
 
-## Documentation
+## Cost
 
-- [README.md](rara-harvest/README.md) - Project overview
-- [TESTING.md](rara-harvest/TESTING.md) - TDD workflow & test harness
-- [MIGRATIONS.md](rara-harvest/MIGRATIONS.md) - Database management
-- [.github/workflows/README.md](rara-harvest/.github/workflows/README.md) - CI/CD details
-
----
-
-**Status**: ✅ **Ready for Production**
-
-All infrastructure is configured, tested, and ready to deploy. The rara-harvest agent is the first component of the kura ecosystem—fully isolated, independently deployable, and production-ready.
+| Item | Cost |
+|------|------|
+| GitHub Actions | Free (public repo) |
+| Neon DB | Free tier |
+| Cloud Run (harvest + shelf) | ~$0.02/month each |
+| Cloud Build | Free tier |
+| rara-scribe compute | $0 (local Mac) |
+| Groq ASR | ~$0.111/h of audio (backlog is a one-time few tens of dollars) |

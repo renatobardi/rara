@@ -1,175 +1,96 @@
-# rara-harvest 🎬
+# Architecture — rara ecosystem
 
-**First agent in the kura ecosystem** - An autonomous video harvesting pipeline built with TDD.
+How the three production agents fit together, the data they share, and why each one runs where
+it does.
 
-## What is rara-harvest?
+## Overview
 
-`rara-harvest` is a zero-idle-cost ETL pipeline that autonomously collects and indexes videos from YouTube (and other platforms in the future). It's designed to run on serverless infrastructure with minimal operational overhead.
-
-### Key Characteristics
-
-- ✅ **Fully Tested**: 13 comprehensive TDD tests, all passing
-- ✅ **Production Ready**: Deploy to GCP Cloud Run in minutes
-- ✅ **Cost Efficient**: Pay only for executions (~$0.01/month for daily runs)
-- ✅ **Idempotent**: Safe to run multiple times, no duplicates
-- ✅ **Extensible**: Built for multi-platform harvesting
-- ✅ **Cloud Native**: ARM64-optimized Docker image
-
-## Quick Links
-
-- 📖 **[README.md](rara-harvest/README.md)** - Complete project documentation
-- 🧪 **[TESTING.md](rara-harvest/TESTING.md)** - TDD workflow and harness architecture
-- 🔄 **[TDD_SUMMARY.md](rara-harvest/TDD_SUMMARY.md)** - Red-Green-Refactor cycle results
-- 📋 **[PROJECT_SUMMARY.md](rara-harvest/PROJECT_SUMMARY.md)** - Full implementation guide
-
-## Getting Started
-
-### 1. Build & Test Locally
-
-```bash
-cd rara-harvest
-make test              # Run 13 tests
-make build            # Build local binary
-```
-
-### 2. Deploy to GCP
-
-```bash
-./deploy.sh
-# Or:
-make deploy
-```
-
-### 3. Monitor
-
-```bash
-gcloud run jobs log rara-harvest --region=us-central1
-```
-
-## Project Structure
+`rara` is a set of independent Go agents that share a single Neon PostgreSQL database but own
+isolated tables. Two agents **collect** video references; one agent **transcribes** them.
 
 ```
-rara-harvest/
-├── main.go              # 193 lines - Core ETL logic
-├── main_test.go         # 380 lines - 13 TDD tests + harness
-├── schema.sql           # Database schema
-├── Dockerfile           # Multi-stage ARM64 build
-├── deploy.sh            # GCP deployment automation
-├── Makefile             # Build & test targets
-├── README.md            # Full documentation
-├── TESTING.md           # Test strategy & harness
-├── TDD_SUMMARY.md       # Red-Green-Refactor results
-└── PROJECT_SUMMARY.md   # Implementation summary
+                      ┌──────────────────────────────────────────┐
+                      │            Neon PostgreSQL                │
+                      │  (shared database, isolated tables)       │
+                      └──────────────────────────────────────────┘
+                         ▲                ▲                 ▲
+        writes channel_videos    writes playlist_videos    reads both,
+                │                        │            writes transcripts
+   ┌────────────┴───────┐   ┌────────────┴───────┐   ┌────┴──────────────┐
+   │   rara-harvest     │   │    rara-shelf      │   │    rara-scribe    │
+   │  Cloud Run Job     │   │   Cloud Run Job    │   │  local Mac/launchd│
+   │  (datacenter IP)   │   │   (datacenter IP)  │   │ (residential IP)  │
+   └────────┬───────────┘   └────────┬───────────┘   └────────┬──────────┘
+            │                        │                        │
+   YouTube Data API v3      YouTube Data API v3        yt-dlp + ffmpeg
+     (API key, public)        (OAuth, private)         + Groq/Gemini ASR
 ```
 
-## Test Harness
+## Data flow
 
-Built with fluent builder pattern for readable, maintainable tests:
+1. **rara-harvest** pulls the latest uploads from ~100 external channels and upserts them into
+   `channel_videos` (one row per video, globally unique by `youtube_video_id`).
+2. **rara-shelf** discovers the owner's own playlists via OAuth and upserts every video into
+   `playlist_videos` (unique per `(playlist_id, youtube_video_id)` — the same video can live in
+   multiple playlists).
+3. **rara-scribe** treats `channel_videos ∪ playlist_videos` as its work queue. For each video
+   without a `done` transcript, it downloads the audio, runs ASR, and writes a `transcripts`
+   header row plus N `transcript_segments` (timestamped) in a single transaction.
 
-```go
-harness := NewETLHarness(t).
-    WithChannels([]Channel{...}).
-    WithVideo(PlaylistItem{...})
+The collectors and the transcriber are decoupled by the database: scribe never calls harvest or
+shelf, it just reads their tables. Adding a fourth agent (e.g. enrichment over transcripts)
+follows the same pattern — read upstream tables, write your own.
 
-err := harness.Execute(context.Background())
-harness.AssertVideoCount(1)
-```
+## Why scribe runs locally
 
-## TDD Results
+harvest and shelf hit the YouTube **Data API** (JSON, key/OAuth) — datacenter IPs are fine, so
+they run as serverless Cloud Run Jobs. scribe instead downloads **audio** with `yt-dlp`, and
+YouTube blocks audio downloads from GCP datacenter IPs with a bot-check ("Sign in to confirm
+you're not a bot"), regardless of cookies. A residential IP (the owner's Mac) is not blocked, so
+scribe runs locally via `launchd` on a daily schedule. This is the single deliberate runtime
+divergence in the system.
 
-```
-Phase 1: RED    → 4 failing tests (requirements documented)
-Phase 2: GREEN  → 13 passing tests (implementation complete)
-Phase 3: REFACTOR → Code quality & documentation improved
+## Per-agent design
 
-Total: 13/13 tests passing ✅
-Execution: 199ms (all local, no I/O)
-Coverage: 100% business logic, 0% I/O (intentional)
-```
+| | rara-harvest | rara-shelf | rara-scribe |
+|---|---|---|---|
+| **Purpose** | latest videos from external channels | catalog owner's playlists | transcribe collected videos |
+| **Auth** | API key (public) | OAuth refresh token (private) | none (Groq API key for ASR) |
+| **External I/O** | YouTube Data API | YouTube Data API | yt-dlp, ffmpeg, Groq/Gemini |
+| **Tables** | `target_channels`, `channel_videos` | `playlists`, `playlist_videos` | `transcripts`, `transcript_segments` |
+| **Runtime** | Cloud Run Job | Cloud Run Job | local Mac (launchd, 02:00) |
+| **Pagination** | single recency page (latest N) | full `nextPageToken` loop | n/a (queue from DB) |
+| **Tests** | 14 | 12 | 13 |
 
-## Architecture
+## Shared conventions
 
-**Technology Stack**:
-- Go 1.23+ (minimal, fast)
-- PostgreSQL (Neon DB serverless)
-- Docker (ARM64-native)
-- GCP Cloud Run (pay-per-execution)
-- Cloud Scheduler (daily triggers)
+- **Language**: Go, single `main.go` per agent, `pgx/v5` driver.
+- **Config**: environment variables; required vars fail fast with `log.Fatalf`.
+- **TDD**: every agent has a fluent harness + in-memory `MockDatabase` mirroring real SQL
+  constraints; zero I/O in tests.
+- **Idempotency**: all writes are upserts (`ON CONFLICT`), so any agent is safe to re-run.
+- **Isolation**: tables, migrations, CI, and (for collectors) deploy workflows are per-agent.
+  Even the `updated_at` trigger functions are namespaced (`set_updated_at` vs `shelf_set_updated_at`)
+  to avoid collisions in the shared database.
 
-**Design Patterns**:
-- TDD (Test-Driven Development)
-- Fluent Builder (test harness)
-- Mock Database (dependency isolation)
-- Idempotent Upserts (safety guarantee)
+## Database schema (high level)
 
-## Cost Analysis
+- `target_channels` → seed list of channels harvest pulls from.
+- `channel_videos` → harvested videos (`youtube_video_id` unique).
+- `playlists` / `playlist_videos` → shelf's catalog, composite uniqueness.
+- `transcripts` → one row per transcribed video (`youtube_video_id` unique, `language` TEXT,
+  `engine`, `status` `done`/`failed`, full `transcript` text).
+- `transcript_segments` → timestamped segments (`start_seconds`, `end_seconds`, `text`),
+  re-indexed to a global timeline across audio chunks.
 
-### Monthly Cost (Daily Execution)
+## Technology stack
 
-| Component | Cost |
-|-----------|------|
-| Cloud Run Compute | < $0.01 |
-| Database (Neon) | < $0.01 |
-| YouTube API | Free (10k units/day) |
-| **Total** | **< $0.02/month** |
+- **Go 1.23+** — minimal, fast, single binary per agent.
+- **Neon PostgreSQL** — serverless Postgres, free tier, shared across agents.
+- **GCP Cloud Run Jobs** — harvest + shelf runtime (amd64 images via Cloud Build).
+- **launchd** — scribe runtime on macOS (daily schedule, local logs).
+- **yt-dlp + ffmpeg** — audio acquisition and resampling for scribe.
+- **Groq `whisper-large-v3` / Gemini `gemini-2.5-flash`** — pluggable ASR engines.
 
-## Part of kura Ecosystem
-
-`rara-harvest` is the first autonomous agent in the **kura** system:
-
-```
-kura/
-├── rara-harvest    (video collection) ← YOU ARE HERE
-├── rara-pulse      (metrics/data)
-├── rara-stream     (real-time feeds)
-└── ... more agents
-```
-
-Each agent is:
-- ✅ Independently deployable
-- ✅ TDD-built with full test suites
-- ✅ Cost-optimized for serverless
-- ✅ Designed for autonomous operation
-
-## Next Steps
-
-1. **Explore**: Read [README.md](rara-harvest/README.md) for full setup guide
-2. **Test**: Run `make test` to see all 13 tests pass
-3. **Deploy**: Run `./deploy.sh` to deploy to GCP
-4. **Extend**: Add more video sources (TikTok, Instagram, etc.)
-
-## Development
-
-```bash
-# Testing
-make test                 # Run all tests
-make test-coverage       # Coverage report
-make test-race           # Race detection
-
-# Building
-make build              # Build binary
-make build-arm64        # Build for cloud
-make docker-build       # Build Docker image
-
-# Code Quality
-make lint               # Run linters
-make fmt                # Format code
-
-# Deployment
-make deploy             # Full deployment flow
-```
-
-## Questions?
-
-See the detailed documentation:
-- **How do I test?** → [TESTING.md](rara-harvest/TESTING.md)
-- **How does it work?** → [README.md](rara-harvest/README.md)
-- **What was built?** → [PROJECT_SUMMARY.md](rara-harvest/PROJECT_SUMMARY.md)
-- **How was it tested?** → [TDD_SUMMARY.md](rara-harvest/TDD_SUMMARY.md)
-
----
-
-**Status**: ✅ Production Ready
-**Tests**: 13/13 Passing
-**TDD Cycle**: Red-Green-Refactor Complete
-**Deployment**: GCP Cloud Run Ready
+See [INFRASTRUCTURE.md](./INFRASTRUCTURE.md) for the concrete infrastructure layout (GCP, WIF,
+secrets, local Mac setup).

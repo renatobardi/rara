@@ -1,6 +1,6 @@
 # rara-harvest
 
-A zero-idle-cost video harvesting pipeline for collecting latest videos from target channels (YouTube, TikTok, etc.) and upserting them into a PostgreSQL database (Neon DB). Part of the **kura** ecosystem of agent-based applications.
+A zero-idle-cost video harvesting pipeline for collecting latest videos from target channels (YouTube, TikTok, etc.) and upserting them into a PostgreSQL database (Neon DB). Part of the **rara** ecosystem of agent-based applications.
 
 ## Overview
 
@@ -43,7 +43,7 @@ A zero-idle-cost video harvesting pipeline for collecting latest videos from tar
 
 3. **Run tests**:
    ```bash
-   make test              # Run all 13 tests
+   make test              # Run all 14 tests
    make test-coverage     # View coverage report
    ```
 
@@ -217,7 +217,7 @@ This ensures:
 ### Run Tests
 
 ```bash
-make test                 # Run all 13 tests
+make test                 # Run all 14 tests
 make test-verbose        # Verbose output with race detection
 make test-coverage       # Generate coverage report
 make test-race           # Race detector
@@ -226,7 +226,7 @@ make test-race           # Race detector
 ### Test Architecture
 
 **TDD Implementation** with fluent harness pattern:
-- ✓ 13 comprehensive test cases
+- ✓ 14 comprehensive test cases
 - ✓ 100% coverage on business logic
 - ✓ MockDatabase for isolation
 - ✓ ETLHarness for orchestration
@@ -285,7 +285,7 @@ go test -v -race ./...
 ```
 rara-harvest/
 ├── main.go              # Core ETL logic
-├── main_test.go         # 13 comprehensive tests with harness
+├── main_test.go         # 14 comprehensive tests with harness
 ├── schema.sql           # Database DDL reference
 ├── Dockerfile           # Multi-stage ARM64 build
 ├── deploy.sh            # GCP Cloud Run deployment
@@ -296,12 +296,13 @@ rara-harvest/
 └── PROJECT_SUMMARY.md   # Complete implementation guide
 ```
 
-## Part of kura Ecosystem
+## Part of the rara Ecosystem
 
-**rara-harvest** is the first agent in the **kura** ecosystem of autonomous data collection applications. Other agents in the pipeline include:
-- rara-pulse (for other data sources)
-- rara-stream (for real-time feeds)
-- And more...
+**rara-harvest** is the first agent in the **rara** ecosystem of autonomous data collection applications. Other production agents:
+- **rara-shelf** — catalogs the owner's own YouTube playlists (OAuth)
+- **rara-scribe** — transcribes collected videos with Groq/Gemini ASR (runs locally)
+
+See the [root README](../README.md) for the full ecosystem overview.
 
 ## License
 
