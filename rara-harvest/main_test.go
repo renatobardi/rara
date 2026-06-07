@@ -117,24 +117,22 @@ func (m *MockDatabase) FetchActiveChannels(ctx context.Context) ([]Channel, erro
 	return m.channels, nil
 }
 
-// MockUpsertVideo simulates database insert with idempotency, returning whether
-// a new row was created (false = already existed), mirroring the real
-// upsertVideo's (bool, error) contract.
+// MockUpsertVideo simulates the upsert, returning whether a new row was created
+// (false = already existed and was refreshed), mirroring the real upsertVideo's
+// (bool, error) contract.
 //
-// This mirrors the real schema exactly: youtube_video_id is globally UNIQUE
-// and upsertVideo uses ON CONFLICT (youtube_video_id) DO NOTHING. A video is
-// therefore keyed by its video ID alone — not by channel — so the same video
-// is stored once regardless of how many channels reference it.
+// This mirrors the real schema exactly: youtube_video_id is globally UNIQUE and
+// upsertVideo uses ON CONFLICT (youtube_video_id) DO UPDATE — so an existing
+// video's metadata is refreshed in place. A video is keyed by its video ID alone,
+// so the same video is stored once regardless of how many channels reference it.
 func (m *MockDatabase) UpsertVideo(ctx context.Context, v Video) (bool, error) {
 	if m.err != nil {
 		return false, m.err
 	}
 	key := videoKey(v.VideoID)
-	if _, exists := m.videos[key]; exists {
-		return false, nil // Idempotent: video already exists (global UNIQUE)
-	}
-	m.videos[key] = v
-	return true, nil
+	_, existed := m.videos[key]
+	m.videos[key] = v // insert or refresh, mirroring ON CONFLICT DO UPDATE
+	return !existed, nil
 }
 
 // videoKey creates the unique key for a video, matching the DB's
@@ -225,7 +223,8 @@ type ETLHarness struct {
 	channelVideos map[int][]PlaylistItem
 	t             *testing.T
 	inserted      int // new rows created across the run
-	skipped       int // rows that already existed (idempotent)
+	updated       int // existing rows refreshed (ON CONFLICT DO UPDATE)
+	skipped       int // items skipped (empty video id)
 }
 
 // NewETLHarness creates a new test harness
@@ -265,10 +264,14 @@ func (h *ETLHarness) Execute(ctx context.Context) error {
 	}
 
 	// Reset per-run counters so re-running Execute reports that run's outcome,
-	// mirroring processChannel's per-run inserted/skipped tallies.
-	h.inserted, h.skipped = 0, 0
+	// mirroring processChannel's per-run inserted/updated/skipped tallies.
+	h.inserted, h.updated, h.skipped = 0, 0, 0
 	for _, channel := range channels {
 		for _, video := range h.channelVideos[channel.ID] {
+			if video.ContentDetails.VideoID == "" {
+				h.skipped++ // deleted/private items can lack a video id
+				continue
+			}
 			v := Video{
 				ChannelID:   channel.ID,
 				VideoID:     video.ContentDetails.VideoID,
@@ -283,7 +286,7 @@ func (h *ETLHarness) Execute(ctx context.Context) error {
 			if isNew {
 				h.inserted++
 			} else {
-				h.skipped++
+				h.updated++
 			}
 		}
 	}
@@ -298,8 +301,14 @@ func (h *ETLHarness) AssertInsertedCount(expected int) {
 	}
 }
 
-// AssertSkippedCount verifies how many videos the last Execute skipped as
-// already-present (the bug: this used to be reported as inserted).
+// AssertUpdatedCount verifies how many existing rows the last Execute refreshed.
+func (h *ETLHarness) AssertUpdatedCount(expected int) {
+	if h.updated != expected {
+		h.t.Errorf("updated count = %d, want %d", h.updated, expected)
+	}
+}
+
+// AssertSkippedCount verifies how many items the last Execute skipped (empty id).
 func (h *ETLHarness) AssertSkippedCount(expected int) {
 	if h.skipped != expected {
 		h.t.Errorf("skipped count = %d, want %d", h.skipped, expected)
@@ -404,11 +413,11 @@ func TestETLHarnessIdempotentExecution(t *testing.T) {
 	harness.AssertVideoCount(1) // Still 1, not 2 (idempotent)
 }
 
-// TestETLHarnessReportsRealInsertedSkipped verifies the run reports accurate
-// inserted vs skipped counts. The first run inserts both videos; the second run
-// inserts nothing and skips both (the previous bug reported len(videos) as
+// TestETLHarnessReportsRealInsertedUpdated verifies the run reports accurate
+// inserted vs updated counts. The first run inserts both videos; the second run
+// inserts nothing and updates both (the previous bug reported len(videos) as
 // "inserted/updated" regardless of what actually changed).
-func TestETLHarnessReportsRealInsertedSkipped(t *testing.T) {
+func TestETLHarnessReportsRealInsertedUpdated(t *testing.T) {
 	harness := NewETLHarness(t).
 		WithChannels([]Channel{
 			{ID: 1, YoutubeChannelID: "UCchannel1", ChannelName: "Channel 1", Active: true},
@@ -421,13 +430,55 @@ func TestETLHarnessReportsRealInsertedSkipped(t *testing.T) {
 		t.Fatalf("First execution failed: %v", err)
 	}
 	harness.AssertInsertedCount(2)
-	harness.AssertSkippedCount(0)
+	harness.AssertUpdatedCount(0)
 
 	if err := harness.Execute(ctx); err != nil {
 		t.Fatalf("Second execution failed: %v", err)
 	}
 	harness.AssertInsertedCount(0) // nothing new
-	harness.AssertSkippedCount(2)  // both already present
+	harness.AssertUpdatedCount(2)  // both already present, refreshed
+}
+
+// TestETLHarnessSkipsEmptyVideoID: items without a video id (deleted/private)
+// are skipped, matching rara-shelf — no empty row is inserted.
+func TestETLHarnessSkipsEmptyVideoID(t *testing.T) {
+	harness := NewETLHarness(t).
+		WithChannels([]Channel{
+			{ID: 1, YoutubeChannelID: "UCchannel1", ChannelName: "Channel 1", Active: true},
+		}).
+		WithVideosForChannel(1, makePlaylistItem("", "Deleted"), makePlaylistItem("vid1", "Good"))
+
+	if err := harness.Execute(context.Background()); err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	harness.AssertVideoCount(1) // only the valid one stored
+	harness.AssertInsertedCount(1)
+	harness.AssertSkippedCount(1)
+	harness.AssertVideoExists("vid1")
+}
+
+// TestETLHarnessRefreshesMetadata: a re-run with a changed title updates the
+// stored row in place (ON CONFLICT DO UPDATE), rather than keeping the old title.
+func TestETLHarnessRefreshesMetadata(t *testing.T) {
+	ctx := context.Background()
+	h := NewETLHarness(t).
+		WithChannels([]Channel{{ID: 1, YoutubeChannelID: "UCc", ChannelName: "C", Active: true}}).
+		WithVideosForChannel(1, makePlaylistItem("vid1", "Old Title"))
+	if err := h.Execute(ctx); err != nil {
+		t.Fatalf("first run: %v", err)
+	}
+
+	// Same video id, new title on a second discovery.
+	h2 := NewETLHarness(t)
+	h2.db = h.db // reuse the same store
+	h2.WithChannels([]Channel{{ID: 1, YoutubeChannelID: "UCc", ChannelName: "C", Active: true}}).
+		WithVideosForChannel(1, makePlaylistItem("vid1", "New Title"))
+	if err := h2.Execute(ctx); err != nil {
+		t.Fatalf("second run: %v", err)
+	}
+	if got := h.db.videos[videoKey("vid1")].Title; got != "New Title" {
+		t.Errorf("title = %q, want refreshed to %q", got, "New Title")
+	}
 }
 
 // TestETLHarnessEmptyChannels tests ETL with no channels

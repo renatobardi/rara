@@ -117,16 +117,14 @@ func (m *MockDatabase) UpsertPlaylist(ctx context.Context, pl Playlist) (int, er
 
 // UpsertVideo mirrors the real schema: UNIQUE(playlist_id, youtube_video_id).
 // A video is keyed by playlist+video, so the same video can exist in many
-// playlists, but is stored once per playlist.
+// playlists, but is stored once per playlist. On conflict it refreshes the row
+// in place, mirroring ON CONFLICT DO UPDATE (title/position/etc).
 func (m *MockDatabase) UpsertVideo(ctx context.Context, v Video) error {
 	if m.err != nil {
 		return m.err
 	}
 	key := videoKey(v.PlaylistID, v.VideoID)
-	if _, exists := m.videos[key]; exists {
-		return nil // idempotent within the same playlist
-	}
-	m.videos[key] = v
+	m.videos[key] = v // insert or refresh, mirroring ON CONFLICT DO UPDATE
 	return nil
 }
 
@@ -160,6 +158,29 @@ func TestMockIdempotencySamePlaylist(t *testing.T) {
 	}
 	if len(db.videos) != 1 {
 		t.Errorf("videos count = %d, want 1 (idempotent)", len(db.videos))
+	}
+}
+
+// TestMockRefreshesMetadata: re-cataloguing the same video with a new title and
+// position refreshes the stored row in place (ON CONFLICT DO UPDATE), rather than
+// keeping the stale values.
+func TestMockRefreshesMetadata(t *testing.T) {
+	db := newMockDatabase()
+	ctx := context.Background()
+
+	if err := db.UpsertVideo(ctx, Video{PlaylistID: 1, VideoID: "v1", Title: "Old", Position: 0}); err != nil {
+		t.Fatalf("first upsert: %v", err)
+	}
+	if err := db.UpsertVideo(ctx, Video{PlaylistID: 1, VideoID: "v1", Title: "New", Position: 5}); err != nil {
+		t.Fatalf("second upsert: %v", err)
+	}
+
+	if len(db.videos) != 1 {
+		t.Fatalf("videos count = %d, want 1", len(db.videos))
+	}
+	got := db.videos[videoKey(1, "v1")]
+	if got.Title != "New" || got.Position != 5 {
+		t.Errorf("row = {Title:%q Position:%d}, want {New 5}", got.Title, got.Position)
 	}
 }
 
