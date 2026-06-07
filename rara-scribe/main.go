@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -140,6 +141,11 @@ type Transcript struct {
 	DurationSeconds int
 	Status          string // "done" | "failed"
 	Error           string
+	// TransientFailure marks a 'failed' save as caused by a transient ASR error (a
+	// 429 rate limit or a 5xx) rather than a permanent one (deleted/private video,
+	// bad request). SaveTranscript keeps attempt_count unchanged for these, so an
+	// exhausted daily quota never counts toward the retry cap.
+	TransientFailure bool
 }
 
 // VideoRef is a video pending transcription, discovered from the collector tables.
@@ -334,6 +340,73 @@ func NewTranscriber(cfg Config) (Transcriber, string, error) {
 // Orchestration (engine/acquirer-agnostic; unit-tested via mocks)
 // ---------------------------------------------------------------------------
 
+// transientError marks an ASR failure as transient (retryable) — a rate limit
+// (HTTP 429) or a server-side 5xx — as opposed to a permanent failure (deleted/
+// private video, bad request, auth). The transcribers wrap their final error in
+// this type so transcribeSource can flag the Transcript and SaveTranscript can
+// keep the retry counter unchanged: a daily-quota exhaustion must not retire an
+// otherwise-fine video.
+type transientError struct{ err error }
+
+func (e *transientError) Error() string { return e.err.Error() }
+func (e *transientError) Unwrap() error { return e.err }
+
+// isTransient reports whether err (or anything it wraps) is a transientError.
+func isTransient(err error) bool {
+	var te *transientError
+	return errors.As(err, &te)
+}
+
+// asrResult is one successful ASR attempt's parsed output.
+type asrResult struct {
+	text     string
+	language string
+	segs     []Segment
+}
+
+// asrAttempt performs a single ASR HTTP call. On success it returns the parsed
+// result and a nil error. On failure it returns the HTTP status code (0 for a
+// transport-level error, treated as permanent), an optional Retry-After hint, and
+// the error.
+type asrAttempt func(ctx context.Context) (res asrResult, status int, retryAfter time.Duration, err error)
+
+// retryTransientASR runs attempt with exponential backoff, retrying only
+// transient failures — an HTTP 429 (rate limit) or a 5xx — up to maxASRRetries.
+// Permanent failures (a 4xx other than 429, a transport error, a parse error)
+// return immediately. A transient failure that survives the retries, or whose
+// backoff is cut short by context cancellation, is wrapped in *transientError so
+// it does not count toward the per-video retry cap: an exhausted daily quota must
+// not retire an otherwise-fine video.
+func retryTransientASR(ctx context.Context, engine string, attempt asrAttempt) (string, string, []Segment, error) {
+	for n := 0; ; n++ {
+		res, status, retryAfter, err := attempt(ctx)
+		if err == nil {
+			return res.text, res.language, res.segs, nil
+		}
+		transient := status == http.StatusTooManyRequests || status >= 500
+		if !transient || n >= maxASRRetries {
+			if transient {
+				return "", "", nil, &transientError{err}
+			}
+			return "", "", nil, err
+		}
+		wait := retryAfter
+		if wait <= 0 {
+			wait = asrRetryBase << n // 2s, 4s, 8s, 16s
+		}
+		log.Printf("%s transient error (status %d); retrying in %s (attempt %d/%d)\n",
+			engine, status, wait, n+1, maxASRRetries)
+		select {
+		case <-ctx.Done():
+			// The backoff we're serving is for a transient failure; if the context
+			// expires mid-wait, the root cause is still that transient error, so
+			// surface it as transient rather than counting it against the cap.
+			return "", "", nil, &transientError{err}
+		case <-time.After(wait):
+		}
+	}
+}
+
 // transcribeSource runs the full pipeline for one source: acquire audio, then
 // transcribe every chunk and stitch the result. It never returns an error —
 // failures are captured as a "failed" Transcript so the batch can persist them
@@ -365,6 +438,7 @@ func transcribeSource(ctx context.Context, acq AudioAcquirer, tr Transcriber, en
 		text, lang, chunkSegs, err := tr.Transcribe(ctx, ch.Path)
 		if err != nil {
 			t.Status, t.Error = statusFailed, err.Error()
+			t.TransientFailure = isTransient(err)
 			return t, nil
 		}
 		if lang != "" {
@@ -605,58 +679,36 @@ func (g *groqTranscriber) Transcribe(ctx context.Context, audioPath string) (str
 		return "", "", nil, err
 	}
 
-	var lastErr error
-	for attempt := 0; ; attempt++ {
+	return retryTransientASR(ctx, "groq", func(ctx context.Context) (asrResult, int, time.Duration, error) {
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, g.endpoint, bytes.NewReader(reqBody))
 		if err != nil {
-			return "", "", nil, err
+			return asrResult{}, 0, 0, err
 		}
 		req.Header.Set("Authorization", "Bearer "+g.apiKey)
 		req.Header.Set("Content-Type", contentType)
 
 		resp, err := transcribeClient.Do(req)
 		if err != nil {
-			return "", "", nil, err
+			return asrResult{}, 0, 0, err
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			return asrResult{}, resp.StatusCode, parseRetryAfter(resp.Header.Get("Retry-After")),
+				fmt.Errorf("groq API error (status %d): %s", resp.StatusCode, truncate(string(body), 500))
 		}
 
-		if resp.StatusCode == http.StatusOK {
-			var vj verboseJSON
-			derr := json.NewDecoder(resp.Body).Decode(&vj)
-			resp.Body.Close()
-			if derr != nil {
-				return "", "", nil, derr
-			}
-			segs := make([]Segment, len(vj.Segments))
-			for i, s := range vj.Segments {
-				segs[i] = Segment{Start: s.Start, End: s.End, Text: strings.TrimSpace(s.Text)}
-			}
-			return vj.Text, vj.Language, segs, nil
+		var vj verboseJSON
+		if err := json.NewDecoder(resp.Body).Decode(&vj); err != nil {
+			return asrResult{}, 0, 0, err
 		}
-
-		body, _ := io.ReadAll(resp.Body)
-		retryAfter := parseRetryAfter(resp.Header.Get("Retry-After"))
-		resp.Body.Close()
-		lastErr = fmt.Errorf("groq API error (status %d): %s", resp.StatusCode, truncate(string(body), 500))
-
-		// Retry only transient failures (429 rate limit, 5xx). 4xx other than 429
-		// are permanent (bad request, auth) — fail immediately.
-		transient := resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500
-		if !transient || attempt >= maxASRRetries {
-			return "", "", nil, lastErr
+		segs := make([]Segment, len(vj.Segments))
+		for i, s := range vj.Segments {
+			segs[i] = Segment{Start: s.Start, End: s.End, Text: strings.TrimSpace(s.Text)}
 		}
-
-		wait := retryAfter
-		if wait <= 0 {
-			wait = asrRetryBase << attempt // 2s, 4s, 8s, 16s
-		}
-		log.Printf("groq transient error (status %d); retrying in %s (attempt %d/%d)\n",
-			resp.StatusCode, wait, attempt+1, maxASRRetries)
-		select {
-		case <-ctx.Done():
-			return "", "", nil, ctx.Err()
-		case <-time.After(wait):
-		}
-	}
+		return asrResult{text: vj.Text, language: vj.Language, segs: segs}, http.StatusOK, 0, nil
+	})
 }
 
 // buildGroqMultipart assembles the transcription request body in memory so it can
@@ -707,10 +759,16 @@ func parseRetryAfter(v string) time.Duration {
 // Real transcriber: Gemini 2.5 Flash (native audio, structured JSON output)
 // ---------------------------------------------------------------------------
 
-type geminiTranscriber struct{ apiKey string }
+type geminiTranscriber struct {
+	apiKey   string
+	endpoint string // overridable for tests; defaults to the Gemini API
+}
 
 func newGeminiTranscriber(apiKey string) *geminiTranscriber {
-	return &geminiTranscriber{apiKey: apiKey}
+	return &geminiTranscriber{
+		apiKey:   apiKey,
+		endpoint: "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
+	}
 }
 
 const geminiPrompt = "Transcribe this audio verbatim in its original spoken language. " +
@@ -761,63 +819,68 @@ func (g *geminiTranscriber) Transcribe(ctx context.Context, audioPath string) (s
 		return "", "", nil, err
 	}
 
-	// Pass the API key via header, never the query string: a transport error from
-	// Do() is a *url.Error that embeds the full URL in its message, which would
-	// otherwise leak the key into logs.
-	const endpoint = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(string(payload)))
-	if err != nil {
-		return "", "", nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("x-goog-api-key", g.apiKey)
+	// A 429 (rate limit) or 5xx is transient and retried with backoff, on par with
+	// the Groq engine, so a momentary quota blip does not fail an otherwise-fine
+	// video. Permanent errors (4xx, parse failures) return immediately.
+	return retryTransientASR(ctx, "gemini", func(ctx context.Context) (asrResult, int, time.Duration, error) {
+		// Pass the API key via header, never the query string: a transport error from
+		// Do() is a *url.Error that embeds the full URL in its message, which would
+		// otherwise leak the key into logs.
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, g.endpoint, strings.NewReader(string(payload)))
+		if err != nil {
+			return asrResult{}, 0, 0, err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("x-goog-api-key", g.apiKey)
 
-	resp, err := transcribeClient.Do(req)
-	if err != nil {
-		return "", "", nil, err
-	}
-	defer resp.Body.Close()
+		resp, err := transcribeClient.Do(req)
+		if err != nil {
+			return asrResult{}, 0, 0, err
+		}
+		defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return "", "", nil, fmt.Errorf("gemini API error (status %d): %s", resp.StatusCode, truncate(string(body), 500))
-	}
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			return asrResult{}, resp.StatusCode, parseRetryAfter(resp.Header.Get("Retry-After")),
+				fmt.Errorf("gemini API error (status %d): %s", resp.StatusCode, truncate(string(body), 500))
+		}
 
-	var gr struct {
-		Candidates []struct {
-			Content struct {
-				Parts []struct {
-					Text string `json:"text"`
-				} `json:"parts"`
-			} `json:"content"`
-		} `json:"candidates"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&gr); err != nil {
-		return "", "", nil, err
-	}
-	if len(gr.Candidates) == 0 || len(gr.Candidates[0].Content.Parts) == 0 {
-		return "", "", nil, fmt.Errorf("gemini returned no candidates")
-	}
+		var gr struct {
+			Candidates []struct {
+				Content struct {
+					Parts []struct {
+						Text string `json:"text"`
+					} `json:"parts"`
+				} `json:"content"`
+			} `json:"candidates"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&gr); err != nil {
+			return asrResult{}, 0, 0, err
+		}
+		if len(gr.Candidates) == 0 || len(gr.Candidates[0].Content.Parts) == 0 {
+			return asrResult{}, 0, 0, fmt.Errorf("gemini returned no candidates")
+		}
 
-	var parsed struct {
-		Language string `json:"language"`
-		Segments []struct {
-			Start float64 `json:"start"`
-			End   float64 `json:"end"`
-			Text  string  `json:"text"`
-		} `json:"segments"`
-	}
-	if err := json.Unmarshal([]byte(gr.Candidates[0].Content.Parts[0].Text), &parsed); err != nil {
-		return "", "", nil, fmt.Errorf("failed to parse gemini transcript JSON: %w", err)
-	}
+		var parsed struct {
+			Language string `json:"language"`
+			Segments []struct {
+				Start float64 `json:"start"`
+				End   float64 `json:"end"`
+				Text  string  `json:"text"`
+			} `json:"segments"`
+		}
+		if err := json.Unmarshal([]byte(gr.Candidates[0].Content.Parts[0].Text), &parsed); err != nil {
+			return asrResult{}, 0, 0, fmt.Errorf("failed to parse gemini transcript JSON: %w", err)
+		}
 
-	segs := make([]Segment, len(parsed.Segments))
-	texts := make([]string, len(parsed.Segments))
-	for i, s := range parsed.Segments {
-		segs[i] = Segment{Start: s.Start, End: s.End, Text: strings.TrimSpace(s.Text)}
-		texts[i] = strings.TrimSpace(s.Text)
-	}
-	return strings.Join(texts, " "), parsed.Language, segs, nil
+		segs := make([]Segment, len(parsed.Segments))
+		texts := make([]string, len(parsed.Segments))
+		for i, s := range parsed.Segments {
+			segs[i] = Segment{Start: s.Start, End: s.End, Text: strings.TrimSpace(s.Text)}
+			texts[i] = strings.TrimSpace(s.Text)
+		}
+		return asrResult{text: strings.Join(texts, " "), language: parsed.Language, segs: segs}, http.StatusOK, 0, nil
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -968,8 +1031,16 @@ func (d *pgxDatabase) PendingVideos(ctx context.Context, limit int) ([]VideoRef,
 	// Pending = videos in either collector table without a terminal transcript.
 	// Terminal = 'done' (has content) or 'empty' (no speech) — neither is retried.
 	// Failed videos past the retry cap are also excluded (so deleted/private videos
-	// stop being retried forever). Never-attempted videos are ordered before
-	// previously-failed ones so a handful of failures can never starve the backlog.
+	// stop being retried forever).
+	//
+	// Ordering, in priority order:
+	//   1. never-attempted videos before previously-failed ones, so a backlog of
+	//      failures can never starve fresh work;
+	//   2. among failed rows, fewest attempts first;
+	//   3. then least-recently-tried first (updated_at ASC) — a round-robin so a
+	//      large transient backlog (all at attempt_count=0, e.g. quota-starved
+	//      videos awaiting the no-quota local engine) drains fairly instead of the
+	//      same rows being re-tried every run while others wait forever.
 	const query = `
 		SELECT v.youtube_video_id, MIN(v.url) AS url
 		FROM (
@@ -981,7 +1052,10 @@ func (d *pgxDatabase) PendingVideos(ctx context.Context, limit int) ([]VideoRef,
 		WHERE (t.youtube_video_id IS NULL OR t.status NOT IN ('done', 'empty'))
 		  AND NOT (t.status = 'failed' AND t.attempt_count >= $2)
 		GROUP BY v.youtube_video_id
-		ORDER BY MIN(CASE WHEN t.status = 'failed' THEN 1 ELSE 0 END) ASC
+		ORDER BY
+			MIN(CASE WHEN t.status = 'failed' THEN 1 ELSE 0 END) ASC,
+			MIN(COALESCE(t.attempt_count, 0)) ASC,
+			MIN(t.updated_at) ASC NULLS FIRST
 		LIMIT $1`
 	rows, err := d.conn.Query(ctx, query, limit, maxFailedAttempts)
 	if err != nil {
@@ -1010,11 +1084,14 @@ func (d *pgxDatabase) SaveTranscript(ctx context.Context, t Transcript, segs []S
 	}
 	defer tx.Rollback(ctx)
 
-	// attempt_count tracks consecutive failures: start a brand-new failed row at 1,
-	// a done row at 0; on conflict, increment when the new save is 'failed' and
-	// reset to 0 when it is 'done'.
+	// attempt_count tracks consecutive *permanent* failures: start a brand-new
+	// permanent-failed row at 1, every other brand-new row (done/empty, or a
+	// transient failure) at 0. On conflict, a permanent failure increments, a
+	// transient failure (429/5xx) leaves the counter unchanged, and a done/empty
+	// save resets to 0. Transient failures are deliberately excluded so an
+	// exhausted daily quota never retires an otherwise-fine video.
 	initialAttempt := 0
-	if t.Status == "failed" {
+	if t.Status == statusFailed && !t.TransientFailure {
 		initialAttempt = 1
 	}
 	const upsert = `
@@ -1030,9 +1107,10 @@ func (d *pgxDatabase) SaveTranscript(ctx context.Context, t Transcript, segs []S
 			duration_seconds = EXCLUDED.duration_seconds,
 			status = EXCLUDED.status,
 			error = EXCLUDED.error,
-			attempt_count = CASE WHEN EXCLUDED.status = 'failed'
-			                     THEN transcripts.attempt_count + 1
-			                     ELSE 0 END,
+			attempt_count = CASE
+			                  WHEN EXCLUDED.status = 'failed' AND $11 THEN transcripts.attempt_count
+			                  WHEN EXCLUDED.status = 'failed'        THEN transcripts.attempt_count + 1
+			                  ELSE 0 END,
 			updated_at = CURRENT_TIMESTAMP
 		RETURNING id`
 	var id int
@@ -1047,6 +1125,7 @@ func (d *pgxDatabase) SaveTranscript(ctx context.Context, t Transcript, segs []S
 		t.Status,
 		nullStr(t.Error),
 		initialAttempt,
+		t.TransientFailure,
 	).Scan(&id); err != nil {
 		return err
 	}
