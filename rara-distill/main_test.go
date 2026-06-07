@@ -6,10 +6,13 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // ---------------------------------------------------------------------------
@@ -344,10 +347,14 @@ type mockTranscript struct {
 	status string // done | failed | empty
 }
 
-// MockDatabase mirrors the SQL contract: PendingDocs filters to done/non-empty
-// transcripts and skips a doc only when a fresh distillation exists for the recipe
-// (done, same source hash, same recipe hash); SaveDistillation upserts on
-// (source_key, COALESCE(session_patterns, pattern)).
+// MockDatabase encodes the *intended* PendingDocs behaviour: filter to done/non-empty
+// transcripts, skip a doc only when a fresh distillation exists for the recipe (done,
+// same source hash, same recipe hash), and skip failures past the retry cap;
+// SaveDistillation upserts on (source_key, COALESCE(session_patterns, pattern)).
+//
+// It cannot reproduce SQL three-valued (NULL) logic, so it is not a substitute for
+// exercising the real query — see TestPendingDocsIntegration, which runs the actual
+// SQL against Postgres and guards the never-distilled / failed-cap NULL edge cases.
 type MockDatabase struct {
 	transcripts   []mockTranscript
 	distillations map[string]Distillation // keyed by source_key|keyPattern
@@ -877,3 +884,101 @@ func TestBatchSizeLimit(t *testing.T) {
 
 // videoRef is a tiny helper mirroring the canonical watch URL for test readability.
 func videoRef(id string) string { return "https://www.youtube.com/watch?v=" + id }
+
+// ---------------------------------------------------------------------------
+// Integration test (real SQL) — opt-in via DISTILL_TEST_DATABASE_URL.
+//
+// The unit tests above use MockDatabase, which cannot reproduce SQL three-valued
+// (NULL) logic. This test runs the actual PendingDocs query against Postgres to guard
+// the NULL edge cases that a mock will always miss: a never-distilled transcript MUST
+// be returned (the case a naive NOT (... ) clause silently drops), a fresh one MUST be
+// skipped, a failure under the cap MUST be retried, and one past the cap MUST be
+// excluded. Skipped unless DISTILL_TEST_DATABASE_URL points at a throwaway Postgres.
+// ---------------------------------------------------------------------------
+
+func TestPendingDocsIntegration(t *testing.T) {
+	dsn := os.Getenv("DISTILL_TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("set DISTILL_TEST_DATABASE_URL to a throwaway Postgres to run the integration test")
+	}
+	ctx := context.Background()
+	conn, err := pgx.Connect(ctx, dsn)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer conn.Close(ctx)
+
+	const schema = "distill_it_test"
+	exec := func(sql string, args ...any) {
+		t.Helper()
+		if _, err := conn.Exec(ctx, sql, args...); err != nil {
+			t.Fatalf("exec %.60q: %v", sql, err)
+		}
+	}
+
+	exec("DROP SCHEMA IF EXISTS " + schema + " CASCADE")
+	exec("CREATE SCHEMA " + schema)
+	t.Cleanup(func() { _, _ = conn.Exec(ctx, "DROP SCHEMA IF EXISTS "+schema+" CASCADE") })
+	exec("SET search_path TO " + schema)
+
+	exec(`CREATE TABLE transcripts (
+		youtube_video_id TEXT, source_type TEXT NOT NULL, source_ref TEXT NOT NULL,
+		transcript TEXT, status TEXT NOT NULL)`)
+	exec(`CREATE TABLE channel_videos (youtube_video_id TEXT, title TEXT)`)
+	exec(`CREATE TABLE playlist_videos (youtube_video_id TEXT, title TEXT)`)
+	exec(`CREATE TABLE distillations (
+		id SERIAL PRIMARY KEY,
+		youtube_video_id TEXT, source_type TEXT NOT NULL, source_ref TEXT NOT NULL,
+		source_key TEXT NOT NULL, pattern TEXT NOT NULL, context TEXT, strategy TEXT,
+		session_patterns TEXT, engine TEXT NOT NULL, title TEXT, content TEXT,
+		structured JSONB NOT NULL DEFAULT '{}', structured_status TEXT NOT NULL DEFAULT 'ok',
+		doc_context TEXT, source_sha256 TEXT NOT NULL, recipe_sha256 TEXT NOT NULL,
+		status TEXT NOT NULL DEFAULT 'done', error TEXT, attempt_count INT NOT NULL DEFAULT 0)`)
+	exec("CREATE UNIQUE INDEX uq ON distillations (source_key, COALESCE(session_patterns, pattern))")
+
+	all := []string{"never", "fresh_done", "failed_under", "failed_over"}
+	for _, v := range all {
+		exec(`INSERT INTO transcripts (youtube_video_id, source_type, source_ref, transcript, status)
+			VALUES ($1, 'youtube', $2, $3, 'done')`, v, "https://y/"+v, "body of "+v)
+		exec("INSERT INTO channel_videos (youtube_video_id, title) VALUES ($1, $2)", v, "Title "+v)
+	}
+
+	const recipe = "recipe-hash-v1"
+	const keyPattern = "extract_wisdom"
+
+	srcHash := func(v string) string {
+		var h string
+		if err := conn.QueryRow(ctx,
+			"SELECT encode(sha256(convert_to($1, 'UTF8')), 'hex')", "body of "+v).Scan(&h); err != nil {
+			t.Fatalf("hash: %v", err)
+		}
+		return h
+	}
+	insDist := func(v, status string, attempts int) {
+		exec(`INSERT INTO distillations
+			(youtube_video_id, source_type, source_ref, source_key, pattern, engine,
+			 source_sha256, recipe_sha256, status, attempt_count)
+			VALUES ($1, 'youtube', $2, $1, $3, 'gemini/x', $4, $5, $6, $7)`,
+			v, "https://y/"+v, keyPattern, srcHash(v), recipe, status, attempts)
+	}
+	// "never" gets no distillation row — the NULL edge that bug-class #1 dropped.
+	insDist("fresh_done", statusDone, 0)                       // up to date -> excluded
+	insDist("failed_under", statusFailed, maxFailedAttempts-1) // retryable -> included
+	insDist("failed_over", statusFailed, maxFailedAttempts)    // cap reached -> excluded
+
+	db := &pgxDatabase{conn: conn}
+	docs, err := db.PendingDocs(ctx, 100, keyPattern, recipe)
+	if err != nil {
+		t.Fatalf("PendingDocs: %v", err)
+	}
+	got := map[string]bool{}
+	for _, d := range docs {
+		got[d.YoutubeVideoID] = true
+	}
+	want := map[string]bool{"never": true, "failed_under": true}
+	for _, v := range all {
+		if got[v] != want[v] {
+			t.Errorf("PendingDocs include[%q] = %v, want %v", v, got[v], want[v])
+		}
+	}
+}

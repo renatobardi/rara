@@ -52,7 +52,7 @@ const (
 )
 
 const (
-	defaultBatchSize = 25
+	defaultBatchSize = 1
 
 	// curateTimeout bounds the LLM work on a single transcript (a long transcript
 	// plus a multi-stage session can take a while), so a hung provider call cannot
@@ -391,13 +391,13 @@ func extractJSONFence(s string) string {
 	return strings.TrimSpace(rest[:end])
 }
 
-// truncate caps a string to max runes for logging, appending an ellipsis when cut.
-func truncate(s string, max int) string {
+// truncate caps a string to limit runes for logging, appending an ellipsis when cut.
+func truncate(s string, limit int) string {
 	r := []rune(s)
-	if len(r) <= max {
+	if len(r) <= limit {
 		return s
 	}
-	return string(r[:max]) + "…"
+	return string(r[:limit]) + "…"
 }
 
 // parseRetryAfter reads a Retry-After header in delta-seconds form. Returns 0 when
@@ -679,9 +679,13 @@ func newClaudeCurator(apiKey, model string) *claudeCurator {
 
 func (c *claudeCurator) Curate(ctx context.Context, systemPrompt, input string) (string, error) {
 	const toolName = "emit_curation"
+	// A curation carries content_markdown + the full structured extraction; 8192 was
+	// tight enough to truncate long docs (a cut tool_use block then fails to parse →
+	// parse_failed). Sonnet supports far more, so give the response real headroom.
+	const maxTokens = 16384
 	reqBody := map[string]any{
 		"model":      c.model,
-		"max_tokens": 8192,
+		"max_tokens": maxTokens,
 		"system":     systemPrompt,
 		"messages": []any{
 			map[string]any{"role": "user", "content": input},
@@ -882,7 +886,10 @@ func (d *pgxDatabase) PendingDocs(ctx context.Context, limit int, keyPattern, re
 		        OR d.source_sha256 <> src.source_sha256
 		        OR d.recipe_sha256 <> $3
 		      )
-		  AND NOT (d.status = 'failed' AND d.attempt_count >= $4)
+		  -- NULL-safe: a never-distilled doc has d.status = NULL, so a plain
+		  -- NOT (d.status = 'failed' AND ...) would evaluate to NULL and drop the row.
+		  -- IS DISTINCT FROM keeps never-distilled rows (and under-cap failures) in.
+		  AND (d.status IS DISTINCT FROM 'failed' OR d.attempt_count < $4)
 		ORDER BY (CASE WHEN d.status = 'failed' THEN 1 ELSE 0 END) ASC, src.youtube_video_id
 		LIMIT $1`
 	rows, err := d.conn.Query(ctx, query, limit, keyPattern, recipeSHA, maxFailedAttempts)
