@@ -34,6 +34,13 @@ const (
 	geminiModelName = "gemini/gemini-2.5-flash"
 )
 
+// Transcript status values (the transcripts.status column).
+const (
+	statusDone   = "done"   // transcribed with content
+	statusFailed = "failed" // acquisition or ASR error (retried up to the cap)
+	statusEmpty  = "empty"  // transcribed but no speech (silent/music) — terminal
+)
+
 const (
 	// chunkSeconds is the ffmpeg segment length. Each 10-minute chunk of 16 kHz
 	// mono audio stays well under Groq's 25 MB upload limit, so we never need
@@ -241,7 +248,7 @@ func transcribeSource(ctx context.Context, acq AudioAcquirer, tr Transcriber, en
 		SourceType: src.Type,
 		SourceRef:  src.Ref,
 		Engine:     engineName,
-		Status:     "done",
+		Status:     statusDone,
 	}
 	if src.Type == "youtube" {
 		t.YoutubeVideoID = extractVideoID(src.Ref)
@@ -249,7 +256,7 @@ func transcribeSource(ctx context.Context, acq AudioAcquirer, tr Transcriber, en
 
 	chunks, err := acq.Acquire(ctx, src)
 	if err != nil {
-		t.Status, t.Error = "failed", err.Error()
+		t.Status, t.Error = statusFailed, err.Error()
 		return t, nil
 	}
 	defer cleanupChunks(chunks)
@@ -262,7 +269,7 @@ func transcribeSource(ctx context.Context, acq AudioAcquirer, tr Transcriber, en
 	for _, ch := range chunks {
 		text, lang, chunkSegs, err := tr.Transcribe(ctx, ch.Path)
 		if err != nil {
-			t.Status, t.Error = "failed", err.Error()
+			t.Status, t.Error = statusFailed, err.Error()
 			return t, nil
 		}
 		if lang != "" {
@@ -279,6 +286,12 @@ func transcribeSource(ctx context.Context, acq AudioAcquirer, tr Transcriber, en
 	t.Language = majorityLanguage(langCounts)
 	t.Text = strings.Join(parts, "\n")
 	t.DurationSeconds = durationFromSegments(segs)
+	// No speech at all (silent or music-only video): mark 'empty' so it is both
+	// distinguishable from a real transcript and terminal — PendingVideos won't
+	// keep reprocessing it every run.
+	if len(segs) == 0 && t.Text == "" {
+		t.Status = statusEmpty
+	}
 	return t, segs
 }
 
@@ -410,7 +423,7 @@ func (a *ytDlpAcquirer) Acquire(ctx context.Context, src Source) ([]AudioChunk, 
 	pattern := filepath.Join(workDir, "chunk_%03d.mp3")
 	ffargs := []string{
 		"-hide_banner", "-loglevel", "error",
-		"-i", input,
+		"-i", safeFFmpegInput(input),
 		"-ar", "16000", "-ac", "1",
 		"-f", "segment", "-segment_time", strconv.Itoa(chunkSeconds),
 		"-reset_timestamps", "1",
@@ -438,6 +451,28 @@ func (a *ytDlpAcquirer) Acquire(ctx context.Context, src Source) ([]AudioChunk, 
 func lastLine(b []byte) string {
 	lines := strings.Split(strings.TrimSpace(string(b)), "\n")
 	return lines[len(lines)-1]
+}
+
+// safeFFmpegInput stops a source ref from being interpreted by ffmpeg as an option
+// (leading "-") or a protocol (e.g. "concat:", "subfile:"): a non-absolute path is
+// forced to a literal relative path with "./". Absolute paths — our temp downloads
+// in the batch path — pass through unchanged. This only matters for the manual
+// --source mode with a local/url ref; the batch always feeds an absolute temp file.
+func safeFFmpegInput(p string) string {
+	if filepath.IsAbs(p) {
+		return p
+	}
+	return "./" + p
+}
+
+// truncate caps a string (e.g. a provider error body) to max runes for logging,
+// appending an ellipsis when it was cut, so logs stay bounded.
+func truncate(s string, max int) string {
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	return string(r[:max]) + "…"
 }
 
 // ---------------------------------------------------------------------------
@@ -505,7 +540,7 @@ func (g *groqTranscriber) Transcribe(ctx context.Context, audioPath string) (str
 		body, _ := io.ReadAll(resp.Body)
 		retryAfter := parseRetryAfter(resp.Header.Get("Retry-After"))
 		resp.Body.Close()
-		lastErr = fmt.Errorf("groq API error (status %d): %s", resp.StatusCode, string(body))
+		lastErr = fmt.Errorf("groq API error (status %d): %s", resp.StatusCode, truncate(string(body), 500))
 
 		// Retry only transient failures (429 rate limit, 5xx). 4xx other than 429
 		// are permanent (bad request, auth) — fail immediately.
@@ -649,7 +684,7 @@ func (g *geminiTranscriber) Transcribe(ctx context.Context, audioPath string) (s
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return "", "", nil, fmt.Errorf("gemini API error (status %d): %s", resp.StatusCode, string(body))
+		return "", "", nil, fmt.Errorf("gemini API error (status %d): %s", resp.StatusCode, truncate(string(body), 500))
 	}
 
 	var gr struct {
@@ -698,9 +733,10 @@ type pgxDatabase struct{ conn *pgx.Conn }
 // PendingVideos returns videos present in either collector table that do not yet
 // have a completed transcript, capped at limit.
 func (d *pgxDatabase) PendingVideos(ctx context.Context, limit int) ([]VideoRef, error) {
-	// Pending = videos in either collector table without a 'done' transcript,
-	// excluding failed videos that have exhausted the retry cap (so deleted/private
-	// videos stop being retried forever). Never-attempted videos are ordered before
+	// Pending = videos in either collector table without a terminal transcript.
+	// Terminal = 'done' (has content) or 'empty' (no speech) — neither is retried.
+	// Failed videos past the retry cap are also excluded (so deleted/private videos
+	// stop being retried forever). Never-attempted videos are ordered before
 	// previously-failed ones so a handful of failures can never starve the backlog.
 	const query = `
 		SELECT v.youtube_video_id, MIN(v.url) AS url
@@ -710,7 +746,7 @@ func (d *pgxDatabase) PendingVideos(ctx context.Context, limit int) ([]VideoRef,
 			SELECT youtube_video_id, url FROM playlist_videos
 		) v
 		LEFT JOIN transcripts t ON t.youtube_video_id = v.youtube_video_id
-		WHERE (t.youtube_video_id IS NULL OR t.status <> 'done')
+		WHERE (t.youtube_video_id IS NULL OR t.status NOT IN ('done', 'empty'))
 		  AND NOT (t.status = 'failed' AND t.attempt_count >= $2)
 		GROUP BY v.youtube_video_id
 		ORDER BY MIN(CASE WHEN t.status = 'failed' THEN 1 ELSE 0 END) ASC

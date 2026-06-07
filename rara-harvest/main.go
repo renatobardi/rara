@@ -153,6 +153,16 @@ func processChannel(ctx context.Context, conn *pgx.Conn, channel Channel, apiKey
 	return nil
 }
 
+// truncate caps a string (e.g. an API error body) to max runes for logging,
+// appending an ellipsis when cut, so logs stay bounded.
+func truncate(s string, max int) string {
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	return string(r[:max]) + "…"
+}
+
 func convertToUploadPlaylistID(channelID string) string {
 	// Only "UC..." channel IDs map to an uploads playlist ("UU...").
 	// Anything else is returned unchanged rather than silently corrupted.
@@ -166,6 +176,10 @@ func fetchLatestVideos(ctx context.Context, apiKey, uploadPlaylistID string) ([]
 	params := url.Values{}
 	params.Set("playlistId", uploadPlaylistID)
 	params.Set("part", "snippet,contentDetails")
+	// Intentional recency window: harvest only wants each channel's latest uploads,
+	// so it fetches a single page of the 5 most recent and does NOT paginate. This
+	// is by design, not an incomplete sync — rara-shelf is the agent that walks full
+	// playlists via nextPageToken.
 	params.Set("maxResults", "5")
 	params.Set("key", apiKey)
 
@@ -185,7 +199,7 @@ func fetchLatestVideos(ctx context.Context, apiKey, uploadPlaylistID string) ([]
 
 	if resp.StatusCode != http.StatusOK {
 		body, err := io.ReadAll(resp.Body)
-		errMsg := string(body)
+		errMsg := truncate(string(body), 500)
 		if err != nil {
 			errMsg = fmt.Sprintf("(unable to read body: %v)", err)
 		}
