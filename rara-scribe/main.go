@@ -224,6 +224,23 @@ func videoURL(videoID string) string {
 	return "https://www.youtube.com/watch?v=" + videoID
 }
 
+// chunkProgressLabel formats a per-chunk progress line so a long source shows
+// life in the logs instead of going silent for the minutes it takes whisper.cpp
+// to grind through up to an hour of audio per chunk. Newlines in the id (a
+// url/local ref) are flattened so a crafted ref can't forge extra log lines.
+func chunkProgressLabel(id string, n, total int) string {
+	id = strings.NewReplacer("\n", " ", "\r", " ").Replace(id)
+	return fmt.Sprintf("  %s: transcribing chunk %d/%d", id, n, total)
+}
+
+// shouldLogChunkProgress decides whether to emit per-chunk progress. The local
+// engine is always logged — each chunk is minutes of wall-clock work, so even a
+// single chunk would otherwise sit silent — as is any multi-chunk source. Fast
+// single-chunk API transcriptions stay quiet to avoid log noise on the nightly run.
+func shouldLogChunkProgress(engineName string, totalChunks int) bool {
+	return totalChunks > 1 || engineName == whisperCppModelName
+}
+
 // resolveSourceTimeout picks the per-video budget: a SOURCE_TIMEOUT_MINUTES env
 // override (any engine), else the engine default — larger for local, whose
 // transcription is wall-clock work rather than a network round-trip.
@@ -434,7 +451,16 @@ func transcribeSource(ctx context.Context, acq AudioAcquirer, tr Transcriber, en
 		segs       []Segment
 		langCounts = map[string]int{}
 	)
-	for _, ch := range chunks {
+	// A label for progress logs: the youtube id when known, else the raw ref.
+	label := t.YoutubeVideoID
+	if label == "" {
+		label = src.Ref
+	}
+	logProgress := shouldLogChunkProgress(engineName, len(chunks))
+	for i, ch := range chunks {
+		if logProgress {
+			log.Println(chunkProgressLabel(label, i+1, len(chunks)))
+		}
 		text, lang, chunkSegs, err := tr.Transcribe(ctx, ch.Path)
 		if err != nil {
 			t.Status, t.Error = statusFailed, err.Error()
