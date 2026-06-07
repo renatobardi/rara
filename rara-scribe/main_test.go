@@ -2,11 +2,13 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -561,6 +563,118 @@ func TestTranscribeSourceFlagsTransientASRFailure(t *testing.T) {
 	}
 }
 
+// TestGroqTransientOnContextCancelDuringBackoff: when a 429's backoff wait is cut
+// short by context cancellation, the error must still classify as transient — the
+// root cause is the rate limit, so it must not count toward the retry cap.
+func TestGroqTransientOnContextCancelDuringBackoff(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "10") // a backoff far longer than the ctx deadline
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":{"message":"rate limit"}}`))
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	g := &groqTranscriber{apiKey: "k", endpoint: srv.URL}
+	_, _, _, err := g.Transcribe(ctx, writeTempAudio(t))
+	if err == nil || !isTransient(err) {
+		t.Fatalf("a 429 backoff cut short by ctx cancellation must stay transient, got err=%v transient=%v", err, isTransient(err))
+	}
+}
+
+// geminiResponse builds the API envelope that wraps the JSON transcript as text
+// inside candidates/content/parts — the shape geminiTranscriber unwraps.
+func geminiResponse(t *testing.T, language string, segs []Segment) []byte {
+	t.Helper()
+	type seg struct {
+		Start float64 `json:"start"`
+		End   float64 `json:"end"`
+		Text  string  `json:"text"`
+	}
+	inner := struct {
+		Language string `json:"language"`
+		Segments []seg  `json:"segments"`
+	}{Language: language}
+	for _, s := range segs {
+		inner.Segments = append(inner.Segments, seg{Start: s.Start, End: s.End, Text: s.Text})
+	}
+	innerJSON, err := json.Marshal(inner)
+	if err != nil {
+		t.Fatalf("marshal inner: %v", err)
+	}
+	envelope := map[string]any{
+		"candidates": []any{map[string]any{
+			"content": map[string]any{
+				"parts": []any{map[string]any{"text": string(innerJSON)}},
+			},
+		}},
+	}
+	out, err := json.Marshal(envelope)
+	if err != nil {
+		t.Fatalf("marshal envelope: %v", err)
+	}
+	return out
+}
+
+// TestGeminiRetriesOn429ThenSucceeds: the Gemini engine retries a transient 429
+// with backoff (on par with Groq) and the following 200 yields the transcript.
+func TestGeminiRetriesOn429ThenSucceeds(t *testing.T) {
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if atomic.AddInt32(&calls, 1) == 1 {
+			w.Header().Set("Retry-After", "0.02")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"error":{"message":"rate limit"}}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(geminiResponse(t, "pt", []Segment{{Start: 0, End: 1, Text: "olá"}}))
+	}))
+	defer srv.Close()
+
+	g := &geminiTranscriber{apiKey: "k", endpoint: srv.URL}
+	text, lang, segs, err := g.Transcribe(context.Background(), writeTempAudio(t))
+	if err != nil {
+		t.Fatalf("expected success after retry, got %v", err)
+	}
+	if text != "olá" || lang != "pt" || len(segs) != 1 {
+		t.Errorf("unexpected result: text=%q lang=%q segs=%+v", text, lang, segs)
+	}
+	if got := atomic.LoadInt32(&calls); got != 2 {
+		t.Errorf("expected 2 calls (429 then 200), got %d", got)
+	}
+}
+
+// TestGeminiClassifiesTransientVsPermanent: a persistent 429 is surfaced as a
+// transient error after exhausting retries, while a 4xx is permanent.
+func TestGeminiClassifiesTransientVsPermanent(t *testing.T) {
+	persistent429 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "0.01")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":{"message":"rate limit"}}`))
+	}))
+	defer persistent429.Close()
+
+	g := &geminiTranscriber{apiKey: "k", endpoint: persistent429.URL}
+	_, _, _, err := g.Transcribe(context.Background(), writeTempAudio(t))
+	if err == nil || !isTransient(err) {
+		t.Fatalf("persistent 429 should classify transient, got err=%v transient=%v", err, isTransient(err))
+	}
+
+	badReq := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":{"message":"bad request"}}`))
+	}))
+	defer badReq.Close()
+
+	g = &geminiTranscriber{apiKey: "k", endpoint: badReq.URL}
+	_, _, _, err = g.Transcribe(context.Background(), writeTempAudio(t))
+	if err == nil || isTransient(err) {
+		t.Fatalf("400 should classify permanent, got err=%v transient=%v", err, isTransient(err))
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Mocks
 // ---------------------------------------------------------------------------
@@ -572,6 +686,8 @@ type MockDatabase struct {
 	transcripts map[string]Transcript // keyed by dedup key
 	segments    map[string][]Segment
 	attempts    map[string]int // failed-attempt counter per dedup key
+	savedSeq    map[string]int // last save order per key — mirrors updated_at
+	saveCounter int            // monotonic save sequence
 	saveErr     error
 	pendingErr  error
 }
@@ -581,6 +697,7 @@ func newMockDatabase() *MockDatabase {
 		transcripts: make(map[string]Transcript),
 		segments:    make(map[string][]Segment),
 		attempts:    make(map[string]int),
+		savedSeq:    make(map[string]int),
 	}
 }
 
@@ -616,6 +733,16 @@ func (m *MockDatabase) PendingVideos(ctx context.Context, limit int) ([]VideoRef
 			fresh = append(fresh, ref)
 		}
 	}
+	// Mirror the SQL ordering among failed rows: fewest attempts first, then the
+	// least-recently-saved (updated_at ASC, round-robin) so a large backlog at the
+	// same attempt_count can't starve itself.
+	sort.SliceStable(retry, func(i, j int) bool {
+		ki, kj := "yt:"+retry[i].YoutubeVideoID, "yt:"+retry[j].YoutubeVideoID
+		if m.attempts[ki] != m.attempts[kj] {
+			return m.attempts[ki] < m.attempts[kj]
+		}
+		return m.savedSeq[ki] < m.savedSeq[kj]
+	})
 	out := append(fresh, retry...)
 	if limit > 0 && len(out) > limit {
 		out = out[:limit]
@@ -630,6 +757,8 @@ func (m *MockDatabase) SaveTranscript(ctx context.Context, t Transcript, segs []
 	key := dedupKey(t)
 	m.transcripts[key] = t // upsert: replaces, mirroring ON CONFLICT DO UPDATE
 	m.segments[key] = segs // replace segments
+	m.saveCounter++
+	m.savedSeq[key] = m.saveCounter // mirror updated_at = CURRENT_TIMESTAMP
 	// Mirror attempt_count: a permanent failure increments, a 'done'/'empty' save
 	// resets to 0, and a transient failure (rate limit / 5xx) leaves it unchanged
 	// so a daily-quota starvation never counts toward the retry cap.
@@ -723,6 +852,62 @@ func TestPendingVideosExcludesExhaustedFailures(t *testing.T) {
 	m.attempts["yt:perma"] = maxFailedAttempts
 	if got, _ := m.PendingVideos(context.Background(), 25); len(got) != 0 {
 		t.Errorf("at cap: want video excluded, got %+v", got)
+	}
+}
+
+// TestPendingVideosFewerAttemptsFirst: among failed rows, the one with fewer
+// attempts is retried before one closer to the cap.
+func TestPendingVideosFewerAttemptsFirst(t *testing.T) {
+	m := newMockDatabase()
+	m.pending = []VideoRef{
+		{YoutubeVideoID: "near", URL: videoURL("near")},
+		{YoutubeVideoID: "far", URL: videoURL("far")},
+	}
+	m.transcripts["yt:near"] = Transcript{YoutubeVideoID: "near", Status: statusFailed}
+	m.transcripts["yt:far"] = Transcript{YoutubeVideoID: "far", Status: statusFailed}
+	m.attempts["yt:near"] = maxFailedAttempts - 1 // almost retired
+	m.attempts["yt:far"] = 1                      // plenty of headroom
+
+	got, err := m.PendingVideos(context.Background(), 25)
+	if err != nil {
+		t.Fatalf("PendingVideos: %v", err)
+	}
+	if len(got) != 2 || got[0].YoutubeVideoID != "far" {
+		t.Errorf("want [far, near] (fewest attempts first), got %+v", got)
+	}
+}
+
+// TestPendingVideosRoundRobinAmongFailed: a backlog of equally-failed rows (same
+// attempt_count, e.g. quota-starved transient failures) is drained round-robin —
+// the least-recently-tried first — so re-trying one row sends it to the back
+// instead of the same rows being picked every run while others wait forever.
+func TestPendingVideosRoundRobinAmongFailed(t *testing.T) {
+	ctx := context.Background()
+	m := newMockDatabase()
+	m.pending = []VideoRef{
+		{YoutubeVideoID: "a", URL: videoURL("a")},
+		{YoutubeVideoID: "b", URL: videoURL("b")},
+	}
+	// Both transient-failed at attempt_count=0; 'a' was tried (saved) first.
+	if err := m.SaveTranscript(ctx, Transcript{YoutubeVideoID: "a", SourceRef: videoURL("a"), Status: statusFailed, TransientFailure: true}, nil); err != nil {
+		t.Fatalf("save a: %v", err)
+	}
+	if err := m.SaveTranscript(ctx, Transcript{YoutubeVideoID: "b", SourceRef: videoURL("b"), Status: statusFailed, TransientFailure: true}, nil); err != nil {
+		t.Fatalf("save b: %v", err)
+	}
+
+	got, _ := m.PendingVideos(ctx, 25)
+	if len(got) != 2 || got[0].YoutubeVideoID != "a" {
+		t.Fatalf("want [a, b] (a tried longest ago leads), got %+v", got)
+	}
+
+	// Re-try 'a' (saved again now): it becomes the most-recent, so 'b' should lead.
+	if err := m.SaveTranscript(ctx, Transcript{YoutubeVideoID: "a", SourceRef: videoURL("a"), Status: statusFailed, TransientFailure: true}, nil); err != nil {
+		t.Fatalf("re-save a: %v", err)
+	}
+	got, _ = m.PendingVideos(ctx, 25)
+	if len(got) != 2 || got[0].YoutubeVideoID != "b" {
+		t.Errorf("after retrying a, want [b, a], got %+v", got)
 	}
 }
 
