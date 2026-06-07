@@ -70,7 +70,7 @@ Curates the **raw transcripts** produced by scribe into **knowledge documents re
 - **Tables**: `distillations` (own); reads `transcripts`, `channel_videos`, `playlist_videos`
 - **Uniqueness**: `UNIQUE(source_key, COALESCE(session_patterns, pattern))` — idempotent; reprocesses when the transcript or the recipe changes (dual hash)
 - **Runtime**: GCP Cloud Run Job (daily, after scribe)
-- **Tests**: 32/32 passing (+ an opt-in Postgres integration test for the pending-queue SQL)
+- **Tests**: 34/34 passing (+ an opt-in Postgres integration test for the pending-queue SQL)
 - **Status**: ✅ Production
 
 [README →](./rara-distill/README.md) | [DEPLOY →](./rara-distill/DEPLOY.md)
@@ -165,7 +165,7 @@ rara/
 │   └── ...
 ├── rara-distill/           # Transcript curator → RAG material (Cloud Run)
 │   ├── main.go
-│   ├── main_test.go        # 32 TDD tests, DistillHarness + mock LLM
+│   ├── main_test.go        # 34 TDD tests, DistillHarness + mock LLM
 │   ├── patterns/           # Fabric-style curation library (go:embed)
 │   ├── contexts/
 │   ├── strategies/

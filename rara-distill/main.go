@@ -867,22 +867,21 @@ type pgxDatabase struct{ conn *pgx.Conn }
 // and never-distilled docs are ordered before previously-failed ones so failures
 // cannot starve the backlog.
 func (d *pgxDatabase) PendingDocs(ctx context.Context, limit int, keyPattern, recipeSHA string) ([]SourceDoc, error) {
+	// Two stages: pick the pending rows first (cheap), then build the timestamped
+	// transcript ONLY for the <= limit rows that survive. Building it inside src would
+	// run the per-segment string_agg for every done transcript (the whole backlog),
+	// because the ORDER BY ... LIMIT forces all matching rows to be projected before
+	// the cut — wasteful when the batch is small.
 	const query = `
 		WITH src AS (
 			SELECT
+				t.id AS transcript_id,
 				t.youtube_video_id,
 				t.source_type,
 				t.source_ref,
 				COALESCE(t.youtube_video_id, t.source_ref) AS source_key,
 				COALESCE(cv.title, pv.title, '')           AS title,
 				t.transcript,
-				-- Per-segment "[seconds] text", so the model can anchor claims to a
-				-- timestamp. Falls back to the flat transcript when there are no segments.
-				COALESCE(
-					(SELECT string_agg('[' || floor(s.start_seconds)::int || '] ' || s.text, E'\n' ORDER BY s.seq)
-					 FROM transcript_segments s WHERE s.transcript_id = t.id),
-					t.transcript
-				) AS transcript_ts,
 				encode(sha256(convert_to(t.transcript, 'UTF8')), 'hex') AS source_sha256
 			FROM transcripts t
 			LEFT JOIN LATERAL (
@@ -896,25 +895,39 @@ func (d *pgxDatabase) PendingDocs(ctx context.Context, limit int, keyPattern, re
 			WHERE t.status = 'done'
 			  AND t.transcript IS NOT NULL
 			  AND length(btrim(t.transcript)) > 0
+		),
+		pending AS (
+			SELECT src.transcript_id, src.youtube_video_id, src.source_type, src.source_ref,
+			       src.source_key, src.title, src.transcript, src.source_sha256
+			FROM src
+			LEFT JOIN distillations d
+			       ON d.source_key = src.source_key
+			      AND COALESCE(d.session_patterns, d.pattern) = $2
+			WHERE (
+			        d.id IS NULL
+			        OR d.status <> 'done'
+			        OR d.source_sha256 <> src.source_sha256
+			        OR d.recipe_sha256 <> $3
+			      )
+			  -- NULL-safe: a never-distilled doc has d.status = NULL, so a plain
+			  -- NOT (d.status = 'failed' AND ...) would evaluate to NULL and drop the row.
+			  -- IS DISTINCT FROM keeps never-distilled rows (and under-cap failures) in.
+			  AND (d.status IS DISTINCT FROM 'failed' OR d.attempt_count < $4)
+			ORDER BY (CASE WHEN d.status = 'failed' THEN 1 ELSE 0 END) ASC, src.youtube_video_id
+			LIMIT $1
 		)
-		SELECT src.youtube_video_id, src.source_type, src.source_ref, src.source_key,
-		       src.title, src.transcript, src.transcript_ts, src.source_sha256
-		FROM src
-		LEFT JOIN distillations d
-		       ON d.source_key = src.source_key
-		      AND COALESCE(d.session_patterns, d.pattern) = $2
-		WHERE (
-		        d.id IS NULL
-		        OR d.status <> 'done'
-		        OR d.source_sha256 <> src.source_sha256
-		        OR d.recipe_sha256 <> $3
-		      )
-		  -- NULL-safe: a never-distilled doc has d.status = NULL, so a plain
-		  -- NOT (d.status = 'failed' AND ...) would evaluate to NULL and drop the row.
-		  -- IS DISTINCT FROM keeps never-distilled rows (and under-cap failures) in.
-		  AND (d.status IS DISTINCT FROM 'failed' OR d.attempt_count < $4)
-		ORDER BY (CASE WHEN d.status = 'failed' THEN 1 ELSE 0 END) ASC, src.youtube_video_id
-		LIMIT $1`
+		SELECT p.youtube_video_id, p.source_type, p.source_ref, p.source_key,
+		       p.title, p.transcript,
+		       -- Per-segment "[seconds] text", so the model can anchor claims to a
+		       -- timestamp. Falls back to the flat transcript when there are no segments.
+		       COALESCE(
+		           (SELECT string_agg('[' || floor(s.start_seconds)::int || '] ' || s.text, E'\n' ORDER BY s.seq)
+		            FROM transcript_segments s WHERE s.transcript_id = p.transcript_id),
+		           p.transcript
+		       ) AS transcript_ts,
+		       p.source_sha256
+		FROM pending p
+		ORDER BY p.youtube_video_id`
 	rows, err := d.conn.Query(ctx, query, limit, keyPattern, recipeSHA, maxFailedAttempts)
 	if err != nil {
 		return nil, err

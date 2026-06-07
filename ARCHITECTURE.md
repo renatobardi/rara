@@ -72,7 +72,7 @@ divergence in the system.
 | **Tables** | `target_channels`, `channel_videos` | `playlists`, `playlist_videos` | `transcripts`, `transcript_segments` | `distillations` |
 | **Runtime** | Cloud Run Job | Cloud Run Job | local Mac (launchd, 02:00) | Cloud Run Job |
 | **Pagination** | single recency page (latest N) | full `nextPageToken` loop | n/a (queue from DB) | n/a (queue from DB) |
-| **Tests** | 14 | 12 | 13 | 32 |
+| **Tests** | 14 | 12 | 13 | 34 |
 
 ## Shared conventions
 
