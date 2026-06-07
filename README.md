@@ -67,13 +67,29 @@ Curates the **raw transcripts** produced by scribe into **knowledge documents re
 - **Engine**: pluggable via `CURATE_ENGINE` — `gemini` (default), `claude` or `groq`
 - **Curation**: Fabric-style **patterns** + optional **contexts** + **strategies** + **sessions** (pattern chains), all Markdown embedded via `go:embed`
 - **Output**: per `(source, recipe)` — human `content` (Markdown) **plus** queryable `structured` and a `doc_context` for Contextual Retrieval, in a single LLM pass ("compile once")
-- **Tables**: `distillations` (own); reads `transcripts`, `channel_videos`, `playlist_videos`
-- **Uniqueness**: `UNIQUE(source_key, COALESCE(session_patterns, pattern))` — idempotent; reprocesses when the transcript or the recipe changes (dual hash)
-- **Runtime**: GCP Cloud Run Job (daily, after scribe)
-- **Tests**: 34/34 passing (+ an opt-in Postgres integration test for the pending-queue SQL)
+- **Tables**: `distillations` (own); reads `transcripts`, `channel_videos`, `playlist_videos`, and (news lane) `news_items`
+- **Source lanes**: `DISTILL_SOURCE=transcripts` (default) or `news` — the news lane reads rara-feed's `news_items` with a fixed `summarize_news` + `software-ai` recipe, as its own Cloud Run Job so it never starves the transcript lane
+- **Uniqueness**: `UNIQUE(source_key, COALESCE(session_patterns, pattern))` — idempotent; reprocesses when the source or the recipe changes (dual hash)
+- **Runtime**: GCP Cloud Run Job (daily, after scribe; the news lane runs after feed)
+- **Tests**: 35/35 passing (+ an opt-in Postgres integration test for the pending-queue SQL)
 - **Status**: ✅ Production
 
 [README →](./rara-distill/README.md) | [DEPLOY →](./rara-distill/DEPLOY.md)
+
+---
+
+### 📰 rara-feed
+Collects **AI/ML news** from RSS feeds, Hacker News (Algolia) and HTML pages into a `news_items` table — an upstream source the distill **news lane** curates. Reads its work queue from `feed_sources`, writes its own `news_items` table.
+
+- **Sources**: RSS 2.0 **and** Atom (auto-detected), Hacker News by search term, HTML via a generic **JSON-LD** extractor (v1)
+- **Resilience**: a source that fails (block / JS / timeout) is skipped — never brings down the batch; idempotent re-runs via `content_sha256` staleness
+- **Full-text**: best-effort article fetch when the feed ships no inline body; `fetch_status` (`full|excerpt|failed`) records coverage
+- **Tables**: `news_items` (own) + `feed_sources` (work queue, seeded); deduped on `url` (HN text posts keyed by permalink)
+- **Runtime**: GCP Cloud Run Job (daily, **before** the distill news lane). No LLM secrets; the Bright Data unlocker tier is a follow-up
+- **Tests**: 24/24 passing (mock Fetcher + MockDatabase + fixtures, zero I/O)
+- **Status**: 🚧 In review
+
+[README →](./rara-feed/README.md) | [DEPLOY →](./rara-feed/DEPLOY.md)
 
 ---
 
@@ -106,7 +122,8 @@ See [INFRASTRUCTURE.md](./INFRASTRUCTURE.md) for the full layout and [ARCHITECTU
 | `shelf-oauth-client-id` | rara-shelf (OAuth Web app client) |
 | `shelf-oauth-client-secret` | rara-shelf |
 | `shelf-oauth-refresh-token` | rara-shelf (scope: youtube.readonly) |
-| `gemini-api-key` | rara-distill (curation LLM; default engine) |
+| `database-url` | + rara-feed (same Neon connection string) |
+| `gemini-api-key` | rara-distill (curation LLM; default engine — both lanes) |
 | `anthropic-api-key` / `groq-api-key` | rara-distill (only if `CURATE_ENGINE` switched) |
 
 > **rara-scribe does not use Secret Manager.** It runs locally and reads `DATABASE_URL` and
@@ -134,13 +151,16 @@ rara/
 │   ├── ci-shelf.yml        # Code quality + tests (rara-shelf)
 │   ├── ci-scribe.yml       # Code quality + tests (rara-scribe)
 │   ├── ci-distill.yml      # Code quality + tests (rara-distill)
+│   ├── ci-feed.yml         # Code quality + tests (rara-feed)
 │   ├── database.yml        # Migrations (rara-harvest)
 │   ├── database-shelf.yml  # Migrations (rara-shelf)
 │   ├── database-scribe.yml # Migrations (rara-scribe)
 │   ├── database-distill.yml# Migrations (rara-distill)
+│   ├── database-feed.yml   # Migrations (rara-feed)
 │   ├── deploy.yml          # Cloud Run deploy (rara-harvest)
 │   ├── deploy-shelf.yml    # Cloud Run deploy (rara-shelf)
-│   └── deploy-distill.yml  # Cloud Run deploy (rara-distill)
+│   ├── deploy-distill.yml  # Cloud Run deploy (rara-distill + news lane)
+│   └── deploy-feed.yml     # Cloud Run deploy (rara-feed)
 │                           # (no deploy-scribe.yml — scribe runs locally)
 ├── rara-harvest/           # YouTube channel video harvester (Cloud Run)
 │   ├── main.go
@@ -165,10 +185,17 @@ rara/
 │   └── ...
 ├── rara-distill/           # Transcript curator → RAG material (Cloud Run)
 │   ├── main.go
-│   ├── main_test.go        # 34 TDD tests, DistillHarness + mock LLM
+│   ├── main_test.go        # 35 TDD tests, DistillHarness + mock LLM
 │   ├── patterns/           # Fabric-style curation library (go:embed)
+│   │   └── summarize_news/ # news-lane pattern (DISTILL_SOURCE=news)
 │   ├── contexts/
 │   ├── strategies/
+│   ├── migrations/
+│   │   └── 001_initial_schema.sql
+│   └── ...
+├── rara-feed/              # AI/ML news collector → news_items (Cloud Run)
+│   ├── main.go
+│   ├── main_test.go        # 24 TDD tests, FeedHarness + mock Fetcher
 │   ├── migrations/
 │   │   └── 001_initial_schema.sql
 │   └── ...
