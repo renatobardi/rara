@@ -67,19 +67,24 @@ Chosen by `TRANSCRIBE_ENGINE` in `.env`:
 
 | Engine | Model | Approx. cost | Notes |
 |--------|-------|--------------|-------|
-| `groq` (default) | `whisper-large-v3` | ~$0.111/h | Best quality/cost; precise timestamps. |
+| `groq` (default) | `whisper-large-v3` | ~$0.111/h | Best quality/cost; precise timestamps. Free tier caps at 2000 req/day. |
 | `gemini` | `gemini-2.5-flash` | ~$0.045/h (batch) | Cheaper; approximate timestamps. |
+| `local` | `whisper.cpp` `large-v3` | $0 (compute) | Offline, no API quota — same large-v3 weights as Groq (beam search 5). Hybrid: Groq fallback per chunk when `GROQ_API_KEY` is set. |
 
-The `engine` column records which engine produced each row.
+The `engine` column records which engine produced each row (for `local`, the stored
+name is `whispercpp/whisper-large-v3` even when a chunk fell back to Groq).
 
 ## Configuration (env)
 
 | Var | Required | Default | Description |
 |-----|----------|---------|-------------|
 | `DATABASE_URL` | yes | — | Neon PostgreSQL (shared) |
-| `TRANSCRIBE_ENGINE` | no | `groq` | `groq` or `gemini` |
-| `GROQ_API_KEY` | if engine=groq | — | https://console.groq.com |
+| `TRANSCRIBE_ENGINE` | no | `groq` | `groq`, `gemini` or `local` |
+| `GROQ_API_KEY` | if engine=groq | — | https://console.groq.com (also enables the Groq fallback under `local`) |
 | `GEMINI_API_KEY` | if engine=gemini | — | https://aistudio.google.com |
+| `WHISPER_CPP_BIN` | if engine=local | `/opt/homebrew/bin/whisper-cli` | whisper.cpp CLI binary |
+| `WHISPER_CPP_MODEL` | if engine=local | — | Absolute path to the ggml `large-v3` model |
+| `WHISPER_CPP_VAD_MODEL` | no | — | Optional silero VAD model (trims silence/music, cuts hallucinations) |
 | `BATCH_SIZE` | no | `25` | Videos per run (default; raise freely — e.g. 100, 1000 — to drain the backlog faster, no hard cap) |
 | `YT_DLP_BIN` | yes (local) | — | Absolute path to `yt-dlp` |
 | `FFMPEG_BIN` | yes (local) | — | Absolute path to `ffmpeg` |

@@ -154,9 +154,144 @@ func TestNewTranscriberFactory(t *testing.T) {
 		t.Error("expected error for gemini without key")
 	}
 
+	// Local (whisper.cpp): selected with bin+model. Without a Groq key it is the
+	// bare local engine; with a key it is wrapped as primary with Groq fallback —
+	// but the stored engine name is always the local one.
+	loc, name, err := NewTranscriber(Config{Engine: engineLocal, WhisperCppBin: "wc", WhisperCppModel: "m"})
+	if err != nil || loc == nil || name != whisperCppModelName {
+		t.Fatalf("local: err=%v tr=%v name=%q", err, loc, name)
+	}
+	if _, ok := loc.(*whisperCppTranscriber); !ok {
+		t.Errorf("local without groq key: type = %T, want *whisperCppTranscriber", loc)
+	}
+	hyb, name, err := NewTranscriber(Config{Engine: engineLocal, WhisperCppBin: "wc", WhisperCppModel: "m", GroqAPIKey: "k"})
+	if err != nil || name != whisperCppModelName {
+		t.Fatalf("local+groq: err=%v name=%q", err, name)
+	}
+	if _, ok := hyb.(*fallbackTranscriber); !ok {
+		t.Errorf("local with groq key: type = %T, want *fallbackTranscriber", hyb)
+	}
+
+	// Local without bin/model → error.
+	if _, _, err := NewTranscriber(Config{Engine: engineLocal}); err == nil {
+		t.Error("expected error for local without bin/model")
+	}
+
 	// Unknown engine → error.
 	if _, _, err := NewTranscriber(Config{Engine: "whisperx", GroqAPIKey: "k"}); err == nil {
 		t.Error("expected error for unknown engine")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Local whisper.cpp JSON parsing
+// ---------------------------------------------------------------------------
+
+func TestParseWhisperCppJSON(t *testing.T) {
+	const sample = `{
+		"result": {"language": "pt"},
+		"transcription": [
+			{"offsets": {"from": 0, "to": 2500}, "text": " Olá mundo"},
+			{"offsets": {"from": 2500, "to": 5000}, "text": " segundo segmento "}
+		]
+	}`
+	text, lang, segs, err := parseWhisperCppJSON([]byte(sample))
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if lang != "pt" {
+		t.Errorf("language = %q, want pt", lang)
+	}
+	if text != "Olá mundo segundo segmento" {
+		t.Errorf("text = %q", text)
+	}
+	if len(segs) != 2 {
+		t.Fatalf("segs len = %d, want 2", len(segs))
+	}
+	// Offsets are milliseconds → seconds, text trimmed.
+	if segs[0] != (Segment{Start: 0, End: 2.5, Text: "Olá mundo"}) {
+		t.Errorf("seg0 = %+v", segs[0])
+	}
+	if segs[1] != (Segment{Start: 2.5, End: 5, Text: "segundo segmento"}) {
+		t.Errorf("seg1 = %+v", segs[1])
+	}
+
+	// Malformed JSON → error.
+	if _, _, _, err := parseWhisperCppJSON([]byte("{not json")); err == nil {
+		t.Error("expected error for malformed JSON")
+	}
+
+	// Empty transcription → empty text/segs, no error (pipeline marks it 'empty').
+	text, _, segs, err = parseWhisperCppJSON([]byte(`{"result":{"language":"en"},"transcription":[]}`))
+	if err != nil || text != "" || len(segs) != 0 {
+		t.Errorf("empty: err=%v text=%q segs=%d", err, text, len(segs))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Hybrid fallback transcriber
+// ---------------------------------------------------------------------------
+
+// recordingTranscriber returns a fixed result/error and counts its invocations,
+// so a test can assert whether the fallback secondary was reached.
+type recordingTranscriber struct {
+	text, language string
+	segs           []Segment
+	err            error
+	calls          int
+}
+
+func (r *recordingTranscriber) Transcribe(ctx context.Context, audioPath string) (string, string, []Segment, error) {
+	r.calls++
+	return r.text, r.language, r.segs, r.err
+}
+
+func TestFallbackTranscriber(t *testing.T) {
+	ctx := context.Background()
+
+	// Primary succeeds → secondary is never called.
+	primary := &recordingTranscriber{text: "local", language: "pt"}
+	secondary := &recordingTranscriber{text: "groq"}
+	f := &fallbackTranscriber{primary: primary, secondary: secondary}
+	text, lang, _, err := f.Transcribe(ctx, "chunk.mp3")
+	if err != nil || text != "local" || lang != "pt" {
+		t.Fatalf("primary-ok: err=%v text=%q lang=%q", err, text, lang)
+	}
+	if secondary.calls != 0 {
+		t.Errorf("secondary called %d times, want 0", secondary.calls)
+	}
+
+	// Primary fails → secondary's result is used.
+	primary = &recordingTranscriber{err: errors.New("whisper.cpp crashed")}
+	secondary = &recordingTranscriber{text: "groq", language: "en"}
+	f = &fallbackTranscriber{primary: primary, secondary: secondary}
+	text, lang, _, err = f.Transcribe(ctx, "chunk.mp3")
+	if err != nil || text != "groq" || lang != "en" {
+		t.Fatalf("fallback: err=%v text=%q lang=%q", err, text, lang)
+	}
+	if secondary.calls != 1 {
+		t.Errorf("secondary called %d times, want 1", secondary.calls)
+	}
+
+	// Both fail → an error surfaces.
+	primary = &recordingTranscriber{err: errors.New("local down")}
+	secondary = &recordingTranscriber{err: errors.New("groq down")}
+	f = &fallbackTranscriber{primary: primary, secondary: secondary}
+	if _, _, _, err := f.Transcribe(ctx, "chunk.mp3"); err == nil {
+		t.Error("expected error when both engines fail")
+	}
+
+	// Cancelled context → no fallback attempt (the secondary would fail too).
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	primary = &recordingTranscriber{err: errors.New("ctx canceled")}
+	secondary = &recordingTranscriber{text: "groq"}
+	f = &fallbackTranscriber{primary: primary, secondary: secondary}
+	if _, _, _, err := f.Transcribe(cancelled, "chunk.mp3"); err == nil {
+		t.Error("expected error on cancelled context")
+	}
+	if secondary.calls != 0 {
+		t.Errorf("secondary called %d times on cancelled ctx, want 0", secondary.calls)
 	}
 }
 

@@ -29,9 +29,11 @@ import (
 const (
 	engineGroq   = "groq"
 	engineGemini = "gemini"
+	engineLocal  = "local" // whisper.cpp on this machine (no API quota)
 
-	groqModelName   = "groq/whisper-large-v3"
-	geminiModelName = "gemini/gemini-2.5-flash"
+	groqModelName       = "groq/whisper-large-v3"
+	geminiModelName     = "gemini/gemini-2.5-flash"
+	whisperCppModelName = "whispercpp/whisper-large-v3"
 )
 
 // Transcript status values (the transcripts.status column).
@@ -61,6 +63,11 @@ const (
 	// PendingVideos skips it so permanently-broken videos (deleted/private) stop
 	// burning yt-dlp/ASR calls every run. A 'done' save resets the counter.
 	maxFailedAttempts = 5
+
+	// whisperCppBeamSize is the beam-search width for the local whisper.cpp engine.
+	// 5 is the quality-oriented setting, keeping local large-v3 transcripts on par
+	// with the Groq large-v3 we fall back to.
+	whisperCppBeamSize = 5
 
 	// maxASRRetries bounds how many times a transient ASR error (429 rate limit or
 	// 5xx) is retried within a single chunk before giving up. Groq's free tier is
@@ -125,12 +132,15 @@ type VideoRef struct {
 
 // Config is the runtime configuration, sourced from environment variables.
 type Config struct {
-	DatabaseURL  string
-	Engine       string
-	GroqAPIKey   string
-	GeminiAPIKey string
-	Cookies      string
-	BatchSize    int
+	DatabaseURL        string
+	Engine             string
+	GroqAPIKey         string
+	GeminiAPIKey       string
+	WhisperCppBin      string // whisper.cpp CLI (engine "local")
+	WhisperCppModel    string // ggml model file for whisper.cpp
+	WhisperCppVADModel string // optional silero VAD model for whisper.cpp
+	Cookies            string
+	BatchSize          int
 }
 
 // ---------------------------------------------------------------------------
@@ -230,8 +240,25 @@ func NewTranscriber(cfg Config) (Transcriber, string, error) {
 			return nil, "", fmt.Errorf("GEMINI_API_KEY is required for engine %q", engineGemini)
 		}
 		return newGeminiTranscriber(cfg.GeminiAPIKey), geminiModelName, nil
+	case engineLocal:
+		if cfg.WhisperCppBin == "" || cfg.WhisperCppModel == "" {
+			return nil, "", fmt.Errorf("WHISPER_CPP_BIN and WHISPER_CPP_MODEL are required for engine %q", engineLocal)
+		}
+		local := newWhisperCppTranscriber(cfg)
+		// Hybrid: with a Groq key present, run local as primary and Groq as the
+		// fallback so a per-chunk local failure still completes via the API. The
+		// stored engine name stays the local one (the primary path).
+		if cfg.GroqAPIKey != "" {
+			return &fallbackTranscriber{
+				primary:       local,
+				secondary:     newGroqTranscriber(cfg.GroqAPIKey),
+				primaryName:   whisperCppModelName,
+				secondaryName: groqModelName,
+			}, whisperCppModelName, nil
+		}
+		return local, whisperCppModelName, nil
 	default:
-		return nil, "", fmt.Errorf("unknown TRANSCRIBE_ENGINE %q (use %q or %q)", cfg.Engine, engineGroq, engineGemini)
+		return nil, "", fmt.Errorf("unknown TRANSCRIBE_ENGINE %q (use %q, %q or %q)", cfg.Engine, engineGroq, engineGemini, engineLocal)
 	}
 }
 
@@ -725,6 +752,122 @@ func (g *geminiTranscriber) Transcribe(ctx context.Context, audioPath string) (s
 }
 
 // ---------------------------------------------------------------------------
+// Local transcriber: whisper.cpp large-v3 (offline, no API quota)
+// ---------------------------------------------------------------------------
+
+// whisperCppTranscriber shells out to the whisper.cpp CLI for fully local ASR.
+// whisper.cpp reads our 16 kHz mono mp3 chunks directly (miniaudio), so no
+// transcode is needed; it transcribes with beam search (and optional silero VAD)
+// for quality on par with Groq's whisper-large-v3.
+type whisperCppTranscriber struct {
+	bin      string // whisper.cpp CLI (e.g. whisper-cli)
+	model    string // ggml model file (e.g. ggml-large-v3.bin)
+	vadModel string // optional silero VAD model; "" disables VAD
+	beam     int
+}
+
+func newWhisperCppTranscriber(cfg Config) *whisperCppTranscriber {
+	return &whisperCppTranscriber{
+		bin:      cfg.WhisperCppBin,
+		model:    cfg.WhisperCppModel,
+		vadModel: cfg.WhisperCppVADModel,
+		beam:     whisperCppBeamSize,
+	}
+}
+
+func (w *whisperCppTranscriber) Transcribe(ctx context.Context, audioPath string) (string, string, []Segment, error) {
+	work, err := os.MkdirTemp("", "whispercpp-*")
+	if err != nil {
+		return "", "", nil, err
+	}
+	defer os.RemoveAll(work)
+
+	// -oj writes the transcript JSON to <outBase>.json.
+	outBase := filepath.Join(work, "out")
+	args := []string{
+		"-m", w.model,
+		"-f", audioPath,
+		"-l", "auto",
+		"-bs", strconv.Itoa(w.beam),
+		"-oj", "-of", outBase,
+	}
+	// Optional VAD (silero): trims silence/music, cutting hallucinations on
+	// non-speech audio.
+	if w.vadModel != "" {
+		args = append(args, "--vad", "--vad-model", w.vadModel)
+	}
+	if out, err := exec.CommandContext(ctx, w.bin, args...).CombinedOutput(); err != nil {
+		return "", "", nil, fmt.Errorf("whisper.cpp failed: %w: %s", err, lastLine(out))
+	}
+
+	data, err := os.ReadFile(outBase + ".json")
+	if err != nil {
+		return "", "", nil, fmt.Errorf("whisper.cpp produced no JSON: %w", err)
+	}
+	return parseWhisperCppJSON(data)
+}
+
+// whisperCppJSON mirrors the relevant fields of whisper.cpp's -oj output.
+type whisperCppJSON struct {
+	Result struct {
+		Language string `json:"language"`
+	} `json:"result"`
+	Transcription []struct {
+		Offsets struct {
+			From int `json:"from"` // milliseconds
+			To   int `json:"to"`
+		} `json:"offsets"`
+		Text string `json:"text"`
+	} `json:"transcription"`
+}
+
+// parseWhisperCppJSON converts whisper.cpp's -oj output into the engine-agnostic
+// (text, language, segments) shape. Offsets are milliseconds → seconds; the full
+// text is the segments joined (whisper.cpp emits no top-level transcript field).
+func parseWhisperCppJSON(data []byte) (string, string, []Segment, error) {
+	var wj whisperCppJSON
+	if err := json.Unmarshal(data, &wj); err != nil {
+		return "", "", nil, fmt.Errorf("failed to parse whisper.cpp JSON: %w", err)
+	}
+	segs := make([]Segment, len(wj.Transcription))
+	texts := make([]string, len(wj.Transcription))
+	for i, s := range wj.Transcription {
+		segs[i] = Segment{
+			Start: float64(s.Offsets.From) / 1000,
+			End:   float64(s.Offsets.To) / 1000,
+			Text:  strings.TrimSpace(s.Text),
+		}
+		texts[i] = strings.TrimSpace(s.Text)
+	}
+	return strings.Join(texts, " "), wj.Result.Language, segs, nil
+}
+
+// ---------------------------------------------------------------------------
+// Hybrid fallback transcriber: primary engine, secondary on error
+// ---------------------------------------------------------------------------
+
+// fallbackTranscriber runs primary first and, only if it errors while the context
+// is still live, retries the same chunk on secondary. It is the hybrid seam:
+// local whisper.cpp as primary with Groq as the safety net.
+type fallbackTranscriber struct {
+	primary, secondary         Transcriber
+	primaryName, secondaryName string
+}
+
+func (f *fallbackTranscriber) Transcribe(ctx context.Context, audioPath string) (string, string, []Segment, error) {
+	text, lang, segs, err := f.primary.Transcribe(ctx, audioPath)
+	if err == nil {
+		return text, lang, segs, nil
+	}
+	// A cancelled/expired context will fail the secondary too — don't waste the call.
+	if ctx.Err() != nil {
+		return "", "", nil, err
+	}
+	log.Printf("primary ASR (%s) failed: %v; falling back to %s\n", f.primaryName, err, f.secondaryName)
+	return f.secondary.Transcribe(ctx, audioPath)
+}
+
+// ---------------------------------------------------------------------------
 // Real database: Neon PostgreSQL via pgx
 // ---------------------------------------------------------------------------
 
@@ -878,12 +1021,15 @@ func loadConfig() Config {
 		}
 	}
 	return Config{
-		DatabaseURL:  os.Getenv("DATABASE_URL"),
-		Engine:       os.Getenv("TRANSCRIBE_ENGINE"),
-		GroqAPIKey:   os.Getenv("GROQ_API_KEY"),
-		GeminiAPIKey: os.Getenv("GEMINI_API_KEY"),
-		Cookies:      os.Getenv("YT_DLP_COOKIES"),
-		BatchSize:    batch,
+		DatabaseURL:        os.Getenv("DATABASE_URL"),
+		Engine:             os.Getenv("TRANSCRIBE_ENGINE"),
+		GroqAPIKey:         os.Getenv("GROQ_API_KEY"),
+		GeminiAPIKey:       os.Getenv("GEMINI_API_KEY"),
+		WhisperCppBin:      resolveBin("WHISPER_CPP_BIN", "/opt/homebrew/bin/whisper-cli"),
+		WhisperCppModel:    os.Getenv("WHISPER_CPP_MODEL"),
+		WhisperCppVADModel: os.Getenv("WHISPER_CPP_VAD_MODEL"),
+		Cookies:            os.Getenv("YT_DLP_COOKIES"),
+		BatchSize:          batch,
 	}
 }
 
