@@ -57,8 +57,12 @@ jobs:
           # (WIF) credentials. Upload source ourselves (gcloud storage works fine),
           # then submit with --no-source referencing the pre-uploaded object.
           tar -czf /tmp/source.tgz -C rara-harvest .
+          # Namespace the object by job: a single merge can trigger two agent deploys
+          # concurrently, and a bare source/${SHA}.tgz path makes them clobber each
+          # other's source — building one agent's binary into the other's image. Keep
+          # the per-job prefix.
           gcloud storage cp /tmp/source.tgz \
-            "gs://${{ vars.GCP_PROJECT_ID }}_cloudbuild/source/${GITHUB_SHA}.tgz"
+            "gs://${{ vars.GCP_PROJECT_ID }}_cloudbuild/source/${JOB_NAME}-${GITHUB_SHA}.tgz"
 
           cat > /tmp/cloudbuild.yaml << YAML
           steps:
@@ -67,7 +71,7 @@ jobs:
           source:
             storageSource:
               bucket: ${{ vars.GCP_PROJECT_ID }}_cloudbuild
-              object: source/${GITHUB_SHA}.tgz
+              object: source/${JOB_NAME}-${GITHUB_SHA}.tgz
           images: ['${IMAGE}']
           YAML
 
