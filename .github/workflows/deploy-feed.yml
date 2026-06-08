@@ -1,4 +1,4 @@
-name: Deploy feed to Cloud Run
+name: Deploy rara-feed
 
 on:
   workflow_dispatch:

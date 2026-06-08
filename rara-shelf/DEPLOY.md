@@ -74,7 +74,7 @@ Future rotation: `gcloud secrets versions add shelf-oauth-refresh-token --data-f
 ## 4. Deploy
 
 - **Automatic**: merging anything under `rara-shelf/**` to `main` triggers `deploy-shelf.yml`.
-- **Manual**: Actions → **Deploy rara-shelf to Cloud Run** → *Run workflow*.
+- **Manual**: Actions → **Deploy rara-shelf** → *Run workflow*.
 
 The workflow builds the image, creates/updates the Cloud Run Job `rara-shelf` (mounting the
 4 secrets), and executes it once.

@@ -15,8 +15,9 @@ shelf and distill), the shared Neon database, GitHub Actions CI/CD, and the loca
 | rara-shelf | GCP Cloud Run Job | daily | GCP datacenter |
 | rara-scribe | macOS `launchd` agent | daily at 02:00 | owner's Mac (residential IP) |
 | rara-distill | GCP Cloud Run Job | daily, after scribe | GCP datacenter |
+| rara-feed | GCP Cloud Run Job | daily | GCP datacenter |
 
-All four read/write the **same Neon database**, using isolated tables.
+All five read/write the **same Neon database**, using isolated tables.
 
 ## GCP (Cloud Run: harvest + shelf + distill)
 
@@ -95,7 +96,7 @@ merge to `main`). Storage usage is tiny — the full transcript backlog is well 
 
 ## CI/CD (GitHub Actions)
 
-Eleven workflows, path-filtered per agent. See [.github/workflows/README.md](./.github/workflows/README.md)
+Fourteen workflows, path-filtered per agent. See [.github/workflows/README.md](./.github/workflows/README.md)
 for details.
 
 | Workflow | Agent | Purpose |
@@ -104,13 +105,16 @@ for details.
 | `ci-shelf.yml` | shelf | fmt/vet/test/security |
 | `ci-scribe.yml` | scribe | fmt/vet/test/security |
 | `ci-distill.yml` | distill | fmt/vet/test/security |
+| `ci-feed.yml` | feed | fmt/vet/test/security |
 | `database.yml` | harvest | migrations |
 | `database-shelf.yml` | shelf | migrations |
 | `database-scribe.yml` | scribe | migrations |
 | `database-distill.yml` | distill | migrations |
+| `database-feed.yml` | feed | migrations |
 | `deploy.yml` | harvest | Cloud Run deploy |
 | `deploy-shelf.yml` | shelf | Cloud Run deploy |
 | `deploy-distill.yml` | distill | Cloud Run deploy |
+| `deploy-feed.yml` | feed | Cloud Run deploy |
 
 scribe has **no deploy workflow** — it is installed and updated locally with
 `make build && bash install-local.sh`.

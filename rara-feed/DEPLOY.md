@@ -14,7 +14,7 @@ the deploy of rara-harvest, with **no LLM and no Bright Data secrets** in v1.
 
 ## Database migration
 
-Applied by the `Database Migrations (feed)` workflow
+Applied by the `Database rara-feed` workflow
 (`.github/workflows/database-feed.yml`):
 
 1. On PR: validates each file in `rara-feed/migrations/` with `BEGIN; … ROLLBACK;`.
