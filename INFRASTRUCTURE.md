@@ -15,8 +15,9 @@ shelf and distill), the shared Neon database, GitHub Actions CI/CD, and the loca
 | rara-shelf | GCP Cloud Run Job | daily | GCP datacenter |
 | rara-scribe | macOS `launchd` agent | daily at 02:00 | owner's Mac (residential IP) |
 | rara-distill | GCP Cloud Run Job | daily, after scribe | GCP datacenter |
+| rara-feed | GCP Cloud Run Job | daily | GCP datacenter |
 
-All four read/write the **same Neon database**, using isolated tables.
+All five read/write the **same Neon database**, using isolated tables.
 
 ## GCP (Cloud Run: harvest + shelf + distill)
 

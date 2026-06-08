@@ -25,6 +25,8 @@ to one agent never triggers another's pipeline.
 > **rara-scribe has no deploy workflow.** It runs locally on a Mac via `launchd`, not on Cloud
 > Run. Updating it is `cd rara-scribe && make build && bash install-local.sh` — there is no image
 > build or deploy step. Its CI and migration workflows still run in GitHub Actions.
+>
+> **rara-feed has a full pipeline** (CI + Database + Deploy), same as harvest, shelf, and distill.
 
 ## Workflow types
 
