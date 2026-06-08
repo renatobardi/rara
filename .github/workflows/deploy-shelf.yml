@@ -1,4 +1,4 @@
-name: Deploy rara-shelf to Cloud Run
+name: Deploy rara-shelf
 
 on:
   workflow_dispatch:

@@ -125,7 +125,7 @@ In **Settings → Secrets and variables → Actions**:
 ## 3. Deploy
 
 - **Automatic**: merge anything under `rara-harvest/**` to `main`.
-- **Manual**: Actions → **Deploy to Cloud Run** → *Run workflow*.
+- **Manual**: Actions → **Deploy rara-harvest** → *Run workflow*.
 
 The workflow builds the image, creates/updates the `rara-harvest` Cloud Run Job,
 and executes it once. View logs:

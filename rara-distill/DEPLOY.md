@@ -36,7 +36,7 @@ via the project-level grant from the harvest setup).
 ## 2. Deploy
 
 - **Automatic**: merge anything under `rara-distill/**` to `main`.
-- **Manual**: Actions → **Deploy distill to Cloud Run** → *Run workflow*.
+- **Manual**: Actions → **Deploy rara-distill** → *Run workflow*.
 
 The workflow builds the image, creates/updates the `rara-distill` Cloud Run Job, and
 executes it once. The job is configured with `--set-secrets` for `DATABASE_URL`,

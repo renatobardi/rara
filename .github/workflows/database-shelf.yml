@@ -1,4 +1,4 @@
-name: Database Migrations (shelf)
+name: Database rara-shelf
 
 on:
   push:

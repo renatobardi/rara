@@ -95,7 +95,7 @@ merge to `main`). Storage usage is tiny — the full transcript backlog is well 
 
 ## CI/CD (GitHub Actions)
 
-Eleven workflows, path-filtered per agent. See [.github/workflows/README.md](./.github/workflows/README.md)
+Fourteen workflows, path-filtered per agent. See [.github/workflows/README.md](./.github/workflows/README.md)
 for details.
 
 | Workflow | Agent | Purpose |
@@ -104,13 +104,16 @@ for details.
 | `ci-shelf.yml` | shelf | fmt/vet/test/security |
 | `ci-scribe.yml` | scribe | fmt/vet/test/security |
 | `ci-distill.yml` | distill | fmt/vet/test/security |
+| `ci-feed.yml` | feed | fmt/vet/test/security |
 | `database.yml` | harvest | migrations |
 | `database-shelf.yml` | shelf | migrations |
 | `database-scribe.yml` | scribe | migrations |
 | `database-distill.yml` | distill | migrations |
+| `database-feed.yml` | feed | migrations |
 | `deploy.yml` | harvest | Cloud Run deploy |
 | `deploy-shelf.yml` | shelf | Cloud Run deploy |
 | `deploy-distill.yml` | distill | Cloud Run deploy |
+| `deploy-feed.yml` | feed | Cloud Run deploy |
 
 scribe has **no deploy workflow** — it is installed and updated locally with
 `make build && bash install-local.sh`.

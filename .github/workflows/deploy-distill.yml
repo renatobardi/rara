@@ -1,4 +1,4 @@
-name: Deploy distill to Cloud Run
+name: Deploy rara-distill
 
 on:
   workflow_dispatch:

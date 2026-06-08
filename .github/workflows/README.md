@@ -11,13 +11,16 @@ to one agent never triggers another's pipeline.
 | `ci-shelf.yml` | rara-shelf | `rara-shelf/**` | Code quality, tests, security scan |
 | `ci-scribe.yml` | rara-scribe | `rara-scribe/**` | Code quality, tests, security scan |
 | `ci-distill.yml` | rara-distill | `rara-distill/**` | Code quality, tests, security scan |
+| `ci-feed.yml` | rara-feed | `rara-feed/**` | Code quality, tests, security scan |
 | `database.yml` | rara-harvest | `rara-harvest/migrations/**` | Validate + apply migrations |
 | `database-shelf.yml` | rara-shelf | `rara-shelf/migrations/**` | Validate + apply migrations |
 | `database-scribe.yml` | rara-scribe | `rara-scribe/migrations/**` | Validate + apply migrations |
 | `database-distill.yml` | rara-distill | `rara-distill/migrations/**` | Validate + apply migrations |
+| `database-feed.yml` | rara-feed | `rara-feed/migrations/**` | Validate + apply migrations |
 | `deploy.yml` | rara-harvest | `rara-harvest/**` | Build image + deploy Cloud Run Job |
 | `deploy-shelf.yml` | rara-shelf | `rara-shelf/**` | Build image + deploy Cloud Run Job |
 | `deploy-distill.yml` | rara-distill | `rara-distill/**` | Build image + deploy Cloud Run Job |
+| `deploy-feed.yml` | rara-feed | `rara-feed/**` | Build image + deploy Cloud Run Job |
 
 > **rara-scribe has no deploy workflow.** It runs locally on a Mac via `launchd`, not on Cloud
 > Run. Updating it is `cd rara-scribe && make build && bash install-local.sh` — there is no image

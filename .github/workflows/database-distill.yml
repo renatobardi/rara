@@ -1,4 +1,4 @@
-name: Database Migrations (distill)
+name: Database rara-distill
 
 on:
   push:
