@@ -1423,9 +1423,9 @@ func TestPendingVideosIntegration(t *testing.T) {
 	}
 	sp := func(s string) *string { return &s }
 
-	insertVideo("never_attempted", nil, 0)                        // no row — MUST be returned
-	insertVideo("done_video", sp("done"), 0)                      // MUST be excluded
-	insertVideo("empty_video", sp("empty"), 0)                    // MUST be excluded
+	insertVideo("never_attempted", nil, 0)                             // no row — MUST be returned
+	insertVideo("done_video", sp("done"), 0)                           // MUST be excluded
+	insertVideo("empty_video", sp("empty"), 0)                         // MUST be excluded
 	insertVideo("failed_under_cap", sp("failed"), maxFailedAttempts-1) // MUST be returned
 	insertVideo("failed_at_cap", sp("failed"), maxFailedAttempts)      // MUST be excluded
 
