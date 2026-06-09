@@ -1093,7 +1093,7 @@ func (d *pgxDatabase) PendingVideos(ctx context.Context, limit int) ([]VideoRef,
 		) v
 		LEFT JOIN transcripts t ON t.youtube_video_id = v.youtube_video_id
 		WHERE (t.youtube_video_id IS NULL OR t.status NOT IN ('done', 'empty'))
-		  AND NOT (t.status = 'failed' AND t.attempt_count >= $2)
+		  AND (t.status IS DISTINCT FROM 'failed' OR t.attempt_count < $2)
 		GROUP BY v.youtube_video_id
 		ORDER BY
 			MIN(CASE WHEN t.status = 'failed' THEN 1 ELSE 0 END) ASC,
