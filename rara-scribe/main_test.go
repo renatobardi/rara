@@ -13,6 +13,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // ---------------------------------------------------------------------------
@@ -1344,4 +1346,111 @@ func TestDoneSaveResetsAttemptCount(t *testing.T) {
 	}
 	h.AssertStatus("flap", statusDone)
 	h.AssertAttemptCount("flap", 0)
+}
+
+// ---------------------------------------------------------------------------
+// Integration test (real SQL) — opt-in via SCRIBE_TEST_DATABASE_URL.
+//
+// Unit tests above use MockDatabase, which cannot reproduce SQL three-valued
+// (NULL) logic. This test runs the actual PendingVideos query against Postgres
+// to guard the NULL edge cases a mock will always miss:
+//
+//   - a video with NO transcript row MUST be returned (the bug case: a naive
+//     NOT (status='failed' AND attempt_count>=cap) evaluates to NULL when
+//     t.status IS NULL, silently dropping every never-attempted video);
+//   - a video with status='done' MUST be excluded;
+//   - a video with status='empty' MUST be excluded;
+//   - a video with status='failed' and attempt_count < cap MUST be returned;
+//   - a video with status='failed' and attempt_count >= cap MUST be excluded.
+//
+// Skipped unless SCRIBE_TEST_DATABASE_URL points at a throwaway Postgres.
+// ---------------------------------------------------------------------------
+
+func TestPendingVideosIntegration(t *testing.T) {
+	dsn := os.Getenv("SCRIBE_TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("set SCRIBE_TEST_DATABASE_URL to a throwaway Postgres to run the integration test")
+	}
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer pool.Close()
+
+	const schema = "scribe_it_test"
+	exec := func(sql string, args ...any) {
+		t.Helper()
+		if _, err := pool.Exec(ctx, sql, args...); err != nil {
+			t.Fatalf("exec %.60q: %v", sql, err)
+		}
+	}
+
+	exec("DROP SCHEMA IF EXISTS " + schema + " CASCADE")
+	exec("CREATE SCHEMA " + schema)
+	t.Cleanup(func() { pool.Exec(ctx, "DROP SCHEMA IF EXISTS "+schema+" CASCADE") })
+	exec("SET search_path TO " + schema)
+
+	exec(`CREATE TABLE channel_videos (
+		youtube_video_id TEXT PRIMARY KEY,
+		url              TEXT NOT NULL
+	)`)
+	exec(`CREATE TABLE playlist_videos (
+		youtube_video_id TEXT NOT NULL,
+		url              TEXT NOT NULL
+	)`)
+	exec(`CREATE TABLE transcripts (
+		id               SERIAL PRIMARY KEY,
+		source_type      TEXT NOT NULL DEFAULT 'youtube',
+		youtube_video_id TEXT UNIQUE,
+		source_ref       TEXT NOT NULL DEFAULT '',
+		engine           TEXT NOT NULL DEFAULT 'groq/whisper-large-v3',
+		status           TEXT NOT NULL DEFAULT 'done',
+		error            TEXT,
+		attempt_count    INT  NOT NULL DEFAULT 0,
+		created_at       TIMESTAMPTZ DEFAULT now(),
+		updated_at       TIMESTAMPTZ DEFAULT now()
+	)`)
+
+	// Helper: insert a video into channel_videos and optionally its transcript.
+	insertVideo := func(id string, status *string, attemptCount int) {
+		exec("INSERT INTO channel_videos (youtube_video_id, url) VALUES ($1, $2)",
+			id, "https://youtu.be/"+id)
+		if status != nil {
+			exec(`INSERT INTO transcripts (youtube_video_id, status, attempt_count)
+				  VALUES ($1, $2, $3)`, id, *status, attemptCount)
+		}
+	}
+	sp := func(s string) *string { return &s }
+
+	insertVideo("never_attempted", nil, 0)                        // no row — MUST be returned
+	insertVideo("done_video", sp("done"), 0)                      // MUST be excluded
+	insertVideo("empty_video", sp("empty"), 0)                    // MUST be excluded
+	insertVideo("failed_under_cap", sp("failed"), maxFailedAttempts-1) // MUST be returned
+	insertVideo("failed_at_cap", sp("failed"), maxFailedAttempts)      // MUST be excluded
+
+	db := &pgxDatabase{pool: pool}
+	refs, err := db.PendingVideos(ctx, 100)
+	if err != nil {
+		t.Fatalf("PendingVideos: %v", err)
+	}
+
+	got := make(map[string]bool, len(refs))
+	for _, r := range refs {
+		got[r.YoutubeVideoID] = true
+	}
+
+	mustInclude := []string{"never_attempted", "failed_under_cap"}
+	mustExclude := []string{"done_video", "empty_video", "failed_at_cap"}
+
+	for _, id := range mustInclude {
+		if !got[id] {
+			t.Errorf("PendingVideos missing %q (should be pending)", id)
+		}
+	}
+	for _, id := range mustExclude {
+		if got[id] {
+			t.Errorf("PendingVideos includes %q (should be excluded)", id)
+		}
+	}
 }
