@@ -333,6 +333,17 @@ func computeItemStatus(flowSteps []FlowStep, bySeq map[int]ItemStep) string {
 	}
 }
 
+// hasLaterStep reports whether any item_step with a seq greater than the given one has been
+// materialized — i.e. the flow has advanced past that point.
+func hasLaterStep(seq int, bySeq map[int]ItemStep) bool {
+	for s := range bySeq {
+		if s > seq {
+			return true
+		}
+	}
+	return false
+}
+
 // isStale reports whether a running step's worker has likely died: it has a heartbeat
 // (stamped at claim) older than staleAfter. A step with no heartbeat is never stale.
 func (r *Reconciler) isStale(s ItemStep) bool {
@@ -357,6 +368,13 @@ func (r *Reconciler) gateTerminalStatus(ctx context.Context, item Item, flowStep
 			continue
 		}
 		if s, ok := bySeq[fs.Seq]; !ok || s.Status != stepDone {
+			continue
+		}
+		// Already routed `keep` if the flow advanced past this gate (a later step exists) —
+		// a drop/defer would have terminated the item before any successor materialized. Skip
+		// the decision read for gates we have demonstrably passed, so a long-running item does
+		// not re-read every kept gate on every pass.
+		if hasLaterStep(fs.Seq, bySeq) {
 			continue
 		}
 		dec, found, err := r.db.LatestGateDecision(ctx, item.ID, fs.Capability)

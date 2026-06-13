@@ -144,7 +144,7 @@ func profileMatch(in gateInput, prof profileDoc) float64 {
 	hay := strings.ToLower(in.Title + "\n" + in.Channel + "\n" + in.Text)
 	hits := 0
 	for _, t := range prof.Topics {
-		if t != "" && strings.Contains(hay, strings.ToLower(t)) {
+		if t != "" && containsWord(hay, strings.ToLower(t)) {
 			hits++
 		}
 	}
@@ -152,13 +152,13 @@ func profileMatch(in gateInput, prof profileDoc) float64 {
 		if a == "" {
 			continue
 		}
-		if strings.EqualFold(strings.TrimSpace(in.Channel), strings.TrimSpace(a)) || strings.Contains(hay, strings.ToLower(a)) {
+		if strings.EqualFold(strings.TrimSpace(in.Channel), strings.TrimSpace(a)) || containsWord(hay, strings.ToLower(a)) {
 			hits++
 		}
 	}
 	anti := 0
 	for _, x := range prof.AntiTopics {
-		if x != "" && strings.Contains(hay, strings.ToLower(x)) {
+		if x != "" && containsWord(hay, strings.ToLower(x)) {
 			anti++
 		}
 	}
@@ -167,6 +167,37 @@ func profileMatch(in gateInput, prof profileDoc) float64 {
 		return 0
 	}
 	return 1 - 1/(1+float64(net))
+}
+
+// containsWord reports whether token occurs in haystack delimited by word boundaries
+// (the string edge or a non-alphanumeric byte on each side). Both args must already be
+// lowercased. This avoids the substring trap where a short topic like "ai" would otherwise
+// match "rain", "available" or "maintain"; a multi-word phrase ("platform engineering")
+// still matches as a delimited run. Boundary detection is byte-level (ASCII alphanumerics) —
+// any non-ASCII byte counts as a boundary, which is the right call for these tokens.
+func containsWord(haystack, token string) bool {
+	if token == "" {
+		return false
+	}
+	for from := 0; from <= len(haystack)-len(token); {
+		i := strings.Index(haystack[from:], token)
+		if i < 0 {
+			return false
+		}
+		start := from + i
+		end := start + len(token)
+		beforeOK := start == 0 || !isAlnumByte(haystack[start-1])
+		afterOK := end == len(haystack) || !isAlnumByte(haystack[end])
+		if beforeOK && afterOK {
+			return true
+		}
+		from = start + 1
+	}
+	return false
+}
+
+func isAlnumByte(b byte) bool {
+	return b >= 'a' && b <= 'z' || b >= '0' && b <= '9' || b >= 'A' && b <= 'Z'
 }
 
 // parseProfile turns the raw interest_profile JSONB columns + the enabled rules into the

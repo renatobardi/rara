@@ -174,6 +174,53 @@ func TestProfileMatchScore(t *testing.T) {
 	}
 }
 
+// TestProfileMatchWordBoundary: a short topic must match as a WORD, not a substring — so the
+// seeded topic "ai" matches "the ai model" but never "rain"/"available"/"maintain". This is
+// the false-positive guard that keeps the profile layer from spuriously keeping off-topic
+// items (which would skip the LLM and let noise through).
+func TestProfileMatchWordBoundary(t *testing.T) {
+	prof := profileWith([]string{"ai"}, nil, nil)
+	keeps := []string{"The new AI model", "ai: a primer", "talk about ai.", "(ai)"}
+	for _, title := range keeps {
+		if profileMatch(gateInput{Title: title}, prof) == 0 {
+			t.Errorf("%q should match topic 'ai' as a word", title)
+		}
+	}
+	noMatch := []string{"rain in spain", "now available", "how to maintain", "he said so", "container ships"}
+	for _, title := range noMatch {
+		if got := profileMatch(gateInput{Title: title}, prof); got != 0 {
+			t.Errorf("%q must NOT match topic 'ai' (substring trap), got %v", title, got)
+		}
+	}
+	// Phrases still match as a delimited run.
+	phr := profileWith([]string{"platform engineering"}, nil, nil)
+	if profileMatch(gateInput{Title: "notes on platform engineering at scale"}, phr) == 0 {
+		t.Error("multi-word topic should still match")
+	}
+}
+
+// TestContainsWord exercises the boundary helper directly.
+func TestContainsWord(t *testing.T) {
+	cases := []struct {
+		hay, tok string
+		want     bool
+	}{
+		{"the ai model", "ai", true},
+		{"rain", "ai", false},
+		{"available now", "ai", false},
+		{"ai", "ai", true},
+		{"llm and ai", "ai", true},
+		{"aibo robot", "ai", false},
+		{"", "ai", false},
+		{"anything", "", false},
+	}
+	for _, c := range cases {
+		if got := containsWord(c.hay, c.tok); got != c.want {
+			t.Errorf("containsWord(%q, %q) = %v, want %v", c.hay, c.tok, got, c.want)
+		}
+	}
+}
+
 // TestParseProfileWeights honors a valid keep_threshold override and falls back otherwise.
 func TestParseProfileWeights(t *testing.T) {
 	base := InterestProfile{Version: 1, Topics: json.RawMessage(`["x"]`)}
