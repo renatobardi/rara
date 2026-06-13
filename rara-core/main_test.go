@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"errors"
+	"sort"
 	"testing"
+	"time"
 )
 
 // ---------------------------------------------------------------------------
@@ -70,9 +72,13 @@ type MockDatabase struct {
 	flowSteps    map[flowStepKey]FlowStep
 	policies     map[string]RoutingPolicy // UNIQUE(scope)
 
-	items     map[string]Item // UNIQUE(lane, source_ref) -> key "lane\x00source_ref"
-	itemByID  map[int]bool
+	items     map[string]Item          // UNIQUE(lane, source_ref) -> key "lane\x00source_ref"
+	itemByID  map[int]Item             // id -> item (for GetItem / ListActiveItems)
 	itemSteps map[itemStepKey]ItemStep // UNIQUE(item_id, seq)
+	// stepOrder records item_steps insertion order so the claim can mirror the SQL
+	// ORDER BY id (FIFO over the pending frontier).
+	stepOrder    map[itemStepKey]int
+	nextStepSeqN int
 
 	gateDecisions []GateDecision          // append-only
 	feedback      []Feedback              // append-only
@@ -91,8 +97,9 @@ func newMockDatabase() *MockDatabase {
 		flowSteps:    make(map[flowStepKey]FlowStep),
 		policies:     make(map[string]RoutingPolicy),
 		items:        make(map[string]Item),
-		itemByID:     make(map[int]bool),
+		itemByID:     make(map[int]Item),
 		itemSteps:    make(map[itemStepKey]ItemStep),
+		stepOrder:    make(map[itemStepKey]int),
 		profiles:     make(map[int]InterestProfile),
 		nextFlowID:   1,
 		nextItemID:   1,
@@ -157,12 +164,37 @@ func (m *MockDatabase) UpsertItem(_ context.Context, it Item) (int, error) {
 	if existing, ok := m.items[k]; ok {
 		it.ID = existing.ID // ON CONFLICT (lane, source_ref) DO UPDATE keeps the row id
 		m.items[k] = it
+		m.itemByID[it.ID] = it
 		return it.ID, nil
 	}
 	it.ID = m.nextItemID
 	m.nextItemID++
 	m.items[k] = it
-	m.itemByID[it.ID] = true
+	m.itemByID[it.ID] = it
+	return it.ID, nil
+}
+
+// DiscoverItem mirrors the pgx idempotent discovery upsert: insert in the passed status,
+// but on conflict PRESERVE the existing runtime status (re-stamping only flow fields).
+func (m *MockDatabase) DiscoverItem(_ context.Context, it Item) (int, error) {
+	if !isValidItemStatus(it.Status) {
+		return 0, errCheckViolation
+	}
+	if !m.flowByID[it.FlowID] {
+		return 0, errFKViolation // REFERENCES flows(id)
+	}
+	k := itemKey(it.Lane, it.SourceRef)
+	if existing, ok := m.items[k]; ok {
+		existing.FlowID = it.FlowID
+		existing.FlowVersion = it.FlowVersion // status untouched
+		m.items[k] = existing
+		m.itemByID[existing.ID] = existing
+		return existing.ID, nil
+	}
+	it.ID = m.nextItemID
+	m.nextItemID++
+	m.items[k] = it
+	m.itemByID[it.ID] = it
 	return it.ID, nil
 }
 
@@ -170,7 +202,7 @@ func (m *MockDatabase) UpsertItemStep(_ context.Context, s ItemStep) error {
 	if !isValidStepStatus(s.Status) {
 		return errCheckViolation
 	}
-	if !m.itemByID[s.ItemID] {
+	if _, ok := m.itemByID[s.ItemID]; !ok {
 		return errFKViolation // REFERENCES items(id)
 	}
 	if _, ok := m.capabilities[s.Capability]; !ok {
@@ -181,7 +213,12 @@ func (m *MockDatabase) UpsertItemStep(_ context.Context, s ItemStep) error {
 			return errFKViolation // REFERENCES providers(name)
 		}
 	}
-	m.itemSteps[itemStepKey{s.ItemID, s.Seq}] = s // ON CONFLICT (item_id, seq) DO UPDATE
+	k := itemStepKey{s.ItemID, s.Seq}
+	if _, ok := m.stepOrder[k]; !ok {
+		m.nextStepSeqN++
+		m.stepOrder[k] = m.nextStepSeqN // record SERIAL-id insertion order for the claim
+	}
+	m.itemSteps[k] = s // ON CONFLICT (item_id, seq) DO UPDATE
 	return nil
 }
 
@@ -189,7 +226,7 @@ func (m *MockDatabase) InsertGateDecision(_ context.Context, d GateDecision) err
 	if !isValidGate(d.Gate) || !isValidDecision(d.Decision) {
 		return errCheckViolation
 	}
-	if !m.itemByID[d.ItemID] {
+	if _, ok := m.itemByID[d.ItemID]; !ok {
 		return errFKViolation
 	}
 	m.gateDecisions = append(m.gateDecisions, d) // append-only
@@ -210,6 +247,93 @@ func (m *MockDatabase) InsertInterestProfile(_ context.Context, p InterestProfil
 	}
 	m.profiles[p.Version] = p
 	return nil
+}
+
+// --- Reads + claim (Phase 1) ----------------------------------------------
+// These mirror the pgx implementations in store_reads.go: pure observation plus the one
+// atomic claim. The claim simulates FOR UPDATE SKIP LOCKED by serving the lowest-insertion
+// pending step and moving it to running, so a second claim never returns the same row.
+
+// claimTime is the fixed heartbeat stamp the mock writes on claim (the real DB uses
+// CURRENT_TIMESTAMP). Tests only assert it is non-nil.
+var claimTime = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+func (m *MockDatabase) GetFlow(_ context.Context, name string) (Flow, bool, error) {
+	f, ok := m.flows[name]
+	return f, ok, nil
+}
+
+func (m *MockDatabase) GetItem(_ context.Context, id int) (Item, bool, error) {
+	it, ok := m.itemByID[id]
+	return it, ok, nil
+}
+
+func (m *MockDatabase) ListActiveItems(_ context.Context) ([]Item, error) {
+	var out []Item
+	for _, it := range m.items {
+		switch it.Status {
+		case itemDone, itemFiltered, itemFailed, itemQuarantine:
+			// terminal — skip
+		default:
+			out = append(out, it)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out, nil
+}
+
+func (m *MockDatabase) ListFlowSteps(_ context.Context, flowID int) ([]FlowStep, error) {
+	var out []FlowStep
+	for k, s := range m.flowSteps {
+		if k.flowID == flowID && s.Enabled {
+			out = append(out, s)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Seq < out[j].Seq })
+	return out, nil
+}
+
+func (m *MockDatabase) ListItemSteps(_ context.Context, itemID int) ([]ItemStep, error) {
+	var out []ItemStep
+	for k, s := range m.itemSteps {
+		if k.itemID == itemID {
+			out = append(out, s)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Seq < out[j].Seq })
+	return out, nil
+}
+
+func (m *MockDatabase) ListProvidersForCapability(_ context.Context, capability string) ([]Provider, error) {
+	var out []Provider
+	for _, p := range m.providers {
+		if p.Capability == capability && p.Enabled {
+			out = append(out, p)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out, nil
+}
+
+func (m *MockDatabase) ClaimPendingStep(_ context.Context, capability string) (*ItemStep, error) {
+	bestKey, bestOrder, found := itemStepKey{}, int(^uint(0)>>1), false
+	for k, s := range m.itemSteps {
+		if s.Capability == capability && s.Status == stepPending {
+			if o := m.stepOrder[k]; o < bestOrder { // lowest insertion order = FIFO by id
+				bestKey, bestOrder, found = k, o, true
+			}
+		}
+	}
+	if !found {
+		return nil, nil
+	}
+	s := m.itemSteps[bestKey]
+	s.Status = stepRunning // pending -> running, atomically leaving the pending frontier
+	s.Attempt++
+	hb := claimTime
+	s.HeartbeatAt = &hb
+	m.itemSteps[bestKey] = s
+	return &s, nil
 }
 
 // compile-time guarantee the mock satisfies the seam the pgx impl does.

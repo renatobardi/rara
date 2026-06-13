@@ -12,9 +12,11 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"log"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -263,10 +265,48 @@ type Database interface {
 	UpsertItem(ctx context.Context, it Item) (int, error)
 	UpsertItemStep(ctx context.Context, s ItemStep) error
 
+	// DiscoverItem is the ingest's idempotent upsert: it inserts a newly discovered
+	// item (with the passed status) but on conflict (lane, source_ref) PRESERVES the
+	// existing runtime status — only re-stamping flow_id/flow_version. Discovery never
+	// regresses an in-flight item; runtime status is written solely by the reconciler
+	// via UpsertItem.
+	DiscoverItem(ctx context.Context, it Item) (int, error)
+
 	// Curation + learning (append-only).
 	InsertGateDecision(ctx context.Context, d GateDecision) error
 	InsertFeedback(ctx context.Context, f Feedback) error
 	InsertInterestProfile(ctx context.Context, p InterestProfile) error
+
+	// --- Reads (Phase 1) -----------------------------------------------------
+	// The reconciler is level-triggered: it observes desired state (flows +
+	// items) vs actual (item_steps) and acts. These reads back that observation;
+	// the ingest reads a flow to stamp flow_version; the shim reads an item to
+	// recover its source_ref. All are pure reads — no decision is made here.
+
+	// GetFlow returns the flow with the given name (found=false if absent).
+	GetFlow(ctx context.Context, name string) (Flow, bool, error)
+	// GetItem returns the item by id (found=false if absent).
+	GetItem(ctx context.Context, id int) (Item, bool, error)
+	// ListActiveItems returns items not yet in a terminal status
+	// (terminal = done | filtered | failed | quarantine), ordered by id.
+	ListActiveItems(ctx context.Context) ([]Item, error)
+	// ListFlowSteps returns the enabled steps of a flow ordered by seq.
+	ListFlowSteps(ctx context.Context, flowID int) ([]FlowStep, error)
+	// ListItemSteps returns an item's runtime steps ordered by seq.
+	ListItemSteps(ctx context.Context, itemID int) ([]ItemStep, error)
+	// ListProvidersForCapability returns the enabled providers of a capability,
+	// ordered by name for deterministic selection.
+	ListProvidersForCapability(ctx context.Context, capability string) ([]Provider, error)
+
+	// --- Claim (Phase 1) -----------------------------------------------------
+	// ClaimPendingStep is the worker's pull: it atomically claims the
+	// frontmost pending step of a capability with
+	//   SELECT ... WHERE capability=$1 AND status='pending'
+	//   ORDER BY id FOR UPDATE SKIP LOCKED LIMIT 1
+	// then transitions it pending->running, bumps attempt and stamps the
+	// heartbeat — so no two workers ever claim the same row. Returns
+	// (nil, nil) when the queue is empty for that capability.
+	ClaimPendingStep(ctx context.Context, capability string) (*ItemStep, error)
 }
 
 // ---------------------------------------------------------------------------
@@ -379,6 +419,24 @@ func (d *pgxDatabase) UpsertItem(ctx context.Context, it Item) (int, error) {
 	return id, err
 }
 
+func (d *pgxDatabase) DiscoverItem(ctx context.Context, it Item) (int, error) {
+	if !isValidItemStatus(it.Status) {
+		return 0, fmt.Errorf("invalid item status %q", it.Status)
+	}
+	// status is set only on INSERT; the conflict path leaves items.status untouched so
+	// re-discovery never regresses an in-flight item.
+	const q = `
+		INSERT INTO items (lane, source_ref, flow_id, flow_version, status)
+		VALUES ($1, $2, $3, $4, $5)
+		ON CONFLICT (lane, source_ref) DO UPDATE SET
+			flow_id      = EXCLUDED.flow_id,
+			flow_version = EXCLUDED.flow_version
+		RETURNING id`
+	var id int
+	err := d.conn.QueryRow(ctx, q, it.Lane, it.SourceRef, it.FlowID, it.FlowVersion, it.Status).Scan(&id)
+	return id, err
+}
+
 func (d *pgxDatabase) UpsertItemStep(ctx context.Context, s ItemStep) error {
 	if !isValidStepStatus(s.Status) {
 		return fmt.Errorf("invalid item_step status %q", s.Status)
@@ -449,27 +507,130 @@ func nullStr(s string) *string {
 
 func loadDatabaseURL() string { return os.Getenv("DATABASE_URL") }
 
+// usage documents the Phase 1 subcommands. rara-core is one binary with several roles,
+// each deployed where the architecture puts it: `reconcile` runs always-on in the VPC;
+// `work --capability transcrever` runs alongside scribe on the Mac; `work --capability
+// destilar` is the woken Cloud Run job; `seed`/`ingest` are operational one-shots.
+const usage = `rara-core — 2.0 control plane
+
+Usage: core-job <command> [flags]
+
+Commands:
+  seed                       Seed the YouTube lane config (capabilities, providers, flow)
+  ingest                     Populate the items spine from channel_videos ∪ playlist_videos
+  reconcile [--loop]         Run the reconciler: one pass, or always-on with --loop
+  work --capability <cap>    Run a worker shim that pulls and processes its assignments
+                             (cap: transcrever | destilar)
+  status                     Phase 0 health check: confirm the control tables are reachable
+`
+
 func main() {
+	if len(os.Args) < 2 {
+		fmt.Print(usage)
+		os.Exit(2)
+	}
+	cmd := os.Args[1]
+
 	dbURL := loadDatabaseURL()
 	if dbURL == "" {
 		log.Fatalf("DATABASE_URL environment variable is required")
 	}
-
-	connectCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx := context.Background()
+	connectCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	conn, err := pgx.Connect(connectCtx, dbURL)
 	cancel()
 	if err != nil {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
-	defer conn.Close(context.Background())
-	log.Println("Connected to database successfully")
+	defer conn.Close(ctx)
+	db := &pgxDatabase{conn: conn}
 
-	// Phase 0: the control tables exist and the persistence seam is wired, but there
-	// is no reconciler yet. Confirm the schema is reachable and exit. The always-on
-	// reconciler loop (observe flows + items, route, activate) arrives in Phase 1.
-	var capCount int
-	if err := conn.QueryRow(context.Background(), `SELECT COUNT(*) FROM capabilities`).Scan(&capCount); err != nil {
-		log.Fatalf("Control tables not reachable (did migrations run?): %v", err)
+	switch cmd {
+	case "seed":
+		if err := SeedYouTubeLane(ctx, db); err != nil {
+			log.Fatalf("seed: %v", err)
+		}
+		log.Println("rara-core: YouTube lane config seeded")
+
+	case "ingest":
+		n, err := IngestYouTube(ctx, db, &pgxSpineSource{conn: conn})
+		if err != nil {
+			log.Fatalf("ingest: %v", err)
+		}
+		log.Printf("rara-core: ingested %d YouTube videos into the items spine", n)
+
+	case "reconcile":
+		runReconcile(ctx, db, os.Args[2:])
+
+	case "work":
+		runWork(ctx, db, conn, os.Args[2:])
+
+	case "status":
+		var capCount int
+		if err := conn.QueryRow(ctx, `SELECT COUNT(*) FROM capabilities`).Scan(&capCount); err != nil {
+			log.Fatalf("Control tables not reachable (did migrations run?): %v", err)
+		}
+		log.Printf("rara-core ready: %d capabilities registered", capCount)
+
+	default:
+		fmt.Print(usage)
+		os.Exit(2)
 	}
-	log.Printf("rara-core scaffold ready: %d capabilities registered. Reconciler not implemented yet (Phase 0).", capCount)
+}
+
+// runReconcile runs one reconcile pass, or an always-on loop with --loop. The loop is the
+// VPC deployment: it must stay awake while the Mac sleeps and Cloud Run scales to zero.
+func runReconcile(ctx context.Context, db Database, argv []string) {
+	fs := flag.NewFlagSet("reconcile", flag.ExitOnError)
+	loop := fs.Bool("loop", false, "run continuously on RECONCILE_INTERVAL_SECONDS (default 30s)")
+	_ = fs.Parse(argv)
+
+	r := NewReconciler(db, logActivator{}) // real Cloud Run activator is Phase 2
+	if !*loop {
+		if err := r.ReconcileOnce(ctx); err != nil {
+			log.Fatalf("reconcile: %v", err)
+		}
+		return
+	}
+	interval := 30 * time.Second
+	if v := os.Getenv("RECONCILE_INTERVAL_SECONDS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			interval = time.Duration(n) * time.Second
+		}
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	log.Printf("rara-core reconciler: always-on, interval=%s", interval)
+	for {
+		if err := r.ReconcileOnce(ctx); err != nil {
+			log.Printf("reconcile pass: %v", err)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+// runWork runs a capability's pull loop until its queue drains. It selects the shim by
+// capability: transcrever -> scribe, destilar -> distill.
+func runWork(ctx context.Context, db Database, conn *pgx.Conn, argv []string) {
+	fs := flag.NewFlagSet("work", flag.ExitOnError)
+	capability := fs.String("capability", "", "capability to serve: transcrever | destilar")
+	_ = fs.Parse(argv)
+
+	var runner StepRunner
+	switch *capability {
+	case capTranscrever:
+		runner = newScribeRunner(conn)
+	case capDestilar:
+		runner = newDistillRunner(conn)
+	default:
+		log.Fatalf("work: --capability must be %q or %q, got %q", capTranscrever, capDestilar, *capability)
+	}
+	if err := NewWorker(db, *capability, runner).RunUntilDrained(ctx); err != nil {
+		log.Fatalf("work %s: %v", *capability, err)
+	}
+	log.Printf("rara-core worker %s: queue drained", *capability)
 }
