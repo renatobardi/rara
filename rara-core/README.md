@@ -8,23 +8,54 @@ never a direct call.
 
 See [ARCHITECTURE-2.0.md](../ARCHITECTURE-2.0.md) for the full design and build order.
 
-## Status — Phase 0 (Foundations)
+## Status — Phase 1 (Reconciler MVP over existing lanes)
 
-Scaffold only. This phase ships:
+The control plane now drives the **YouTube** lane end to end — collect → transcribe →
+distill — by orchestrating the existing 1.0 workers through the control tables, without
+changing any worker's domain logic. Phase 1 ships:
 
-- The agent skeleton (Go, `pgx/v5`, single `main.go`, Makefile, migrations + CI),
-  following the 1.0 per-agent conventions.
-- The **control tables** (`migrations/001_initial_schema.sql`): `capabilities`,
-  `providers`, `flows`, `flow_steps`, `routing_policies`, `items`, `item_steps`,
-  `gate_decisions`, `feedback`, `interest_profile` — isolated in the shared Neon DB
-  with a namespaced `core_set_updated_at` trigger and the claim indexes that make the
-  `SELECT … FOR UPDATE SKIP LOCKED` work-queue efficient.
-- The persistence seam: idempotent upserts (`ON CONFLICT`) for the config + spine
-  tables, append-only inserts for the audit tables, mirrored by an in-memory
-  `MockDatabase` in the tests.
+- **Lane config seed** ([seed.go](seed.go)): the YouTube lane as data — capabilities,
+  four providers (`harvest`/`shelf` = collectors, `asr-youtube` = scribe on the Mac
+  with the residential constraint, `distill` = Cloud Run), one `youtube` flow and its
+  five ordered steps (`coletar → gate_barato → transcrever → gate_rico → destilar`).
+- **Spine ingest** ([ingest.go](ingest.go)): populates `items` from
+  `channel_videos ∪ playlist_videos`, deduped globally on `youtube_video_id`. Idempotent
+  — re-discovery never regresses an in-flight item's status (`DiscoverItem`).
+- **Reconciler** ([reconciler.go](reconciler.go)): a level-triggered loop. It observes
+  flow steps vs `item_steps` and takes the single next action — auto-satisfy `coletar`
+  (the item exists ⇒ collection happened) and the pass-through gates, assign a provider
+  for real work steps, advance the item, terminate. Boring, idempotent, no domain work.
+- **Claim contract** ([store_reads.go](store_reads.go)): workers pull their assignment
+  with `SELECT … WHERE status='pending' ORDER BY id FOR UPDATE SKIP LOCKED` — no broker,
+  no double-claim. The claim moves the step `pending → running`.
+- **Worker shims** ([worker.go](worker.go), [runners.go](runners.go)): a thin adapter
+  that translates an `item_steps` assignment into the existing binary's current
+  entrypoint (`scribe --source <url> --limit 1`; an idempotent `distill` batch drain)
+  and writes the produced domain row id back as `output_ref`. Scribe/distill domain
+  logic is untouched.
+- **Pass-through gates**: `gate_barato`/`gate_rico` always `keep` (recorded in
+  `gate_decisions`, `decided_by=passthrough`). Real curation is Phase 3.
 
-**There is no behavior yet** — no reconciler loop, no router, no curation gates.
-`main()` connects, confirms the control tables are reachable, and exits.
+Routing (cost/quality/constraints + fallback) is **Phase 2**; until then the reconciler
+selects the single enabled provider per capability and the residential constraint is
+recorded but not yet enforced. A minimal **liveness backstop** is in, though: a claimed
+(`running`) step whose heartbeat goes stale past `RECONCILE_STALE_SECONDS` is returned to
+the pending frontier for re-claim. Other robustness edges handled this phase: a transient
+worker miss (e.g. distill's batch hasn't reached a transcript yet) re-queues the step up to
+an attempt ceiling instead of failing the item; an empty (no-speech) transcript curates the
+item out (`filtered`) rather than driving it into a distill that must fail; and the loops
+honour SIGINT/SIGTERM for graceful shutdown.
+
+### Commands
+
+```bash
+core-job seed                      # seed the YouTube lane config (idempotent)
+core-job ingest                    # items spine <- channel_videos ∪ playlist_videos
+core-job reconcile [--loop]        # one pass, or always-on (VPC) on RECONCILE_INTERVAL_SECONDS
+core-job work --capability transcrever   # scribe shim (resident, on the Mac)
+core-job work --capability destilar      # distill shim (on_demand, Cloud Run)
+core-job status                    # health check: control tables reachable
+```
 
 ## Control tables
 
@@ -68,5 +99,7 @@ applied to Neon by `database-core.yml` on merge to `main` (and validated inside 
 ## Runtime
 
 rara-core is designed to run **always-on in the VPC** (the reconciler must stay awake
-while the Mac sleeps and Cloud Run scales to zero). Phase 0 ships only the schema and
-scaffold; the reconciler, router, and gates land in Phases 1–3.
+while the Mac sleeps and Cloud Run scales to zero): `core-job reconcile --loop`. The
+worker shims run where their domain binary lives — `work --capability transcrever`
+alongside scribe on the Mac, `work --capability destilar` as the woken Cloud Run job.
+The policy-driven router lands in Phase 2 and the curation gates in Phase 3.
