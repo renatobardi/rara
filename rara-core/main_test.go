@@ -172,6 +172,10 @@ func (m *MockDatabase) UpsertItem(_ context.Context, it Item) (int, error) {
 	if !isValidItemStatus(it.Status) {
 		return 0, errCheckViolation
 	}
+	it.Sensitivity = sensitivityOr(it.Sensitivity) // mirror the SQL DEFAULT 'public'
+	if !isValidSensitivity(it.Sensitivity) {
+		return 0, errCheckViolation
+	}
 	if !m.flowByID[it.FlowID] {
 		return 0, errFKViolation // REFERENCES flows(id)
 	}
@@ -193,6 +197,10 @@ func (m *MockDatabase) UpsertItem(_ context.Context, it Item) (int, error) {
 // but on conflict PRESERVE the existing runtime status (re-stamping only flow fields).
 func (m *MockDatabase) DiscoverItem(_ context.Context, it Item) (int, error) {
 	if !isValidItemStatus(it.Status) {
+		return 0, errCheckViolation
+	}
+	it.Sensitivity = sensitivityOr(it.Sensitivity) // mirror the SQL DEFAULT 'public'
+	if !isValidSensitivity(it.Sensitivity) {
 		return 0, errCheckViolation
 	}
 	if !m.flowByID[it.FlowID] {
@@ -401,10 +409,10 @@ func (m *MockDatabase) TouchProviderHeartbeat(_ context.Context, name string) er
 	return nil
 }
 
-func (m *MockDatabase) ClaimPendingStep(_ context.Context, capability string) (*ItemStep, error) {
+func (m *MockDatabase) ClaimPendingStep(_ context.Context, capability, provider string) (*ItemStep, error) {
 	bestKey, bestOrder, found := itemStepKey{}, int(^uint(0)>>1), false
 	for k, s := range m.itemSteps {
-		if s.Capability == capability && s.Status == stepPending {
+		if s.Capability == capability && s.AssignedProvider == provider && s.Status == stepPending {
 			if o := m.stepOrder[k]; o < bestOrder { // lowest insertion order = FIFO by id
 				bestKey, bestOrder, found = k, o, true
 			}

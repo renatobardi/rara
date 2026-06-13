@@ -361,10 +361,12 @@ func TestReconcileNoProviderErrors(t *testing.T) {
 	ctx := context.Background()
 	db := newMockDatabase()
 	itemID := seedAndIngestOne(t, db, "vid1")
-	// Disable the only gate_barato provider.
-	p := db.providers[provGateBarato]
-	p.Enabled = false
-	db.providers[provGateBarato] = p
+	// Disable BOTH gate_barato providers (cloud + self-host) so the capability is unroutable.
+	for _, name := range []string{provGateBarato, provGateBaratoLocal} {
+		p := db.providers[name]
+		p.Enabled = false
+		db.providers[name] = p
+	}
 
 	r := NewReconciler(db, &fakeActivator{})
 	it := db.itemByID[itemID]

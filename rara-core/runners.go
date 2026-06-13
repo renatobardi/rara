@@ -123,6 +123,153 @@ func (r *distillRunner) Run(ctx context.Context, item Item, _ ItemStep) (RunResu
 }
 
 // ---------------------------------------------------------------------------
+// asr-direct-audio shim (transcrever, podcast) — transcribe a direct enclosure URL.
+//
+// The podcast counterpart of scribeRunner: instead of building a YouTube watch URL, it
+// resolves the episode's direct CDN audio URL from podcast_episodes (the collector's domain
+// table, SELECT only) and hands it to the ASR binary. The binary writes a transcripts row
+// with source_type=podcast and source_ref=GUID — the same GUID the spine carries — so the
+// downstream gate_rico and distill lookups chain on source_ref. No residential IP is needed
+// (the enclosure is a plain CDN download), so this provider runs on Cloud Run/VPC. Like the
+// other shims, it is exercised by integration, not unit tests.
+//
+// Integration contract: ASR_DIRECT_BIN must accept `--source <url> --source-type podcast
+// --source-ref <guid>` and write the transcripts row keyed on that source_ref/source_type.
+// ---------------------------------------------------------------------------
+
+type asrDirectAudioRunner struct {
+	conn *pgx.Conn
+	bin  string // ASR_DIRECT_BIN (the ASR binary deployed on Cloud Run; transcribes a direct URL)
+}
+
+func newASRDirectAudioRunner(conn *pgx.Conn) *asrDirectAudioRunner {
+	return &asrDirectAudioRunner{conn: conn, bin: envOr("ASR_DIRECT_BIN", "scribe-job")}
+}
+
+func (r *asrDirectAudioRunner) Run(ctx context.Context, item Item, _ ItemStep) (RunResult, error) {
+	audioURL, err := r.enclosureURL(ctx, item.SourceRef)
+	if err != nil {
+		return RunResult{}, err
+	}
+	cmd := exec.CommandContext(ctx, r.bin,
+		"--source", audioURL, "--source-type", lanePodcast, "--source-ref", item.SourceRef, "--limit", "1")
+	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+	if err := cmd.Run(); err != nil {
+		return RunResult{}, fmt.Errorf("asr-direct-audio %s: %w", item.SourceRef, err)
+	}
+	// Capture the transcript keyed on the spine's source_ref. 'empty' (no speech) is benign
+	// no-content; no row at all is a hard failure.
+	const q = `SELECT id, status FROM transcripts
+	           WHERE source_ref = $1 AND source_type = $2 AND status IN ('done', 'empty')`
+	var id int
+	var status string
+	switch err := r.conn.QueryRow(ctx, q, item.SourceRef, lanePodcast).Scan(&id, &status); {
+	case errors.Is(err, pgx.ErrNoRows):
+		return RunResult{}, fmt.Errorf("transcrever podcast %s: %w", item.SourceRef, errNoOutputRow)
+	case err != nil:
+		return RunResult{}, err
+	}
+	return RunResult{OutputRef: strconv.Itoa(id), Filtered: status == "empty"}, nil
+}
+
+// enclosureURL resolves an episode's direct audio URL from the collector's domain table.
+func (r *asrDirectAudioRunner) enclosureURL(ctx context.Context, guid string) (string, error) {
+	const q = `SELECT enclosure_url FROM podcast_episodes WHERE guid = $1`
+	var url string
+	switch err := r.conn.QueryRow(ctx, q, guid).Scan(&url); {
+	case errors.Is(err, pgx.ErrNoRows):
+		return "", fmt.Errorf("asr-direct-audio: no podcast_episodes row for guid %q: %w", guid, errNoOutputRow)
+	case err != nil:
+		return "", err
+	}
+	return url, nil
+}
+
+// ---------------------------------------------------------------------------
+// extract shim (extrair, email) — clean an email body into a to-text artifact.
+//
+// The email lane's to-text worker. It reads the raw email body from the emails table (the
+// rara-mail collector's domain table, SELECT only), runs the PURE cleaner (extract.go:
+// strip HTML/signature/quoted-reply), and stores the result as a transcripts row
+// (source_type=email, source_ref=message_id) so distill consumes it exactly like a
+// transcript. Writing transcripts is the one sanctioned cross-agent write — the to-text
+// artifact table is shared by design (the universal "to-text store"). Sensitivity is handled
+// by ROUTING (private items only reach self-host LLMs), not by where the text is stored.
+//
+// Like the other shims this glue is exercised by integration, not unit tests; cleanEmailText
+// is what the pure tests cover.
+// ---------------------------------------------------------------------------
+
+// extractEngine labels the transcripts.engine of an email to-text row (a NOT NULL column),
+// distinguishing extractor output from real ASR engines.
+const extractEngine = "rara-core/extrair"
+
+type extractRunner struct {
+	conn *pgx.Conn
+}
+
+func newExtractRunner(conn *pgx.Conn) *extractRunner { return &extractRunner{conn: conn} }
+
+func (r *extractRunner) Run(ctx context.Context, item Item, _ ItemStep) (RunResult, error) {
+	raw, err := r.readEmailBody(ctx, item.SourceRef)
+	if err != nil {
+		return RunResult{}, err
+	}
+	clean := cleanEmailText(raw)
+	id, err := r.writeTranscript(ctx, item.SourceRef, clean)
+	if err != nil {
+		return RunResult{}, err
+	}
+	// An email that cleans to nothing (pure signature/quote) is benign no-content: the step is
+	// done, but the item is curated out rather than marched into a distill that must fail.
+	return RunResult{OutputRef: strconv.Itoa(id), Filtered: strings.TrimSpace(clean) == ""}, nil
+}
+
+// readEmailBody fetches the raw email body. A missing row is a hard failure (extrair runs only
+// after the email was collected).
+func (r *extractRunner) readEmailBody(ctx context.Context, messageID string) (string, error) {
+	const q = `SELECT COALESCE(body, '') FROM emails WHERE message_id = $1`
+	var body string
+	switch err := r.conn.QueryRow(ctx, q, messageID).Scan(&body); {
+	case errors.Is(err, pgx.ErrNoRows):
+		return "", fmt.Errorf("extrair %s: %w", messageID, errNoOutputRow)
+	case err != nil:
+		return "", err
+	}
+	return body, nil
+}
+
+// writeTranscript stores the cleaned text as a transcripts row keyed on (source_ref,
+// source_type=email). transcripts has no unique key for non-youtube sources, so it upserts
+// manually (UPDATE, else INSERT) — a retry re-cleans in place rather than duplicating. (A
+// partial unique index on transcripts(source_ref) WHERE youtube_video_id IS NULL in rara-scribe
+// would make this a one-statement ON CONFLICT; recommended but not required.)
+func (r *extractRunner) writeTranscript(ctx context.Context, sourceRef, text string) (int, error) {
+	status := "done"
+	if strings.TrimSpace(text) == "" {
+		status = "empty"
+	}
+	const upd = `
+		UPDATE transcripts SET transcript = $3, status = $4, engine = $5
+		WHERE source_ref = $1 AND source_type = $2
+		RETURNING id`
+	var id int
+	switch err := r.conn.QueryRow(ctx, upd, sourceRef, laneEmail, text, status, extractEngine).Scan(&id); {
+	case errors.Is(err, pgx.ErrNoRows):
+		const ins = `
+			INSERT INTO transcripts (source_type, source_ref, engine, transcript, status)
+			VALUES ($1, $2, $3, $4, $5)
+			RETURNING id`
+		if err := r.conn.QueryRow(ctx, ins, laneEmail, sourceRef, extractEngine, text, status).Scan(&id); err != nil {
+			return 0, err
+		}
+	case err != nil:
+		return 0, err
+	}
+	return id, nil
+}
+
+// ---------------------------------------------------------------------------
 // gate shim (gate_barato / gate_rico) — the I/O edge of the curation cascade.
 //
 // gate_barato judges METADATA (title + channel) before paying for ASR; gate_rico judges the
@@ -183,16 +330,19 @@ func (r *gateRunner) loadProfile(ctx context.Context) (profileDoc, error) {
 	return parseProfile(prof, rules), nil
 }
 
-// readInput gathers what the gate judges: metadata for both gates, plus the full transcript
-// for gate_rico.
+// readInput gathers what the gate judges: metadata for both gates, plus the full to-text
+// artifact for gate_rico. Both reads are LANE-AWARE — the metadata/text live in a different
+// domain table per lane (youtube: channel_videos/transcripts-by-video-id; podcast:
+// podcast_episodes/transcripts-by-source_ref) — while the cascade that judges them (gates.go)
+// stays a single pure function.
 func (r *gateRunner) readInput(ctx context.Context, item Item) (gateInput, error) {
-	title, channel, err := r.readMetadata(ctx, item.SourceRef)
+	title, channel, err := r.readMetadata(ctx, item)
 	if err != nil {
 		return gateInput{}, err
 	}
 	in := gateInput{Title: title, Channel: channel}
 	if r.gate == capGateRico {
-		text, err := r.readText(ctx, item.SourceRef)
+		text, err := r.readText(ctx, item)
 		if err != nil {
 			return gateInput{}, err
 		}
@@ -201,11 +351,37 @@ func (r *gateRunner) readInput(ctx context.Context, item Item) (gateInput, error
 	return in, nil
 }
 
-// readMetadata fetches the video's title and (best-effort) channel name. It prefers the
+// readMetadata fetches the item's title and (best-effort) channel/author, dispatching by lane.
+func (r *gateRunner) readMetadata(ctx context.Context, item Item) (title, channel string, err error) {
+	switch item.Lane {
+	case lanePodcast:
+		return r.readPodcastMetadata(ctx, item.SourceRef)
+	case laneEmail:
+		return r.readEmailMetadata(ctx, item.SourceRef)
+	default:
+		return r.readYouTubeMetadata(ctx, item.SourceRef)
+	}
+}
+
+// readText fetches the completed to-text artifact for gate_rico, dispatching by lane. A
+// missing artifact at this point is a hard failure (gate_rico runs only after the to-text step
+// completed). Podcast and email both store their to-text in transcripts keyed by source_ref.
+func (r *gateRunner) readText(ctx context.Context, item Item) (string, error) {
+	switch item.Lane {
+	case lanePodcast:
+		return r.readTranscriptBySourceRef(ctx, item.SourceRef, lanePodcast)
+	case laneEmail:
+		return r.readTranscriptBySourceRef(ctx, item.SourceRef, laneEmail)
+	default:
+		return r.readYouTubeText(ctx, item.SourceRef)
+	}
+}
+
+// readYouTubeMetadata fetches a video's title and (best-effort) channel name. It prefers the
 // harvested channel_videos row (which carries the channel via target_channels) and falls back
 // to a shelved playlist_videos row (title only). A missing row yields empty strings rather
 // than an error — the cascade then leans on the LLM, which will tend to defer on no signal.
-func (r *gateRunner) readMetadata(ctx context.Context, videoID string) (title, channel string, err error) {
+func (r *gateRunner) readYouTubeMetadata(ctx context.Context, videoID string) (title, channel string, err error) {
 	const q = `
 		SELECT title, channel FROM (
 			SELECT cv.title AS title, tc.channel_name AS channel, 1 AS pri
@@ -224,14 +400,58 @@ func (r *gateRunner) readMetadata(ctx context.Context, videoID string) (title, c
 	return title, channel, nil
 }
 
-// readText fetches the completed transcript for gate_rico. A missing transcript at this
-// point is a hard failure (gate_rico runs only after transcrever completed).
-func (r *gateRunner) readText(ctx context.Context, videoID string) (string, error) {
+// readYouTubeText fetches the completed transcript for a YouTube video (keyed by the video id).
+func (r *gateRunner) readYouTubeText(ctx context.Context, videoID string) (string, error) {
 	const q = `SELECT COALESCE(transcript, '') FROM transcripts WHERE youtube_video_id = $1 AND status = 'done'`
 	var text string
 	switch err := r.conn.QueryRow(ctx, q, videoID).Scan(&text); {
 	case errors.Is(err, pgx.ErrNoRows):
 		return "", fmt.Errorf("gate_rico %s: %w", videoID, errNoOutputRow)
+	case err != nil:
+		return "", err
+	}
+	return text, nil
+}
+
+// readPodcastMetadata fetches an episode's title and (best-effort) feed title as the "channel",
+// keyed by the RSS guid. A missing row yields empty strings (the cascade leans on the LLM).
+func (r *gateRunner) readPodcastMetadata(ctx context.Context, guid string) (title, channel string, err error) {
+	const q = `
+		SELECT pe.title, COALESCE(pf.title, '')
+		FROM podcast_episodes pe
+		LEFT JOIN podcast_feeds pf ON pf.id = pe.feed_id
+		WHERE pe.guid = $1`
+	switch err := r.conn.QueryRow(ctx, q, guid).Scan(&title, &channel); {
+	case errors.Is(err, pgx.ErrNoRows):
+		return "", "", nil
+	case err != nil:
+		return "", "", err
+	}
+	return title, channel, nil
+}
+
+// readEmailMetadata fetches an email's subject (as title) and sender (as channel), keyed by
+// the Gmail message id. A missing row yields empty strings (the cascade leans on the LLM).
+func (r *gateRunner) readEmailMetadata(ctx context.Context, messageID string) (title, channel string, err error) {
+	const q = `SELECT COALESCE(subject, ''), COALESCE(sender, '') FROM emails WHERE message_id = $1`
+	switch err := r.conn.QueryRow(ctx, q, messageID).Scan(&title, &channel); {
+	case errors.Is(err, pgx.ErrNoRows):
+		return "", "", nil
+	case err != nil:
+		return "", "", err
+	}
+	return title, channel, nil
+}
+
+// readTranscriptBySourceRef fetches the completed to-text artifact for a non-youtube lane,
+// keyed by (source_ref, source_type) in the shared transcripts table — the contract the
+// to-text worker honours so the gate/distill lookups chain on the spine's source_ref.
+func (r *gateRunner) readTranscriptBySourceRef(ctx context.Context, sourceRef, sourceType string) (string, error) {
+	const q = `SELECT COALESCE(transcript, '') FROM transcripts WHERE source_ref = $1 AND source_type = $2 AND status = 'done'`
+	var text string
+	switch err := r.conn.QueryRow(ctx, q, sourceRef, sourceType).Scan(&text); {
+	case errors.Is(err, pgx.ErrNoRows):
+		return "", fmt.Errorf("gate_rico %s/%s: %w", sourceType, sourceRef, errNoOutputRow)
 	case err != nil:
 		return "", err
 	}
@@ -441,6 +661,64 @@ func (s *pgxSpineSource) YouTubeVideos(ctx context.Context) ([]YouTubeVideo, err
 			return nil, err
 		}
 		out = append(out, v)
+	}
+	return out, rows.Err()
+}
+
+// ---------------------------------------------------------------------------
+// pgx PodcastSource — the read side of podcast ingest (podcast_episodes).
+// ---------------------------------------------------------------------------
+
+type pgxPodcastSource struct{ conn *pgx.Conn }
+
+// PodcastEpisodes returns every collected episode that carries a stable GUID. The spine is
+// keyed on (lane=podcast, source_ref=guid); the collector (rara-podcast) owns the table.
+func (s *pgxPodcastSource) PodcastEpisodes(ctx context.Context) ([]PodcastEpisode, error) {
+	const q = `
+		SELECT guid, COALESCE(title, '')
+		FROM podcast_episodes
+		WHERE guid IS NOT NULL AND guid <> ''`
+	rows, err := s.conn.Query(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []PodcastEpisode
+	for rows.Next() {
+		var e PodcastEpisode
+		if err := rows.Scan(&e.GUID, &e.Title); err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+// ---------------------------------------------------------------------------
+// pgx EmailSource — the read side of email ingest (emails).
+// ---------------------------------------------------------------------------
+
+type pgxEmailSource struct{ conn *pgx.Conn }
+
+// Emails returns every collected email that carries a message id. The spine is keyed on
+// (lane=email, source_ref=message_id); the collector (rara-mail) owns the table.
+func (s *pgxEmailSource) Emails(ctx context.Context) ([]EmailItem, error) {
+	const q = `
+		SELECT message_id, COALESCE(subject, '')
+		FROM emails
+		WHERE message_id IS NOT NULL AND message_id <> ''`
+	rows, err := s.conn.Query(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []EmailItem
+	for rows.Next() {
+		var e EmailItem
+		if err := rows.Scan(&e.MessageID, &e.Subject); err != nil {
+			return nil, err
+		}
+		out = append(out, e)
 	}
 	return out, rows.Err()
 }

@@ -206,7 +206,7 @@ func (r *Reconciler) materialize(ctx context.Context, item Item, fs FlowStep) (d
 		// gate_rico are workers now, no longer pass-through). Route to a provider by policy
 		// (cost<->quality + constraints + health + fallback) and write a pending assignment
 		// for the worker to pull; wake on_demand providers.
-		prov, ok, err := r.router.Select(ctx, fs.Capability, r.now(), r.healthTTL)
+		prov, ok, err := r.router.Select(ctx, fs.Capability, item, r.now(), r.healthTTL)
 		if err != nil {
 			return false, err
 		}
@@ -237,7 +237,7 @@ func (r *Reconciler) materialize(ctx context.Context, item Item, fs FlowStep) (d
 // chosen provider is on_demand, activation is re-fired.
 func (r *Reconciler) handleStaleStep(ctx context.Context, item Item, st ItemStep) error {
 	dead := st.AssignedProvider
-	next, ok, err := r.router.Select(ctx, st.Capability, r.now(), r.healthTTL, dead)
+	next, ok, err := r.router.Select(ctx, st.Capability, item, r.now(), r.healthTTL, dead)
 	if err != nil {
 		return err
 	}
@@ -306,10 +306,14 @@ func (r *Reconciler) setItemStatus(ctx context.Context, item Item, status string
 // computeItemStatus maps step completion to the item lifecycle status. The to_text /
 // distilled / done milestones are driven by which capability has completed:
 //
-//	all steps done            -> done
-//	destilar done             -> distilled
-//	transcrever done          -> to_text
-//	otherwise (early steps)   -> discovered
+//	all steps done                 -> done
+//	destilar done                  -> distilled
+//	transcrever OR extrair done    -> to_text
+//	otherwise (early steps)        -> discovered
+//
+// The to_text milestone is reached by EITHER to-text capability: `transcrever` (audio lanes:
+// youtube, podcast) or `extrair` (text lanes: email). The architecture's lane template is
+// `... -> (transcrever | extrair) -> ...`, so both produce the same milestone.
 func computeItemStatus(flowSteps []FlowStep, bySeq map[int]ItemStep) string {
 	doneCaps := make(map[string]bool)
 	allDone := true
@@ -326,7 +330,7 @@ func computeItemStatus(flowSteps []FlowStep, bySeq map[int]ItemStep) string {
 		return itemDone
 	case doneCaps[capDestilar]:
 		return itemDistilled
-	case doneCaps[capTranscrever]:
+	case doneCaps[capTranscrever] || doneCaps[capExtrair]:
 		return itemToText
 	default:
 		return itemDiscovered

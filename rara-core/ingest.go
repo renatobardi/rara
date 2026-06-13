@@ -74,3 +74,102 @@ func IngestYouTube(ctx context.Context, db Database, src SpineSource) (int, erro
 	}
 	return n, nil
 }
+
+// PodcastEpisode is the minimal projection the spine needs from a collected podcast episode.
+// GUID is the RSS item's stable id -> items.source_ref; Title is carried for symmetry (the
+// gate reads metadata from podcast_episodes directly).
+type PodcastEpisode struct {
+	GUID  string
+	Title string
+}
+
+// PodcastSource reads the collected-episode universe the podcast spine is built from. The
+// concrete implementation reads podcast_episodes (written by the rara-podcast collector).
+type PodcastSource interface {
+	PodcastEpisodes(ctx context.Context) ([]PodcastEpisode, error)
+}
+
+// IngestPodcast upserts one `items` row per collected podcast episode (lane=podcast,
+// source_ref=guid, public). Mirrors IngestYouTube: idempotent on (lane, source_ref), stamps
+// the podcast flow's version, never regresses an in-flight item. Returns the count processed.
+func IngestPodcast(ctx context.Context, db Database, src PodcastSource) (int, error) {
+	flow, found, err := db.GetFlow(ctx, podcastFlowName)
+	if err != nil {
+		return 0, err
+	}
+	if !found {
+		return 0, fmt.Errorf("ingest: flow %q not seeded (run SeedPodcastLane first)", podcastFlowName)
+	}
+	episodes, err := src.PodcastEpisodes(ctx)
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, e := range episodes {
+		if e.GUID == "" {
+			continue // skip malformed rows (an episode with no stable id)
+		}
+		if _, err := db.DiscoverItem(ctx, Item{
+			Lane:        lanePodcast,
+			SourceRef:   e.GUID,
+			FlowID:      flow.ID,
+			FlowVersion: flow.Version,
+			Status:      itemDiscovered,
+			Sensitivity: sensitivityPublic,
+		}); err != nil {
+			return n, err
+		}
+		n++
+	}
+	return n, nil
+}
+
+// EmailItem is the minimal projection the spine needs from a collected email. MessageID is the
+// Gmail message id -> items.source_ref; Subject is carried for symmetry (the gate reads
+// metadata from the emails table directly).
+type EmailItem struct {
+	MessageID string
+	Subject   string
+}
+
+// EmailSource reads the collected-email universe the email spine is built from. The concrete
+// implementation reads the emails table (written by the rara-mail collector).
+type EmailSource interface {
+	Emails(ctx context.Context) ([]EmailItem, error)
+}
+
+// IngestEmail upserts one `items` row per collected email (lane=email, source_ref=message_id).
+// Email content is PRIVATE, so every email item is stamped sensitivity=private — the router
+// then keeps it off third-party models. Mirrors the other ingests: idempotent on
+// (lane, source_ref), stamps the email flow's version, never regresses an in-flight item.
+func IngestEmail(ctx context.Context, db Database, src EmailSource) (int, error) {
+	flow, found, err := db.GetFlow(ctx, emailFlowName)
+	if err != nil {
+		return 0, err
+	}
+	if !found {
+		return 0, fmt.Errorf("ingest: flow %q not seeded (run SeedEmailLane first)", emailFlowName)
+	}
+	emails, err := src.Emails(ctx)
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, e := range emails {
+		if e.MessageID == "" {
+			continue // skip malformed rows (an email with no message id)
+		}
+		if _, err := db.DiscoverItem(ctx, Item{
+			Lane:        laneEmail,
+			SourceRef:   e.MessageID,
+			FlowID:      flow.ID,
+			FlowVersion: flow.Version,
+			Status:      itemDiscovered,
+			Sensitivity: sensitivityPrivate,
+		}); err != nil {
+			return n, err
+		}
+		n++
+	}
+	return n, nil
+}

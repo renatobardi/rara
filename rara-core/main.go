@@ -65,6 +65,14 @@ const (
 	stepSkipped  = "skipped"
 )
 
+// items.sensitivity — how freely an item's content may be sent to a model. `private`
+// content (email) may only be processed by local/self-host providers; the router excludes
+// any provider tagged third-party for it (constraintsSatisfied). Defaults to `public`.
+const (
+	sensitivityPublic  = "public"
+	sensitivityPrivate = "private"
+)
+
 // gate_decisions.gate
 const (
 	gateBarato = "gate_barato"
@@ -131,11 +139,17 @@ const (
 // router uses when no capability-scoped policy exists.
 const policyScopeGlobal = "global"
 
-// constraintResidential is the only hard-constraint requirement the router understands
-// today (providers.constraints -> {"requires":"residential"}): egress from a residential
-// IP, satisfied only by runtime=local. YouTube blocks audio download from datacenter IPs,
-// so asr-youtube carries it and the router eliminates any cloudrun/vpc candidate.
+// constraintResidential is the hard-constraint requirement (providers.constraints ->
+// {"requires":"residential"}): egress from a residential IP, satisfied only by
+// runtime=local. YouTube blocks audio download from datacenter IPs, so asr-youtube carries
+// it and the router eliminates any cloudrun/vpc candidate.
 const constraintResidential = "residential"
+
+// constraintThirdParty is the providers.constraints sensitivity tag
+// ({"sensitivity":"third_party"}) marking a provider that sends content off-box to a
+// third-party model. The router excludes such a provider for a `private` item (only
+// local/self-host may process private content); untagged/self-host providers are unrestricted.
+const constraintThirdParty = "third_party"
 
 func isValidRuntime(s string) bool {
 	switch s {
@@ -174,6 +188,9 @@ func isValidDecision(s string) bool {
 	return s == decisionKeep || s == decisionDrop || s == decisionDefer
 }
 func isValidTargetType(s string) bool { return s == targetItem || s == targetDistillation }
+func isValidSensitivity(s string) bool {
+	return s == sensitivityPublic || s == sensitivityPrivate
+}
 func isValidRuleAction(s string) bool { return s == ruleAllow || s == ruleDeny }
 func isValidMatchType(s string) bool  { return s == matchChannel || s == matchTitleContains }
 
@@ -238,6 +255,10 @@ type Item struct {
 	FlowID      int
 	FlowVersion int
 	Status      string
+	// Sensitivity is `public` (default) or `private`. Stamped at discovery (email -> private)
+	// and frozen thereafter; the router reads it to exclude third-party providers for private
+	// content. The reconciler preserves it on every status write (it reads the full item).
+	Sensitivity string
 }
 
 // ItemStep is one mutable runtime state-row.
@@ -391,14 +412,16 @@ type Database interface {
 	TouchProviderHeartbeat(ctx context.Context, name string) error
 
 	// --- Claim (Phase 1) -----------------------------------------------------
-	// ClaimPendingStep is the worker's pull: it atomically claims the
-	// frontmost pending step of a capability with
-	//   SELECT ... WHERE capability=$1 AND status='pending'
+	// ClaimPendingStep is the worker's pull: it atomically claims the frontmost pending step
+	// of a capability ASSIGNED TO the given provider with
+	//   SELECT ... WHERE capability=$1 AND assigned_provider=$2 AND status='pending'
 	//   ORDER BY id FOR UPDATE SKIP LOCKED LIMIT 1
-	// then transitions it pending->running, bumps attempt and stamps the
-	// heartbeat — so no two workers ever claim the same row. Returns
-	// (nil, nil) when the queue is empty for that capability.
-	ClaimPendingStep(ctx context.Context, capability string) (*ItemStep, error)
+	// then transitions it pending->running, bumps attempt and stamps the heartbeat — so no
+	// two workers ever claim the same row. The provider filter matters once a capability has
+	// MORE THAN ONE provider with different runners (transcrever -> asr-youtube on the Mac vs
+	// asr-direct-audio on Cloud Run): each worker pulls only the steps the reconciler routed
+	// to it, never the other provider's. Returns (nil, nil) when the queue is empty.
+	ClaimPendingStep(ctx context.Context, capability, provider string) (*ItemStep, error)
 }
 
 // ---------------------------------------------------------------------------
@@ -514,16 +537,21 @@ func (d *pgxDatabase) UpsertItem(ctx context.Context, it Item) (int, error) {
 	if !isValidItemStatus(it.Status) {
 		return 0, fmt.Errorf("invalid item status %q", it.Status)
 	}
+	sens := sensitivityOr(it.Sensitivity)
+	if !isValidSensitivity(sens) {
+		return 0, fmt.Errorf("invalid item sensitivity %q", it.Sensitivity)
+	}
 	const q = `
-		INSERT INTO items (lane, source_ref, flow_id, flow_version, status)
-		VALUES ($1, $2, $3, $4, $5)
+		INSERT INTO items (lane, source_ref, flow_id, flow_version, status, sensitivity)
+		VALUES ($1, $2, $3, $4, $5, $6)
 		ON CONFLICT (lane, source_ref) DO UPDATE SET
 			flow_id      = EXCLUDED.flow_id,
 			flow_version = EXCLUDED.flow_version,
-			status       = EXCLUDED.status
+			status       = EXCLUDED.status,
+			sensitivity  = EXCLUDED.sensitivity
 		RETURNING id`
 	var id int
-	err := d.conn.QueryRow(ctx, q, it.Lane, it.SourceRef, it.FlowID, it.FlowVersion, it.Status).Scan(&id)
+	err := d.conn.QueryRow(ctx, q, it.Lane, it.SourceRef, it.FlowID, it.FlowVersion, it.Status, sens).Scan(&id)
 	return id, err
 }
 
@@ -531,20 +559,24 @@ func (d *pgxDatabase) DiscoverItem(ctx context.Context, it Item) (int, error) {
 	if !isValidItemStatus(it.Status) {
 		return 0, fmt.Errorf("invalid item status %q", it.Status)
 	}
-	// The flow stamp (flow_id + flow_version) and status are frozen at INSERT: the
-	// conflict path re-stamps NOTHING. An in-flight item finishes on the flow shape it was
+	sens := sensitivityOr(it.Sensitivity)
+	if !isValidSensitivity(sens) {
+		return 0, fmt.Errorf("invalid item sensitivity %q", it.Sensitivity)
+	}
+	// The flow stamp (flow_id + flow_version), status AND sensitivity are frozen at INSERT:
+	// the conflict path re-stamps NOTHING. An in-flight item finishes on the flow shape it was
 	// discovered with — re-discovery after a flow edit must neither regress its runtime
 	// status (the reconciler owns that) nor re-stamp its flow_version (new items pick up the
 	// new version; in-flight ones keep the old). The DO UPDATE is a deliberate no-op keep
 	// (flow_id = its own current value) purely so RETURNING yields the existing row's id.
 	const q = `
-		INSERT INTO items (lane, source_ref, flow_id, flow_version, status)
-		VALUES ($1, $2, $3, $4, $5)
+		INSERT INTO items (lane, source_ref, flow_id, flow_version, status, sensitivity)
+		VALUES ($1, $2, $3, $4, $5, $6)
 		ON CONFLICT (lane, source_ref) DO UPDATE SET
 			flow_id = items.flow_id
 		RETURNING id`
 	var id int
-	err := d.conn.QueryRow(ctx, q, it.Lane, it.SourceRef, it.FlowID, it.FlowVersion, it.Status).Scan(&id)
+	err := d.conn.QueryRow(ctx, q, it.Lane, it.SourceRef, it.FlowID, it.FlowVersion, it.Status, sens).Scan(&id)
 	return id, err
 }
 
@@ -612,6 +644,15 @@ func nullStr(s string) *string {
 	return &s
 }
 
+// sensitivityOr defaults an empty sensitivity to `public`, mirroring the items.sensitivity
+// SQL DEFAULT so a write that omits it never violates the NOT NULL / CHECK.
+func sensitivityOr(s string) string {
+	if s == "" {
+		return sensitivityPublic
+	}
+	return s
+}
+
 // ---------------------------------------------------------------------------
 // Entrypoint
 // ---------------------------------------------------------------------------
@@ -630,8 +671,9 @@ Commands:
   seed                       Seed the YouTube lane config (capabilities, providers, flow)
   ingest                     Populate the items spine from channel_videos ∪ playlist_videos
   reconcile [--loop]         Run the reconciler: one pass, or always-on with --loop
-  work --capability <cap>    Run a worker shim that pulls and processes its assignments
-                             (cap: transcrever | destilar | gate_barato | gate_rico)
+  work --capability <cap> --provider <name>
+                             Run a worker shim that pulls and processes its assignments
+                             (cap: transcrever | extrair | destilar | gate_barato | gate_rico)
   feedback --distillation <id> --signal <up|down>
                              Record explicit thumbs on a distillation
   quarantine list            List items deferred to quarantine (the cold-start review sample)
@@ -666,17 +708,22 @@ func main() {
 
 	switch cmd {
 	case "seed":
-		if err := SeedYouTubeLane(ctx, db); err != nil {
-			log.Fatalf("seed: %v", err)
+		for _, seed := range []struct {
+			name string
+			fn   func(context.Context, Database) error
+		}{
+			{"youtube", SeedYouTubeLane},
+			{"podcast", SeedPodcastLane},
+			{"email", SeedEmailLane},
+		} {
+			if err := seed.fn(ctx, db); err != nil {
+				log.Fatalf("seed %s: %v", seed.name, err)
+			}
 		}
-		log.Println("rara-core: YouTube lane config seeded")
+		log.Println("rara-core: lane config seeded (youtube, podcast, email)")
 
 	case "ingest":
-		n, err := IngestYouTube(ctx, db, &pgxSpineSource{conn: conn})
-		if err != nil {
-			log.Fatalf("ingest: %v", err)
-		}
-		log.Printf("rara-core: ingested %d YouTube videos into the items spine", n)
+		runIngest(ctx, db, conn, os.Args[2:])
 
 	case "reconcile":
 		runReconcile(ctx, db, os.Args[2:])
@@ -701,6 +748,34 @@ func main() {
 		fmt.Print(usage)
 		os.Exit(2)
 	}
+}
+
+// runIngest populates the items spine for a lane from its collector's domain tables. The lane
+// selects which SpineSource to read (youtube: channel_videos ∪ playlist_videos; podcast:
+// podcast_episodes). Each is idempotent — re-ingesting converges.
+func runIngest(ctx context.Context, db Database, conn *pgx.Conn, argv []string) {
+	fs := flag.NewFlagSet("ingest", flag.ExitOnError)
+	lane := fs.String("lane", laneYouTube, "lane to ingest: youtube | podcast | email")
+	_ = fs.Parse(argv)
+
+	var (
+		n   int
+		err error
+	)
+	switch *lane {
+	case laneYouTube:
+		n, err = IngestYouTube(ctx, db, &pgxSpineSource{conn: conn})
+	case lanePodcast:
+		n, err = IngestPodcast(ctx, db, &pgxPodcastSource{conn: conn})
+	case laneEmail:
+		n, err = IngestEmail(ctx, db, &pgxEmailSource{conn: conn})
+	default:
+		log.Fatalf("ingest: --lane must be one of youtube|podcast|email, got %q", *lane)
+	}
+	if err != nil {
+		log.Fatalf("ingest %s: %v", *lane, err)
+	}
+	log.Printf("rara-core: ingested %d %s items into the spine", n, *lane)
 }
 
 // runReconcile runs one reconcile pass, or an always-on loop with --loop. The loop is the
@@ -748,33 +823,54 @@ func runReconcile(ctx context.Context, db Database, argv []string) {
 	}
 }
 
-// runWork runs a capability's pull loop until its queue drains. It selects the shim by
-// capability: transcrever -> scribe, destilar -> distill.
+// runWork runs a (capability, provider) pull loop until its queue drains. A worker serves
+// exactly one provider so it claims only the steps the reconciler routed to it — required
+// once a capability has several providers with different runners (transcrever -> asr-youtube
+// on the Mac vs asr-direct-audio on Cloud Run).
 func runWork(ctx context.Context, db Database, conn *pgx.Conn, argv []string) {
 	fs := flag.NewFlagSet("work", flag.ExitOnError)
-	capability := fs.String("capability", "", "capability to serve: transcrever | destilar")
+	capability := fs.String("capability", "", "capability to serve: transcrever | extrair | destilar | gate_barato | gate_rico")
+	provider := fs.String("provider", "", "the provider this worker serves (the reconciler assigns steps to it)")
 	_ = fs.Parse(argv)
+	if *provider == "" {
+		log.Fatalf("work: --provider is required (a capability may have several providers with different runners)")
+	}
 
-	var runner StepRunner
-	switch *capability {
+	runner := selectRunner(db, conn, *capability, *provider)
+	if err := NewWorker(db, *capability, *provider, runner).RunUntilDrained(ctx); err != nil {
+		log.Fatalf("work %s/%s: %v", *capability, *provider, err)
+	}
+	log.Printf("rara-core worker %s/%s: queue drained", *capability, *provider)
+}
+
+// selectRunner maps a (capability, provider) pair to its StepRunner shim. transcrever has two
+// providers with different entrypoints (asr-youtube builds a watch URL; asr-direct-audio reads
+// a direct enclosure URL), so the provider — not just the capability — selects the runner.
+func selectRunner(db Database, conn *pgx.Conn, capability, provider string) StepRunner {
+	switch capability {
 	case capTranscrever:
-		runner = newScribeRunner(conn)
+		switch provider {
+		case provASRYouTube:
+			return newScribeRunner(conn)
+		case provASRDirectAudio:
+			return newASRDirectAudioRunner(conn)
+		default:
+			log.Fatalf("work transcrever: unknown provider %q", provider)
+		}
+	case capExtrair:
+		return newExtractRunner(conn)
 	case capDestilar:
-		runner = newDistillRunner(conn)
+		return newDistillRunner(conn)
 	case capGateBarato, capGateRico:
 		judge, err := newLiteLLMJudge()
 		if err != nil {
-			log.Fatalf("work %s: %v", *capability, err)
+			log.Fatalf("work %s: %v", capability, err)
 		}
-		runner = newGateRunner(db, conn, *capability, judge)
+		return newGateRunner(db, conn, capability, judge)
 	default:
-		log.Fatalf("work: --capability must be one of %q %q %q %q, got %q",
-			capTranscrever, capDestilar, capGateBarato, capGateRico, *capability)
+		log.Fatalf("work: --capability must be one of transcrever|extrair|destilar|gate_barato|gate_rico, got %q", capability)
 	}
-	if err := NewWorker(db, *capability, runner).RunUntilDrained(ctx); err != nil {
-		log.Fatalf("work %s: %v", *capability, err)
-	}
-	log.Printf("rara-core worker %s: queue drained", *capability)
+	return nil // unreachable: every branch above either returns or log.Fatalf-exits
 }
 
 // runFeedback records explicit thumbs on a distillation (deliverable #4).

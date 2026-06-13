@@ -18,6 +18,11 @@ var routerClock = time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
 
 const routerHealthTTL = 5 * time.Minute
 
+// routerItem is a neutral item for the existing selection tests: a public YouTube item. The
+// providers those tests build declare no `accepts`/`sensitivity`, so the item's facets do not
+// perturb them; the accepts/sensitivity behaviour is covered by its own tests below.
+var routerItem = Item{Lane: laneYouTube, Sensitivity: sensitivityPublic}
+
 func ptime(t time.Time) *time.Time { return &t }
 
 // residential is the JSON constraint asr-youtube carries.
@@ -48,12 +53,12 @@ func TestRankCostQualityWeight(t *testing.T) {
 	cands := []Provider{premium, cheap} // unsorted input
 
 	costHeavy := RoutingPolicy{CostWeight: 1, QualityWeight: 0}
-	if got := names(rankProviders(cands, costHeavy, routerClock, routerHealthTTL, nil)); got[0] != "cheap" {
+	if got := names(rankProviders(cands, costHeavy, routerItem, routerClock, routerHealthTTL, nil)); got[0] != "cheap" {
 		t.Errorf("cost-heavy policy should prefer the cheapest, got order %v", got)
 	}
 
 	qualityHeavy := RoutingPolicy{CostWeight: 0, QualityWeight: 1}
-	if got := names(rankProviders(cands, qualityHeavy, routerClock, routerHealthTTL, nil)); got[0] != "premium" {
+	if got := names(rankProviders(cands, qualityHeavy, routerItem, routerClock, routerHealthTTL, nil)); got[0] != "premium" {
 		t.Errorf("quality-heavy policy should prefer the best quality, got order %v", got)
 	}
 }
@@ -64,7 +69,7 @@ func TestScoreNeutralWhenCostsEqual(t *testing.T) {
 	a := onDemand("a", 5, 0.40)
 	b := onDemand("b", 5, 0.80)
 	costHeavy := RoutingPolicy{CostWeight: 1, QualityWeight: 0.001}
-	if got := names(rankProviders([]Provider{a, b}, costHeavy, routerClock, routerHealthTTL, nil)); got[0] != "b" {
+	if got := names(rankProviders([]Provider{a, b}, costHeavy, routerItem, routerClock, routerHealthTTL, nil)); got[0] != "b" {
 		t.Errorf("equal costs: quality should decide, got %v", got)
 	}
 }
@@ -78,7 +83,7 @@ func TestRankConstraintFilter(t *testing.T) {
 	datacenter := Provider{Name: "asr-dc", Capability: capTranscrever, Runtime: runtimeCloudRun,
 		Activation: activationOnDemand, Constraints: residential, Quality: 0.9, Enabled: true}
 
-	ranked := rankProviders([]Provider{datacenter, local}, RoutingPolicy{}, routerClock, routerHealthTTL, nil)
+	ranked := rankProviders([]Provider{datacenter, local}, RoutingPolicy{}, routerItem, routerClock, routerHealthTTL, nil)
 	if got := names(ranked); len(got) != 1 || got[0] != "asr-local" {
 		t.Errorf("residential constraint should leave only the local provider, got %v", got)
 	}
@@ -89,7 +94,7 @@ func TestRankConstraintFilter(t *testing.T) {
 func TestRankConstraintUnknownFailsClosed(t *testing.T) {
 	weird := Provider{Name: "needs-gpu", Capability: capTranscrever, Runtime: runtimeLocal,
 		Activation: activationOnDemand, Constraints: json.RawMessage(`{"requires":"gpu"}`), Enabled: true}
-	if ranked := rankProviders([]Provider{weird}, RoutingPolicy{}, routerClock, routerHealthTTL, nil); len(ranked) != 0 {
+	if ranked := rankProviders([]Provider{weird}, RoutingPolicy{}, routerItem, routerClock, routerHealthTTL, nil); len(ranked) != 0 {
 		t.Errorf("unknown hard requirement should fail closed, got %v", names(ranked))
 	}
 }
@@ -108,7 +113,7 @@ func TestRankHealthExclusion(t *testing.T) {
 	asleep := Provider{Name: "ondemand-asleep", Capability: capTranscrever, Runtime: runtimeCloudRun,
 		Activation: activationOnDemand, HeartbeatAt: nil, Enabled: true}
 
-	ranked := rankProviders([]Provider{fresh, stale, never, asleep}, RoutingPolicy{}, routerClock, routerHealthTTL, nil)
+	ranked := rankProviders([]Provider{fresh, stale, never, asleep}, RoutingPolicy{}, routerItem, routerClock, routerHealthTTL, nil)
 	got := map[string]bool{}
 	for _, n := range names(ranked) {
 		got[n] = true
@@ -135,12 +140,12 @@ func TestRankOrderedFallback(t *testing.T) {
 	b := onDemand("b", 10, 0.5)
 	policy := RoutingPolicy{CostWeight: 1, QualityWeight: 1, Fallback: json.RawMessage(`["b","a"]`)}
 
-	if got := names(rankProviders([]Provider{a, b}, policy, routerClock, routerHealthTTL, nil)); got[0] != "b" || got[1] != "a" {
+	if got := names(rankProviders([]Provider{a, b}, policy, routerItem, routerClock, routerHealthTTL, nil)); got[0] != "b" || got[1] != "a" {
 		t.Errorf("fallback order should pin b before a, got %v", got)
 	}
 	// A non-listed provider falls in behind the pinned ones, by score.
 	c := onDemand("c", 1, 0.99)
-	if got := names(rankProviders([]Provider{a, b, c}, policy, routerClock, routerHealthTTL, nil)); got[0] != "b" || got[1] != "a" || got[2] != "c" {
+	if got := names(rankProviders([]Provider{a, b, c}, policy, routerItem, routerClock, routerHealthTTL, nil)); got[0] != "b" || got[1] != "a" || got[2] != "c" {
 		t.Errorf("non-listed provider should follow the pinned chain, got %v", got)
 	}
 }
@@ -150,7 +155,7 @@ func TestRankOrderedFallback(t *testing.T) {
 func TestRankExcludeForFallover(t *testing.T) {
 	a := onDemand("a", 1, 0.9)
 	b := onDemand("b", 2, 0.8)
-	ranked := rankProviders([]Provider{a, b}, RoutingPolicy{QualityWeight: 1}, routerClock, routerHealthTTL, map[string]bool{"a": true})
+	ranked := rankProviders([]Provider{a, b}, RoutingPolicy{QualityWeight: 1}, routerItem, routerClock, routerHealthTTL, map[string]bool{"a": true})
 	if got := names(ranked); len(got) != 1 || got[0] != "b" {
 		t.Errorf("excluding a should leave only b, got %v", got)
 	}
@@ -159,8 +164,62 @@ func TestRankExcludeForFallover(t *testing.T) {
 // TestRankNoEligible: an empty candidate set (or one fully filtered out) ranks to nothing,
 // so Select returns ok=false and the item waits.
 func TestRankNoEligible(t *testing.T) {
-	if ranked := rankProviders(nil, RoutingPolicy{}, routerClock, routerHealthTTL, nil); ranked != nil {
+	if ranked := rankProviders(nil, RoutingPolicy{}, routerItem, routerClock, routerHealthTTL, nil); ranked != nil {
 		t.Errorf("no candidates should rank to nil, got %v", names(ranked))
+	}
+}
+
+// TestRankAcceptsMatchesLane: `accepts` routes an item to the provider that can consume its
+// SOURCE. transcrever carries two providers — asr-youtube accepts ["youtube"], asr-direct-audio
+// accepts ["podcast"] — and a provider with no `accepts` serves any lane. The item's lane
+// selects the eligible set.
+func TestRankAcceptsMatchesLane(t *testing.T) {
+	yt := Provider{Name: "asr-youtube", Capability: capTranscrever, Runtime: runtimeCloudRun,
+		Activation: activationOnDemand, Constraints: json.RawMessage(`{"accepts":["youtube"]}`), Enabled: true}
+	pod := Provider{Name: "asr-direct-audio", Capability: capTranscrever, Runtime: runtimeCloudRun,
+		Activation: activationOnDemand, Constraints: json.RawMessage(`{"accepts":["podcast"]}`), Enabled: true}
+	anyLane := onDemand("any-lane", 1, 0.5) // no accepts -> serves every lane
+
+	in := func(ps []Provider) map[string]bool {
+		m := map[string]bool{}
+		for _, n := range names(ps) {
+			m[n] = true
+		}
+		return m
+	}
+	cands := []Provider{yt, pod, anyLane}
+
+	ytItem := Item{Lane: laneYouTube}
+	got := in(rankProviders(cands, RoutingPolicy{}, ytItem, routerClock, routerHealthTTL, nil))
+	if !got["asr-youtube"] || got["asr-direct-audio"] || !got["any-lane"] {
+		t.Errorf("youtube item: want asr-youtube + any-lane, not asr-direct-audio; got %v", got)
+	}
+
+	podItem := Item{Lane: lanePodcast}
+	got = in(rankProviders(cands, RoutingPolicy{}, podItem, routerClock, routerHealthTTL, nil))
+	if got["asr-youtube"] || !got["asr-direct-audio"] || !got["any-lane"] {
+		t.Errorf("podcast item: want asr-direct-audio + any-lane, not asr-youtube; got %v", got)
+	}
+}
+
+// TestRankSensitivityExcludesThirdParty: a provider tagged third_party is eliminated for a
+// `private` item (only local/self-host may process private content), but is eligible for a
+// `public` item. An untagged provider serves both.
+func TestRankSensitivityExcludesThirdParty(t *testing.T) {
+	third := Provider{Name: "cloud-llm", Capability: capDestilar, Runtime: runtimeCloudRun,
+		Activation: activationOnDemand, Constraints: json.RawMessage(`{"sensitivity":"third_party"}`), Enabled: true}
+	selfHost := Provider{Name: "local-llm", Capability: capDestilar, Runtime: runtimeVPC,
+		Activation: activationOnDemand, Enabled: true}
+	cands := []Provider{third, selfHost}
+
+	private := Item{Lane: laneEmail, Sensitivity: sensitivityPrivate}
+	if got := names(rankProviders(cands, RoutingPolicy{}, private, routerClock, routerHealthTTL, nil)); len(got) != 1 || got[0] != "local-llm" {
+		t.Errorf("private item must route only to self-host, got %v", got)
+	}
+
+	public := Item{Lane: laneYouTube, Sensitivity: sensitivityPublic}
+	if got := rankProviders(cands, RoutingPolicy{}, public, routerClock, routerHealthTTL, nil); len(got) != 2 {
+		t.Errorf("public item should reach both providers, got %v", names(got))
 	}
 }
 
@@ -177,7 +236,7 @@ func TestRouterSelectReadsPolicyAndProviders(t *testing.T) {
 
 	// Cost-heavy global policy -> cheapest wins.
 	_ = db.UpsertRoutingPolicy(ctx, RoutingPolicy{Scope: policyScopeGlobal, CostWeight: 1, QualityWeight: 0})
-	p, ok, err := rt.Select(ctx, capTranscrever, routerClock, routerHealthTTL)
+	p, ok, err := rt.Select(ctx, capTranscrever, routerItem, routerClock, routerHealthTTL)
 	if err != nil || !ok {
 		t.Fatalf("select: ok=%v err=%v", ok, err)
 	}
@@ -187,7 +246,7 @@ func TestRouterSelectReadsPolicyAndProviders(t *testing.T) {
 
 	// A capability-scoped policy overrides the global one -> quality wins.
 	_ = db.UpsertRoutingPolicy(ctx, RoutingPolicy{Scope: capTranscrever, CostWeight: 0, QualityWeight: 1})
-	p, ok, err = rt.Select(ctx, capTranscrever, routerClock, routerHealthTTL)
+	p, ok, err = rt.Select(ctx, capTranscrever, routerItem, routerClock, routerHealthTTL)
 	if err != nil || !ok {
 		t.Fatalf("select scoped: ok=%v err=%v", ok, err)
 	}
@@ -206,7 +265,7 @@ func TestRouterSelectNoneEligible(t *testing.T) {
 	mustProvider(t, db, Provider{Name: "asr", Capability: capTranscrever, Runtime: runtimeLocal,
 		Activation: activationResident, HeartbeatAt: ptime(routerClock.Add(-1 * time.Hour)), Enabled: true})
 
-	_, ok, err := NewRouter(db).Select(ctx, capTranscrever, routerClock, routerHealthTTL)
+	_, ok, err := NewRouter(db).Select(ctx, capTranscrever, routerItem, routerClock, routerHealthTTL)
 	if err != nil {
 		t.Fatalf("select: %v", err)
 	}

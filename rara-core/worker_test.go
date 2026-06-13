@@ -47,7 +47,7 @@ func TestWorkerClaimsAndCompletes(t *testing.T) {
 	db := newMockDatabase()
 	itemID := assignTranscrever(t, db)
 	runner := &fakeRunner{result: out("transcript-7")}
-	w := NewWorker(db, capTranscrever, runner)
+	w := NewWorker(db, capTranscrever, provASRYouTube, runner)
 
 	claimed, err := w.RunOnce(ctx)
 	if err != nil {
@@ -78,7 +78,7 @@ func TestWorkerNoWork(t *testing.T) {
 	if err := SeedYouTubeLane(ctx, db); err != nil {
 		t.Fatal(err)
 	}
-	claimed, err := NewWorker(db, capTranscrever, &fakeRunner{}).RunOnce(ctx)
+	claimed, err := NewWorker(db, capTranscrever, provASRYouTube, &fakeRunner{}).RunOnce(ctx)
 	if err != nil || claimed {
 		t.Errorf("empty queue: claimed=%v err=%v, want false/nil", claimed, err)
 	}
@@ -90,7 +90,7 @@ func TestWorkerRunFailureMarksFailed(t *testing.T) {
 	ctx := context.Background()
 	db := newMockDatabase()
 	itemID := assignTranscrever(t, db)
-	w := NewWorker(db, capTranscrever, &fakeRunner{err: errors.New("asr exploded")})
+	w := NewWorker(db, capTranscrever, provASRYouTube, &fakeRunner{err: errors.New("asr exploded")})
 
 	claimed, err := w.RunOnce(ctx)
 	if err != nil || !claimed {
@@ -117,11 +117,11 @@ func TestClaimNoDoubleClaimFIFO(t *testing.T) {
 	mustStep(t, db, ItemStep{ItemID: id1, Seq: 3, Capability: capTranscrever, Status: stepPending, AssignedProvider: provASRYouTube})
 	mustStep(t, db, ItemStep{ItemID: id2, Seq: 3, Capability: capTranscrever, Status: stepPending, AssignedProvider: provASRYouTube})
 
-	first, err := db.ClaimPendingStep(ctx, capTranscrever)
+	first, err := db.ClaimPendingStep(ctx, capTranscrever, provASRYouTube)
 	if err != nil || first == nil {
 		t.Fatalf("first claim: %v / %v", first, err)
 	}
-	second, err := db.ClaimPendingStep(ctx, capTranscrever)
+	second, err := db.ClaimPendingStep(ctx, capTranscrever, provASRYouTube)
 	if err != nil || second == nil {
 		t.Fatalf("second claim: %v / %v", second, err)
 	}
@@ -133,8 +133,42 @@ func TestClaimNoDoubleClaimFIFO(t *testing.T) {
 		t.Errorf("claim order = (%d,%d), want FIFO (%d,%d)", first.ItemID, second.ItemID, id1, id2)
 	}
 	// Both are now running, so a third claim finds nothing.
-	if third, _ := db.ClaimPendingStep(ctx, capTranscrever); third != nil {
+	if third, _ := db.ClaimPendingStep(ctx, capTranscrever, provASRYouTube); third != nil {
 		t.Errorf("third claim should be empty, got item %d", third.ItemID)
+	}
+}
+
+// TestClaimProviderIsolation: with two pending steps of one capability assigned to DIFFERENT
+// providers, each worker claims only the step routed to its own provider — never the sibling's.
+// This is what keeps two transcrever providers (asr-youtube on the Mac, asr-direct-audio on
+// Cloud Run) from stealing each other's work.
+func TestClaimProviderIsolation(t *testing.T) {
+	ctx := context.Background()
+	db := newMockDatabase()
+	_ = db.UpsertCapability(ctx, Capability{Name: capTranscrever})
+	mustProvider(t, db, Provider{Name: "prov-a", Capability: capTranscrever, Runtime: runtimeCloudRun, Activation: activationOnDemand, Enabled: true})
+	mustProvider(t, db, Provider{Name: "prov-b", Capability: capTranscrever, Runtime: runtimeLocal, Activation: activationResident, Enabled: true})
+	fid := seedFlow(t, db)
+	idA, _ := db.UpsertItem(ctx, Item{Lane: laneYouTube, SourceRef: "a", FlowID: fid, FlowVersion: 1, Status: itemDiscovered})
+	idB, _ := db.UpsertItem(ctx, Item{Lane: laneYouTube, SourceRef: "b", FlowID: fid, FlowVersion: 1, Status: itemDiscovered})
+	mustStep(t, db, ItemStep{ItemID: idA, Seq: 3, Capability: capTranscrever, Status: stepPending, AssignedProvider: "prov-a"})
+	mustStep(t, db, ItemStep{ItemID: idB, Seq: 3, Capability: capTranscrever, Status: stepPending, AssignedProvider: "prov-b"})
+
+	claimedA, err := db.ClaimPendingStep(ctx, capTranscrever, "prov-a")
+	if err != nil || claimedA == nil {
+		t.Fatalf("prov-a claim: %v / %v", claimedA, err)
+	}
+	if claimedA.ItemID != idA {
+		t.Errorf("prov-a claimed item %d, want %d (its own step)", claimedA.ItemID, idA)
+	}
+	// prov-a's queue is now empty (it must NOT see prov-b's step).
+	if again, _ := db.ClaimPendingStep(ctx, capTranscrever, "prov-a"); again != nil {
+		t.Errorf("prov-a should have no more work, claimed item %d", again.ItemID)
+	}
+	// prov-b still has its own step waiting.
+	claimedB, _ := db.ClaimPendingStep(ctx, capTranscrever, "prov-b")
+	if claimedB == nil || claimedB.ItemID != idB {
+		t.Errorf("prov-b should claim its own step %d, got %v", idB, claimedB)
 	}
 }
 
@@ -151,7 +185,7 @@ func TestRunUntilDrained(t *testing.T) {
 		mustStep(t, db, ItemStep{ItemID: id, Seq: 3, Capability: capTranscrever, Status: stepPending, AssignedProvider: provASRYouTube})
 	}
 	runner := &fakeRunner{result: out("x")}
-	if err := NewWorker(db, capTranscrever, runner).RunUntilDrained(ctx); err != nil {
+	if err := NewWorker(db, capTranscrever, provASRYouTube, runner).RunUntilDrained(ctx); err != nil {
 		t.Fatalf("drain: %v", err)
 	}
 	if len(runner.ran) != 3 {
@@ -175,10 +209,10 @@ func TestEndToEndYouTubeFlow(t *testing.T) {
 	act := &fakeActivator{}
 	r := NewReconciler(db, act)
 	workers := []*Worker{
-		NewWorker(db, capGateBarato, gateKeepRunner()),
-		NewWorker(db, capTranscrever, &fakeRunner{result: out("transcript-7")}),
-		NewWorker(db, capGateRico, gateKeepRunner()),
-		NewWorker(db, capDestilar, &fakeRunner{result: out("distill-9")}),
+		NewWorker(db, capGateBarato, provGateBarato, gateKeepRunner()),
+		NewWorker(db, capTranscrever, provASRYouTube, &fakeRunner{result: out("transcript-7")}),
+		NewWorker(db, capGateRico, provGateRico, gateKeepRunner()),
+		NewWorker(db, capDestilar, provDistill, &fakeRunner{result: out("distill-9")}),
 	}
 
 	// Run to a fixed point: reconcile, then let every shim drain, until the item is done.
@@ -250,7 +284,7 @@ func TestWorkerFiltersEmptyTranscript(t *testing.T) {
 	itemID := assignTranscrever(t, db)
 	runner := &fakeRunner{result: RunResult{OutputRef: "transcript-empty", Filtered: true}}
 
-	claimed, err := NewWorker(db, capTranscrever, runner).RunOnce(ctx)
+	claimed, err := NewWorker(db, capTranscrever, provASRYouTube, runner).RunOnce(ctx)
 	if err != nil || !claimed {
 		t.Fatalf("RunOnce: claimed=%v err=%v", claimed, err)
 	}
@@ -289,15 +323,15 @@ func TestGateWorkerRecordsDecision(t *testing.T) {
 			db := newMockDatabase()
 			itemID := seedAndIngestOne(t, db, "vid1")
 			// A pending gate_barato step at the metadata gate's seq (2), as the reconciler
-			// would assign it to a gate provider.
-			mustStep(t, db, ItemStep{ItemID: itemID, Seq: 2, Capability: capGateBarato, Status: stepPending})
+			// would assign it to a gate provider (provider set so the provider-aware claim matches).
+			mustStep(t, db, ItemStep{ItemID: itemID, Seq: 2, Capability: capGateBarato, Status: stepPending, AssignedProvider: provGateBarato})
 
 			verdict := &GateVerdict{
 				Decision: tc.decision, Score: gateScore(0.71),
 				DecidedBy: tc.decidedBy, Reason: "unit-test verdict",
 			}
 			runner := &fakeRunner{result: RunResult{Gate: verdict}}
-			claimed, err := NewWorker(db, capGateBarato, runner).RunOnce(ctx)
+			claimed, err := NewWorker(db, capGateBarato, provGateBarato, runner).RunOnce(ctx)
 			if err != nil || !claimed {
 				t.Fatalf("RunOnce: claimed=%v err=%v", claimed, err)
 			}
@@ -335,7 +369,7 @@ func TestWorkerRetriesTransientThenFails(t *testing.T) {
 	runner := &fakeRunner{err: errRetryable}
 
 	// First claim+run: transient -> re-queued pending, not failed.
-	if _, err := NewWorker(db, capTranscrever, runner).RunOnce(ctx); err != nil {
+	if _, err := NewWorker(db, capTranscrever, provASRYouTube, runner).RunOnce(ctx); err != nil {
 		t.Fatal(err)
 	}
 	s := db.itemSteps[itemStepKey{itemID, 3}]
@@ -347,7 +381,7 @@ func TestWorkerRetriesTransientThenFails(t *testing.T) {
 	}
 
 	// Draining keeps retrying until the attempt ceiling, then fails for good.
-	if err := NewWorker(db, capTranscrever, runner).RunUntilDrained(ctx); err != nil {
+	if err := NewWorker(db, capTranscrever, provASRYouTube, runner).RunUntilDrained(ctx); err != nil {
 		t.Fatal(err)
 	}
 	s = db.itemSteps[itemStepKey{itemID, 3}]
@@ -372,7 +406,7 @@ func TestWorkerItemNotFound(t *testing.T) {
 	db := newMockDatabase()
 	itemID := assignTranscrever(t, db)
 
-	claimed, err := NewWorker(itemGoneDB{db}, capTranscrever, &fakeRunner{result: out("x")}).RunOnce(ctx)
+	claimed, err := NewWorker(itemGoneDB{db}, capTranscrever, provASRYouTube, &fakeRunner{result: out("x")}).RunOnce(ctx)
 	if err != nil || !claimed {
 		t.Fatalf("RunOnce: claimed=%v err=%v", claimed, err)
 	}
@@ -390,7 +424,7 @@ func TestRunUntilDrainedStopsOnContextCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	err := NewWorker(db, capTranscrever, &fakeRunner{result: out("x")}).RunUntilDrained(ctx)
+	err := NewWorker(db, capTranscrever, provASRYouTube, &fakeRunner{result: out("x")}).RunUntilDrained(ctx)
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("drain should stop with context.Canceled, got %v", err)
 	}
