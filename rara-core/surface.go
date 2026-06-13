@@ -122,6 +122,17 @@ func (c *Core) UpsertProvider(ctx context.Context, p Provider) error {
 	if !isValidActivation(p.Activation) {
 		return badInput("invalid activation %q (want resident|on_demand)", p.Activation)
 	}
+	// heartbeat_at is RUNTIME liveness (owned by TouchProviderHeartbeat), not config. A
+	// full-record config upsert would clobber it — so PRESERVE the live value across an edit
+	// (and leave it nil for a brand-new provider, which then gets the router's bootstrap grace).
+	// This is why a `heartbeat_at` in the request body is ignored.
+	if existing, found, err := c.db.GetProvider(ctx, p.Name); err != nil {
+		return err
+	} else if found {
+		p.HeartbeatAt = existing.HeartbeatAt
+	} else {
+		p.HeartbeatAt = nil
+	}
 	return c.db.UpsertProvider(ctx, p)
 }
 func (c *Core) UpsertRoutingPolicy(ctx context.Context, p RoutingPolicy) error {
@@ -163,6 +174,13 @@ func (c *Core) ReviewQuarantineItem(ctx context.Context, itemID int, signal stri
 	}
 	if itemID <= 0 {
 		return badInput("item id must be positive, got %d", itemID)
+	}
+	// A missing item or one not actually in quarantine is a caller error (400), not a 500.
+	// Pre-check it here so the surface names it clearly; ReviewQuarantine re-checks (harmless).
+	if it, found, err := c.db.GetItem(ctx, itemID); err != nil {
+		return err
+	} else if !found || it.Status != itemQuarantine {
+		return badInput("item %d is not in quarantine", itemID)
 	}
 	return ReviewQuarantine(ctx, c.db, itemID, signal)
 }
@@ -433,9 +451,15 @@ func pathID(w http.ResponseWriter, r *http.Request) (int, bool) {
 	return id, true
 }
 
-// decodeJSON strictly decodes a JSON request body, answering 400 on a malformed body.
+// maxBodyBytes caps a request body (1 MiB) — far above any config row or pasted post, but a
+// backstop against an unbounded body exhausting memory. Exceeding it fails the decode -> 400.
+const maxBodyBytes = 1 << 20
+
+// decodeJSON decodes a (size-capped) JSON request body, answering 400 on a malformed/oversized
+// body. DisallowUnknownFields is deliberate: this is a config-edit API, so a mistyped field
+// should be a visible 400, not silently dropped.
 func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
-	dec := json.NewDecoder(r.Body)
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodyBytes))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(dst); err != nil {
 		http.Error(w, `{"error":"invalid JSON body"}`, http.StatusBadRequest)

@@ -115,6 +115,35 @@ func TestCoreAddInterestProfileValidatesVersion(t *testing.T) {
 	}
 }
 
+// TestCoreUpsertProviderPreservesHeartbeat: a config edit (e.g. toggling enabled) that omits
+// heartbeat_at must NOT clear the provider's runtime liveness — heartbeat is owned by the
+// worker, not config.
+func TestCoreUpsertProviderPreservesHeartbeat(t *testing.T) {
+	ctx := context.Background()
+	core, db, _ := newTestCore(t)
+	if err := SeedYouTubeLane(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	markProviderAlive(t, db, provASRYouTube) // a live resident worker stamped its heartbeat
+	before, _, _ := db.GetProvider(ctx, provASRYouTube)
+	if before.HeartbeatAt == nil {
+		t.Fatal("precondition: heartbeat should be set")
+	}
+	edit := before
+	edit.HeartbeatAt = nil // the request body omits it (the common case)
+	edit.Enabled = false   // ...while toggling a real config field
+	if err := core.UpsertProvider(ctx, edit); err != nil {
+		t.Fatal(err)
+	}
+	after, _, _ := db.GetProvider(ctx, provASRYouTube)
+	if after.HeartbeatAt == nil {
+		t.Error("config edit cleared heartbeat_at; runtime liveness must be preserved")
+	}
+	if after.Enabled {
+		t.Error("the enabled toggle should still apply")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Auth middleware (fail-closed)
 // ---------------------------------------------------------------------------
@@ -314,6 +343,31 @@ func TestHTTPReviewQuarantineRescues(t *testing.T) {
 	}
 	if len(db.feedback) != 1 || db.feedback[0].Source != sourceQuarantineReview {
 		t.Errorf("review should record quarantine_review feedback: %+v", db.feedback)
+	}
+}
+
+func TestHTTPReviewNonQuarantinedIs400(t *testing.T) {
+	ctx := context.Background()
+	core, db, _ := newTestCore(t)
+	if err := SeedYouTubeLane(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	// A discovered (not quarantined) item: reviewing it is a caller error, not a 500.
+	id, _ := db.UpsertItem(ctx, Item{Lane: "youtube", SourceRef: "d", FlowID: db.flows[youtubeFlowName].ID, FlowVersion: 1, Status: itemDiscovered})
+	h := NewSurfaceMux(core, testToken)
+	rec := do(t, h, http.MethodPost, "/v1/quarantine/review", `{"item_id":`+strconv.Itoa(id)+`,"signal":"up"}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("reviewing a non-quarantined item should be 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHTTPOversizedBodyIs400(t *testing.T) {
+	core, _, _ := newTestCore(t)
+	h := NewSurfaceMux(core, testToken)
+	big := `{"name":"` + strings.Repeat("a", (1<<20)+16) + `"}` // > maxBodyBytes
+	rec := do(t, h, http.MethodPut, "/v1/providers", big)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("an oversized body should be 400, got %d", rec.Code)
 	}
 }
 

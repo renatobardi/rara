@@ -414,7 +414,7 @@ func (s *mcpServer) dispatch(ctx context.Context, req rpcRequest) (rpcResponse, 
 // ServeHTTP is the POST /mcp endpoint: decode the JSON-RPC request, dispatch, write the response.
 func (s *mcpServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var req rpcRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodyBytes)).Decode(&req); err != nil {
 		writeJSON(w, http.StatusOK, rpcResponse{
 			JSONRPC: "2.0",
 			Error:   &rpcError{Code: rpcErrParse, Message: "parse error"},
