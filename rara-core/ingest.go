@@ -56,9 +56,11 @@ func IngestYouTube(ctx context.Context, db Database, src SpineSource) (int, erro
 			continue // skip malformed rows (e.g. a private/deleted playlist entry)
 		}
 		// DiscoverItem is idempotent on (lane, source_ref): new videos land in
-		// `discovered`; re-discovered ones keep their id AND their in-flight status
-		// (runtime status is the reconciler's to write, never ingest's). flow_version
-		// is (re-)stamped from the current flow either way.
+		// `discovered` stamped with the CURRENT flow_version; re-discovered ones keep their
+		// id, their in-flight status (runtime status is the reconciler's to write, never
+		// ingest's) AND their original flow_version frozen at first discovery — so a flow
+		// edit only reaches items discovered after it (in-flight items finish on the old
+		// version).
 		if _, err := db.DiscoverItem(ctx, Item{
 			Lane:        laneYouTube,
 			SourceRef:   v.VideoID,

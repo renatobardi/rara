@@ -7,7 +7,9 @@ table (`distillations`) in the same Neon database. The **Kura** "second brain"
 (separate project) consumes `distillations` later to build its own RAG — total
 isolation: rara-distill never calls Kura.
 
-- **Engine**: pluggable via `CURATE_ENGINE` — `gemini` (default), `claude` or `groq`
+- **Engine**: pluggable via `CURATE_ENGINE` — `gemini` (default), `claude`, `groq`, or
+  `litellm` (a self-hosted [LiteLLM gateway](./litellm/): distill speaks OpenAI-compatible
+  to it and the real model is a gateway alias — the 2.0 anti-lock-in path)
 - **Curation**: Fabric-style **patterns** (system prompts) + optional **contexts**
   (injected reference material) + optional **strategies** (reasoning wrappers) +
   **sessions** (chain several patterns over one transcript, each stage sees the
@@ -146,9 +148,10 @@ go run .                      # distill DISTILL_BATCH_SIZE transcripts
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `DATABASE_URL` | — (required) | Neon connection string (shared) |
-| `CURATE_ENGINE` | `gemini` | `gemini` \| `claude` \| `groq` |
+| `CURATE_ENGINE` | `gemini` | `gemini` \| `claude` \| `groq` \| `litellm` |
 | `GEMINI_API_KEY` / `ANTHROPIC_API_KEY` / `GROQ_API_KEY` | — | per engine |
 | `GEMINI_MODEL` / `CLAUDE_MODEL` / `GROQ_MODEL` | sane defaults | model override |
+| `LITELLM_BASE_URL` / `LITELLM_API_KEY` / `LITELLM_MODEL` | — / — / `claude-sonnet-4-6` | self-hosted gateway (OpenAI-compatible); key optional. See [litellm/](./litellm/) |
 | `DISTILL_PATTERNS` | `extract_wisdom` | CSV; many = session chain |
 | `DISTILL_CONTEXT` | (none) | context file in `contexts/<name>.md` |
 | `DISTILL_STRATEGY` | (none) | strategy file in `strategies/<name>.md` |

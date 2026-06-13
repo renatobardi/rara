@@ -94,6 +94,16 @@ const (
 	capDestilar    = "destilar"
 )
 
+// policyScopeGlobal is the routing_policies.scope sentinel for the catch-all policy the
+// router uses when no capability-scoped policy exists.
+const policyScopeGlobal = "global"
+
+// constraintResidential is the only hard-constraint requirement the router understands
+// today (providers.constraints -> {"requires":"residential"}): egress from a residential
+// IP, satisfied only by runtime=local. YouTube blocks audio download from datacenter IPs,
+// so asr-youtube carries it and the router eliminates any cloudrun/vpc candidate.
+const constraintResidential = "residential"
+
 func isValidRuntime(s string) bool {
 	switch s {
 	case runtimeLocal, runtimeCloudRun, runtimeVPC:
@@ -299,6 +309,21 @@ type Database interface {
 	// ListProvidersForCapability returns the enabled providers of a capability,
 	// ordered by name for deterministic selection.
 	ListProvidersForCapability(ctx context.Context, capability string) ([]Provider, error)
+	// GetProvider returns a single provider by name (found=false if absent or it has
+	// been removed from config). The timeout->fallback path uses it to read the
+	// activation of the provider it re-queues a step onto.
+	GetProvider(ctx context.Context, name string) (Provider, bool, error)
+	// GetRoutingPolicy returns the policy for a scope (a capability name or
+	// policyScopeGlobal), found=false if absent. The router reads the capability-scoped
+	// policy first, then falls back to the global one.
+	GetRoutingPolicy(ctx context.Context, scope string) (RoutingPolicy, bool, error)
+
+	// --- Health feed (Phase 2) -----------------------------------------------
+	// TouchProviderHeartbeat stamps providers.heartbeat_at = now for a live provider,
+	// so the router's health gate keeps it eligible. A worker calls it when it pulls
+	// work (proof of life); unknown names are a no-op. Best-effort liveness, never a
+	// full-record upsert (it must not clobber the provider's config columns).
+	TouchProviderHeartbeat(ctx context.Context, name string) error
 
 	// --- Claim (Phase 1) -----------------------------------------------------
 	// ClaimPendingStep is the worker's pull: it atomically claims the
@@ -425,14 +450,17 @@ func (d *pgxDatabase) DiscoverItem(ctx context.Context, it Item) (int, error) {
 	if !isValidItemStatus(it.Status) {
 		return 0, fmt.Errorf("invalid item status %q", it.Status)
 	}
-	// status is set only on INSERT; the conflict path leaves items.status untouched so
-	// re-discovery never regresses an in-flight item.
+	// The flow stamp (flow_id + flow_version) and status are frozen at INSERT: the
+	// conflict path re-stamps NOTHING. An in-flight item finishes on the flow shape it was
+	// discovered with — re-discovery after a flow edit must neither regress its runtime
+	// status (the reconciler owns that) nor re-stamp its flow_version (new items pick up the
+	// new version; in-flight ones keep the old). The DO UPDATE is a deliberate no-op keep
+	// (flow_id = its own current value) purely so RETURNING yields the existing row's id.
 	const q = `
 		INSERT INTO items (lane, source_ref, flow_id, flow_version, status)
 		VALUES ($1, $2, $3, $4, $5)
 		ON CONFLICT (lane, source_ref) DO UPDATE SET
-			flow_id      = EXCLUDED.flow_id,
-			flow_version = EXCLUDED.flow_version
+			flow_id = items.flow_id
 		RETURNING id`
 	var id int
 	err := d.conn.QueryRow(ctx, q, it.Lane, it.SourceRef, it.FlowID, it.FlowVersion, it.Status).Scan(&id)
@@ -594,6 +622,11 @@ func runReconcile(ctx context.Context, db Database, argv []string) {
 	if v := os.Getenv("RECONCILE_STALE_SECONDS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			r.staleAfter = time.Duration(n) * time.Second
+		}
+	}
+	if v := os.Getenv("ROUTE_HEALTH_SECONDS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			r.healthTTL = time.Duration(n) * time.Second
 		}
 	}
 	if !*loop {

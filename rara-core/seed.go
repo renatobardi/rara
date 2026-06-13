@@ -55,20 +55,30 @@ func SeedYouTubeLane(ctx context.Context, db Database) error {
 		}
 	}
 
-	// 2) Providers — concrete implementations. cost/quality/latency are placeholders;
-	//    the router that consumes them is Phase 2. What matters in Phase 1 is the
-	//    runtime/activation pair, which decides where work runs and how it wakes.
+	// 2) Providers — concrete implementations. cost (relative weight, unbounded),
+	//    quality (normalized 0..1) and latency_ms feed the Phase 2 router's cost<->quality
+	//    score; the runtime/activation pair decides where work runs and how it wakes. The
+	//    numbers are first-cut estimates (one lane, one provider per real work capability,
+	//    so nothing competes yet) — they exist to be tuned as real telemetry lands.
 	providers := []Provider{
-		// coletar: two collectors feeding one spine. Cloud Run jobs, woken on demand.
-		{Name: provHarvest, Capability: capColetar, Runtime: runtimeCloudRun, Activation: activationOnDemand, Enabled: true},
-		{Name: provShelf, Capability: capColetar, Runtime: runtimeCloudRun, Activation: activationOnDemand, Enabled: true},
-		// transcrever: scribe is resident on the Mac. YouTube audio download is blocked
-		// from datacenter IPs, hence the residential constraint (the router enforces it
-		// in Phase 2; recorded now so the constraint travels with the provider).
+		// coletar: YouTube Data API (key) and OAuth playlists — cheap, fast metadata reads.
+		// (coletar is auto-satisfied by the reconciler, never actually routed; values seeded
+		// for completeness and future per-collector routing.)
+		{Name: provHarvest, Capability: capColetar, Runtime: runtimeCloudRun, Activation: activationOnDemand,
+			Cost: 0.10, Quality: 0.95, LatencyMs: 500, Enabled: true},
+		{Name: provShelf, Capability: capColetar, Runtime: runtimeCloudRun, Activation: activationOnDemand,
+			Cost: 0.10, Quality: 0.95, LatencyMs: 800, Enabled: true},
+		// transcrever: scribe (local Whisper) is resident on the Mac. No API cost but heavy
+		// compute/time (~minutes per video). YouTube blocks audio download from datacenter
+		// IPs, hence the residential constraint — the router uses it to eliminate cloudrun/
+		// vpc candidates and leave the Mac.
 		{Name: provASRYouTube, Capability: capTranscrever, Runtime: runtimeLocal, Activation: activationResident,
+			Cost: 1.00, Quality: 0.90, LatencyMs: 120000,
 			Constraints: []byte(`{"requires":"residential"}`), Enabled: true},
-		// destilar: distill is a scale-to-zero Cloud Run job, woken on demand.
-		{Name: provDistill, Capability: capDestilar, Runtime: runtimeCloudRun, Activation: activationOnDemand, Enabled: true},
+		// destilar: distill (LLM curation via the LiteLLM gateway) on a scale-to-zero Cloud
+		// Run job — the priciest step (model tokens), high quality.
+		{Name: provDistill, Capability: capDestilar, Runtime: runtimeCloudRun, Activation: activationOnDemand,
+			Cost: 2.00, Quality: 0.92, LatencyMs: 30000, Enabled: true},
 	}
 	for _, p := range providers {
 		if err := db.UpsertProvider(ctx, p); err != nil {
@@ -96,7 +106,8 @@ func SeedYouTubeLane(ctx context.Context, db Database) error {
 		}
 	}
 
-	// 4) Default global routing policy. Phase 1 selects the only enabled provider per
-	//    capability; the cost<->quality weighting below is seeded for Phase 2's router.
-	return db.UpsertRoutingPolicy(ctx, RoutingPolicy{Scope: "global", CostWeight: 0.5, QualityWeight: 0.5})
+	// 4) Default global routing policy: a balanced cost<->quality weighting and no explicit
+	//    fallback (one provider per real work capability in this lane, so scoring alone
+	//    decides). The Phase 2 router reads this; a capability-scoped policy can override it.
+	return db.UpsertRoutingPolicy(ctx, RoutingPolicy{Scope: policyScopeGlobal, CostWeight: 0.5, QualityWeight: 0.5})
 }

@@ -14,7 +14,11 @@ func (f *fakeActivator) Activate(_ context.Context, p Provider) error {
 	return nil
 }
 
-// seedAndIngestOne seeds the lane and ingests a single video, returning the item id.
+// seedAndIngestOne seeds the lane and ingests a single video, returning the item id. It
+// also marks the resident scribe (asr-youtube) "known alive" with a fresh heartbeat — the
+// realistic state of a live scribe. (A never-seen resident would still route under the
+// router's bootstrap grace; a fresh heartbeat is what keeps it eligible once seen and lets
+// staleness, not absence, be the offline signal.)
 func seedAndIngestOne(t *testing.T, db *MockDatabase, videoID string) int {
 	t.Helper()
 	ctx := context.Background()
@@ -24,7 +28,17 @@ func seedAndIngestOne(t *testing.T, db *MockDatabase, videoID string) int {
 	if _, err := IngestYouTube(ctx, db, fakeSpineSource{videos: []YouTubeVideo{{VideoID: videoID}}}); err != nil {
 		t.Fatalf("ingest: %v", err)
 	}
+	markProviderAlive(t, db, provASRYouTube)
 	return db.items[itemKey(laneYouTube, videoID)].ID
+}
+
+// markProviderAlive stamps a fresh heartbeat on a provider so the router's health gate
+// treats it as online (what a live resident worker does for itself).
+func markProviderAlive(t *testing.T, db *MockDatabase, name string) {
+	t.Helper()
+	if err := db.TouchProviderHeartbeat(context.Background(), name); err != nil {
+		t.Fatalf("heartbeat %s: %v", name, err)
+	}
 }
 
 // stepBySeq is a test helper to fetch one item_step.
@@ -273,6 +287,62 @@ func TestReconcileRequeuesStaleRunningStep(t *testing.T) {
 	fresh := runWithHeartbeat(base.Add(-1 * time.Minute))
 	if fresh.Status != stepRunning || fresh.HeartbeatAt == nil {
 		t.Errorf("fresh running step = %+v, want still running", fresh)
+	}
+}
+
+// setProviderHeartbeat stamps an explicit heartbeat on a provider (deterministic health,
+// no wall clock) for the reconciler's router gate.
+func setProviderHeartbeat(db *MockDatabase, name string, ts time.Time) {
+	p := db.providers[name]
+	p.HeartbeatAt = &ts
+	db.providers[name] = p
+}
+
+// TestReconcileTimeoutFallsBackToNextProvider (#2): when a running step's worker dies (stale
+// heartbeat), the reconciler re-routes it to the NEXT eligible provider — excluding the dead
+// one — honouring constraints + health, rather than re-queuing the same dead worker.
+func TestReconcileTimeoutFallsBackToNextProvider(t *testing.T) {
+	ctx := context.Background()
+	base := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	db := newMockDatabase()
+	itemID := seedAndIngestOne(t, db, "vid1")
+
+	// A second, healthy transcrever provider (a backup Mac): also local + residential, but
+	// pricier so the primary asr-youtube is chosen first.
+	mustProvider(t, db, Provider{Name: "asr-backup", Capability: capTranscrever, Runtime: runtimeLocal,
+		Activation: activationResident, Constraints: residential, Cost: 2.0, Quality: 0.9, Enabled: true})
+	setProviderHeartbeat(db, provASRYouTube, base.Add(-1*time.Minute)) // both alive at base
+	setProviderHeartbeat(db, "asr-backup", base.Add(-1*time.Minute))
+
+	r := NewReconciler(db, &fakeActivator{})
+	r.now = func() time.Time { return base }
+	r.staleAfter = 10 * time.Minute
+	r.healthTTL = 5 * time.Minute
+
+	// First pass assigns transcrever to the cheaper primary.
+	if err := r.ReconcileOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if st := db.itemSteps[itemStepKey{itemID, 3}]; st.AssignedProvider != provASRYouTube {
+		t.Fatalf("primary assignment = %q, want %s", st.AssignedProvider, provASRYouTube)
+	}
+
+	// The worker claims it, then dies: running with a stale heartbeat.
+	st := db.itemSteps[itemStepKey{itemID, 3}]
+	st.Status = stepRunning
+	st.HeartbeatAt = ptime(base.Add(-30 * time.Minute))
+	mustStep(t, db, st)
+
+	// Next pass detects the dead worker and fails over to the backup.
+	if err := r.ReconcileOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	got := db.itemSteps[itemStepKey{itemID, 3}]
+	if got.Status != stepPending || got.HeartbeatAt != nil {
+		t.Errorf("re-routed step = %+v, want pending with heartbeat cleared", got)
+	}
+	if got.AssignedProvider != "asr-backup" {
+		t.Errorf("failover assigned %q, want asr-backup (the next provider, not the dead one)", got.AssignedProvider)
 	}
 }
 

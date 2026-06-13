@@ -90,6 +90,47 @@ func TestIngestIdempotentPreservesStatus(t *testing.T) {
 	}
 }
 
+// TestIngestFreezesFlowVersion (#5 cleanup): a flow version bump must NOT re-stamp an
+// already-discovered item. In-flight items finish on the flow shape they were discovered
+// with; only NEW items pick up the new version.
+func TestIngestFreezesFlowVersion(t *testing.T) {
+	ctx := context.Background()
+	db := newMockDatabase()
+	if err := SeedYouTubeLane(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	src := fakeSpineSource{videos: []YouTubeVideo{{VideoID: "vid1"}}}
+	if _, err := IngestYouTube(ctx, db, src); err != nil {
+		t.Fatal(err)
+	}
+	if got := db.items[itemKey(laneYouTube, "vid1")].FlowVersion; got != 1 {
+		t.Fatalf("first discovery flow_version = %d, want 1", got)
+	}
+
+	// Operator edits the flow: bump version to 2.
+	f := db.flows[youtubeFlowName]
+	f.Version = 2
+	if _, err := db.UpsertFlow(ctx, f); err != nil {
+		t.Fatal(err)
+	}
+
+	// Re-discovery of the SAME video must keep flow_version frozen at 1.
+	if _, err := IngestYouTube(ctx, db, src); err != nil {
+		t.Fatal(err)
+	}
+	if got := db.items[itemKey(laneYouTube, "vid1")].FlowVersion; got != 1 {
+		t.Errorf("re-ingest re-stamped flow_version to %d, want it frozen at 1", got)
+	}
+
+	// A brand-new video discovered now picks up version 2.
+	if _, err := IngestYouTube(ctx, db, fakeSpineSource{videos: []YouTubeVideo{{VideoID: "vid2"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := db.items[itemKey(laneYouTube, "vid2")].FlowVersion; got != 2 {
+		t.Errorf("new item flow_version = %d, want 2", got)
+	}
+}
+
 func TestIngestSkipsEmptyAndDedups(t *testing.T) {
 	ctx := context.Background()
 	db := newMockDatabase()

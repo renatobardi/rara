@@ -33,9 +33,8 @@ import (
 )
 
 // defaultStaleAfter is how long a claimed (running) step may go without a heartbeat before
-// the reconciler assumes its worker died and returns the step to the pending frontier for
-// re-claim. A conservative default; tunable via RECONCILE_STALE_SECONDS. (Full
-// timeout->reactivate/fallback routing is Phase 2; this is the minimal liveness backstop.)
+// the reconciler assumes its worker died and re-routes the step (timeout->fallback, see
+// handleStaleStep). A conservative default; tunable via RECONCILE_STALE_SECONDS.
 const defaultStaleAfter = 10 * time.Minute
 
 // Activator wakes an on_demand provider so it starts pulling its assignment. For resident
@@ -47,22 +46,28 @@ type Activator interface {
 	Activate(ctx context.Context, p Provider) error
 }
 
-// Reconciler is the control loop. now + staleAfter are injectable so the heartbeat-liveness
-// backstop is deterministic in tests.
+// Reconciler is the control loop. now, staleAfter and healthTTL are injectable so the
+// heartbeat-liveness backstop and the router's health gate are deterministic in tests.
 type Reconciler struct {
 	db         Database
 	activator  Activator
+	router     *Router
 	now        func() time.Time
 	staleAfter time.Duration
+	healthTTL  time.Duration
 }
 
-// NewReconciler wires a reconciler. A nil activator falls back to a logging no-op. now and
-// staleAfter default to wall-clock and defaultStaleAfter; tests overwrite them directly.
+// NewReconciler wires a reconciler. A nil activator falls back to a logging no-op. now,
+// staleAfter and healthTTL default to wall-clock, defaultStaleAfter and defaultHealthTTL;
+// tests overwrite them directly.
 func NewReconciler(db Database, activator Activator) *Reconciler {
 	if activator == nil {
 		activator = logActivator{}
 	}
-	return &Reconciler{db: db, activator: activator, now: time.Now, staleAfter: defaultStaleAfter}
+	return &Reconciler{
+		db: db, activator: activator, router: NewRouter(db),
+		now: time.Now, staleAfter: defaultStaleAfter, healthTTL: defaultHealthTTL,
+	}
 }
 
 // ReconcileOnce runs a single pass over every active item. The always-on loop in main()
@@ -121,13 +126,10 @@ func (r *Reconciler) reconcileItem(ctx context.Context, item Item) error {
 			return r.setItemStatus(ctx, item, itemFailed)
 		case actWait:
 			// A work step is pending/assigned/running — the worker owns it now. If it is
-			// running but its heartbeat has gone stale, the worker likely died; return the
-			// step to the pending frontier so it can be re-claimed, then continue.
+			// running but its heartbeat has gone stale, the worker likely died: re-route it
+			// (timeout->fallback), then continue.
 			if st := bySeq[fs.Seq]; st.Status == stepRunning && r.isStale(st) {
-				log.Printf("reconcile item %d seq %d: stale heartbeat, re-queuing for claim", item.ID, fs.Seq)
-				st.Status = stepPending
-				st.HeartbeatAt = nil
-				if err := r.db.UpsertItemStep(ctx, st); err != nil {
+				if err := r.handleStaleStep(ctx, item, st); err != nil {
 					return err
 				}
 			}
@@ -200,16 +202,18 @@ func (r *Reconciler) materialize(ctx context.Context, item Item, fs FlowStep) (d
 		})
 
 	default:
-		// A real work step (transcrever, destilar). Select a provider and write a pending
-		// assignment for the worker to pull; wake on_demand providers.
-		prov, ok, err := r.selectProvider(ctx, fs.Capability)
+		// A real work step (transcrever, destilar). Route to a provider by policy
+		// (cost<->quality + constraints + health + fallback) and write a pending assignment
+		// for the worker to pull; wake on_demand providers.
+		prov, ok, err := r.router.Select(ctx, fs.Capability, r.now(), r.healthTTL)
 		if err != nil {
 			return false, err
 		}
 		if !ok {
-			// No enabled provider yet — leave the step unmaterialized; a later pass
-			// assigns it once one is registered. Level-triggered: nothing to undo.
-			return false, fmt.Errorf("no enabled provider for capability %q", fs.Capability)
+			// No eligible provider (none registered, all constraint-violating, or all
+			// unhealthy) — leave the step unmaterialized; a later pass assigns it once one
+			// becomes eligible. Level-triggered: nothing to undo.
+			return false, fmt.Errorf("no eligible provider for capability %q (constraints/health unmet)", fs.Capability)
 		}
 		if err := r.db.UpsertItemStep(ctx, ItemStep{
 			ItemID: item.ID, Seq: fs.Seq, Capability: fs.Capability,
@@ -217,29 +221,66 @@ func (r *Reconciler) materialize(ctx context.Context, item Item, fs FlowStep) (d
 		}); err != nil {
 			return false, err
 		}
-		if prov.Activation == activationOnDemand {
-			if err := r.activator.Activate(ctx, prov); err != nil {
-				// Best-effort: the assignment stands; a future pass or the worker's own
-				// schedule still drains it. Don't fail the item over a wake hiccup.
-				log.Printf("activate %s for item %d: %v", prov.Name, item.ID, err)
-			}
-		}
+		r.activateIfOnDemand(ctx, item, prov)
 		return false, nil
 	}
 }
 
-// selectProvider is the Phase 1 router: pick the single enabled provider of a capability.
-// Phase 2 replaces this with policy-driven cost<->quality selection + constraints +
-// fallback. When several are enabled (none are, this phase), the first by name wins.
-func (r *Reconciler) selectProvider(ctx context.Context, capability string) (Provider, bool, error) {
-	providers, err := r.db.ListProvidersForCapability(ctx, capability)
+// handleStaleStep recovers a running step whose worker has gone silent (heartbeat older
+// than staleAfter -> the worker likely died). Per the architecture's timeout policy it
+// "re-fire[s] activation OR fall[s] back to the next provider": it asks the router for the
+// next eligible provider EXCLUDING the dead one (so it honours constraints + health and
+// never picks the same dead worker). If an alternative exists the step fails over to it; if
+// none does, the step is re-queued on the same provider to be re-claimed should it revive.
+// Either way the step returns to the pending frontier (heartbeat cleared) and, when the
+// chosen provider is on_demand, activation is re-fired.
+func (r *Reconciler) handleStaleStep(ctx context.Context, item Item, st ItemStep) error {
+	dead := st.AssignedProvider
+	next, ok, err := r.router.Select(ctx, st.Capability, r.now(), r.healthTTL, dead)
 	if err != nil {
-		return Provider{}, false, err
+		return err
 	}
-	if len(providers) == 0 {
-		return Provider{}, false, nil
+
+	chosen := next
+	if ok {
+		log.Printf("reconcile item %d seq %d: stale heartbeat, failing over %s -> %s", item.ID, st.Seq, dead, next.Name)
+	} else {
+		// No alternative provider: re-queue on the same one (it may come back). Read it to
+		// decide whether to re-fire activation; if it vanished from config, re-queue
+		// unassigned and let a later pass route the step afresh.
+		log.Printf("reconcile item %d seq %d: stale heartbeat, no fallback, re-queuing %s", item.ID, st.Seq, dead)
+		p, found, gerr := r.db.GetProvider(ctx, dead)
+		if gerr != nil {
+			return gerr
+		}
+		if found {
+			chosen = p
+		} else {
+			chosen = Provider{} // empty name -> NULL assigned_provider; re-route next pass
+		}
 	}
-	return providers[0], true, nil
+
+	st.Status = stepPending
+	st.HeartbeatAt = nil
+	st.AssignedProvider = chosen.Name
+	if err := r.db.UpsertItemStep(ctx, st); err != nil {
+		return err
+	}
+	r.activateIfOnDemand(ctx, item, chosen)
+	return nil
+}
+
+// activateIfOnDemand wakes an on_demand provider so it starts pulling. Resident providers
+// and the empty (unassigned) provider are skipped. Best-effort: a failed wake is logged,
+// not fatal — the pending assignment stands and a later pass (or the worker's own schedule)
+// still drains it.
+func (r *Reconciler) activateIfOnDemand(ctx context.Context, item Item, prov Provider) {
+	if prov.Name == "" || prov.Activation != activationOnDemand {
+		return
+	}
+	if err := r.activator.Activate(ctx, prov); err != nil {
+		log.Printf("activate %s for item %d: %v", prov.Name, item.ID, err)
+	}
 }
 
 // syncItemStatus recomputes the item's status from its completed steps and persists it if

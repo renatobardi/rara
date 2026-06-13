@@ -75,6 +75,15 @@ func (w *Worker) RunOnce(ctx context.Context) (claimed bool, err error) {
 		return false, nil // nothing pending for this capability
 	}
 
+	// Proof of life: this worker just pulled work as `assigned_provider`, so that provider
+	// is alive — stamp its heartbeat so the router's health gate keeps routing to it.
+	// Best-effort; a heartbeat write must never block processing the claimed step.
+	if step.AssignedProvider != "" {
+		if err := w.db.TouchProviderHeartbeat(ctx, step.AssignedProvider); err != nil {
+			log.Printf("worker %s: heartbeat %s: %v", w.capability, step.AssignedProvider, err)
+		}
+	}
+
 	item, found, err := w.db.GetItem(ctx, step.ItemID)
 	if err != nil {
 		return true, err
