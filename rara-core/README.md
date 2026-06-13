@@ -8,6 +8,35 @@ never a direct call.
 
 See [ARCHITECTURE-2.0.md](../ARCHITECTURE-2.0.md) for the full design and build order.
 
+## Status — Phase 3 (Curation gates — where 2.0 stops distilling everything)
+
+The gates are **real workers** now, not pass-through. `gate_barato` (on metadata, before
+ASR) and `gate_rico` (on full text, before distillation) are capabilities routed and pulled
+exactly like `transcrever`/`destilar`, and they actually **select**:
+
+- **Cheap→expensive cascade** ([gates.go](gates.go)): `rules` (deterministic allow/deny) →
+  `interest_profile` match (cheap, deterministic) → **LLM-judge** (via LiteLLM, only the
+  borderline middle). Each layer decides or escalates; the cascade is a pure function, unit-
+  tested with a fake judge. Profiles never auto-drop (absence ≠ rejection) — only an explicit
+  deny rule or the LLM drops.
+- **keep / drop / defer** — the gate worker records a `gate_decisions` row (decision, score,
+  `decided_by`, reason) and marks the step done; the **reconciler reads it and routes**:
+  `keep` advances, `drop` → terminal `filtered`, `defer` → terminal `quarantine`. Judgement
+  in the worker, routing in the control plane.
+- **`interest_profile` + `gate_rules`**: a living, versioned preferences document (topics /
+  authors / anti-topics / weights, seeded at v1) read by the profile layer and injected as
+  LLM-judge context; the allow/deny rules live in their own `gate_rules` table.
+- **Quarantine** ([feedback.go](feedback.go)): `defer` parks an item in `quarantine` (the
+  cold-start review sample). `quarantine list` surfaces it; `quarantine review --signal up`
+  rescues it (overrides the gate with a keep, resumes the pipeline), `--signal down` confirms
+  the drop. The review is captured as `feedback` (source=`quarantine_review`).
+- **Explicit thumbs**: `feedback --distillation <id> --signal up|down` records explicit
+  signal (target=`distillation`, source=`user_explicit`). Revising the profile *from* this
+  feedback is the Phase 6 learning loop (a deliberate stub here).
+
+The LLM-judge is the only paid layer and runs only on what rules + the profile could not
+decide. See [.env.example](.env.example) for the `LITELLM_*` gateway config.
+
 ## Status — Phase 1 (Reconciler MVP over existing lanes)
 
 The control plane now drives the **YouTube** lane end to end — collect → transcribe →
@@ -33,8 +62,8 @@ changing any worker's domain logic. Phase 1 ships:
   entrypoint (`scribe --source <url> --limit 1`; an idempotent `distill` batch drain)
   and writes the produced domain row id back as `output_ref`. Scribe/distill domain
   logic is untouched.
-- **Pass-through gates**: `gate_barato`/`gate_rico` always `keep` (recorded in
-  `gate_decisions`, `decided_by=passthrough`). Real curation is Phase 3.
+- **Pass-through gates** (superseded in Phase 3): in Phase 1 `gate_barato`/`gate_rico` always
+  `keep`. They are real cascade workers now — see the Phase 3 section above.
 
 Routing (cost/quality/constraints + fallback) is **Phase 2**; until then the reconciler
 selects the single enabled provider per capability and the residential constraint is
@@ -54,6 +83,11 @@ core-job ingest                    # items spine <- channel_videos ∪ playlist_
 core-job reconcile [--loop]        # one pass, or always-on (VPC) on RECONCILE_INTERVAL_SECONDS
 core-job work --capability transcrever   # scribe shim (resident, on the Mac)
 core-job work --capability destilar      # distill shim (on_demand, Cloud Run)
+core-job work --capability gate_barato   # metadata gate worker (cascade + LiteLLM judge)
+core-job work --capability gate_rico     # full-text gate worker
+core-job feedback --distillation <id> --signal up|down   # explicit thumbs
+core-job quarantine list                 # the cold-start review sample (deferred items)
+core-job quarantine review --item <id> --signal up|down  # up rescues, down confirms drop
 core-job status                    # health check: control tables reachable
 ```
 
@@ -68,7 +102,8 @@ core-job status                    # health check: control tables reachable
 | `routing_policies` | cost⇄quality weighting + ordered fallback, global or per-capability |
 | `items` | canonical materialized spine; one row per discovered work item (`flow_version`) |
 | `item_steps` | mutable runtime state-rows; `output_ref` is a logical link to a worker domain row |
-| `gate_decisions` | append-only curation audit + training substrate |
+| `gate_decisions` | append-only curation audit + training substrate (decision, score, `decided_by`, reason) |
+| `gate_rules` | deterministic allow/deny rules — the cheapest cascade layer |
 | `feedback` | append-only learning signal that tunes the gates |
 | `interest_profile` | living, versioned preferences document (each revision = a new immutable row) |
 
@@ -101,5 +136,6 @@ applied to Neon by `database-core.yml` on merge to `main` (and validated inside 
 rara-core is designed to run **always-on in the VPC** (the reconciler must stay awake
 while the Mac sleeps and Cloud Run scales to zero): `core-job reconcile --loop`. The
 worker shims run where their domain binary lives — `work --capability transcrever`
-alongside scribe on the Mac, `work --capability destilar` as the woken Cloud Run job.
-The policy-driven router lands in Phase 2 and the curation gates in Phase 3.
+alongside scribe on the Mac, `work --capability destilar` and the gate workers
+(`gate_barato`/`gate_rico`) as woken Cloud Run jobs. The gate workers reach the VPC LiteLLM
+gateway for the LLM-judge.

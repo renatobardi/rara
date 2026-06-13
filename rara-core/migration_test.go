@@ -124,6 +124,44 @@ func TestMigrationRangeChecks(t *testing.T) {
 	}
 }
 
+// readMigration002 loads the Phase-3 gate_rules migration.
+func readMigration002(t *testing.T) string {
+	t.Helper()
+	b, err := os.ReadFile("migrations/002_gate_rules.sql")
+	if err != nil {
+		t.Fatalf("read migration 002: %v", err)
+	}
+	return string(b)
+}
+
+// TestMigration002GateRules asserts the Phase-3 rules table exists with the cascade's
+// allow/deny + match_type CHECK contract, reuses the namespaced trigger, and stays
+// isolated (no foreign domain tables).
+func TestMigration002GateRules(t *testing.T) {
+	sql := readMigration002(t)
+	if !strings.Contains(sql, "CREATE TABLE IF NOT EXISTS gate_rules (") {
+		t.Error("missing CREATE TABLE for gate_rules")
+	}
+	for _, c := range []string{
+		"CHECK (action IN ('allow', 'deny'))",
+		"CHECK (match_type IN ('channel', 'title_contains'))",
+		"UNIQUE (action, match_type, value)",
+	} {
+		if !strings.Contains(sql, c) {
+			t.Errorf("missing constraint %q", c)
+		}
+	}
+	// Must reuse rara-core's namespaced trigger, never a foreign agent's.
+	if !strings.Contains(sql, "EXECUTE FUNCTION core_set_updated_at()") {
+		t.Error("gate_rules trigger must use the namespaced core_set_updated_at()")
+	}
+	for _, tbl := range []string{"channel_videos", "transcripts", "distillations"} {
+		if strings.Contains(sql, "CREATE TABLE IF NOT EXISTS "+tbl) {
+			t.Errorf("migration 002 must not create foreign table %q", tbl)
+		}
+	}
+}
+
 // TestMigrationNoCrossAgentTables guards isolation: rara-core's migration must not
 // touch another agent's domain tables.
 func TestMigrationNoCrossAgentTables(t *testing.T) {

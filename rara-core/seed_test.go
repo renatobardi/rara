@@ -6,8 +6,9 @@ import (
 )
 
 // TestSeedYouTubeLane asserts the lane config the reconciler later reads back: the five
-// capabilities, the four providers with the right runtime/activation, one `youtube` flow
-// at version 1, its five ordered steps with pass-through gates, and a default policy.
+// capabilities, the six providers (incl. the two gate workers) with the right
+// runtime/activation, one `youtube` flow at version 1, its five ordered steps, a default
+// policy, and the seeded interest_profile v1.
 func TestSeedYouTubeLane(t *testing.T) {
 	ctx := context.Background()
 	db := newMockDatabase()
@@ -30,6 +31,8 @@ func TestSeedYouTubeLane(t *testing.T) {
 		provShelf:      {capColetar, runtimeCloudRun, activationOnDemand},
 		provASRYouTube: {capTranscrever, runtimeLocal, activationResident},
 		provDistill:    {capDestilar, runtimeCloudRun, activationOnDemand},
+		provGateBarato: {capGateBarato, runtimeCloudRun, activationOnDemand},
+		provGateRico:   {capGateRico, runtimeCloudRun, activationOnDemand},
 	}
 	for name, want := range wantProviders {
 		p, ok := db.providers[name]
@@ -70,17 +73,21 @@ func TestSeedYouTubeLane(t *testing.T) {
 			t.Errorf("step %d = (seq %d, %s), want (seq %d, %s)", i, s.Seq, s.Capability, i+1, wantSeq[i])
 		}
 	}
-	// Gates carry the pass-through option this phase.
-	if got := string(db.flowSteps[flowStepKey{f.ID, 2}].Options); got != optGateMode {
-		t.Errorf("gate_barato options = %q, want %q", got, optGateMode)
-	}
-	if got := string(db.flowSteps[flowStepKey{f.ID, 4}].Options); got != optGateMode {
-		t.Errorf("gate_rico options = %q, want %q", got, optGateMode)
-	}
-
 	// Default routing policy seeded for Phase 2's router.
 	if _, ok := db.policies["global"]; !ok {
 		t.Error("global routing policy not seeded")
+	}
+
+	// interest_profile v1 seeded with a keep_threshold and starter topics.
+	p, found, _ := db.GetLatestInterestProfile(ctx)
+	if !found || p.Version != 1 {
+		t.Fatalf("interest_profile v1 not seeded (found=%v, v%d)", found, p.Version)
+	}
+	if got := string(p.Weights); got != `{"keep_threshold":0.6}` {
+		t.Errorf("profile weights = %q, want a keep_threshold", got)
+	}
+	if len(parseStringArray(p.Topics)) == 0 {
+		t.Error("profile v1 should seed starter topics")
 	}
 }
 
@@ -98,10 +105,14 @@ func TestSeedIdempotent(t *testing.T) {
 	if got := db.flows[youtubeFlowName].ID; got != id1 {
 		t.Errorf("flow id changed on re-seed: %d -> %d", id1, got)
 	}
-	if len(db.providers) != 4 {
-		t.Errorf("expected 4 providers after re-seed, got %d", len(db.providers))
+	if len(db.providers) != 6 {
+		t.Errorf("expected 6 providers after re-seed, got %d", len(db.providers))
 	}
 	if len(db.flowSteps) != 5 {
 		t.Errorf("expected 5 flow steps after re-seed, got %d", len(db.flowSteps))
+	}
+	// interest_profile is seeded exactly once — re-seeding must not create a v2 or error.
+	if len(db.profiles) != 1 {
+		t.Errorf("expected interest_profile seeded once, got %d versions", len(db.profiles))
 	}
 }

@@ -94,6 +94,39 @@ const (
 	capDestilar    = "destilar"
 )
 
+// gate_decisions.decided_by — which cascade layer reached the decision (the audit trail
+// distinguishes the cheap deterministic layers from the paid LLM-judge).
+const (
+	decidedByRules   = "rules"   // deterministic allow/deny gate_rules
+	decidedByProfile = "profile" // interest_profile match
+	decidedByLLM     = "llm"     // LLM-judge via LiteLLM (the borderline middle only)
+)
+
+// gate_rules.action
+const (
+	ruleAllow = "allow"
+	ruleDeny  = "deny"
+)
+
+// gate_rules.match_type
+const (
+	matchChannel       = "channel"        // exact channel/author name, case-insensitive
+	matchTitleContains = "title_contains" // case-insensitive substring of the title
+)
+
+// feedback.signal
+const (
+	signalUp   = "up"
+	signalDown = "down"
+)
+
+// feedback.source — provenance of a learning signal (free-text in SQL; these are the
+// sources Phase 3 writes). The interest_profile revision (Phase 6) consumes them.
+const (
+	sourceUserExplicit     = "user_explicit"     // explicit thumbs on a distillation
+	sourceQuarantineReview = "quarantine_review" // human review of a quarantined item
+)
+
 // policyScopeGlobal is the routing_policies.scope sentinel for the catch-all policy the
 // router uses when no capability-scoped policy exists.
 const policyScopeGlobal = "global"
@@ -141,6 +174,8 @@ func isValidDecision(s string) bool {
 	return s == decisionKeep || s == decisionDrop || s == decisionDefer
 }
 func isValidTargetType(s string) bool { return s == targetItem || s == targetDistillation }
+func isValidRuleAction(s string) bool { return s == ruleAllow || s == ruleDeny }
+func isValidMatchType(s string) bool  { return s == matchChannel || s == matchTitleContains }
 
 // ---------------------------------------------------------------------------
 // Domain types — one struct per control table. JSONB columns are carried as
@@ -246,6 +281,16 @@ type InterestProfile struct {
 	Weights    json.RawMessage
 }
 
+// GateRule is one deterministic allow/deny rule — the cheapest layer of the gate cascade.
+// A deny match drops the item (deny precedence); an allow match keeps it; no match
+// escalates to the profile/LLM layers.
+type GateRule struct {
+	Action    string // allow | deny
+	MatchType string // channel | title_contains
+	Value     string
+	Enabled   bool
+}
+
 // ---------------------------------------------------------------------------
 // Persistence seam
 //
@@ -272,6 +317,9 @@ type Database interface {
 	UpsertFlow(ctx context.Context, f Flow) (int, error)
 	UpsertFlowStep(ctx context.Context, s FlowStep) error
 	UpsertRoutingPolicy(ctx context.Context, p RoutingPolicy) error
+	// UpsertGateRule writes one deterministic allow/deny rule (Phase 3 gate cascade),
+	// idempotent on (action, match_type, value).
+	UpsertGateRule(ctx context.Context, r GateRule) error
 
 	// Spine (idempotent upserts).
 	UpsertItem(ctx context.Context, it Item) (int, error)
@@ -317,6 +365,23 @@ type Database interface {
 	// policyScopeGlobal), found=false if absent. The router reads the capability-scoped
 	// policy first, then falls back to the global one.
 	GetRoutingPolicy(ctx context.Context, scope string) (RoutingPolicy, bool, error)
+
+	// --- Curation reads (Phase 3) --------------------------------------------
+	// The gate cascade reads the live profile + rules; the reconciler reads the gate's
+	// decision to route keep/drop/defer; the quarantine surface lists deferred items.
+
+	// ListGateRules returns the enabled allow/deny rules for the cascade's rules layer.
+	ListGateRules(ctx context.Context) ([]GateRule, error)
+	// GetLatestInterestProfile returns the highest-version interest_profile row (the live
+	// preferences document), found=false when none has been seeded yet.
+	GetLatestInterestProfile(ctx context.Context) (InterestProfile, bool, error)
+	// LatestGateDecision returns the most recent gate_decisions row for (item, gate),
+	// found=false if the gate has not run for the item. The reconciler reads it to route
+	// a completed gate step (keep -> advance, drop -> filtered, defer -> quarantine).
+	LatestGateDecision(ctx context.Context, itemID int, gate string) (GateDecision, bool, error)
+	// ListQuarantinedItems returns items in terminal `quarantine` (the cold-start review
+	// sample), ordered by id.
+	ListQuarantinedItems(ctx context.Context) ([]Item, error)
 
 	// --- Health feed (Phase 2) -----------------------------------------------
 	// TouchProviderHeartbeat stamps providers.heartbeat_at = now for a live provider,
@@ -426,6 +491,22 @@ func (d *pgxDatabase) UpsertRoutingPolicy(ctx context.Context, p RoutingPolicy) 
 			quality_weight = EXCLUDED.quality_weight,
 			fallback       = EXCLUDED.fallback`
 	_, err := d.conn.Exec(ctx, q, p.Scope, p.CostWeight, p.QualityWeight, jsonOrEmpty(p.Fallback, "[]"))
+	return err
+}
+
+func (d *pgxDatabase) UpsertGateRule(ctx context.Context, r GateRule) error {
+	if !isValidRuleAction(r.Action) {
+		return fmt.Errorf("invalid gate rule action %q", r.Action)
+	}
+	if !isValidMatchType(r.MatchType) {
+		return fmt.Errorf("invalid gate rule match_type %q", r.MatchType)
+	}
+	const q = `
+		INSERT INTO gate_rules (action, match_type, value, enabled)
+		VALUES ($1, $2, $3, $4)
+		ON CONFLICT (action, match_type, value) DO UPDATE SET
+			enabled = EXCLUDED.enabled`
+	_, err := d.conn.Exec(ctx, q, r.Action, r.MatchType, r.Value, r.Enabled)
 	return err
 }
 
@@ -550,7 +631,12 @@ Commands:
   ingest                     Populate the items spine from channel_videos ∪ playlist_videos
   reconcile [--loop]         Run the reconciler: one pass, or always-on with --loop
   work --capability <cap>    Run a worker shim that pulls and processes its assignments
-                             (cap: transcrever | destilar)
+                             (cap: transcrever | destilar | gate_barato | gate_rico)
+  feedback --distillation <id> --signal <up|down>
+                             Record explicit thumbs on a distillation
+  quarantine list            List items deferred to quarantine (the cold-start review sample)
+  quarantine review --item <id> --signal <up|down>
+                             Review a quarantined item: up rescues it, down confirms the drop
   status                     Phase 0 health check: confirm the control tables are reachable
 `
 
@@ -597,6 +683,12 @@ func main() {
 
 	case "work":
 		runWork(ctx, db, conn, os.Args[2:])
+
+	case "feedback":
+		runFeedback(ctx, db, os.Args[2:])
+
+	case "quarantine":
+		runQuarantine(ctx, db, os.Args[2:])
 
 	case "status":
 		var capCount int
@@ -669,11 +761,66 @@ func runWork(ctx context.Context, db Database, conn *pgx.Conn, argv []string) {
 		runner = newScribeRunner(conn)
 	case capDestilar:
 		runner = newDistillRunner(conn)
+	case capGateBarato, capGateRico:
+		judge, err := newLiteLLMJudge()
+		if err != nil {
+			log.Fatalf("work %s: %v", *capability, err)
+		}
+		runner = newGateRunner(db, conn, *capability, judge)
 	default:
-		log.Fatalf("work: --capability must be %q or %q, got %q", capTranscrever, capDestilar, *capability)
+		log.Fatalf("work: --capability must be one of %q %q %q %q, got %q",
+			capTranscrever, capDestilar, capGateBarato, capGateRico, *capability)
 	}
 	if err := NewWorker(db, *capability, runner).RunUntilDrained(ctx); err != nil {
 		log.Fatalf("work %s: %v", *capability, err)
 	}
 	log.Printf("rara-core worker %s: queue drained", *capability)
+}
+
+// runFeedback records explicit thumbs on a distillation (deliverable #4).
+func runFeedback(ctx context.Context, db Database, argv []string) {
+	fs := flag.NewFlagSet("feedback", flag.ExitOnError)
+	distillation := fs.String("distillation", "", "distillation id to rate")
+	signal := fs.String("signal", "", "up | down")
+	_ = fs.Parse(argv)
+	if *distillation == "" || *signal == "" {
+		log.Fatalf("feedback: --distillation and --signal are required")
+	}
+	if err := CaptureDistillationFeedback(ctx, db, *distillation, *signal); err != nil {
+		log.Fatalf("feedback: %v", err)
+	}
+	log.Printf("rara-core: recorded %q feedback on distillation %s", *signal, *distillation)
+}
+
+// runQuarantine lists or reviews the quarantine sample (deliverable #5). `list` prints the
+// deferred items; `review --item N --signal up|down` resolves one (up rescues, down drops).
+func runQuarantine(ctx context.Context, db Database, argv []string) {
+	if len(argv) == 0 {
+		log.Fatalf("quarantine: expected subcommand 'list' or 'review'")
+	}
+	switch argv[0] {
+	case "list":
+		items, err := db.ListQuarantinedItems(ctx)
+		if err != nil {
+			log.Fatalf("quarantine list: %v", err)
+		}
+		log.Printf("rara-core: %d item(s) in quarantine", len(items))
+		for _, it := range items {
+			fmt.Printf("  item %d\t%s\t%s\n", it.ID, it.Lane, it.SourceRef)
+		}
+	case "review":
+		fs := flag.NewFlagSet("review", flag.ExitOnError)
+		item := fs.Int("item", 0, "quarantined item id")
+		signal := fs.String("signal", "", "up (rescue) | down (confirm drop)")
+		_ = fs.Parse(argv[1:])
+		if *item == 0 || *signal == "" {
+			log.Fatalf("quarantine review: --item and --signal are required")
+		}
+		if err := ReviewQuarantine(ctx, db, *item, *signal); err != nil {
+			log.Fatalf("quarantine review: %v", err)
+		}
+		log.Printf("rara-core: reviewed quarantined item %d (%q)", *item, *signal)
+	default:
+		log.Fatalf("quarantine: unknown subcommand %q (want 'list' or 'review')", argv[0])
+	}
 }
