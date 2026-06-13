@@ -7,8 +7,9 @@
 //
 //  1. eliminates providers that fail a HARD constraint (e.g. asr-youtube requires a
 //     residential IP -> any cloudrun/vpc candidate is dropped);
-//  2. eliminates UNHEALTHY providers (a resident worker with a stale/missing heartbeat is
-//     offline; on_demand workers are asleep-by-design and exempt);
+//  2. eliminates UNHEALTHY providers (a resident worker whose heartbeat went STALE is
+//     offline; a never-seen resident gets bootstrap grace; on_demand workers are
+//     asleep-by-design and exempt);
 //  3. orders the survivors by a cost<->quality score, with the policy's ordered `fallback`
 //     list pinning the front of the chain (an explicit operator failover order);
 //  4. returns the best candidate — or nothing, in which case the item waits (the caller
@@ -193,15 +194,21 @@ func constraintsSatisfied(p Provider) bool {
 // providerHealthy reports whether a provider is alive enough to receive work. on_demand
 // providers (Cloud Run, scale-to-zero) are asleep by design until the reconciler wakes
 // them, so they always pass the health gate at SELECTION time; their post-assignment
-// liveness is tracked per-step on item_steps.heartbeat_at (the reconciler's stale
-// backstop). A resident provider (the Mac scribe, a VPC worker) is meant to be awake and
-// heartbeating — a nil or stale heartbeat means it is offline, so it is not eligible.
+// liveness is tracked per-step on item_steps.heartbeat_at (the reconciler's stale backstop).
+//
+// A resident provider (the Mac scribe, a VPC worker) is meant to be awake and heartbeating.
+// We can only call one DEAD once we have seen it alive and then lost it: a STALE heartbeat
+// (older than healthTTL) excludes it, so its work fails over. A provider we have NEVER heard
+// from gets bootstrap grace — it is treated as starting-up, not dead. Without that grace the
+// lane would deadlock: a resident only stamps its first heartbeat when it CLAIMS work, which
+// it can only do once the router has selected it. The worker becomes "known alive" on its
+// first claim (worker.go), after which staleness — the real failure signal — applies.
 func providerHealthy(p Provider, now time.Time, healthTTL time.Duration) bool {
 	if p.Activation == activationOnDemand {
 		return true
 	}
 	if p.HeartbeatAt == nil {
-		return false
+		return true // bootstrap grace: never-seen != dead
 	}
 	return now.Sub(*p.HeartbeatAt) <= healthTTL
 }

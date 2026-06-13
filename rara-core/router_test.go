@@ -94,9 +94,10 @@ func TestRankConstraintUnknownFailsClosed(t *testing.T) {
 	}
 }
 
-// TestRankHealthExclusion (#6 heartbeat): a resident provider is eligible only with a fresh
-// heartbeat — stale or never-seen is excluded. on_demand providers are asleep-by-design and
-// stay eligible with no heartbeat at all.
+// TestRankHealthExclusion (#6 heartbeat): a resident whose heartbeat went STALE is excluded
+// (the real "offline" signal), while a fresh one stays eligible. A never-seen resident gets
+// bootstrap grace (starting-up, not dead), and on_demand providers are asleep-by-design and
+// eligible with no heartbeat at all.
 func TestRankHealthExclusion(t *testing.T) {
 	fresh := Provider{Name: "resident-fresh", Capability: capTranscrever, Runtime: runtimeLocal,
 		Activation: activationResident, HeartbeatAt: ptime(routerClock.Add(-1 * time.Minute)), Enabled: true}
@@ -116,10 +117,10 @@ func TestRankHealthExclusion(t *testing.T) {
 		t.Error("resident with a fresh heartbeat should be eligible")
 	}
 	if got["resident-stale"] {
-		t.Error("resident with a stale heartbeat should be excluded")
+		t.Error("resident with a STALE heartbeat should be excluded (the offline signal)")
 	}
-	if got["resident-never"] {
-		t.Error("resident that never heartbeat should be excluded")
+	if !got["resident-never"] {
+		t.Error("never-seen resident should get bootstrap grace (starting-up, not dead)")
 	}
 	if !got["ondemand-asleep"] {
 		t.Error("on_demand provider should be health-exempt (asleep by design)")

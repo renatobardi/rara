@@ -15,9 +15,10 @@ func (f *fakeActivator) Activate(_ context.Context, p Provider) error {
 }
 
 // seedAndIngestOne seeds the lane and ingests a single video, returning the item id. It
-// also marks the resident scribe (asr-youtube) alive: the Phase 2 router's health gate
-// only routes transcrever to a resident provider with a fresh heartbeat, which in
-// production the live scribe stamps for itself.
+// also marks the resident scribe (asr-youtube) "known alive" with a fresh heartbeat — the
+// realistic state of a live scribe. (A never-seen resident would still route under the
+// router's bootstrap grace; a fresh heartbeat is what keeps it eligible once seen and lets
+// staleness, not absence, be the offline signal.)
 func seedAndIngestOne(t *testing.T, db *MockDatabase, videoID string) int {
 	t.Helper()
 	ctx := context.Background()
