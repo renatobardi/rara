@@ -66,6 +66,7 @@ type MockDatabase struct {
 	capabilities map[string]Capability // UNIQUE(name)
 	providers    map[string]Provider   // UNIQUE(name)
 	flows        map[string]Flow       // UNIQUE(name)
+	flowByID     map[int]bool          // FK target for flow_steps.flow_id / items.flow_id
 	flowSteps    map[flowStepKey]FlowStep
 	policies     map[string]RoutingPolicy // UNIQUE(scope)
 
@@ -86,6 +87,7 @@ func newMockDatabase() *MockDatabase {
 		capabilities: make(map[string]Capability),
 		providers:    make(map[string]Provider),
 		flows:        make(map[string]Flow),
+		flowByID:     make(map[int]bool),
 		flowSteps:    make(map[flowStepKey]FlowStep),
 		policies:     make(map[string]RoutingPolicy),
 		items:        make(map[string]Item),
@@ -124,12 +126,16 @@ func (m *MockDatabase) UpsertFlow(_ context.Context, f Flow) (int, error) {
 	f.ID = m.nextFlowID
 	m.nextFlowID++
 	m.flows[f.Name] = f
+	m.flowByID[f.ID] = true
 	return f.ID, nil
 }
 
 func (m *MockDatabase) UpsertFlowStep(_ context.Context, s FlowStep) error {
+	if !m.flowByID[s.FlowID] {
+		return errFKViolation // REFERENCES flows(id)
+	}
 	if _, ok := m.capabilities[s.Capability]; !ok {
-		return errFKViolation
+		return errFKViolation // REFERENCES capabilities(name)
 	}
 	m.flowSteps[flowStepKey{s.FlowID, s.Seq}] = s // ON CONFLICT (flow_id, seq) DO UPDATE
 	return nil
@@ -143,6 +149,9 @@ func (m *MockDatabase) UpsertRoutingPolicy(_ context.Context, p RoutingPolicy) e
 func (m *MockDatabase) UpsertItem(_ context.Context, it Item) (int, error) {
 	if !isValidItemStatus(it.Status) {
 		return 0, errCheckViolation
+	}
+	if !m.flowByID[it.FlowID] {
+		return 0, errFKViolation // REFERENCES flows(id)
 	}
 	k := itemKey(it.Lane, it.SourceRef)
 	if existing, ok := m.items[k]; ok {
@@ -205,6 +214,17 @@ func (m *MockDatabase) InsertInterestProfile(_ context.Context, p InterestProfil
 
 // compile-time guarantee the mock satisfies the seam the pgx impl does.
 var _ Database = (*MockDatabase)(nil)
+
+// seedFlow inserts a flow and returns its id, for tests that need a valid FK target
+// for flow_steps.flow_id / items.flow_id.
+func seedFlow(t *testing.T, db *MockDatabase) int {
+	t.Helper()
+	fid, err := db.UpsertFlow(context.Background(), Flow{Name: "test_flow", SourceType: "news", Enabled: true, Version: 1})
+	if err != nil {
+		t.Fatalf("seed flow: %v", err)
+	}
+	return fid
+}
 
 // ---------------------------------------------------------------------------
 // Config-table contract
@@ -334,12 +354,13 @@ func TestRoutingPolicyUniqueScope(t *testing.T) {
 func TestItemDedupByLaneSourceRef(t *testing.T) {
 	ctx := context.Background()
 	db := newMockDatabase()
-	id1, err := db.UpsertItem(ctx, Item{Lane: "youtube", SourceRef: "vid123", FlowID: 1, FlowVersion: 1, Status: itemDiscovered})
+	fid := seedFlow(t, db)
+	id1, err := db.UpsertItem(ctx, Item{Lane: "youtube", SourceRef: "vid123", FlowID: fid, FlowVersion: 1, Status: itemDiscovered})
 	if err != nil {
 		t.Fatal(err)
 	}
 	// Same natural key re-discovered: collapses to one row, id stable.
-	id2, err := db.UpsertItem(ctx, Item{Lane: "youtube", SourceRef: "vid123", FlowID: 1, FlowVersion: 1, Status: itemToText})
+	id2, err := db.UpsertItem(ctx, Item{Lane: "youtube", SourceRef: "vid123", FlowID: fid, FlowVersion: 1, Status: itemToText})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -350,7 +371,7 @@ func TestItemDedupByLaneSourceRef(t *testing.T) {
 		t.Fatalf("UNIQUE(lane, source_ref) not honored: %d rows", len(db.items))
 	}
 	// Same source_ref in a DIFFERENT lane is a distinct item.
-	if _, err := db.UpsertItem(ctx, Item{Lane: "podcast", SourceRef: "vid123", FlowID: 1, FlowVersion: 1, Status: itemDiscovered}); err != nil {
+	if _, err := db.UpsertItem(ctx, Item{Lane: "podcast", SourceRef: "vid123", FlowID: fid, FlowVersion: 1, Status: itemDiscovered}); err != nil {
 		t.Fatal(err)
 	}
 	if len(db.items) != 2 {
@@ -361,8 +382,26 @@ func TestItemDedupByLaneSourceRef(t *testing.T) {
 func TestItemRejectsBadStatus(t *testing.T) {
 	ctx := context.Background()
 	db := newMockDatabase()
-	if _, err := db.UpsertItem(ctx, Item{Lane: "news", SourceRef: "u", FlowID: 1, FlowVersion: 1, Status: "queued"}); !errors.Is(err, errCheckViolation) {
+	fid := seedFlow(t, db)
+	if _, err := db.UpsertItem(ctx, Item{Lane: "news", SourceRef: "u", FlowID: fid, FlowVersion: 1, Status: "queued"}); !errors.Is(err, errCheckViolation) {
 		t.Fatalf("invalid item status should fail CHECK, got %v", err)
+	}
+}
+
+func TestItemRequiresExistingFlow(t *testing.T) {
+	ctx := context.Background()
+	db := newMockDatabase()
+	if _, err := db.UpsertItem(ctx, Item{Lane: "news", SourceRef: "u", FlowID: 999, FlowVersion: 1, Status: itemDiscovered}); !errors.Is(err, errFKViolation) {
+		t.Fatalf("item on unknown flow should fail FK, got %v", err)
+	}
+}
+
+func TestFlowStepRequiresExistingFlow(t *testing.T) {
+	ctx := context.Background()
+	db := newMockDatabase()
+	_ = db.UpsertCapability(ctx, Capability{Name: capColetar})
+	if err := db.UpsertFlowStep(ctx, FlowStep{FlowID: 999, Seq: 1, Capability: capColetar}); !errors.Is(err, errFKViolation) {
+		t.Fatalf("flow_step on unknown flow should fail FK, got %v", err)
 	}
 }
 
@@ -370,7 +409,8 @@ func TestItemStepUniquePerItemSeqAndFKs(t *testing.T) {
 	ctx := context.Background()
 	db := newMockDatabase()
 	_ = db.UpsertCapability(ctx, Capability{Name: capTranscrever})
-	itemID, _ := db.UpsertItem(ctx, Item{Lane: "youtube", SourceRef: "v", FlowID: 1, FlowVersion: 1, Status: itemDiscovered})
+	fid := seedFlow(t, db)
+	itemID, _ := db.UpsertItem(ctx, Item{Lane: "youtube", SourceRef: "v", FlowID: fid, FlowVersion: 1, Status: itemDiscovered})
 
 	// FK: unknown item.
 	if err := db.UpsertItemStep(ctx, ItemStep{ItemID: 9999, Seq: 1, Capability: capTranscrever, Status: stepPending}); !errors.Is(err, errFKViolation) {
@@ -406,7 +446,8 @@ func TestItemStepUniquePerItemSeqAndFKs(t *testing.T) {
 func TestGateDecisionsAppendOnly(t *testing.T) {
 	ctx := context.Background()
 	db := newMockDatabase()
-	itemID, _ := db.UpsertItem(ctx, Item{Lane: "news", SourceRef: "u", FlowID: 1, FlowVersion: 1, Status: itemDiscovered})
+	fid := seedFlow(t, db)
+	itemID, _ := db.UpsertItem(ctx, Item{Lane: "news", SourceRef: "u", FlowID: fid, FlowVersion: 1, Status: itemDiscovered})
 	// Two runs of the same gate accumulate — history is the point (calibration sample).
 	if err := db.InsertGateDecision(ctx, GateDecision{ItemID: itemID, Gate: gateBarato, Decision: decisionDefer, DecidedBy: "rules"}); err != nil {
 		t.Fatal(err)
@@ -420,6 +461,27 @@ func TestGateDecisionsAppendOnly(t *testing.T) {
 	// Bad enum rejected.
 	if err := db.InsertGateDecision(ctx, GateDecision{ItemID: itemID, Gate: "gate_medio", Decision: decisionKeep, DecidedBy: "x"}); !errors.Is(err, errCheckViolation) {
 		t.Fatalf("invalid gate should fail CHECK, got %v", err)
+	}
+}
+
+// gate_rico carries both a confidence score (0..1) and an integer rank (ordering);
+// the two are distinct columns so a rank position can exceed the score's [0,1] range.
+func TestGateDecisionRichScoreAndRank(t *testing.T) {
+	ctx := context.Background()
+	db := newMockDatabase()
+	fid := seedFlow(t, db)
+	itemID, _ := db.UpsertItem(ctx, Item{Lane: "news", SourceRef: "u", FlowID: fid, FlowVersion: 1, Status: itemToText})
+	score := 0.82
+	rank := 3
+	if err := db.InsertGateDecision(ctx, GateDecision{
+		ItemID: itemID, Gate: gateRico, Decision: decisionKeep,
+		Score: &score, Rank: &rank, DecidedBy: "llm-judge",
+	}); err != nil {
+		t.Fatalf("rich gate decision with score+rank: %v", err)
+	}
+	got := db.gateDecisions[len(db.gateDecisions)-1]
+	if got.Score == nil || *got.Score != score || got.Rank == nil || *got.Rank != rank {
+		t.Errorf("score/rank not preserved: %+v", got)
 	}
 }
 

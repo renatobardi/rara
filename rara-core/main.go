@@ -209,7 +209,8 @@ type GateDecision struct {
 	ItemID    int
 	Gate      string
 	Decision  string
-	Score     *float64 // nullable (the rules layer needs no score)
+	Score     *float64 // confidence in [0,1]; nil for the rules layer (which needs none)
+	Rank      *int     // gate_rico ordering (1 = top); nil outside gate_rico / when unranked
 	DecidedBy string
 	Reason    string
 }
@@ -242,9 +243,16 @@ type InterestProfile struct {
 //
 // No method here makes a routing or scheduling decision — that is deferred to the
 // reconciler in a later phase. This seam is pure storage.
+//
+// Upsert contract: the Upsert* methods are FULL-RECORD upserts — on conflict every
+// non-key column is overwritten with the value from the passed struct, including
+// zero-values (an empty IOContract/Constraints writes the SQL default '{}'/'[]', an
+// empty Description writes NULL). Always pass the complete intended row; never a
+// partial patch, or you will clobber existing columns. (The SQL seed in 001 uses
+// ON CONFLICT DO NOTHING precisely so re-applying the migration never clobbers.)
 // ---------------------------------------------------------------------------
 type Database interface {
-	// Config (idempotent upserts).
+	// Config (idempotent, full-record upserts).
 	UpsertCapability(ctx context.Context, c Capability) error
 	UpsertProvider(ctx context.Context, p Provider) error
 	UpsertFlow(ctx context.Context, f Flow) (int, error)
@@ -401,9 +409,9 @@ func (d *pgxDatabase) InsertGateDecision(ctx context.Context, dec GateDecision) 
 		return fmt.Errorf("invalid decision %q", dec.Decision)
 	}
 	const q = `
-		INSERT INTO gate_decisions (item_id, gate, decision, score, decided_by, reason)
-		VALUES ($1, $2, $3, $4, $5, $6)`
-	_, err := d.conn.Exec(ctx, q, dec.ItemID, dec.Gate, dec.Decision, dec.Score, dec.DecidedBy, nullStr(dec.Reason))
+		INSERT INTO gate_decisions (item_id, gate, decision, score, rank, decided_by, reason)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)`
+	_, err := d.conn.Exec(ctx, q, dec.ItemID, dec.Gate, dec.Decision, dec.Score, dec.Rank, dec.DecidedBy, nullStr(dec.Reason))
 	return err
 }
 

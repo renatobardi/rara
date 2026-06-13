@@ -103,6 +103,27 @@ func TestMigrationKeyConstraints(t *testing.T) {
 	}
 }
 
+// TestMigrationRangeChecks asserts the normalized-range guards on the router
+// weights / quality and the gate confidence, and that gate ranking lives in a
+// separate integer column (a rank position can exceed score's [0,1] ceiling).
+func TestMigrationRangeChecks(t *testing.T) {
+	sql := readMigration(t)
+	wantChecks := []string{
+		"CHECK (quality >= 0 AND quality <= 1)",                // providers.quality
+		"CHECK (cost_weight >= 0 AND cost_weight <= 1)",        // routing_policies
+		"CHECK (quality_weight >= 0 AND quality_weight <= 1)",  // routing_policies
+		"CHECK (score IS NULL OR (score >= 0 AND score <= 1))", // gate_decisions.score
+	}
+	for _, c := range wantChecks {
+		if !strings.Contains(sql, c) {
+			t.Errorf("missing range CHECK %q", c)
+		}
+	}
+	if !strings.Contains(sql, "rank       INT") {
+		t.Error("gate_decisions must carry a separate integer rank column for gate_rico ordering")
+	}
+}
+
 // TestMigrationNoCrossAgentTables guards isolation: rara-core's migration must not
 // touch another agent's domain tables.
 func TestMigrationNoCrossAgentTables(t *testing.T) {

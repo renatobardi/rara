@@ -53,8 +53,8 @@ CREATE TABLE IF NOT EXISTS providers (
     capability   VARCHAR(32)   NOT NULL REFERENCES capabilities(name),
     runtime      VARCHAR(8)    NOT NULL,                        -- local | cloudrun | vpc
     activation   VARCHAR(10)   NOT NULL,                        -- resident | on_demand
-    cost         NUMERIC(10,4) NOT NULL DEFAULT 0,              -- relative cost weight for the router
-    quality      NUMERIC(4,3)  NOT NULL DEFAULT 0,              -- 0..1 quality weight for the router
+    cost         NUMERIC(10,4) NOT NULL DEFAULT 0,              -- relative cost weight for the router (unbounded units)
+    quality      NUMERIC(4,3)  NOT NULL DEFAULT 0,              -- normalized quality score in [0,1]
     latency_ms   INT           NOT NULL DEFAULT 0,              -- typical latency hint
     constraints  JSONB         NOT NULL DEFAULT '{}'::jsonb,    -- hard constraints, e.g. {"requires":"residential"}
     enabled      BOOLEAN       NOT NULL DEFAULT true,
@@ -63,7 +63,10 @@ CREATE TABLE IF NOT EXISTS providers (
     updated_at   TIMESTAMPTZ   DEFAULT CURRENT_TIMESTAMP,
     UNIQUE (name),
     CHECK (runtime IN ('local', 'cloudrun', 'vpc')),
-    CHECK (activation IN ('resident', 'on_demand'))
+    CHECK (activation IN ('resident', 'on_demand')),
+    CHECK (quality >= 0 AND quality <= 1),
+    CHECK (cost >= 0),
+    CHECK (latency_ms >= 0)
 );
 
 CREATE INDEX IF NOT EXISTS idx_providers_capability ON providers(capability) WHERE enabled = true;
@@ -108,12 +111,14 @@ CREATE TABLE IF NOT EXISTS flow_steps (
 CREATE TABLE IF NOT EXISTS routing_policies (
     id             SERIAL PRIMARY KEY,
     scope          VARCHAR(32)  NOT NULL,                       -- 'global' or a capability name
-    cost_weight    NUMERIC(4,3) NOT NULL DEFAULT 0.5,
-    quality_weight NUMERIC(4,3) NOT NULL DEFAULT 0.5,
+    cost_weight    NUMERIC(4,3) NOT NULL DEFAULT 0.5,           -- normalized weight in [0,1]
+    quality_weight NUMERIC(4,3) NOT NULL DEFAULT 0.5,           -- normalized weight in [0,1]
     fallback       JSONB        NOT NULL DEFAULT '[]'::jsonb,   -- ordered list of provider names
     created_at     TIMESTAMPTZ  DEFAULT CURRENT_TIMESTAMP,
     updated_at     TIMESTAMPTZ  DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE (scope)
+    UNIQUE (scope),
+    CHECK (cost_weight >= 0 AND cost_weight <= 1),
+    CHECK (quality_weight >= 0 AND quality_weight <= 1)
 );
 
 -- ---------------------------------------------------------------------------
@@ -186,12 +191,17 @@ CREATE TABLE IF NOT EXISTS gate_decisions (
     item_id    INT          NOT NULL REFERENCES items(id) ON DELETE CASCADE,
     gate       VARCHAR(16)  NOT NULL,                           -- gate_barato | gate_rico
     decision   VARCHAR(8)   NOT NULL,                           -- keep | drop | defer
-    score      NUMERIC(4,3),                                    -- confidence / rank (nullable: rules layer needs none)
+    score      NUMERIC(4,3),                                    -- confidence in [0,1] (NULL: the rules layer needs none)
+    rank       INT,                                             -- gate_rico ordering (1 = top); NULL outside gate_rico / unranked
     decided_by VARCHAR(32)  NOT NULL,                           -- rules | profile | llm-judge
     reason     TEXT,
     created_at TIMESTAMPTZ  DEFAULT CURRENT_TIMESTAMP,
     CHECK (gate IN ('gate_barato', 'gate_rico')),
-    CHECK (decision IN ('keep', 'drop', 'defer'))
+    CHECK (decision IN ('keep', 'drop', 'defer')),
+    -- score is a normalized confidence; the gate_rico *ranking* uses the separate
+    -- integer rank column (a position can exceed NUMERIC(4,3)'s 9.999 ceiling).
+    CHECK (score IS NULL OR (score >= 0 AND score <= 1)),
+    CHECK (rank IS NULL OR rank >= 1)
 );
 
 CREATE INDEX IF NOT EXISTS idx_gate_decisions_item ON gate_decisions(item_id);
