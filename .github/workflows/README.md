@@ -12,11 +12,13 @@ to one agent never triggers another's pipeline.
 | `ci-scribe.yml` | rara-scribe | `rara-scribe/**` | Code quality, tests, security scan |
 | `ci-distill.yml` | rara-distill | `rara-distill/**` | Code quality, tests, security scan |
 | `ci-feed.yml` | rara-feed | `rara-feed/**` | Code quality, tests, security scan |
+| `ci-core.yml` | rara-core | `rara-core/**` | Code quality, tests, security scan |
 | `database.yml` | rara-harvest | `rara-harvest/migrations/**` | Validate + apply migrations |
 | `database-shelf.yml` | rara-shelf | `rara-shelf/migrations/**` | Validate + apply migrations |
 | `database-scribe.yml` | rara-scribe | `rara-scribe/migrations/**` | Validate + apply migrations |
 | `database-distill.yml` | rara-distill | `rara-distill/migrations/**` | Validate + apply migrations |
 | `database-feed.yml` | rara-feed | `rara-feed/migrations/**` | Validate + apply migrations |
+| `database-core.yml` | rara-core | `rara-core/migrations/**` | Validate + apply migrations |
 | `deploy.yml` | rara-harvest | `rara-harvest/**` | Build image + deploy Cloud Run Job |
 | `deploy-shelf.yml` | rara-shelf | `rara-shelf/**` | Build image + deploy Cloud Run Job |
 | `deploy-distill.yml` | rara-distill | `rara-distill/**` | Build image + deploy Cloud Run Job |
@@ -27,6 +29,10 @@ to one agent never triggers another's pipeline.
 > build or deploy step. Its CI and migration workflows still run in GitHub Actions.
 >
 > **rara-feed has a full pipeline** (CI + Database + Deploy), same as harvest, shelf, and distill.
+>
+> **rara-core has CI + Database only (no deploy yet).** Phase 0 ships the control-plane schema
+> and scaffold; the reconciler is not built. rara-core will run always-on in the VPC (not as a
+> Cloud Run Job), so its deploy workflow lands with the reconciler in a later phase.
 
 ## Workflow types
 
