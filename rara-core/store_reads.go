@@ -260,6 +260,136 @@ func (d *pgxDatabase) ListQuarantinedItems(ctx context.Context) ([]Item, error) 
 	return out, rows.Err()
 }
 
+// --- Surface reads (Phase 5) -------------------------------------------------
+// Pure reads backing the HTTP core + MCP adapter: state observation and config-as-data.
+
+// ListItemsByStatus returns the items in a given status, ordered by id. idx_items_status
+// backs the scan. The status is validated by the caller (the surface).
+func (d *pgxDatabase) ListItemsByStatus(ctx context.Context, status string) ([]Item, error) {
+	const q = `
+		SELECT id, lane, source_ref, flow_id, flow_version, status, sensitivity
+		FROM items WHERE status = $1 ORDER BY id`
+	rows, err := d.conn.Query(ctx, q, status)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Item
+	for rows.Next() {
+		var it Item
+		if err := rows.Scan(&it.ID, &it.Lane, &it.SourceRef, &it.FlowID, &it.FlowVersion, &it.Status, &it.Sensitivity); err != nil {
+			return nil, err
+		}
+		out = append(out, it)
+	}
+	return out, rows.Err()
+}
+
+// ListGateDecisions returns the full curation audit trail for an item, oldest first
+// (ascending id). idx_gate_decisions_item backs the scan.
+func (d *pgxDatabase) ListGateDecisions(ctx context.Context, itemID int) ([]GateDecision, error) {
+	const q = `
+		SELECT item_id, gate, decision, score, rank, decided_by, COALESCE(reason, '')
+		FROM gate_decisions WHERE item_id = $1 ORDER BY id`
+	rows, err := d.conn.Query(ctx, q, itemID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []GateDecision
+	for rows.Next() {
+		var dec GateDecision
+		if err := rows.Scan(&dec.ItemID, &dec.Gate, &dec.Decision, &dec.Score, &dec.Rank, &dec.DecidedBy, &dec.Reason); err != nil {
+			return nil, err
+		}
+		out = append(out, dec)
+	}
+	return out, rows.Err()
+}
+
+// ListFlows returns every flow, ordered by id.
+func (d *pgxDatabase) ListFlows(ctx context.Context) ([]Flow, error) {
+	const q = `SELECT id, name, source_type, enabled, version FROM flows ORDER BY id`
+	rows, err := d.conn.Query(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Flow
+	for rows.Next() {
+		var f Flow
+		if err := rows.Scan(&f.ID, &f.Name, &f.SourceType, &f.Enabled, &f.Version); err != nil {
+			return nil, err
+		}
+		out = append(out, f)
+	}
+	return out, rows.Err()
+}
+
+// ListProviders returns every provider (enabled or not), ordered by name.
+func (d *pgxDatabase) ListProviders(ctx context.Context) ([]Provider, error) {
+	const q = `
+		SELECT name, capability, runtime, activation, cost, quality, latency_ms,
+		       constraints, enabled, heartbeat_at
+		FROM providers ORDER BY name`
+	rows, err := d.conn.Query(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Provider
+	for rows.Next() {
+		var p Provider
+		if err := rows.Scan(&p.Name, &p.Capability, &p.Runtime, &p.Activation, &p.Cost,
+			&p.Quality, &p.LatencyMs, &p.Constraints, &p.Enabled, &p.HeartbeatAt); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+// ListRoutingPolicies returns every routing policy, ordered by scope.
+func (d *pgxDatabase) ListRoutingPolicies(ctx context.Context) ([]RoutingPolicy, error) {
+	const q = `SELECT scope, cost_weight, quality_weight, fallback FROM routing_policies ORDER BY scope`
+	rows, err := d.conn.Query(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []RoutingPolicy
+	for rows.Next() {
+		var p RoutingPolicy
+		if err := rows.Scan(&p.Scope, &p.CostWeight, &p.QualityWeight, &p.Fallback); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+// ListAllGateRules returns every gate rule (enabled or not), ordered (action, match_type,
+// value) — the config-as-data view (ListGateRules is the cascade's enabled-only read).
+func (d *pgxDatabase) ListAllGateRules(ctx context.Context) ([]GateRule, error) {
+	const q = `
+		SELECT action, match_type, value, enabled
+		FROM gate_rules ORDER BY action, match_type, value`
+	rows, err := d.conn.Query(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []GateRule
+	for rows.Next() {
+		var r GateRule
+		if err := rows.Scan(&r.Action, &r.MatchType, &r.Value, &r.Enabled); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 // TouchProviderHeartbeat stamps heartbeat_at = now for a live provider. An unknown name
 // updates zero rows (no error) — liveness is best-effort. It deliberately touches only
 // heartbeat_at, never the config columns (unlike the full-record UpsertProvider).

@@ -239,12 +239,20 @@ func (r *extractRunner) readEmailBody(ctx context.Context, messageID string) (st
 	return body, nil
 }
 
-// writeTranscript stores the cleaned text as a transcripts row keyed on (source_ref,
-// source_type=email). transcripts has no unique key for non-youtube sources, so it upserts
-// manually (UPDATE, else INSERT) — a retry re-cleans in place rather than duplicating. (A
-// partial unique index on transcripts(source_ref) WHERE youtube_video_id IS NULL in rara-scribe
-// would make this a one-statement ON CONFLICT; recommended but not required.)
+// writeTranscript stores the email's cleaned text as a transcripts row (source_type=email),
+// delegating to the shared writeToText upsert.
 func (r *extractRunner) writeTranscript(ctx context.Context, sourceRef, text string) (int, error) {
+	return writeToText(ctx, r.conn, laneEmail, sourceRef, text, extractEngine)
+}
+
+// writeToText stores a non-youtube to-text artifact as a transcripts row keyed on (source_ref,
+// source_type) — the contract the gate_rico/distill lookups chain on. transcripts has no unique
+// key for non-youtube sources, so it upserts manually (UPDATE, else INSERT) — a retry re-cleans
+// in place rather than duplicating. Shared by every `extrair` lane (email, linkedin). An empty
+// text is stored with status='empty' (benign no-content; the worker then curates the item out).
+// (A partial unique index on transcripts(source_ref) WHERE youtube_video_id IS NULL in
+// rara-scribe would make this a one-statement ON CONFLICT; recommended but not required.)
+func writeToText(ctx context.Context, conn *pgx.Conn, sourceType, sourceRef, text, engine string) (int, error) {
 	status := "done"
 	if strings.TrimSpace(text) == "" {
 		status = "empty"
@@ -254,19 +262,70 @@ func (r *extractRunner) writeTranscript(ctx context.Context, sourceRef, text str
 		WHERE source_ref = $1 AND source_type = $2
 		RETURNING id`
 	var id int
-	switch err := r.conn.QueryRow(ctx, upd, sourceRef, laneEmail, text, status, extractEngine).Scan(&id); {
+	switch err := conn.QueryRow(ctx, upd, sourceRef, sourceType, text, status, engine).Scan(&id); {
 	case errors.Is(err, pgx.ErrNoRows):
 		const ins = `
 			INSERT INTO transcripts (source_type, source_ref, engine, transcript, status)
 			VALUES ($1, $2, $3, $4, $5)
 			RETURNING id`
-		if err := r.conn.QueryRow(ctx, ins, laneEmail, sourceRef, extractEngine, text, status).Scan(&id); err != nil {
+		if err := conn.QueryRow(ctx, ins, sourceType, sourceRef, engine, text, status).Scan(&id); err != nil {
 			return 0, err
 		}
 	case err != nil:
 		return 0, err
 	}
 	return id, nil
+}
+
+// ---------------------------------------------------------------------------
+// linkedin extract shim (extrair, linkedin) — normalize a pasted post into a to-text artifact.
+//
+// The LinkedIn counterpart of extractRunner: it reads the post body from linkedin_posts (the
+// manual-inbox collector's domain table — and, later, Bright Data's — SELECT only), runs the
+// PURE cleaner (cleanPostText), and stores the result as a transcripts row
+// (source_type=linkedin, source_ref=url) so distill consumes it exactly like any transcript.
+// Pinned to the lane by the provider's accepts=["linkedin"]. Exercised by integration, not unit
+// tests; cleanPostText is what the pure tests cover.
+// ---------------------------------------------------------------------------
+
+// linkedinExtractEngine labels the transcripts.engine of a LinkedIn to-text row.
+const linkedinExtractEngine = "rara-core/extrair-linkedin"
+
+type linkedinExtractRunner struct {
+	conn *pgx.Conn
+}
+
+func newLinkedInExtractRunner(conn *pgx.Conn) *linkedinExtractRunner {
+	return &linkedinExtractRunner{conn: conn}
+}
+
+func (r *linkedinExtractRunner) Run(ctx context.Context, item Item, _ ItemStep) (RunResult, error) {
+	raw, err := r.readPostBody(ctx, item.SourceRef)
+	if err != nil {
+		return RunResult{}, err
+	}
+	clean := cleanPostText(raw)
+	id, err := writeToText(ctx, r.conn, laneLinkedIn, item.SourceRef, clean, linkedinExtractEngine)
+	if err != nil {
+		return RunResult{}, err
+	}
+	// A post that cleans to nothing is benign no-content: the step is done, but the item is
+	// curated out rather than marched into a distill that must fail.
+	return RunResult{OutputRef: strconv.Itoa(id), Filtered: strings.TrimSpace(clean) == ""}, nil
+}
+
+// readPostBody fetches the raw post body. A missing row is a hard failure (extrair runs only
+// after the post was submitted).
+func (r *linkedinExtractRunner) readPostBody(ctx context.Context, url string) (string, error) {
+	const q = `SELECT COALESCE(body, '') FROM linkedin_posts WHERE url = $1`
+	var body string
+	switch err := r.conn.QueryRow(ctx, q, url).Scan(&body); {
+	case errors.Is(err, pgx.ErrNoRows):
+		return "", fmt.Errorf("extrair linkedin %s: %w", url, errNoOutputRow)
+	case err != nil:
+		return "", err
+	}
+	return body, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -358,6 +417,8 @@ func (r *gateRunner) readMetadata(ctx context.Context, item Item) (title, channe
 		return r.readPodcastMetadata(ctx, item.SourceRef)
 	case laneEmail:
 		return r.readEmailMetadata(ctx, item.SourceRef)
+	case laneLinkedIn:
+		return r.readLinkedInMetadata(ctx, item.SourceRef)
 	default:
 		return r.readYouTubeMetadata(ctx, item.SourceRef)
 	}
@@ -372,6 +433,8 @@ func (r *gateRunner) readText(ctx context.Context, item Item) (string, error) {
 		return r.readTranscriptBySourceRef(ctx, item.SourceRef, lanePodcast)
 	case laneEmail:
 		return r.readTranscriptBySourceRef(ctx, item.SourceRef, laneEmail)
+	case laneLinkedIn:
+		return r.readTranscriptBySourceRef(ctx, item.SourceRef, laneLinkedIn)
 	default:
 		return r.readYouTubeText(ctx, item.SourceRef)
 	}
@@ -442,6 +505,26 @@ func (r *gateRunner) readEmailMetadata(ctx context.Context, messageID string) (t
 	}
 	return title, channel, nil
 }
+
+// readLinkedInMetadata fetches a post's author (as channel) and a title derived from the post
+// body (posts have no title), keyed by the canonical URL. A missing row yields empty strings
+// (the cascade leans on the LLM). The body prefix gives gate_barato real signal even though the
+// post is short, while the full text is what gate_rico judges after extrair.
+func (r *gateRunner) readLinkedInMetadata(ctx context.Context, url string) (title, channel string, err error) {
+	const q = `SELECT COALESCE(author, ''), COALESCE(body, '') FROM linkedin_posts WHERE url = $1`
+	var author, body string
+	switch err := r.conn.QueryRow(ctx, q, url).Scan(&author, &body); {
+	case errors.Is(err, pgx.ErrNoRows):
+		return "", "", nil
+	case err != nil:
+		return "", "", err
+	}
+	return truncateOnRune(body, linkedinTitlePrefixBytes), author, nil
+}
+
+// linkedinTitlePrefixBytes is how much of a post body stands in as its "title" for the metadata
+// gate (gate_barato). A generous prefix is enough to judge topical relevance cheaply.
+const linkedinTitlePrefixBytes = 200
 
 // readTranscriptBySourceRef fetches the completed to-text artifact for a non-youtube lane,
 // keyed by (source_ref, source_type) in the shared transcripts table — the contract the
@@ -721,4 +804,29 @@ func (s *pgxEmailSource) Emails(ctx context.Context) ([]EmailItem, error) {
 		out = append(out, e)
 	}
 	return out, rows.Err()
+}
+
+// ---------------------------------------------------------------------------
+// pgx LinkedInPostStore — the write side of the manual-inbox collector (linkedin_posts).
+//
+// rara-core OWNS linkedin_posts (the manual inbox lives inside the surface, so unlike the
+// other lanes there is no separate collector agent yet). When Bright Data takes over (Phase 6)
+// it writes the SAME table behind this SAME contract — the flow and extractor never change.
+// ---------------------------------------------------------------------------
+
+type pgxLinkedInInbox struct{ conn pgConn }
+
+func newPgxLinkedInInbox(conn pgConn) *pgxLinkedInInbox { return &pgxLinkedInInbox{conn: conn} }
+
+// UpsertLinkedInPost writes the submitted post, idempotent on the canonical URL (a
+// resubmission refreshes the author/body in place).
+func (s *pgxLinkedInInbox) UpsertLinkedInPost(ctx context.Context, p LinkedInPost) error {
+	const q = `
+		INSERT INTO linkedin_posts (url, author, body)
+		VALUES ($1, $2, $3)
+		ON CONFLICT (url) DO UPDATE SET
+			author = EXCLUDED.author,
+			body   = EXCLUDED.body`
+	_, err := s.conn.Exec(ctx, q, p.URL, nullStr(p.Author), p.Text)
+	return err
 }

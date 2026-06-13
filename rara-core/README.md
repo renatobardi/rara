@@ -8,6 +8,36 @@ never a direct call.
 
 See [ARCHITECTURE-2.0.md](../ARCHITECTURE-2.0.md) for the full design and build order.
 
+## Status — Phase 5 (Surface & LinkedIn)
+
+rara-core now exposes a **control surface** — MCP over HTTP — so a person or an agent
+(Cowork) can drive the running system, plus a manual **LinkedIn** lane. The surface is mounted
+**in the same always-on VPC process** as the reconciler (alongside its ticker).
+
+- **HTTP núcleo** ([surface.go](surface.go)): one operations layer (`Core`) behind a REST
+  adapter. Reads STATE (`GET /v1/items?status=`, `…/items/{id}/steps`, `…/items/{id}/decisions`,
+  `/v1/quarantine`) and config as DATA (`/v1/flows`, `…/flows/{id}/steps`, `/v1/providers`,
+  `/v1/routing-policies`, `/v1/gate-rules`, `/v1/interest-profile`), edits config through the
+  existing idempotent upserts (`PUT`), and drives the two human-in-the-loop signals
+  (`POST /v1/feedback/distillation`, `POST /v1/quarantine/review`) by **reusing the Phase 3
+  functions verbatim**.
+- **MCP adapter** ([mcp.go](mcp.go)): a thin JSON-RPC front-end at `POST /mcp`
+  (`initialize` / `tools/list` / `tools/call`) over the **same** `Core` — 19 tools
+  (`rara_list_items`, `rara_upsert_provider`, `rara_submit_linkedin_post`, …). MCP is the open,
+  vendor-neutral standard (anti-lock-in); the mapping tool→operation is the whole adapter.
+- **Auth** ([surface.go](surface.go)): a single service token (`Authorization: Bearer
+  $SURFACE_TOKEN`), constant-time, **fail-closed** — an unset token refuses to serve. `/healthz`
+  is the only open route.
+- **LinkedIn lane** ([linkedin.go](linkedin.go)): a `manual-inbox` collector — `POST
+  /v1/linkedin/inbox` (or the `rara_submit_linkedin_post` tool) takes a post's URL + text, upserts
+  it into `linkedin_posts` and discovers the spine item (lane=linkedin, sensitivity=public). The
+  flow uses `extrair` (the post is already text), pinned with `accepts:["linkedin"]`. The
+  collector is **swappable for Bright Data** (Phase 6) behind the same `linkedin_posts` contract —
+  the flow, extractor and gates never change.
+
+The surface is unit-tested end to end against the `MockDatabase` + `httptest` (zero real I/O):
+handlers, the auth gate, and the MCP tool→operation mapping.
+
 ## Status — Phase 3 (Curation gates — where 2.0 stops distilling everything)
 
 The gates are **real workers** now, not pass-through. `gate_barato` (on metadata, before
@@ -88,8 +118,13 @@ core-job work --capability gate_rico     # full-text gate worker
 core-job feedback --distillation <id> --signal up|down   # explicit thumbs
 core-job quarantine list                 # the cold-start review sample (deferred items)
 core-job quarantine review --item <id> --signal up|down  # up rescues, down confirms drop
+core-job surface [--addr :8080]    # serve the control surface (HTTP núcleo + MCP) standalone
+core-job work --capability extrair --provider extrair-linkedin  # LinkedIn post normalizer
 core-job status                    # health check: control tables reachable
 ```
+
+The reconciler also mounts the surface in-process when run with `--loop` and `SURFACE_ADDR`
+set (`SURFACE_TOKEN` required) — the always-on VPC deployment.
 
 ## Control tables
 

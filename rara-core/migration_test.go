@@ -162,6 +162,37 @@ func TestMigration002GateRules(t *testing.T) {
 	}
 }
 
+// readMigration004 loads the Phase-5 linkedin_posts migration.
+func readMigration004(t *testing.T) string {
+	t.Helper()
+	b, err := os.ReadFile("migrations/004_linkedin_posts.sql")
+	if err != nil {
+		t.Fatalf("read migration 004: %v", err)
+	}
+	return string(b)
+}
+
+// TestMigration004LinkedInPosts asserts the Phase-5 manual-inbox domain table exists, is keyed
+// on the post URL (the spine's source_ref), reuses the namespaced trigger, and does not touch a
+// foreign agent's domain tables (rara-core owns this one, as the manual inbox lives in its surface).
+func TestMigration004LinkedInPosts(t *testing.T) {
+	sql := readMigration004(t)
+	if !strings.Contains(sql, "CREATE TABLE IF NOT EXISTS linkedin_posts (") {
+		t.Error("missing CREATE TABLE for linkedin_posts")
+	}
+	if !strings.Contains(sql, "UNIQUE (url)") {
+		t.Error("linkedin_posts must be keyed on the post URL (UNIQUE (url))")
+	}
+	if !strings.Contains(sql, "EXECUTE FUNCTION core_set_updated_at()") {
+		t.Error("linkedin_posts trigger must use the namespaced core_set_updated_at()")
+	}
+	for _, tbl := range []string{"channel_videos", "transcripts", "distillations", "emails", "podcast_episodes"} {
+		if strings.Contains(sql, "CREATE TABLE IF NOT EXISTS "+tbl) {
+			t.Errorf("migration 004 must not create foreign table %q", tbl)
+		}
+	}
+}
+
 // TestMigrationNoCrossAgentTables guards isolation: rara-core's migration must not
 // touch another agent's domain tables.
 func TestMigrationNoCrossAgentTables(t *testing.T) {
