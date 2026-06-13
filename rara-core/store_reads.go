@@ -139,6 +139,46 @@ func (d *pgxDatabase) ListProvidersForCapability(ctx context.Context, capability
 	return out, rows.Err()
 }
 
+func (d *pgxDatabase) GetProvider(ctx context.Context, name string) (Provider, bool, error) {
+	const q = `
+		SELECT name, capability, runtime, activation, cost, quality, latency_ms,
+		       constraints, enabled, heartbeat_at
+		FROM providers
+		WHERE name = $1`
+	var p Provider
+	err := d.conn.QueryRow(ctx, q, name).Scan(&p.Name, &p.Capability, &p.Runtime, &p.Activation,
+		&p.Cost, &p.Quality, &p.LatencyMs, &p.Constraints, &p.Enabled, &p.HeartbeatAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Provider{}, false, nil
+	}
+	if err != nil {
+		return Provider{}, false, err
+	}
+	return p, true, nil
+}
+
+func (d *pgxDatabase) GetRoutingPolicy(ctx context.Context, scope string) (RoutingPolicy, bool, error) {
+	const q = `SELECT scope, cost_weight, quality_weight, fallback FROM routing_policies WHERE scope = $1`
+	var p RoutingPolicy
+	err := d.conn.QueryRow(ctx, q, scope).Scan(&p.Scope, &p.CostWeight, &p.QualityWeight, &p.Fallback)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return RoutingPolicy{}, false, nil
+	}
+	if err != nil {
+		return RoutingPolicy{}, false, err
+	}
+	return p, true, nil
+}
+
+// TouchProviderHeartbeat stamps heartbeat_at = now for a live provider. An unknown name
+// updates zero rows (no error) — liveness is best-effort. It deliberately touches only
+// heartbeat_at, never the config columns (unlike the full-record UpsertProvider).
+func (d *pgxDatabase) TouchProviderHeartbeat(ctx context.Context, name string) error {
+	const q = `UPDATE providers SET heartbeat_at = CURRENT_TIMESTAMP WHERE name = $1`
+	_, err := d.conn.Exec(ctx, q, name)
+	return err
+}
+
 // ClaimPendingStep implements the Postgres work-queue pull. The SELECT ... FOR UPDATE
 // SKIP LOCKED inside a transaction is the whole point: concurrent workers each grab a
 // distinct frontmost row, never the same one, with no broker. The claimed row is moved

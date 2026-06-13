@@ -185,10 +185,9 @@ func (m *MockDatabase) DiscoverItem(_ context.Context, it Item) (int, error) {
 	}
 	k := itemKey(it.Lane, it.SourceRef)
 	if existing, ok := m.items[k]; ok {
-		existing.FlowID = it.FlowID
-		existing.FlowVersion = it.FlowVersion // status untouched
-		m.items[k] = existing
-		m.itemByID[existing.ID] = existing
+		// Re-discovery is a no-op (mirrors the pgx no-op ON CONFLICT): the flow stamp
+		// (flow_id + flow_version) and runtime status are frozen at INSERT, so an in-flight
+		// item finishes on the flow shape it was discovered with.
 		return existing.ID, nil
 	}
 	it.ID = m.nextItemID
@@ -313,6 +312,27 @@ func (m *MockDatabase) ListProvidersForCapability(_ context.Context, capability 
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, nil
+}
+
+func (m *MockDatabase) GetProvider(_ context.Context, name string) (Provider, bool, error) {
+	p, ok := m.providers[name]
+	return p, ok, nil
+}
+
+func (m *MockDatabase) GetRoutingPolicy(_ context.Context, scope string) (RoutingPolicy, bool, error) {
+	p, ok := m.policies[scope]
+	return p, ok, nil
+}
+
+// TouchProviderHeartbeat stamps a real-clock heartbeat (consumed only by the router's
+// real-clock health gate). An unknown name is a no-op, mirroring the pgx 0-row UPDATE.
+func (m *MockDatabase) TouchProviderHeartbeat(_ context.Context, name string) error {
+	if p, ok := m.providers[name]; ok {
+		now := time.Now()
+		p.HeartbeatAt = &now
+		m.providers[name] = p
+	}
+	return nil
 }
 
 func (m *MockDatabase) ClaimPendingStep(_ context.Context, capability string) (*ItemStep, error) {
