@@ -170,6 +170,96 @@ func (d *pgxDatabase) GetRoutingPolicy(ctx context.Context, scope string) (Routi
 	return p, true, nil
 }
 
+// ListGateRules returns the enabled allow/deny rules in a deterministic order
+// (action, match_type, value) so the audit reason is stable. Order does not affect the
+// outcome — the cascade enforces deny precedence regardless (applyRules). The partial
+// idx_gate_rules_enabled backs the scan.
+func (d *pgxDatabase) ListGateRules(ctx context.Context) ([]GateRule, error) {
+	const q = `
+		SELECT action, match_type, value, enabled
+		FROM gate_rules
+		WHERE enabled = true
+		ORDER BY action, match_type, value`
+	rows, err := d.conn.Query(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []GateRule
+	for rows.Next() {
+		var r GateRule
+		if err := rows.Scan(&r.Action, &r.MatchType, &r.Value, &r.Enabled); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// GetLatestInterestProfile returns the highest-version profile row. UNIQUE(version) plus
+// MAX(version) gives the single live document the gate cascade reads.
+func (d *pgxDatabase) GetLatestInterestProfile(ctx context.Context) (InterestProfile, bool, error) {
+	const q = `
+		SELECT version, topics, authors, anti_topics, weights
+		FROM interest_profile
+		ORDER BY version DESC
+		LIMIT 1`
+	var p InterestProfile
+	err := d.conn.QueryRow(ctx, q).Scan(&p.Version, &p.Topics, &p.Authors, &p.AntiTopics, &p.Weights)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return InterestProfile{}, false, nil
+	}
+	if err != nil {
+		return InterestProfile{}, false, err
+	}
+	return p, true, nil
+}
+
+// LatestGateDecision returns the most recent decision for (item, gate). gate_decisions is
+// append-only, so the highest id is the latest run; idx_gate_decisions_item backs the scan.
+func (d *pgxDatabase) LatestGateDecision(ctx context.Context, itemID int, gate string) (GateDecision, bool, error) {
+	const q = `
+		SELECT item_id, gate, decision, score, rank, decided_by, COALESCE(reason, '')
+		FROM gate_decisions
+		WHERE item_id = $1 AND gate = $2
+		ORDER BY id DESC
+		LIMIT 1`
+	var dec GateDecision
+	err := d.conn.QueryRow(ctx, q, itemID, gate).Scan(
+		&dec.ItemID, &dec.Gate, &dec.Decision, &dec.Score, &dec.Rank, &dec.DecidedBy, &dec.Reason)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return GateDecision{}, false, nil
+	}
+	if err != nil {
+		return GateDecision{}, false, err
+	}
+	return dec, true, nil
+}
+
+// ListQuarantinedItems returns the deferred (quarantine) items — the cold-start review
+// sample. idx_items_status backs the scan.
+func (d *pgxDatabase) ListQuarantinedItems(ctx context.Context) ([]Item, error) {
+	const q = `
+		SELECT id, lane, source_ref, flow_id, flow_version, status
+		FROM items
+		WHERE status = 'quarantine'
+		ORDER BY id`
+	rows, err := d.conn.Query(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Item
+	for rows.Next() {
+		var it Item
+		if err := rows.Scan(&it.ID, &it.Lane, &it.SourceRef, &it.FlowID, &it.FlowVersion, &it.Status); err != nil {
+			return nil, err
+		}
+		out = append(out, it)
+	}
+	return out, rows.Err()
+}
+
 // TouchProviderHeartbeat stamps heartbeat_at = now for a live provider. An unknown name
 // updates zero rows (no error) — liveness is best-effort. It deliberately touches only
 // heartbeat_at, never the config columns (unlike the full-record UpsertProvider).

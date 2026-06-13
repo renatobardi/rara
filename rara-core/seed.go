@@ -27,12 +27,9 @@ const (
 	provShelf      = "shelf"       // coletar — playlists collector (OAuth)
 	provASRYouTube = "asr-youtube" // transcrever — scribe on the Mac (residential IP)
 	provDistill    = "distill"     // destilar — distill on Cloud Run
+	provGateBarato = "gate-barato" // gate_barato — metadata cascade worker (Cloud Run)
+	provGateRico   = "gate-rico"   // gate_rico — full-text cascade worker (Cloud Run)
 )
-
-// passThroughGate marks a flow_step's gate as a no-op (always keep) for this phase.
-// Real curation (rules -> profile -> llm-judge) is Phase 3; until then the reconciler
-// reads this option and records a keep without calling any gate worker.
-const optGateMode = `{"gate":"passthrough"}`
 
 // SeedYouTubeLane writes the YouTube lane's capabilities, providers, flow and flow_steps,
 // plus a default global routing policy. Idempotent: safe to call on every boot.
@@ -79,6 +76,16 @@ func SeedYouTubeLane(ctx context.Context, db Database) error {
 		// Run job — the priciest step (model tokens), high quality.
 		{Name: provDistill, Capability: capDestilar, Runtime: runtimeCloudRun, Activation: activationOnDemand,
 			Cost: 2.00, Quality: 0.92, LatencyMs: 30000, Enabled: true},
+		// gate_barato / gate_rico: the curation gates are real workers now (the cascade
+		// rules -> profile -> LLM-judge). Cheap on average — the rules/profile layers are
+		// ~free and only the borderline middle pays the LiteLLM call — and routed like any
+		// work step. Cloud Run / on_demand: the reconciler wakes them via Cloud Run Jobs
+		// `run` (the same activator distill uses); the LLM-judge call reaches the VPC LiteLLM
+		// gateway over the network.
+		{Name: provGateBarato, Capability: capGateBarato, Runtime: runtimeCloudRun, Activation: activationOnDemand,
+			Cost: 0.50, Quality: 0.88, LatencyMs: 5000, Enabled: true},
+		{Name: provGateRico, Capability: capGateRico, Runtime: runtimeCloudRun, Activation: activationOnDemand,
+			Cost: 0.60, Quality: 0.90, LatencyMs: 8000, Enabled: true},
 	}
 	for _, p := range providers {
 		if err := db.UpsertProvider(ctx, p); err != nil {
@@ -87,17 +94,18 @@ func SeedYouTubeLane(ctx context.Context, db Database) error {
 	}
 
 	// 3) Flow + steps — the declarative YouTube pipeline. The canonical lane template is
-	//    coletar -> gate_barato -> transcrever -> gate_rico -> destilar. Gates are
-	//    pass-through this phase (see optGateMode).
+	//    coletar -> gate_barato -> transcrever -> gate_rico -> destilar. The gates are real
+	//    cascade workers now (no per-step pass-through option); a lane can still toggle a gate
+	//    off via flow_steps.options {"gate":"skip"} if ever needed.
 	flowID, err := db.UpsertFlow(ctx, Flow{Name: youtubeFlowName, SourceType: laneYouTube, Enabled: true, Version: 1})
 	if err != nil {
 		return err
 	}
 	steps := []FlowStep{
 		{FlowID: flowID, Seq: 1, Capability: capColetar, Enabled: true},
-		{FlowID: flowID, Seq: 2, Capability: capGateBarato, Options: []byte(optGateMode), Enabled: true},
+		{FlowID: flowID, Seq: 2, Capability: capGateBarato, Enabled: true},
 		{FlowID: flowID, Seq: 3, Capability: capTranscrever, Enabled: true},
-		{FlowID: flowID, Seq: 4, Capability: capGateRico, Options: []byte(optGateMode), Enabled: true},
+		{FlowID: flowID, Seq: 4, Capability: capGateRico, Enabled: true},
 		{FlowID: flowID, Seq: 5, Capability: capDestilar, Enabled: true},
 	}
 	for _, s := range steps {
@@ -109,5 +117,26 @@ func SeedYouTubeLane(ctx context.Context, db Database) error {
 	// 4) Default global routing policy: a balanced cost<->quality weighting and no explicit
 	//    fallback (one provider per real work capability in this lane, so scoring alone
 	//    decides). The Phase 2 router reads this; a capability-scoped policy can override it.
-	return db.UpsertRoutingPolicy(ctx, RoutingPolicy{Scope: policyScopeGlobal, CostWeight: 0.5, QualityWeight: 0.5})
+	if err := db.UpsertRoutingPolicy(ctx, RoutingPolicy{Scope: policyScopeGlobal, CostWeight: 0.5, QualityWeight: 0.5}); err != nil {
+		return err
+	}
+
+	// 5) interest_profile v1 — the starter living-preferences document the gate cascade's
+	//    profile layer reads and the LLM-judge gets as context. Seeded ONCE (idempotent): a
+	//    revision is a NEW version (Phase 6's learning loop), never an overwrite. Topics are a
+	//    first-cut tuned as feedback accumulates; the keep_threshold lives in weights.
+	if _, found, err := db.GetLatestInterestProfile(ctx); err != nil {
+		return err
+	} else if !found {
+		if err := db.InsertInterestProfile(ctx, InterestProfile{
+			Version:    1,
+			Topics:     []byte(`["software architecture","platform engineering","devops","ai","llm","data engineering","distributed systems","kubernetes"]`),
+			Authors:    []byte(`[]`),
+			AntiTopics: []byte(`[]`),
+			Weights:    []byte(`{"keep_threshold":0.6}`),
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
 }

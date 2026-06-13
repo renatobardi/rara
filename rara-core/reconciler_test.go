@@ -58,8 +58,23 @@ func completeStep(t *testing.T, db *MockDatabase, itemID, seq int, outputRef str
 	}
 }
 
-// TestReconcileFirstPass: one pass over a freshly discovered item must blow through the
-// auto-satisfiable steps (coletar, gate_barato) and stop having ASSIGNED transcrever.
+// runGate simulates the gate worker finishing a gate step: it records the cascade decision
+// and marks the step done — exactly what worker.RunOnce does for a gate verdict. The
+// reconciler then routes the item from that decision on its next pass.
+func runGate(t *testing.T, db *MockDatabase, itemID, seq int, gate, decision string) {
+	t.Helper()
+	if err := db.InsertGateDecision(context.Background(), GateDecision{
+		ItemID: itemID, Gate: gate, Decision: decision, DecidedBy: decidedByProfile, Reason: "test gate",
+	}); err != nil {
+		t.Fatalf("gate decision: %v", err)
+	}
+	completeStep(t, db, itemID, seq, "")
+}
+
+// TestReconcileFirstPass: one pass over a freshly discovered item auto-satisfies coletar
+// and stops having ASSIGNED gate_barato to the gate worker — the metadata gate runs BEFORE
+// transcription, so transcrever is not materialized yet, and the reconciler records no
+// decision itself (the gate worker will).
 func TestReconcileFirstPass(t *testing.T) {
 	ctx := context.Background()
 	db := newMockDatabase()
@@ -75,36 +90,143 @@ func TestReconcileFirstPass(t *testing.T) {
 	if s, ok := stepBySeq(db, itemID, 1); !ok || s.Status != stepDone || s.OutputRef != "vid1" {
 		t.Errorf("coletar step = %+v, want done with output_ref=vid1", s)
 	}
-	// gate_barato auto-keep + done.
-	if s, ok := stepBySeq(db, itemID, 2); !ok || s.Status != stepDone {
-		t.Errorf("gate_barato step = %+v, want done", s)
+	// gate_barato assigned to the gate worker, pending (a real work step now, on metadata).
+	s, ok := stepBySeq(db, itemID, 2)
+	if !ok || s.Status != stepPending || s.AssignedProvider != provGateBarato {
+		t.Errorf("gate_barato step = %+v, want pending+gate-barato", s)
 	}
-	// transcrever assigned to the resident scribe, still pending (awaiting the worker pull).
-	s, ok := stepBySeq(db, itemID, 3)
-	if !ok || s.Status != stepPending || s.AssignedProvider != provASRYouTube {
-		t.Errorf("transcrever step = %+v, want pending+asr-youtube", s)
+	// transcrever NOT materialized — it waits behind the metadata gate.
+	if _, ok := stepBySeq(db, itemID, 3); ok {
+		t.Error("transcrever should not be materialized before gate_barato decides")
 	}
-	// destilar not materialized yet.
-	if _, ok := stepBySeq(db, itemID, 5); ok {
-		t.Error("destilar should not be materialized before transcrever completes")
+	// on_demand gate -> activation fired exactly once.
+	if len(act.woken) != 1 || act.woken[0] != provGateBarato {
+		t.Errorf("expected gate-barato activation, got %v", act.woken)
 	}
-	// resident provider -> NOT woken via activation.
-	if len(act.woken) != 0 {
-		t.Errorf("resident transcrever should not fire activation, woke %v", act.woken)
+	// The reconciler records NO gate decision — the worker writes it.
+	if len(db.gateDecisions) != 0 {
+		t.Errorf("reconciler must not record gate decisions, got %+v", db.gateDecisions)
 	}
-	// Item still discovered (transcription not done).
+	// Item still discovered.
 	if got := db.itemByID[itemID].Status; got != itemDiscovered {
 		t.Errorf("item status = %q, want discovered", got)
 	}
-	// Pass-through gate recorded a keep decision.
-	if len(db.gateDecisions) != 1 || db.gateDecisions[0].Decision != decisionKeep ||
-		db.gateDecisions[0].DecidedBy != gateDecidedByPassthrough {
-		t.Errorf("expected 1 pass-through keep decision, got %+v", db.gateDecisions)
+}
+
+// TestReconcileGateKeepAdvances: a kept gate_barato lets the item proceed — the next pass
+// advances past the done gate and assigns transcrever.
+func TestReconcileGateKeepAdvances(t *testing.T) {
+	ctx := context.Background()
+	db := newMockDatabase()
+	itemID := seedAndIngestOne(t, db, "vid1")
+	r := NewReconciler(db, &fakeActivator{})
+
+	if err := r.ReconcileOnce(ctx); err != nil { // assign gate_barato
+		t.Fatal(err)
+	}
+	runGate(t, db, itemID, 2, gateBarato, decisionKeep) // gate worker keeps it
+	if err := r.ReconcileOnce(ctx); err != nil {        // route keep -> advance
+		t.Fatal(err)
+	}
+
+	if s, ok := stepBySeq(db, itemID, 3); !ok || s.Status != stepPending || s.AssignedProvider != provASRYouTube {
+		t.Errorf("transcrever step = %+v, want pending+asr-youtube after a kept gate", s)
+	}
+	if got := db.itemByID[itemID].Status; got != itemDiscovered {
+		t.Errorf("item status = %q, want still discovered (transcription pending)", got)
 	}
 }
 
-// TestReconcileIdempotentWhileInFlight: re-running while transcrever is pending changes
-// nothing (level-triggered, no duplicate assignment, no new gate decisions).
+// TestReconcileGateDropFilters: a dropped gate_barato terminates the item as `filtered` —
+// transcrever is never materialized, and the item leaves the active set.
+func TestReconcileGateDropFilters(t *testing.T) {
+	ctx := context.Background()
+	db := newMockDatabase()
+	itemID := seedAndIngestOne(t, db, "vid1")
+	r := NewReconciler(db, &fakeActivator{})
+
+	if err := r.ReconcileOnce(ctx); err != nil { // assign gate_barato
+		t.Fatal(err)
+	}
+	runGate(t, db, itemID, 2, gateBarato, decisionDrop)
+	if err := r.ReconcileOnce(ctx); err != nil { // route drop -> filtered
+		t.Fatal(err)
+	}
+
+	if got := db.itemByID[itemID].Status; got != itemFiltered {
+		t.Errorf("item status = %q, want filtered after a dropped gate", got)
+	}
+	if _, ok := stepBySeq(db, itemID, 3); ok {
+		t.Error("a dropped item must never materialize transcrever")
+	}
+	active, _ := db.ListActiveItems(ctx)
+	if len(active) != 0 {
+		t.Errorf("filtered item should leave the active set, got %d active", len(active))
+	}
+}
+
+// TestReconcileGateDeferQuarantines: a deferred gate_barato terminates the item as
+// `quarantine` (the cold-start review sample), not filtered.
+func TestReconcileGateDeferQuarantines(t *testing.T) {
+	ctx := context.Background()
+	db := newMockDatabase()
+	itemID := seedAndIngestOne(t, db, "vid1")
+	r := NewReconciler(db, &fakeActivator{})
+
+	if err := r.ReconcileOnce(ctx); err != nil { // assign gate_barato
+		t.Fatal(err)
+	}
+	runGate(t, db, itemID, 2, gateBarato, decisionDefer)
+	if err := r.ReconcileOnce(ctx); err != nil { // route defer -> quarantine
+		t.Fatal(err)
+	}
+
+	if got := db.itemByID[itemID].Status; got != itemQuarantine {
+		t.Errorf("item status = %q, want quarantine after a deferred gate", got)
+	}
+	quarantined, _ := db.ListQuarantinedItems(ctx)
+	if len(quarantined) != 1 || quarantined[0].ID != itemID {
+		t.Errorf("deferred item should appear in the quarantine sample, got %+v", quarantined)
+	}
+}
+
+// TestReconcileGateRicoDropAfterTranscribe: the SECOND gate (gate_rico, on full text) also
+// routes — a drop there terminates the item `filtered` before distillation.
+func TestReconcileGateRicoDropAfterTranscribe(t *testing.T) {
+	ctx := context.Background()
+	db := newMockDatabase()
+	itemID := seedAndIngestOne(t, db, "vid1")
+	r := NewReconciler(db, &fakeActivator{})
+
+	if err := r.ReconcileOnce(ctx); err != nil { // assign gate_barato
+		t.Fatal(err)
+	}
+	runGate(t, db, itemID, 2, gateBarato, decisionKeep)
+	if err := r.ReconcileOnce(ctx); err != nil { // assign transcrever
+		t.Fatal(err)
+	}
+	completeStep(t, db, itemID, 3, "transcript-7")
+	if err := r.ReconcileOnce(ctx); err != nil { // assign gate_rico
+		t.Fatal(err)
+	}
+	if s, ok := stepBySeq(db, itemID, 4); !ok || s.Status != stepPending || s.AssignedProvider != provGateRico {
+		t.Fatalf("gate_rico step = %+v, want pending+gate-rico", s)
+	}
+	runGate(t, db, itemID, 4, gateRico, decisionDrop)
+	if err := r.ReconcileOnce(ctx); err != nil { // route drop -> filtered
+		t.Fatal(err)
+	}
+
+	if got := db.itemByID[itemID].Status; got != itemFiltered {
+		t.Errorf("item status = %q, want filtered after gate_rico drop", got)
+	}
+	if _, ok := stepBySeq(db, itemID, 5); ok {
+		t.Error("a gate_rico drop must never materialize destilar")
+	}
+}
+
+// TestReconcileIdempotentWhileInFlight: re-running while gate_barato is pending changes
+// nothing (level-triggered, no duplicate assignment).
 func TestReconcileIdempotentWhileInFlight(t *testing.T) {
 	ctx := context.Background()
 	db := newMockDatabase()
@@ -114,25 +236,21 @@ func TestReconcileIdempotentWhileInFlight(t *testing.T) {
 	if err := r.ReconcileOnce(ctx); err != nil {
 		t.Fatal(err)
 	}
-	gatesAfterFirst := len(db.gateDecisions)
-	attemptAfterFirst := db.itemSteps[itemStepKey{itemID, 3}].Attempt
+	attemptAfterFirst := db.itemSteps[itemStepKey{itemID, 2}].Attempt
 
 	if err := r.ReconcileOnce(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if got := len(db.gateDecisions); got != gatesAfterFirst {
-		t.Errorf("second pass added gate decisions: %d -> %d", gatesAfterFirst, got)
-	}
-	if got := db.itemSteps[itemStepKey{itemID, 3}].Attempt; got != attemptAfterFirst {
+	if got := db.itemSteps[itemStepKey{itemID, 2}].Attempt; got != attemptAfterFirst {
 		t.Errorf("second pass mutated the in-flight step attempt: %d -> %d", attemptAfterFirst, got)
 	}
-	if s := db.itemSteps[itemStepKey{itemID, 3}]; s.Status != stepPending {
-		t.Errorf("transcrever should still be pending, got %q", s.Status)
+	if s := db.itemSteps[itemStepKey{itemID, 2}]; s.Status != stepPending {
+		t.Errorf("gate_barato should still be pending, got %q", s.Status)
 	}
 }
 
-// TestReconcileAfterTranscrever: once the worker finishes transcrever, the next pass
-// auto-keeps gate_rico and ASSIGNS destilar — and fires activation (on_demand Cloud Run).
+// TestReconcileAfterTranscrever: with both gates kept, once the worker finishes transcrever
+// the next pass assigns gate_rico; keeping it then assigns destilar (on_demand Cloud Run).
 func TestReconcileAfterTranscrever(t *testing.T) {
 	ctx := context.Background()
 	db := newMockDatabase()
@@ -140,53 +258,63 @@ func TestReconcileAfterTranscrever(t *testing.T) {
 	act := &fakeActivator{}
 	r := NewReconciler(db, act)
 
-	if err := r.ReconcileOnce(ctx); err != nil {
+	if err := r.ReconcileOnce(ctx); err != nil { // assign gate_barato
+		t.Fatal(err)
+	}
+	runGate(t, db, itemID, 2, gateBarato, decisionKeep)
+	if err := r.ReconcileOnce(ctx); err != nil { // assign transcrever
 		t.Fatal(err)
 	}
 	completeStep(t, db, itemID, 3, "transcript-7") // worker transcribed
-
-	if err := r.ReconcileOnce(ctx); err != nil {
+	if err := r.ReconcileOnce(ctx); err != nil {   // assign gate_rico
 		t.Fatal(err)
 	}
-	// gate_rico auto-kept.
-	if s, ok := stepBySeq(db, itemID, 4); !ok || s.Status != stepDone {
-		t.Errorf("gate_rico step = %+v, want done", s)
-	}
-	// destilar assigned to distill, pending.
-	if s, ok := stepBySeq(db, itemID, 5); !ok || s.Status != stepPending || s.AssignedProvider != provDistill {
-		t.Errorf("destilar step = %+v, want pending+distill", s)
-	}
-	// on_demand distill -> activation fired exactly once.
-	if len(act.woken) != 1 || act.woken[0] != provDistill {
-		t.Errorf("expected distill activation, got %v", act.woken)
-	}
-	// Item advanced to to_text (transcription done, distillation pending).
+	// Item at to_text (transcription done); gate_rico pending on full text.
 	if got := db.itemByID[itemID].Status; got != itemToText {
 		t.Errorf("item status = %q, want to_text", got)
 	}
-	// Two pass-through keeps now (gate_barato + gate_rico).
-	if len(db.gateDecisions) != 2 {
-		t.Errorf("expected 2 pass-through keeps, got %d", len(db.gateDecisions))
+	if s, ok := stepBySeq(db, itemID, 4); !ok || s.Status != stepPending || s.AssignedProvider != provGateRico {
+		t.Errorf("gate_rico step = %+v, want pending+gate-rico", s)
+	}
+
+	runGate(t, db, itemID, 4, gateRico, decisionKeep)
+	if err := r.ReconcileOnce(ctx); err != nil { // route keep -> assign destilar
+		t.Fatal(err)
+	}
+	if s, ok := stepBySeq(db, itemID, 5); !ok || s.Status != stepPending || s.AssignedProvider != provDistill {
+		t.Errorf("destilar step = %+v, want pending+distill", s)
+	}
+	// on_demand distill woken (gate-barato + gate-rico were woken on their own passes too).
+	if len(act.woken) == 0 || act.woken[len(act.woken)-1] != provDistill {
+		t.Errorf("expected distill activation last, got %v", act.woken)
 	}
 }
 
-// TestReconcileCompletes: once destilar finishes, the item becomes terminal (done) and
-// leaves the active set.
+// TestReconcileCompletes: once destilar finishes (both gates kept), the item becomes
+// terminal (done) and leaves the active set.
 func TestReconcileCompletes(t *testing.T) {
 	ctx := context.Background()
 	db := newMockDatabase()
 	itemID := seedAndIngestOne(t, db, "vid1")
 	r := NewReconciler(db, &fakeActivator{})
 
-	if err := r.ReconcileOnce(ctx); err != nil { // -> assign transcrever
+	if err := r.ReconcileOnce(ctx); err != nil { // assign gate_barato
+		t.Fatal(err)
+	}
+	runGate(t, db, itemID, 2, gateBarato, decisionKeep)
+	if err := r.ReconcileOnce(ctx); err != nil { // assign transcrever
 		t.Fatal(err)
 	}
 	completeStep(t, db, itemID, 3, "transcript-7")
-	if err := r.ReconcileOnce(ctx); err != nil { // -> assign destilar
+	if err := r.ReconcileOnce(ctx); err != nil { // assign gate_rico
+		t.Fatal(err)
+	}
+	runGate(t, db, itemID, 4, gateRico, decisionKeep)
+	if err := r.ReconcileOnce(ctx); err != nil { // assign destilar
 		t.Fatal(err)
 	}
 	completeStep(t, db, itemID, 5, "distill-9")
-	if err := r.ReconcileOnce(ctx); err != nil { // -> complete
+	if err := r.ReconcileOnce(ctx); err != nil { // complete
 		t.Fatal(err)
 	}
 
@@ -199,20 +327,21 @@ func TestReconcileCompletes(t *testing.T) {
 	}
 }
 
-// TestReconcileFailPropagates: a failed step makes the item terminal (failed).
+// TestReconcileFailPropagates: a failed gate step (the worker erred, distinct from a drop
+// decision) makes the item terminal (failed).
 func TestReconcileFailPropagates(t *testing.T) {
 	ctx := context.Background()
 	db := newMockDatabase()
 	itemID := seedAndIngestOne(t, db, "vid1")
 	r := NewReconciler(db, &fakeActivator{})
 
-	if err := r.ReconcileOnce(ctx); err != nil {
+	if err := r.ReconcileOnce(ctx); err != nil { // assign gate_barato
 		t.Fatal(err)
 	}
-	// Worker reports a hard failure on transcrever.
-	s := db.itemSteps[itemStepKey{itemID, 3}]
+	// Worker reports a hard failure on the gate step.
+	s := db.itemSteps[itemStepKey{itemID, 2}]
 	s.Status = stepFailed
-	s.Error = "asr exploded"
+	s.Error = "gate worker exploded"
 	if err := db.UpsertItemStep(ctx, s); err != nil {
 		t.Fatal(err)
 	}
@@ -226,24 +355,25 @@ func TestReconcileFailPropagates(t *testing.T) {
 }
 
 // TestReconcileNoProviderErrors: a missing provider for a work step is surfaced as an
-// error (the item is not advanced); the reconciler retries next pass once one appears.
+// error (the item is not advanced); the reconciler retries next pass once one appears. The
+// metadata gate is the first work step now, so disabling its provider is the trigger.
 func TestReconcileNoProviderErrors(t *testing.T) {
 	ctx := context.Background()
 	db := newMockDatabase()
 	itemID := seedAndIngestOne(t, db, "vid1")
-	// Disable the only transcrever provider.
-	p := db.providers[provASRYouTube]
+	// Disable the only gate_barato provider.
+	p := db.providers[provGateBarato]
 	p.Enabled = false
-	db.providers[provASRYouTube] = p
+	db.providers[provGateBarato] = p
 
 	r := NewReconciler(db, &fakeActivator{})
 	it := db.itemByID[itemID]
 	if err := r.reconcileItem(ctx, it); err == nil {
-		t.Fatal("reconcile should error when no provider serves transcrever")
+		t.Fatal("reconcile should error when no provider serves gate_barato")
 	}
-	// transcrever must remain unmaterialized (nothing to undo).
-	if _, ok := stepBySeq(db, itemID, 3); ok {
-		t.Error("transcrever step should not be created without a provider")
+	// gate_barato must remain unmaterialized (nothing to undo).
+	if _, ok := stepBySeq(db, itemID, 2); ok {
+		t.Error("gate_barato step should not be created without a provider")
 	}
 }
 
@@ -254,16 +384,16 @@ func TestReconcileRequeuesStaleRunningStep(t *testing.T) {
 	ctx := context.Background()
 	base := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
 
-	// Helper: put the transcrever step into `running` with the given heartbeat age, run a
-	// reconcile pass, and return the resulting step.
+	// Helper: put the first assigned work step (gate_barato, seq 2) into `running` with the
+	// given heartbeat age, run a reconcile pass, and return the resulting step.
 	runWithHeartbeat := func(heartbeat time.Time) ItemStep {
 		db := newMockDatabase()
 		itemID := seedAndIngestOne(t, db, "vid1")
 		r := NewReconciler(db, &fakeActivator{})
-		if err := r.ReconcileOnce(ctx); err != nil { // assigns transcrever (pending)
+		if err := r.ReconcileOnce(ctx); err != nil { // assigns gate_barato (pending)
 			t.Fatal(err)
 		}
-		s := db.itemSteps[itemStepKey{itemID, 3}]
+		s := db.itemSteps[itemStepKey{itemID, 2}]
 		s.Status = stepRunning
 		s.HeartbeatAt = &heartbeat
 		if err := db.UpsertItemStep(ctx, s); err != nil {
@@ -274,7 +404,7 @@ func TestReconcileRequeuesStaleRunningStep(t *testing.T) {
 		if err := r.ReconcileOnce(ctx); err != nil {
 			t.Fatal(err)
 		}
-		return db.itemSteps[itemStepKey{itemID, 3}]
+		return db.itemSteps[itemStepKey{itemID, 2}]
 	}
 
 	// Stale (heartbeat 30m old) -> re-queued pending, heartbeat cleared.
@@ -319,8 +449,12 @@ func TestReconcileTimeoutFallsBackToNextProvider(t *testing.T) {
 	r.staleAfter = 10 * time.Minute
 	r.healthTTL = 5 * time.Minute
 
-	// First pass assigns transcrever to the cheaper primary.
-	if err := r.ReconcileOnce(ctx); err != nil {
+	// Get past the metadata gate, then the pass assigns transcrever to the cheaper primary.
+	if err := r.ReconcileOnce(ctx); err != nil { // assign gate_barato
+		t.Fatal(err)
+	}
+	runGate(t, db, itemID, 2, gateBarato, decisionKeep)
+	if err := r.ReconcileOnce(ctx); err != nil { // assign transcrever
 		t.Fatal(err)
 	}
 	if st := db.itemSteps[itemStepKey{itemID, 3}]; st.AssignedProvider != provASRYouTube {

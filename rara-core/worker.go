@@ -38,9 +38,16 @@ const maxStepAttempts = 5
 // transcript with no speech): the step is legitimately done, but there is nothing to carry
 // downstream, so the item is curated out (terminal `filtered`) instead of marched into a
 // distill that must fail.
+//
+// Gate is non-nil ONLY for a curation-gate step (gate_barato / gate_rico): it carries the
+// cascade's verdict. The worker records it as a gate_decisions row and marks the step done;
+// it does NOT route the item — the reconciler reads the decision next pass and routes
+// keep/drop/defer (deliverable #6), keeping judgement in the worker and routing in the
+// control plane.
 type RunResult struct {
 	OutputRef string
 	Filtered  bool
+	Gate      *GateVerdict
 }
 
 // StepRunner executes one claimed step against its domain worker. A returned error means
@@ -105,6 +112,22 @@ func (w *Worker) RunOnce(ctx context.Context) (claimed bool, err error) {
 		}
 		log.Printf("worker %s: step item=%d seq=%d failed: %v", w.capability, step.ItemID, step.Seq, runErr)
 		return true, w.finish(ctx, *step, stepFailed, "", runErr.Error())
+	}
+
+	if res.Gate != nil {
+		// A curation gate judged the item. Record the decision (the audit + training
+		// substrate); the gate step is legitimately done. The worker does NOT set item
+		// status — the reconciler reads this decision next pass and routes the item
+		// (keep -> advance, drop -> filtered, defer -> quarantine). w.capability is the
+		// gate name (capGateBarato == gateBarato, capGateRico == gateRico).
+		if err := w.db.InsertGateDecision(ctx, GateDecision{
+			ItemID: item.ID, Gate: w.capability, Decision: res.Gate.Decision,
+			Score: res.Gate.Score, Rank: res.Gate.Rank,
+			DecidedBy: res.Gate.DecidedBy, Reason: res.Gate.Reason,
+		}); err != nil {
+			return true, err
+		}
+		return true, w.finish(ctx, *step, stepDone, res.OutputRef, "")
 	}
 
 	if res.Filtered {

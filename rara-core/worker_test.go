@@ -23,10 +23,18 @@ func (f *fakeRunner) Run(_ context.Context, item Item, _ ItemStep) (RunResult, e
 func out(ref string) RunResult { return RunResult{OutputRef: ref} }
 
 // assignTranscrever drives the reconciler far enough to leave a pending transcrever step.
+// The metadata gate now precedes transcription, so we keep gate_barato (as its worker would)
+// before the reconciler reaches transcrever.
 func assignTranscrever(t *testing.T, db *MockDatabase) int {
 	t.Helper()
+	ctx := context.Background()
 	itemID := seedAndIngestOne(t, db, "vid1")
-	if err := NewReconciler(db, &fakeActivator{}).ReconcileOnce(context.Background()); err != nil {
+	r := NewReconciler(db, &fakeActivator{})
+	if err := r.ReconcileOnce(ctx); err != nil { // assign gate_barato
+		t.Fatalf("reconcile: %v", err)
+	}
+	runGate(t, db, itemID, 2, gateBarato, decisionKeep)
+	if err := r.ReconcileOnce(ctx); err != nil { // assign transcrever
 		t.Fatalf("reconcile: %v", err)
 	}
 	return itemID
@@ -151,28 +159,37 @@ func TestRunUntilDrained(t *testing.T) {
 	}
 }
 
+// gateKeepRunner is a fake gate worker that always keeps (a verdict, no output_ref).
+func gateKeepRunner() *fakeRunner {
+	return &fakeRunner{result: RunResult{Gate: &GateVerdict{Decision: decisionKeep, DecidedBy: decidedByProfile, Reason: "e2e keep"}}}
+}
+
 // TestEndToEndYouTubeFlow drives a single video from discovery to done through alternating
-// reconcile passes and worker shims — the whole Phase 1 control loop, end to end, with the
-// only seams being the fake worker runners and a fake activator.
+// reconcile passes and worker shims — the whole control loop end to end, now WITH the two
+// curation gates as real workers (both keep). The only seams are the fake worker runners and
+// a fake activator.
 func TestEndToEndYouTubeFlow(t *testing.T) {
 	ctx := context.Background()
 	db := newMockDatabase()
 	itemID := seedAndIngestOne(t, db, "vid1")
 	act := &fakeActivator{}
 	r := NewReconciler(db, act)
-	scribe := NewWorker(db, capTranscrever, &fakeRunner{result: out("transcript-7")})
-	distill := NewWorker(db, capDestilar, &fakeRunner{result: out("distill-9")})
+	workers := []*Worker{
+		NewWorker(db, capGateBarato, gateKeepRunner()),
+		NewWorker(db, capTranscrever, &fakeRunner{result: out("transcript-7")}),
+		NewWorker(db, capGateRico, gateKeepRunner()),
+		NewWorker(db, capDestilar, &fakeRunner{result: out("distill-9")}),
+	}
 
-	// Run to a fixed point: reconcile, then let both shims drain, until the item is done.
-	for pass := 0; pass < 6; pass++ {
+	// Run to a fixed point: reconcile, then let every shim drain, until the item is done.
+	for pass := 0; pass < 10; pass++ {
 		if err := r.ReconcileOnce(ctx); err != nil {
 			t.Fatalf("pass %d reconcile: %v", pass, err)
 		}
-		if _, err := scribe.RunOnce(ctx); err != nil {
-			t.Fatalf("pass %d scribe: %v", pass, err)
-		}
-		if _, err := distill.RunOnce(ctx); err != nil {
-			t.Fatalf("pass %d distill: %v", pass, err)
+		for _, w := range workers {
+			if _, err := w.RunOnce(ctx); err != nil {
+				t.Fatalf("pass %d worker %s: %v", pass, w.capability, err)
+			}
 		}
 		if db.itemByID[itemID].Status == itemDone {
 			break
@@ -182,7 +199,7 @@ func TestEndToEndYouTubeFlow(t *testing.T) {
 	if got := db.itemByID[itemID].Status; got != itemDone {
 		t.Fatalf("item never completed, final status %q", got)
 	}
-	// Every step is done, with output_refs linking back to the worker domain rows.
+	// The work steps are done, with output_refs linking back to the worker domain rows.
 	wantRefs := map[int]string{1: "vid1", 3: "transcript-7", 5: "distill-9"}
 	for seq, want := range wantRefs {
 		s := db.itemSteps[itemStepKey{itemID, seq}]
@@ -190,13 +207,29 @@ func TestEndToEndYouTubeFlow(t *testing.T) {
 			t.Errorf("seq %d = %+v, want done output_ref=%s", seq, s, want)
 		}
 	}
-	// Both pass-through gates kept.
+	// Both gates ran as workers and are done.
+	for _, seq := range []int{2, 4} {
+		if s := db.itemSteps[itemStepKey{itemID, seq}]; s.Status != stepDone {
+			t.Errorf("gate step seq %d = %+v, want done", seq, s)
+		}
+	}
+	// Both gates kept (the workers recorded the decisions).
 	if len(db.gateDecisions) != 2 {
 		t.Errorf("expected 2 keep decisions, got %d", len(db.gateDecisions))
 	}
-	// distill (on_demand) was woken; scribe (resident) was not.
-	if len(act.woken) != 1 || act.woken[0] != provDistill {
-		t.Errorf("activation = %v, want [distill]", act.woken)
+	// on_demand providers (gate-barato, gate-rico, distill) were woken; the resident scribe
+	// was not.
+	woken := map[string]bool{}
+	for _, n := range act.woken {
+		woken[n] = true
+	}
+	for _, n := range []string{provGateBarato, provGateRico, provDistill} {
+		if !woken[n] {
+			t.Errorf("expected %s to be woken, got %v", n, act.woken)
+		}
+	}
+	if woken[provASRYouTube] {
+		t.Errorf("resident scribe must not be woken via activation, got %v", act.woken)
 	}
 }
 
@@ -231,6 +264,64 @@ func TestWorkerFiltersEmptyTranscript(t *testing.T) {
 	active, _ := db.ListActiveItems(ctx)
 	if len(active) != 0 {
 		t.Errorf("filtered item should leave the active set, got %d active", len(active))
+	}
+}
+
+// gateScore is a small *float64 helper for verdicts.
+func gateScore(f float64) *float64 { return &f }
+
+// TestGateWorkerRecordsDecision: a gate worker claims a pending gate step, and for each
+// cascade verdict (keep/drop/defer) it appends a gate_decisions row with the decision +
+// score + decided_by + reason and marks the step DONE — but does NOT touch item status
+// (the reconciler routes from the decision). This is deliverable #1's "grava gate_decisions"
+// and #7's keep/drop/defer + gate_decisions recording, with zero I/O.
+func TestGateWorkerRecordsDecision(t *testing.T) {
+	for _, tc := range []struct {
+		decision  string
+		decidedBy string
+	}{
+		{decisionKeep, decidedByProfile},
+		{decisionDrop, decidedByRules},
+		{decisionDefer, decidedByLLM},
+	} {
+		t.Run(tc.decision, func(t *testing.T) {
+			ctx := context.Background()
+			db := newMockDatabase()
+			itemID := seedAndIngestOne(t, db, "vid1")
+			// A pending gate_barato step at the metadata gate's seq (2), as the reconciler
+			// would assign it to a gate provider.
+			mustStep(t, db, ItemStep{ItemID: itemID, Seq: 2, Capability: capGateBarato, Status: stepPending})
+
+			verdict := &GateVerdict{
+				Decision: tc.decision, Score: gateScore(0.71),
+				DecidedBy: tc.decidedBy, Reason: "unit-test verdict",
+			}
+			runner := &fakeRunner{result: RunResult{Gate: verdict}}
+			claimed, err := NewWorker(db, capGateBarato, runner).RunOnce(ctx)
+			if err != nil || !claimed {
+				t.Fatalf("RunOnce: claimed=%v err=%v", claimed, err)
+			}
+
+			// gate_decisions row appended with the full verdict.
+			if len(db.gateDecisions) != 1 {
+				t.Fatalf("expected 1 gate_decision, got %d", len(db.gateDecisions))
+			}
+			d := db.gateDecisions[0]
+			if d.ItemID != itemID || d.Gate != gateBarato || d.Decision != tc.decision ||
+				d.DecidedBy != tc.decidedBy || d.Reason != "unit-test verdict" {
+				t.Errorf("gate_decision = %+v, want item=%d gate_barato %s by %s", d, itemID, tc.decision, tc.decidedBy)
+			}
+			if d.Score == nil || *d.Score != 0.71 {
+				t.Errorf("score not recorded: %v", d.Score)
+			}
+			// Step done; item status untouched (reconciler routes, not the worker).
+			if s := db.itemSteps[itemStepKey{itemID, 2}]; s.Status != stepDone {
+				t.Errorf("gate step = %+v, want done", s)
+			}
+			if got := db.itemByID[itemID].Status; got != itemDiscovered {
+				t.Errorf("worker must not route the item: status = %q, want still discovered", got)
+			}
+		})
 	}
 }
 

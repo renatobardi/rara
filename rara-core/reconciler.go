@@ -1,28 +1,31 @@
-// reconciler.go — Phase 1 deliverables #3 and #6: the level-triggered reconciler and
-// the pass-through gates.
+// reconciler.go — the level-triggered reconciler (Phase 1) plus Phase 3 gate routing.
 //
 // The reconciler is a boring, auditable controller in the Kubernetes sense: it observes
 // desired state (a flow's steps) versus actual state (an item's item_steps) and takes the
 // single next action that closes the gap. It holds no state between passes, makes no
 // network calls of its own, and is idempotent — running it twice on the same item changes
-// nothing the second time. All judgement (the curation gates) is config-driven and, in
-// Phase 1, a no-op keep.
+// nothing the second time. All JUDGEMENT lives in the gate workers (the cascade in
+// gates.go); the control plane only ROUTES the decision they record — deterministic, never
+// model-driven.
 //
-// What the reconciler does NOT do: domain work. It never transcribes or distills. It
-// writes an assignment (a pending item_step with a chosen provider) and waits; the worker
+// What the reconciler does NOT do: domain work. It never transcribes, distills, or judges.
+// It writes an assignment (a pending item_step with a chosen provider) and waits; the worker
 // pulls that assignment (worker.go) and writes the result back. The contract between them
 // is the table, never a call.
 //
 // Per-item state machine driven here, walking flow_steps by seq:
 //
 //	coletar     -> auto-done   (the item EXISTS, so collection already happened)
-//	gate_barato -> auto-keep   (pass-through: record a keep decision, mark done)
+//	gate_barato -> assign      (a real worker now; the gate judges metadata, records a
+//	                            gate_decision, marks the step done)
 //	transcrever -> assign      (pending + provider; wait for the scribe shim)
-//	gate_rico   -> auto-keep   (pass-through)
+//	gate_rico   -> assign      (a real worker; the gate judges the full text)
 //	destilar    -> assign      (pending + provider; wait for the distill shim)
 //
-// One pass advances an item through every auto-satisfiable step until it either assigns a
-// real work step (then waits) or completes. item status is recomputed from completed steps.
+// A completed gate is ROUTED from its recorded decision (gateTerminalStatus): keep advances,
+// drop -> terminal filtered, defer -> terminal quarantine. One pass advances an item through
+// every auto-satisfiable step until it assigns a work step (then waits), routes a gate to a
+// terminal, or completes. item status is recomputed from completed steps.
 package main
 
 import (
@@ -118,6 +121,16 @@ func (r *Reconciler) reconcileItem(ctx context.Context, item Item) error {
 			bySeq[s.Seq] = s
 		}
 
+		// A completed gate routes the item from its recorded decision (deliverable #6): the
+		// gate worker judged and marked the step done; the control plane reads the decision
+		// and acts — drop -> terminal filtered, defer -> terminal quarantine. A keep falls
+		// through to nextAction, which advances past the done gate like any other step.
+		if status, terminal, err := r.gateTerminalStatus(ctx, item, flowSteps, bySeq); err != nil {
+			return err
+		} else if terminal {
+			return r.setItemStatus(ctx, item, status)
+		}
+
 		act, fs := nextAction(flowSteps, bySeq)
 		switch act {
 		case actComplete:
@@ -188,21 +201,9 @@ func (r *Reconciler) materialize(ctx context.Context, item Item, fs FlowStep) (d
 			Status: stepDone, OutputRef: item.SourceRef,
 		})
 
-	case isGate(fs.Capability):
-		// Pass-through gate: always keep (real curation is Phase 3). Record the audit
-		// decision, then mark the step done so the flow advances.
-		if err := r.db.InsertGateDecision(ctx, GateDecision{
-			ItemID: item.ID, Gate: fs.Capability, Decision: decisionKeep,
-			DecidedBy: gateDecidedByPassthrough, Reason: "phase-1 pass-through gate",
-		}); err != nil {
-			return false, err
-		}
-		return true, r.db.UpsertItemStep(ctx, ItemStep{
-			ItemID: item.ID, Seq: fs.Seq, Capability: fs.Capability, Status: stepDone,
-		})
-
 	default:
-		// A real work step (transcrever, destilar). Route to a provider by policy
+		// A real work step — transcrever, destilar, OR a curation gate (gate_barato /
+		// gate_rico are workers now, no longer pass-through). Route to a provider by policy
 		// (cost<->quality + constraints + health + fallback) and write a pending assignment
 		// for the worker to pull; wake on_demand providers.
 		prov, ok, err := r.router.Select(ctx, fs.Capability, r.now(), r.healthTTL)
@@ -332,6 +333,17 @@ func computeItemStatus(flowSteps []FlowStep, bySeq map[int]ItemStep) string {
 	}
 }
 
+// hasLaterStep reports whether any item_step with a seq greater than the given one has been
+// materialized — i.e. the flow has advanced past that point.
+func hasLaterStep(seq int, bySeq map[int]ItemStep) bool {
+	for s := range bySeq {
+		if s > seq {
+			return true
+		}
+	}
+	return false
+}
+
 // isStale reports whether a running step's worker has likely died: it has a heartbeat
 // (stamped at claim) older than staleAfter. A step with no heartbeat is never stale.
 func (r *Reconciler) isStale(s ItemStep) bool {
@@ -343,9 +355,44 @@ func isGate(capability string) bool {
 	return capability == capGateBarato || capability == capGateRico
 }
 
-// gateDecidedByPassthrough is the gate_decisions.decided_by tag for Phase 1's no-op gates,
-// distinguishing them in the audit trail from the Phase 3 rules/profile/llm-judge layers.
-const gateDecidedByPassthrough = "passthrough"
+// gateTerminalStatus maps a completed gate's recorded decision onto the item's terminal
+// status (deliverable #6: the reconciler routes keep/drop/defer from the gate_decision the
+// worker wrote). It scans gate steps in seq order, reading the latest decision of each that
+// is done: drop -> filtered, defer -> quarantine, keep -> not terminal. The first
+// terminating gate wins (a drop at gate_barato ends the item before gate_rico is reached). A
+// done gate with no decision (a data anomaly — the worker writes the decision before marking
+// the step done) is treated as keep, so a glitch never silently drops an item.
+func (r *Reconciler) gateTerminalStatus(ctx context.Context, item Item, flowSteps []FlowStep, bySeq map[int]ItemStep) (string, bool, error) {
+	for _, fs := range flowSteps {
+		if !isGate(fs.Capability) {
+			continue
+		}
+		if s, ok := bySeq[fs.Seq]; !ok || s.Status != stepDone {
+			continue
+		}
+		// Already routed `keep` if the flow advanced past this gate (a later step exists) —
+		// a drop/defer would have terminated the item before any successor materialized. Skip
+		// the decision read for gates we have demonstrably passed, so a long-running item does
+		// not re-read every kept gate on every pass.
+		if hasLaterStep(fs.Seq, bySeq) {
+			continue
+		}
+		dec, found, err := r.db.LatestGateDecision(ctx, item.ID, fs.Capability)
+		if err != nil {
+			return "", false, err
+		}
+		if !found {
+			continue
+		}
+		switch dec.Decision {
+		case decisionDrop:
+			return itemFiltered, true, nil
+		case decisionDefer:
+			return itemQuarantine, true, nil
+		}
+	}
+	return "", false, nil
+}
 
 // logActivator is the default Activator: it records the wake intent without calling any
 // cloud API. The real Cloud Run Jobs `run` client is wired at deploy (it needs

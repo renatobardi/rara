@@ -80,12 +80,18 @@ type MockDatabase struct {
 	stepOrder    map[itemStepKey]int
 	nextStepSeqN int
 
+	gateRules map[gateRuleKey]GateRule // UNIQUE(action, match_type, value)
+
 	gateDecisions []GateDecision          // append-only
 	feedback      []Feedback              // append-only
 	profiles      map[int]InterestProfile // UNIQUE(version)
 
 	nextFlowID int
 	nextItemID int
+}
+
+type gateRuleKey struct {
+	action, matchType, value string
 }
 
 func newMockDatabase() *MockDatabase {
@@ -100,6 +106,7 @@ func newMockDatabase() *MockDatabase {
 		itemByID:     make(map[int]Item),
 		itemSteps:    make(map[itemStepKey]ItemStep),
 		stepOrder:    make(map[itemStepKey]int),
+		gateRules:    make(map[gateRuleKey]GateRule),
 		profiles:     make(map[int]InterestProfile),
 		nextFlowID:   1,
 		nextItemID:   1,
@@ -150,6 +157,14 @@ func (m *MockDatabase) UpsertFlowStep(_ context.Context, s FlowStep) error {
 
 func (m *MockDatabase) UpsertRoutingPolicy(_ context.Context, p RoutingPolicy) error {
 	m.policies[p.Scope] = p // ON CONFLICT (scope) DO UPDATE
+	return nil
+}
+
+func (m *MockDatabase) UpsertGateRule(_ context.Context, r GateRule) error {
+	if !isValidRuleAction(r.Action) || !isValidMatchType(r.MatchType) {
+		return errCheckViolation
+	}
+	m.gateRules[gateRuleKey{r.Action, r.MatchType, r.Value}] = r // ON CONFLICT DO UPDATE
 	return nil
 }
 
@@ -322,6 +337,57 @@ func (m *MockDatabase) GetProvider(_ context.Context, name string) (Provider, bo
 func (m *MockDatabase) GetRoutingPolicy(_ context.Context, scope string) (RoutingPolicy, bool, error) {
 	p, ok := m.policies[scope]
 	return p, ok, nil
+}
+
+func (m *MockDatabase) ListGateRules(_ context.Context) ([]GateRule, error) {
+	var out []GateRule
+	for _, r := range m.gateRules {
+		if r.Enabled {
+			out = append(out, r)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Action != out[j].Action {
+			return out[i].Action < out[j].Action
+		}
+		if out[i].MatchType != out[j].MatchType {
+			return out[i].MatchType < out[j].MatchType
+		}
+		return out[i].Value < out[j].Value
+	})
+	return out, nil
+}
+
+func (m *MockDatabase) GetLatestInterestProfile(_ context.Context) (InterestProfile, bool, error) {
+	best, found := InterestProfile{}, false
+	for _, p := range m.profiles {
+		if !found || p.Version > best.Version {
+			best, found = p, true
+		}
+	}
+	return best, found, nil
+}
+
+// LatestGateDecision returns the last-appended decision for (item, gate) — gate_decisions
+// is append-only, so the highest-index match mirrors the SQL ORDER BY id DESC LIMIT 1.
+func (m *MockDatabase) LatestGateDecision(_ context.Context, itemID int, gate string) (GateDecision, bool, error) {
+	for i := len(m.gateDecisions) - 1; i >= 0; i-- {
+		if d := m.gateDecisions[i]; d.ItemID == itemID && d.Gate == gate {
+			return d, true, nil
+		}
+	}
+	return GateDecision{}, false, nil
+}
+
+func (m *MockDatabase) ListQuarantinedItems(_ context.Context) ([]Item, error) {
+	var out []Item
+	for _, it := range m.items {
+		if it.Status == itemQuarantine {
+			out = append(out, it)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out, nil
 }
 
 // TouchProviderHeartbeat stamps a real-clock heartbeat (consumed only by the router's
@@ -640,6 +706,70 @@ func TestFeedbackTargetTypeChecked(t *testing.T) {
 	}
 	if len(db.feedback) != 1 {
 		t.Fatalf("only the valid row should persist: %d rows", len(db.feedback))
+	}
+}
+
+func TestGateRuleUpsertIdempotentAndChecked(t *testing.T) {
+	ctx := context.Background()
+	db := newMockDatabase()
+	// Bad enums rejected.
+	if err := db.UpsertGateRule(ctx, GateRule{Action: "block", MatchType: matchChannel, Value: "x", Enabled: true}); !errors.Is(err, errCheckViolation) {
+		t.Fatalf("invalid action should fail CHECK, got %v", err)
+	}
+	if err := db.UpsertGateRule(ctx, GateRule{Action: ruleDeny, MatchType: "regex", Value: "x", Enabled: true}); !errors.Is(err, errCheckViolation) {
+		t.Fatalf("invalid match_type should fail CHECK, got %v", err)
+	}
+	// Same (action, match_type, value) upserts in place (toggle enabled).
+	r := GateRule{Action: ruleDeny, MatchType: matchTitleContains, Value: "drama", Enabled: true}
+	if err := db.UpsertGateRule(ctx, r); err != nil {
+		t.Fatal(err)
+	}
+	r.Enabled = false
+	if err := db.UpsertGateRule(ctx, r); err != nil {
+		t.Fatal(err)
+	}
+	if len(db.gateRules) != 1 {
+		t.Fatalf("UNIQUE(action, match_type, value) not honored: %d rows", len(db.gateRules))
+	}
+	// A disabled rule is filtered out of the cascade read.
+	rules, _ := db.ListGateRules(ctx)
+	if len(rules) != 0 {
+		t.Errorf("ListGateRules should return only enabled rules, got %d", len(rules))
+	}
+}
+
+func TestGetLatestInterestProfile(t *testing.T) {
+	ctx := context.Background()
+	db := newMockDatabase()
+	if _, ok, _ := db.GetLatestInterestProfile(ctx); ok {
+		t.Error("no profile seeded yet -> found=false")
+	}
+	_ = db.InsertInterestProfile(ctx, InterestProfile{Version: 1})
+	_ = db.InsertInterestProfile(ctx, InterestProfile{Version: 3})
+	_ = db.InsertInterestProfile(ctx, InterestProfile{Version: 2})
+	p, ok, _ := db.GetLatestInterestProfile(ctx)
+	if !ok || p.Version != 3 {
+		t.Errorf("latest profile = v%d (found=%v), want v3", p.Version, ok)
+	}
+}
+
+func TestLatestGateDecision(t *testing.T) {
+	ctx := context.Background()
+	db := newMockDatabase()
+	fid := seedFlow(t, db)
+	itemID, _ := db.UpsertItem(ctx, Item{Lane: "youtube", SourceRef: "v", FlowID: fid, FlowVersion: 1, Status: itemDiscovered})
+	if _, ok, _ := db.LatestGateDecision(ctx, itemID, gateBarato); ok {
+		t.Error("no decision yet -> found=false")
+	}
+	_ = db.InsertGateDecision(ctx, GateDecision{ItemID: itemID, Gate: gateBarato, Decision: decisionDefer, DecidedBy: decidedByProfile})
+	_ = db.InsertGateDecision(ctx, GateDecision{ItemID: itemID, Gate: gateBarato, Decision: decisionKeep, DecidedBy: decidedByLLM})
+	got, ok, _ := db.LatestGateDecision(ctx, itemID, gateBarato)
+	if !ok || got.Decision != decisionKeep || got.DecidedBy != decidedByLLM {
+		t.Errorf("latest decision = %+v, want the keep (last appended)", got)
+	}
+	// A different gate is independent.
+	if _, ok, _ := db.LatestGateDecision(ctx, itemID, gateRico); ok {
+		t.Error("gate_rico has no decision -> found=false")
 	}
 }
 
