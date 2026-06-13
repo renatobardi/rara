@@ -22,6 +22,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // ---------------------------------------------------------------------------
@@ -201,115 +203,118 @@ func isValidMatchType(s string) bool  { return s == matchChannel || s == matchTi
 // ---------------------------------------------------------------------------
 
 // Capability is a logical task with a fixed I/O contract.
+//
+// The json tags give the control surface (Phase 5) a clean snake_case config-as-data wire
+// shape; these structs are marshaled nowhere else, so the tags affect only the surface.
 type Capability struct {
-	Name        string
-	Description string
-	IOContract  json.RawMessage // "" => defaults to '{}' on write
+	Name        string          `json:"name"`
+	Description string          `json:"description,omitempty"`
+	IOContract  json.RawMessage `json:"io_contract,omitempty"` // "" => defaults to '{}' on write
 }
 
 // Provider is a concrete implementation of a capability.
 type Provider struct {
-	Name        string
-	Capability  string // must reference an existing capability (FK)
-	Runtime     string // local | cloudrun | vpc
-	Activation  string // resident | on_demand
-	Cost        float64
-	Quality     float64 // 0..1
-	LatencyMs   int
-	Constraints json.RawMessage // "" => '{}'
-	Enabled     bool
-	HeartbeatAt *time.Time
+	Name        string          `json:"name"`
+	Capability  string          `json:"capability"` // must reference an existing capability (FK)
+	Runtime     string          `json:"runtime"`    // local | cloudrun | vpc
+	Activation  string          `json:"activation"` // resident | on_demand
+	Cost        float64         `json:"cost"`
+	Quality     float64         `json:"quality"` // 0..1
+	LatencyMs   int             `json:"latency_ms"`
+	Constraints json.RawMessage `json:"constraints,omitempty"` // "" => '{}'
+	Enabled     bool            `json:"enabled"`
+	HeartbeatAt *time.Time      `json:"heartbeat_at,omitempty"`
 }
 
 // Flow is one declarative pipeline per source lane.
 type Flow struct {
-	ID         int
-	Name       string
-	SourceType string
-	Enabled    bool
-	Version    int
+	ID         int    `json:"id"`
+	Name       string `json:"name"`
+	SourceType string `json:"source_type"`
+	Enabled    bool   `json:"enabled"`
+	Version    int    `json:"version"`
 }
 
 // FlowStep is one ordered step of a flow.
 type FlowStep struct {
-	FlowID     int
-	Seq        int
-	Capability string // FK to capabilities.name
-	Options    json.RawMessage
-	Enabled    bool
+	FlowID     int             `json:"flow_id"`
+	Seq        int             `json:"seq"`
+	Capability string          `json:"capability"` // FK to capabilities.name
+	Options    json.RawMessage `json:"options,omitempty"`
+	Enabled    bool            `json:"enabled"`
 }
 
 // RoutingPolicy is a cost<->quality weighting + ordered fallback.
 type RoutingPolicy struct {
-	Scope         string // 'global' or a capability name
-	CostWeight    float64
-	QualityWeight float64
-	Fallback      json.RawMessage // ordered list of provider names
+	Scope         string          `json:"scope"` // 'global' or a capability name
+	CostWeight    float64         `json:"cost_weight"`
+	QualityWeight float64         `json:"quality_weight"`
+	Fallback      json.RawMessage `json:"fallback,omitempty"` // ordered list of provider names
 }
 
 // Item is one row of the canonical spine.
 type Item struct {
-	ID          int
-	Lane        string
-	SourceRef   string
-	FlowID      int
-	FlowVersion int
-	Status      string
+	ID          int    `json:"id"`
+	Lane        string `json:"lane"`
+	SourceRef   string `json:"source_ref"`
+	FlowID      int    `json:"flow_id"`
+	FlowVersion int    `json:"flow_version"`
+	Status      string `json:"status"`
 	// Sensitivity is `public` (default) or `private`. Stamped at discovery (email -> private)
 	// and frozen thereafter; the router reads it to exclude third-party providers for private
 	// content. The reconciler preserves it on every status write (it reads the full item).
-	Sensitivity string
+	Sensitivity string `json:"sensitivity"`
 }
 
 // ItemStep is one mutable runtime state-row.
 type ItemStep struct {
-	ItemID           int
-	Seq              int
-	Capability       string
-	Status           string
-	AssignedProvider string // "" => NULL (unassigned)
-	Attempt          int
-	HeartbeatAt      *time.Time
-	OutputRef        string // "" => NULL; logical link to a worker domain row
-	Error            string
+	ItemID           int        `json:"item_id"`
+	Seq              int        `json:"seq"`
+	Capability       string     `json:"capability"`
+	Status           string     `json:"status"`
+	AssignedProvider string     `json:"assigned_provider,omitempty"` // "" => NULL (unassigned)
+	Attempt          int        `json:"attempt"`
+	HeartbeatAt      *time.Time `json:"heartbeat_at,omitempty"`
+	OutputRef        string     `json:"output_ref,omitempty"` // "" => NULL; logical link to a worker domain row
+	Error            string     `json:"error,omitempty"`
 }
 
 // GateDecision is one append-only curation-gate audit row.
 type GateDecision struct {
-	ItemID    int
-	Gate      string
-	Decision  string
-	Score     *float64 // confidence in [0,1]; nil for the rules layer (which needs none)
-	Rank      *int     // gate_rico ordering (1 = top); nil outside gate_rico / when unranked
-	DecidedBy string
-	Reason    string
+	ItemID    int      `json:"item_id"`
+	Gate      string   `json:"gate"`
+	Decision  string   `json:"decision"`
+	Score     *float64 `json:"score,omitempty"` // confidence in [0,1]; nil for the rules layer (which needs none)
+	Rank      *int     `json:"rank,omitempty"`  // gate_rico ordering (1 = top); nil outside gate_rico / when unranked
+	DecidedBy string   `json:"decided_by"`
+	Reason    string   `json:"reason,omitempty"`
 }
 
 // Feedback is one append-only learning signal.
 type Feedback struct {
-	TargetType string
-	TargetRef  string
-	Signal     string
-	Source     string
+	TargetType string `json:"target_type"`
+	TargetRef  string `json:"target_ref"`
+	Signal     string `json:"signal"`
+	Source     string `json:"source"`
 }
 
 // InterestProfile is one immutable version of the living preferences document.
 type InterestProfile struct {
-	Version    int
-	Topics     json.RawMessage
-	Authors    json.RawMessage
-	AntiTopics json.RawMessage
-	Weights    json.RawMessage
+	Version    int             `json:"version"`
+	Topics     json.RawMessage `json:"topics,omitempty"`
+	Authors    json.RawMessage `json:"authors,omitempty"`
+	AntiTopics json.RawMessage `json:"anti_topics,omitempty"`
+	Weights    json.RawMessage `json:"weights,omitempty"`
 }
 
 // GateRule is one deterministic allow/deny rule — the cheapest layer of the gate cascade.
 // A deny match drops the item (deny precedence); an allow match keeps it; no match
 // escalates to the profile/LLM layers.
 type GateRule struct {
-	Action    string // allow | deny
-	MatchType string // channel | title_contains
-	Value     string
-	Enabled   bool
+	Action    string `json:"action"`     // allow | deny
+	MatchType string `json:"match_type"` // channel | title_contains
+	Value     string `json:"value"`
+	Enabled   bool   `json:"enabled"`
 }
 
 // ---------------------------------------------------------------------------
@@ -404,6 +409,29 @@ type Database interface {
 	// sample), ordered by id.
 	ListQuarantinedItems(ctx context.Context) ([]Item, error)
 
+	// --- Surface reads (Phase 5) ---------------------------------------------
+	// The control surface (HTTP core + MCP adapter) reads state and config as data so an
+	// operator/agent can observe and edit the running system. All pure reads — the surface
+	// never decides; it exposes what the reconciler/gates already wrote and lets config be
+	// edited through the existing idempotent upserts.
+
+	// ListItemsByStatus returns the items in a given lifecycle status, ordered by id (the
+	// surface's "list items by status" view). The status is validated by the caller.
+	ListItemsByStatus(ctx context.Context, status string) ([]Item, error)
+	// ListGateDecisions returns ALL gate_decisions for an item, oldest first — the full
+	// curation audit trail (LatestGateDecision returns only the most recent per gate).
+	ListGateDecisions(ctx context.Context, itemID int) ([]GateDecision, error)
+	// ListFlows returns every flow (config-as-data), ordered by id.
+	ListFlows(ctx context.Context) ([]Flow, error)
+	// ListProviders returns every provider, enabled or not (config-as-data), ordered by name.
+	// (ListProvidersForCapability is the router's enabled-only, per-capability view.)
+	ListProviders(ctx context.Context) ([]Provider, error)
+	// ListRoutingPolicies returns every routing policy (config-as-data), ordered by scope.
+	ListRoutingPolicies(ctx context.Context) ([]RoutingPolicy, error)
+	// ListAllGateRules returns every gate rule, enabled or not (config-as-data), ordered
+	// (action, match_type, value). (ListGateRules is the cascade's enabled-only view.)
+	ListAllGateRules(ctx context.Context) ([]GateRule, error)
+
 	// --- Health feed (Phase 2) -----------------------------------------------
 	// TouchProviderHeartbeat stamps providers.heartbeat_at = now for a live provider,
 	// so the router's health gate keeps it eligible. A worker calls it when it pulls
@@ -428,7 +456,18 @@ type Database interface {
 // Real database: Neon PostgreSQL via pgx
 // ---------------------------------------------------------------------------
 
-type pgxDatabase struct{ conn *pgx.Conn }
+// pgConn is the subset of the pgx query API the store uses, satisfied by BOTH a single
+// *pgx.Conn (the single-threaded commands: seed/ingest/reconcile/work) and a *pgxpool.Pool
+// (the concurrent control surface — pgx.Conn is NOT safe for concurrent use, so the always-on
+// HTTP/MCP surface runs over a pool while the reconciler keeps its own single conn).
+type pgConn interface {
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+	Begin(ctx context.Context) (pgx.Tx, error)
+}
+
+type pgxDatabase struct{ conn pgConn }
 
 func jsonOrEmpty(raw json.RawMessage, def string) string {
 	if len(raw) == 0 {
@@ -671,6 +710,9 @@ Commands:
   seed                       Seed the YouTube lane config (capabilities, providers, flow)
   ingest                     Populate the items spine from channel_videos ∪ playlist_videos
   reconcile [--loop]         Run the reconciler: one pass, or always-on with --loop
+                             (--loop also mounts the surface if SURFACE_ADDR is set)
+  surface [--addr :8080]     Serve the control surface (HTTP núcleo + MCP adapter) standalone
+                             (SURFACE_TOKEN required; --addr defaults to SURFACE_ADDR/:8080)
   work --capability <cap> --provider <name>
                              Run a worker shim that pulls and processes its assignments
                              (cap: transcrever | extrair | destilar | gate_barato | gate_rico)
@@ -715,18 +757,22 @@ func main() {
 			{"youtube", SeedYouTubeLane},
 			{"podcast", SeedPodcastLane},
 			{"email", SeedEmailLane},
+			{"linkedin", SeedLinkedInLane},
 		} {
 			if err := seed.fn(ctx, db); err != nil {
 				log.Fatalf("seed %s: %v", seed.name, err)
 			}
 		}
-		log.Println("rara-core: lane config seeded (youtube, podcast, email)")
+		log.Println("rara-core: lane config seeded (youtube, podcast, email, linkedin)")
 
 	case "ingest":
 		runIngest(ctx, db, conn, os.Args[2:])
 
 	case "reconcile":
-		runReconcile(ctx, db, os.Args[2:])
+		runReconcile(ctx, db, dbURL, os.Args[2:])
+
+	case "surface":
+		runSurface(ctx, dbURL, os.Args[2:])
 
 	case "work":
 		runWork(ctx, db, conn, os.Args[2:])
@@ -779,11 +825,26 @@ func runIngest(ctx context.Context, db Database, conn *pgx.Conn, argv []string) 
 }
 
 // runReconcile runs one reconcile pass, or an always-on loop with --loop. The loop is the
-// VPC deployment: it must stay awake while the Mac sleeps and Cloud Run scales to zero.
-func runReconcile(ctx context.Context, db Database, argv []string) {
+// VPC deployment: it must stay awake while the Mac sleeps and Cloud Run scales to zero. When
+// looping, it also mounts the control surface in the SAME process (alongside the ticker) if
+// SURFACE_ADDR is set — the always-on HTTP/MCP core the architecture puts next to the reconciler.
+func runReconcile(ctx context.Context, db Database, dbURL string, argv []string) {
 	fs := flag.NewFlagSet("reconcile", flag.ExitOnError)
 	loop := fs.Bool("loop", false, "run continuously on RECONCILE_INTERVAL_SECONDS (default 30s)")
 	_ = fs.Parse(argv)
+
+	if *loop {
+		if addr := os.Getenv("SURFACE_ADDR"); addr != "" {
+			// The surface runs over its OWN pool (concurrency-safe), independent of the
+			// reconciler's single conn. A failure to mount it is logged, not fatal — the
+			// reconciler must keep running.
+			go func() {
+				if err := serveSurfacePool(ctx, dbURL, addr, os.Getenv("SURFACE_TOKEN")); err != nil {
+					log.Printf("surface: %v", err)
+				}
+			}()
+		}
+	}
 
 	r := NewReconciler(db, logActivator{}) // real Cloud Run activator is Phase 2
 	if v := os.Getenv("RECONCILE_STALE_SECONDS"); v != "" {
@@ -823,6 +884,36 @@ func runReconcile(ctx context.Context, db Database, argv []string) {
 	}
 }
 
+// runSurface serves ONLY the control surface (HTTP núcleo + MCP adapter), standalone — useful
+// to run the surface apart from the reconciler. The always-on VPC deployment normally co-hosts
+// it inside `reconcile --loop` (SURFACE_ADDR); this is the same server, alone. SURFACE_ADDR
+// defaults to :8080; SURFACE_TOKEN is required (the surface refuses to serve open).
+func runSurface(ctx context.Context, dbURL string, argv []string) {
+	fs := flag.NewFlagSet("surface", flag.ExitOnError)
+	addr := fs.String("addr", envOr("SURFACE_ADDR", ":8080"), "listen address")
+	_ = fs.Parse(argv)
+	if err := serveSurfacePool(ctx, dbURL, *addr, os.Getenv("SURFACE_TOKEN")); err != nil {
+		log.Fatalf("surface: %v", err)
+	}
+}
+
+// serveSurfacePool opens a dedicated connection POOL for the control surface and serves it.
+// The pool (not a single conn) is required because the HTTP/MCP server handles requests
+// concurrently and pgx.Conn is not concurrency-safe. The token is checked before opening the
+// pool so a misconfigured surface never even connects.
+func serveSurfacePool(ctx context.Context, dbURL, addr, token string) error {
+	if token == "" {
+		return fmt.Errorf("surface: SURFACE_TOKEN is required (refusing to serve without auth)")
+	}
+	pool, err := pgxpool.New(ctx, dbURL)
+	if err != nil {
+		return fmt.Errorf("surface: connection pool: %w", err)
+	}
+	defer pool.Close()
+	core := NewCore(&pgxDatabase{conn: pool}, newPgxLinkedInInbox(pool))
+	return ServeSurface(ctx, core, addr, token)
+}
+
 // runWork runs a (capability, provider) pull loop until its queue drains. A worker serves
 // exactly one provider so it claims only the steps the reconciler routed to it — required
 // once a capability has several providers with different runners (transcrever -> asr-youtube
@@ -858,7 +949,16 @@ func selectRunner(db Database, conn *pgx.Conn, capability, provider string) Step
 			log.Fatalf("work transcrever: unknown provider %q", provider)
 		}
 	case capExtrair:
-		return newExtractRunner(conn)
+		// extrair has a provider per text lane (email vs linkedin); each reads a different
+		// domain table, so the provider — not just the capability — selects the runner.
+		switch provider {
+		case provExtrairEmail:
+			return newExtractRunner(conn)
+		case provExtrairLinked:
+			return newLinkedInExtractRunner(conn)
+		default:
+			log.Fatalf("work extrair: unknown provider %q", provider)
+		}
 	case capDestilar:
 		return newDistillRunner(conn)
 	case capGateBarato, capGateRico:

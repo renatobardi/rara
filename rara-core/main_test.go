@@ -398,6 +398,74 @@ func (m *MockDatabase) ListQuarantinedItems(_ context.Context) ([]Item, error) {
 	return out, nil
 }
 
+// --- Surface reads (Phase 5) ----------------------------------------------
+// These mirror the pgx implementations in store_reads.go: pure observation + config-as-data.
+
+func (m *MockDatabase) ListItemsByStatus(_ context.Context, status string) ([]Item, error) {
+	var out []Item
+	for _, it := range m.items {
+		if it.Status == status {
+			out = append(out, it)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out, nil
+}
+
+func (m *MockDatabase) ListGateDecisions(_ context.Context, itemID int) ([]GateDecision, error) {
+	var out []GateDecision
+	for _, d := range m.gateDecisions { // append-only slice preserves insertion (id) order
+		if d.ItemID == itemID {
+			out = append(out, d)
+		}
+	}
+	return out, nil
+}
+
+func (m *MockDatabase) ListFlows(_ context.Context) ([]Flow, error) {
+	var out []Flow
+	for _, f := range m.flows {
+		out = append(out, f)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out, nil
+}
+
+func (m *MockDatabase) ListProviders(_ context.Context) ([]Provider, error) {
+	var out []Provider
+	for _, p := range m.providers {
+		out = append(out, p)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out, nil
+}
+
+func (m *MockDatabase) ListRoutingPolicies(_ context.Context) ([]RoutingPolicy, error) {
+	var out []RoutingPolicy
+	for _, p := range m.policies {
+		out = append(out, p)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Scope < out[j].Scope })
+	return out, nil
+}
+
+func (m *MockDatabase) ListAllGateRules(_ context.Context) ([]GateRule, error) {
+	var out []GateRule
+	for _, r := range m.gateRules {
+		out = append(out, r)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Action != out[j].Action {
+			return out[i].Action < out[j].Action
+		}
+		if out[i].MatchType != out[j].MatchType {
+			return out[i].MatchType < out[j].MatchType
+		}
+		return out[i].Value < out[j].Value
+	})
+	return out, nil
+}
+
 // TouchProviderHeartbeat stamps a real-clock heartbeat (consumed only by the router's
 // real-clock health gate). An unknown name is a no-op, mirroring the pgx 0-row UPDATE.
 func (m *MockDatabase) TouchProviderHeartbeat(_ context.Context, name string) error {

@@ -125,7 +125,7 @@ jobs:
         run: |
           echo "Verifying schema..."
           MISSING=0
-          for tbl in capabilities providers flows flow_steps routing_policies items item_steps gate_decisions gate_rules feedback interest_profile; do
+          for tbl in capabilities providers flows flow_steps routing_policies items item_steps gate_decisions gate_rules feedback interest_profile linkedin_posts; do
             COUNT=$(psql "$DATABASE_URL" -t -c "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = '$tbl'")
             if [ "$(echo "$COUNT" | tr -d '[:space:]')" -eq 1 ]; then
               echo "  ✅ $tbl"
