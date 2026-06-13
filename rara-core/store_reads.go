@@ -32,9 +32,9 @@ func (d *pgxDatabase) GetFlow(ctx context.Context, name string) (Flow, bool, err
 }
 
 func (d *pgxDatabase) GetItem(ctx context.Context, id int) (Item, bool, error) {
-	const q = `SELECT id, lane, source_ref, flow_id, flow_version, status FROM items WHERE id = $1`
+	const q = `SELECT id, lane, source_ref, flow_id, flow_version, status, sensitivity FROM items WHERE id = $1`
 	var it Item
-	err := d.conn.QueryRow(ctx, q, id).Scan(&it.ID, &it.Lane, &it.SourceRef, &it.FlowID, &it.FlowVersion, &it.Status)
+	err := d.conn.QueryRow(ctx, q, id).Scan(&it.ID, &it.Lane, &it.SourceRef, &it.FlowID, &it.FlowVersion, &it.Status, &it.Sensitivity)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Item{}, false, nil
 	}
@@ -47,7 +47,7 @@ func (d *pgxDatabase) GetItem(ctx context.Context, id int) (Item, bool, error) {
 func (d *pgxDatabase) ListActiveItems(ctx context.Context) ([]Item, error) {
 	// Terminal statuses are excluded; the index idx_items_status backs this scan.
 	const q = `
-		SELECT id, lane, source_ref, flow_id, flow_version, status
+		SELECT id, lane, source_ref, flow_id, flow_version, status, sensitivity
 		FROM items
 		WHERE status NOT IN ('done', 'filtered', 'failed', 'quarantine')
 		ORDER BY id`
@@ -59,7 +59,7 @@ func (d *pgxDatabase) ListActiveItems(ctx context.Context) ([]Item, error) {
 	var out []Item
 	for rows.Next() {
 		var it Item
-		if err := rows.Scan(&it.ID, &it.Lane, &it.SourceRef, &it.FlowID, &it.FlowVersion, &it.Status); err != nil {
+		if err := rows.Scan(&it.ID, &it.Lane, &it.SourceRef, &it.FlowID, &it.FlowVersion, &it.Status, &it.Sensitivity); err != nil {
 			return nil, err
 		}
 		out = append(out, it)
@@ -240,7 +240,7 @@ func (d *pgxDatabase) LatestGateDecision(ctx context.Context, itemID int, gate s
 // sample. idx_items_status backs the scan.
 func (d *pgxDatabase) ListQuarantinedItems(ctx context.Context) ([]Item, error) {
 	const q = `
-		SELECT id, lane, source_ref, flow_id, flow_version, status
+		SELECT id, lane, source_ref, flow_id, flow_version, status, sensitivity
 		FROM items
 		WHERE status = 'quarantine'
 		ORDER BY id`
@@ -252,7 +252,7 @@ func (d *pgxDatabase) ListQuarantinedItems(ctx context.Context) ([]Item, error) 
 	var out []Item
 	for rows.Next() {
 		var it Item
-		if err := rows.Scan(&it.ID, &it.Lane, &it.SourceRef, &it.FlowID, &it.FlowVersion, &it.Status); err != nil {
+		if err := rows.Scan(&it.ID, &it.Lane, &it.SourceRef, &it.FlowID, &it.FlowVersion, &it.Status, &it.Sensitivity); err != nil {
 			return nil, err
 		}
 		out = append(out, it)
@@ -274,7 +274,7 @@ func (d *pgxDatabase) TouchProviderHeartbeat(ctx context.Context, name string) e
 // distinct frontmost row, never the same one, with no broker. The claimed row is moved
 // pending->running (heartbeat stamped, attempt bumped) before COMMIT, so it leaves the
 // pending frontier atomically.
-func (d *pgxDatabase) ClaimPendingStep(ctx context.Context, capability string) (*ItemStep, error) {
+func (d *pgxDatabase) ClaimPendingStep(ctx context.Context, capability, provider string) (*ItemStep, error) {
 	tx, err := d.conn.Begin(ctx)
 	if err != nil {
 		return nil, err
@@ -286,16 +286,16 @@ func (d *pgxDatabase) ClaimPendingStep(ctx context.Context, capability string) (
 		       COALESCE(assigned_provider, ''), attempt,
 		       COALESCE(output_ref, ''), COALESCE(error, '')
 		FROM item_steps
-		WHERE capability = $1 AND status = 'pending'
+		WHERE capability = $1 AND assigned_provider = $2 AND status = 'pending'
 		ORDER BY id
 		FOR UPDATE SKIP LOCKED
 		LIMIT 1`
 	var s ItemStep
-	err = tx.QueryRow(ctx, sel, capability).Scan(
+	err = tx.QueryRow(ctx, sel, capability, provider).Scan(
 		&s.ItemID, &s.Seq, &s.Capability, &s.Status,
 		&s.AssignedProvider, &s.Attempt, &s.OutputRef, &s.Error)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, nil // queue empty for this capability
+		return nil, nil // queue empty for this capability+provider
 	}
 	if err != nil {
 		return nil, err

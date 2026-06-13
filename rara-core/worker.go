@@ -58,28 +58,32 @@ type StepRunner interface {
 	Run(ctx context.Context, item Item, step ItemStep) (RunResult, error)
 }
 
-// Worker is one capability's pull loop: claim a pending step, run it, write it back.
+// Worker is one (capability, provider) pull loop: claim a pending step assigned to this
+// provider, run it, write it back. A worker serves exactly one provider so it never claims a
+// sibling provider's steps (transcrever -> asr-youtube vs asr-direct-audio).
 type Worker struct {
 	db         Database
 	capability string
+	provider   string
 	runner     StepRunner
 }
 
-// NewWorker wires a worker for a capability (e.g. transcrever -> the scribe shim).
-func NewWorker(db Database, capability string, runner StepRunner) *Worker {
-	return &Worker{db: db, capability: capability, runner: runner}
+// NewWorker wires a worker for a (capability, provider) pair (e.g. transcrever/asr-youtube ->
+// the scribe shim).
+func NewWorker(db Database, capability, provider string, runner StepRunner) *Worker {
+	return &Worker{db: db, capability: capability, provider: provider, runner: runner}
 }
 
 // RunOnce claims and processes a single step. It returns claimed=false when the queue is
 // empty (the caller can sleep). One step per call keeps the unit of work small and the
 // claim window short; the resident loop just calls this repeatedly.
 func (w *Worker) RunOnce(ctx context.Context) (claimed bool, err error) {
-	step, err := w.db.ClaimPendingStep(ctx, w.capability)
+	step, err := w.db.ClaimPendingStep(ctx, w.capability, w.provider)
 	if err != nil {
 		return false, err
 	}
 	if step == nil {
-		return false, nil // nothing pending for this capability
+		return false, nil // nothing pending for this capability+provider
 	}
 
 	// Proof of life: this worker just pulled work as `assigned_provider`, so that provider

@@ -1,0 +1,10 @@
+podcast-job
+rara-podcast
+coverage.out
+*.out
+.env
+.env.local
+*.swp
+*.swo
+*~
+.DS_Store

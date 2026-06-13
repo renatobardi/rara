@@ -1,0 +1,11 @@
+-- seed.sql — TEMPLATE for operator-curated podcast feeds.
+--
+-- This file intentionally inserts NOTHING by default: which podcasts to follow is the
+-- operator's choice. Uncomment the INSERT and add your feed URLs, then run it against the DB.
+-- The collector refreshes each feed's title from the RSS on the next run. Idempotent:
+-- ON CONFLICT (feed_url) DO NOTHING, so re-running is safe.
+
+-- INSERT INTO podcast_feeds (feed_url, active) VALUES
+--     ('https://feeds.example.com/your-podcast.xml', true),
+--     ('https://another.example.com/rss', true)
+-- ON CONFLICT (feed_url) DO NOTHING;

@@ -48,9 +48,10 @@ func TestSeedYouTubeLane(t *testing.T) {
 			t.Errorf("provider %q should be enabled", name)
 		}
 	}
-	// The residential constraint must travel with asr-youtube (the router enforces it in Phase 2).
-	if got := string(db.providers[provASRYouTube].Constraints); got != `{"requires":"residential"}` {
-		t.Errorf("asr-youtube constraints = %q, want residential", got)
+	// asr-youtube carries the residential requirement AND accepts only youtube (so it never
+	// competes for a podcast item). The router enforces both.
+	if got := string(db.providers[provASRYouTube].Constraints); got != `{"requires":"residential","accepts":["youtube"]}` {
+		t.Errorf("asr-youtube constraints = %q, want residential + accepts youtube", got)
 	}
 
 	// Flow: single youtube lane at version 1.
@@ -105,8 +106,10 @@ func TestSeedIdempotent(t *testing.T) {
 	if got := db.flows[youtubeFlowName].ID; got != id1 {
 		t.Errorf("flow id changed on re-seed: %d -> %d", id1, got)
 	}
-	if len(db.providers) != 6 {
-		t.Errorf("expected 6 providers after re-seed, got %d", len(db.providers))
+	// 6 shared work providers (gate-barato/-local, gate-rico/-local, distill/-local) + 3
+	// YouTube-specific (harvest, shelf, asr-youtube).
+	if len(db.providers) != 9 {
+		t.Errorf("expected 9 providers after re-seed, got %d", len(db.providers))
 	}
 	if len(db.flowSteps) != 5 {
 		t.Errorf("expected 5 flow steps after re-seed, got %d", len(db.flowSteps))

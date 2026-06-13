@@ -43,11 +43,14 @@ type Router struct {
 // NewRouter wires a router over the persistence seam.
 func NewRouter(db Database) *Router { return &Router{db: db} }
 
-// Select returns the preferred provider for a capability, or ok=false when none is
-// eligible+healthy (the item waits). now/healthTTL drive the heartbeat health gate.
-// `exclude` names providers to skip — the timeout->fallback path passes the dead provider
-// so Select returns the NEXT one in the ordered candidate chain (deliverable #2).
-func (rt *Router) Select(ctx context.Context, capability string, now time.Time, healthTTL time.Duration, exclude ...string) (Provider, bool, error) {
+// Select returns the preferred provider for a capability serving a specific ITEM, or
+// ok=false when none is eligible+healthy (the item waits). The item is needed because
+// eligibility now depends on the item's facets: a provider's `accepts` must include the
+// item's lane (source matching), and a third-party provider is excluded for `private`
+// content (sensitivity). now/healthTTL drive the heartbeat health gate. `exclude` names
+// providers to skip — the timeout->fallback path passes the dead provider so Select returns
+// the NEXT one in the ordered candidate chain.
+func (rt *Router) Select(ctx context.Context, capability string, item Item, now time.Time, healthTTL time.Duration, exclude ...string) (Provider, bool, error) {
 	providers, err := rt.db.ListProvidersForCapability(ctx, capability)
 	if err != nil {
 		return Provider{}, false, err
@@ -60,7 +63,7 @@ func (rt *Router) Select(ctx context.Context, capability string, now time.Time, 
 	for _, n := range exclude {
 		ex[n] = true
 	}
-	ranked := rankProviders(providers, policy, now, healthTTL, ex)
+	ranked := rankProviders(providers, policy, item, now, healthTTL, ex)
 	if len(ranked) == 0 {
 		return Provider{}, false, nil
 	}
@@ -95,13 +98,13 @@ func (rt *Router) policyFor(ctx context.Context, capability string) (RoutingPoli
 // (an explicit operator failover chain that overrides scoring); the rest follow by
 // descending cost<->quality score, ties broken by name for determinism. It is pure — no
 // store access — so the whole selection policy is unit-tested without I/O.
-func rankProviders(providers []Provider, policy RoutingPolicy, now time.Time, healthTTL time.Duration, exclude map[string]bool) []Provider {
+func rankProviders(providers []Provider, policy RoutingPolicy, item Item, now time.Time, healthTTL time.Duration, exclude map[string]bool) []Provider {
 	cands := make([]Provider, 0, len(providers))
 	for _, p := range providers {
 		if exclude[p.Name] {
 			continue
 		}
-		if !constraintsSatisfied(p) {
+		if !constraintsSatisfied(p, item) {
 			continue
 		}
 		if !providerHealthy(p, now, healthTTL) {
@@ -158,37 +161,71 @@ func scoreProviders(cands []Provider, policy RoutingPolicy) map[string]float64 {
 	return scores
 }
 
-// providerConstraints is the parsed shape of providers.constraints. Only `requires` is
-// understood today; unknown keys are ignored, but an unknown requirement VALUE fails closed
-// (constraintsSatisfied).
+// providerConstraints is the parsed shape of providers.constraints. Three keys are
+// understood: `requires` (a runtime requirement), `accepts` (the item lanes this provider can
+// consume), and `sensitivity` (a third-party tag). Unknown keys are ignored, but an unknown
+// requirement VALUE fails closed (constraintsSatisfied).
 type providerConstraints struct {
-	Requires string `json:"requires"`
+	Requires    string   `json:"requires"`
+	Accepts     []string `json:"accepts"`
+	Sensitivity string   `json:"sensitivity"`
 }
 
-// constraintsSatisfied reports whether a provider's runtime can satisfy the hard
-// constraints it declares. The load-bearing case: asr-youtube declares
-// {"requires":"residential"} because YouTube blocks audio download from datacenter IPs, so
-// only runtime=local (a residential IP) qualifies — a transcrever provider on cloudrun/vpc
-// declaring the same requirement is eliminated. Fail-closed on the unknowns: malformed
-// constraints or an unrecognized requirement value make the provider ineligible, so the
-// router never assigns a provider it cannot PROVE fits (the item waits, with a clear error,
-// rather than routing blind).
-func constraintsSatisfied(p Provider) bool {
+// constraintsSatisfied reports whether a provider can serve a given ITEM under the hard
+// constraints it declares. Three independent gates, all of which must pass:
+//
+//  1. requires (runtime): asr-youtube declares {"requires":"residential"} because YouTube
+//     blocks audio download from datacenter IPs, so only runtime=local qualifies — a
+//     cloudrun/vpc candidate declaring the same requirement is eliminated.
+//  2. accepts (source matching): when a provider declares `accepts`, the item's lane must be
+//     listed. This is what lets transcrever carry TWO providers — asr-youtube accepts
+//     ["youtube"], asr-direct-audio accepts ["podcast"] — and routes each item to the one
+//     that can actually consume its source. A provider with no `accepts` consumes any lane
+//     (coletar/gates/destilar, and back-compat).
+//  3. sensitivity: a provider tagged {"sensitivity":"third_party"} sends content off-box, so
+//     it is excluded for a `private` item (only local/self-host may process private content).
+//
+// Fail-closed on the unknowns: malformed constraints or an unrecognized requirement value
+// make the provider ineligible, so the router never assigns a provider it cannot PROVE fits
+// (the item waits, with a clear error, rather than routing blind).
+func constraintsSatisfied(p Provider, item Item) bool {
 	if len(p.Constraints) == 0 {
-		return true
+		return true // no constraints declared: serves any item
 	}
 	var c providerConstraints
 	if err := json.Unmarshal(p.Constraints, &c); err != nil {
 		return false
 	}
+	// 1) runtime requirement
 	switch c.Requires {
 	case "":
-		return true // no hard requirement declared
+		// no hard runtime requirement declared
 	case constraintResidential:
-		return p.Runtime == runtimeLocal
+		if p.Runtime != runtimeLocal {
+			return false
+		}
 	default:
 		return false // unknown hard requirement: fail closed
 	}
+	// 2) source matching: a declared accepts-list must include the item's lane
+	if len(c.Accepts) > 0 && !containsString(c.Accepts, item.Lane) {
+		return false
+	}
+	// 3) sensitivity: third-party providers cannot process private content
+	if item.Sensitivity == sensitivityPrivate && c.Sensitivity == constraintThirdParty {
+		return false
+	}
+	return true
+}
+
+// containsString reports whether v is in xs.
+func containsString(xs []string, v string) bool {
+	for _, x := range xs {
+		if x == v {
+			return true
+		}
+	}
+	return false
 }
 
 // providerHealthy reports whether a provider is alive enough to receive work. on_demand
