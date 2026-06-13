@@ -29,13 +29,15 @@ var library embed.FS
 // Engine identifiers (CURATE_ENGINE) and their default models. The stored/​hashed
 // engine string is the combined "engine/model" form.
 const (
-	engineGemini = "gemini"
-	engineClaude = "claude"
-	engineGroq   = "groq"
+	engineGemini  = "gemini"
+	engineClaude  = "claude"
+	engineGroq    = "groq"
+	engineLiteLLM = "litellm"
 
-	defaultGeminiModel = "gemini-3.1-pro-preview"
-	defaultClaudeModel = "claude-sonnet-4-6"
-	defaultGroqModel   = "openai/gpt-oss-120b"
+	defaultGeminiModel  = "gemini-3.1-pro-preview"
+	defaultClaudeModel  = "claude-sonnet-4-6"
+	defaultGroqModel    = "openai/gpt-oss-120b"
+	defaultLiteLLMModel = "claude-sonnet-4-6" // a gateway alias; LiteLLM maps it to a backend
 )
 
 // Distillation status values (the distillations.status column).
@@ -195,6 +197,9 @@ type Config struct {
 	GeminiModel     string
 	ClaudeModel     string
 	GroqModel       string
+	LiteLLMBaseURL  string // LITELLM_BASE_URL: the self-hosted gateway's OpenAI-compatible base
+	LiteLLMAPIKey   string // LITELLM_API_KEY: optional gateway master key (omitted if empty)
+	LiteLLMModel    string // LITELLM_MODEL: the gateway model alias
 	Patterns        string // CSV
 	ContextName     string
 	StrategyName    string
@@ -464,8 +469,15 @@ func NewCurator(cfg Config) (Curator, string, error) {
 		}
 		model := orDefault(cfg.GroqModel, defaultGroqModel)
 		return newGroqCurator(cfg.GroqAPIKey, model), engineGroq + "/" + model, nil
+	case engineLiteLLM:
+		if cfg.LiteLLMBaseURL == "" {
+			return nil, "", fmt.Errorf("LITELLM_BASE_URL is required for engine %q", engineLiteLLM)
+		}
+		model := orDefault(cfg.LiteLLMModel, defaultLiteLLMModel)
+		return newLiteLLMCurator(cfg.LiteLLMBaseURL, cfg.LiteLLMAPIKey, model), engineLiteLLM + "/" + model, nil
 	default:
-		return nil, "", fmt.Errorf("unknown CURATE_ENGINE %q (use %q, %q or %q)", cfg.Engine, engineGemini, engineClaude, engineGroq)
+		return nil, "", fmt.Errorf("unknown CURATE_ENGINE %q (use %q, %q, %q or %q)",
+			cfg.Engine, engineGemini, engineClaude, engineGroq, engineLiteLLM)
 	}
 }
 
@@ -825,6 +837,78 @@ func (g *groqCurator) Curate(ctx context.Context, systemPrompt, input string) (s
 	return gr.Choices[0].Message.Content, nil
 }
 
+// ---------------------------------------------------------------------------
+// litellm curator — the self-hosted LiteLLM gateway (OpenAI-compatible).
+//
+// This is the anti-lock-in seam (ARCHITECTURE-2.0.md, "Lock-in posture" #2): instead of
+// each engine carrying a hardcoded vendor endpoint, distill speaks ONE OpenAI-compatible
+// dialect to a gateway it owns, and the actual model/provider behind it (Claude, Gemini,
+// Groq, a local model) is a gateway config alias — no vendor markup, swappable without a
+// distill change. Wire-identical to the Groq curator (both are OpenAI chat completions with
+// response_format json_object); the only differences are the configurable base URL and an
+// OPTIONAL bearer key (a self-hosted gateway may run keyless or behind a master key). The
+// curation logic is untouched — this is purely the model-call seam.
+// ---------------------------------------------------------------------------
+
+type liteLLMCurator struct {
+	apiKey   string // optional gateway master key; the Authorization header is omitted when empty
+	model    string // gateway model alias
+	endpoint string // full OpenAI chat-completions URL (base + /chat/completions); overridable for tests
+}
+
+func newLiteLLMCurator(baseURL, apiKey, model string) *liteLLMCurator {
+	return &liteLLMCurator{
+		apiKey:   apiKey,
+		model:    model,
+		endpoint: strings.TrimRight(baseURL, "/") + "/chat/completions",
+	}
+}
+
+func (c *liteLLMCurator) Curate(ctx context.Context, systemPrompt, input string) (string, error) {
+	reqBody := map[string]any{
+		"model": c.model,
+		"messages": []any{
+			map[string]any{"role": "system", "content": systemPrompt},
+			map[string]any{"role": "user", "content": input},
+		},
+		"response_format": map[string]any{"type": "json_object"},
+	}
+	payload, err := json.Marshal(reqBody)
+	if err != nil {
+		return "", err
+	}
+
+	body, err := postWithRetry(ctx, func() (*http.Request, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint, strings.NewReader(string(payload)))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set(headerContentType, mimeJSON)
+		if c.apiKey != "" {
+			req.Header.Set("Authorization", "Bearer "+c.apiKey)
+		}
+		return req, nil
+	})
+	if err != nil {
+		return "", err
+	}
+
+	var lr struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(body, &lr); err != nil {
+		return "", err
+	}
+	if len(lr.Choices) == 0 {
+		return "", fmt.Errorf("litellm gateway returned no choices")
+	}
+	return lr.Choices[0].Message.Content, nil
+}
+
 // curationResponseSchema is the JSON schema for the curation object, shared by the
 // engines that accept a response/tool schema (Gemini, Claude).
 func curationResponseSchema() map[string]any {
@@ -1107,6 +1191,9 @@ func loadConfig() Config {
 		GeminiModel:     os.Getenv("GEMINI_MODEL"),
 		ClaudeModel:     os.Getenv("CLAUDE_MODEL"),
 		GroqModel:       os.Getenv("GROQ_MODEL"),
+		LiteLLMBaseURL:  os.Getenv("LITELLM_BASE_URL"),
+		LiteLLMAPIKey:   os.Getenv("LITELLM_API_KEY"),
+		LiteLLMModel:    os.Getenv("LITELLM_MODEL"),
 		Patterns:        os.Getenv("DISTILL_PATTERNS"),
 		ContextName:     os.Getenv("DISTILL_CONTEXT"),
 		StrategyName:    os.Getenv("DISTILL_STRATEGY"),

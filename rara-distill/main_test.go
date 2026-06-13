@@ -276,6 +276,12 @@ func TestNewCuratorFactory(t *testing.T) {
 		t.Fatalf("groq: err=%v cur=%v name=%q", err, cur, name)
 	}
 
+	// LiteLLM gateway: selected by base URL (the key is optional), provenance "litellm/<model>".
+	cur, name, err = NewCurator(Config{Engine: engineLiteLLM, LiteLLMBaseURL: "http://gw:4000/v1"})
+	if err != nil || cur == nil || name != "litellm/"+defaultLiteLLMModel {
+		t.Fatalf("litellm: err=%v cur=%v name=%q", err, cur, name)
+	}
+
 	// Model override is reflected in the engine string.
 	_, name, _ = NewCurator(Config{Engine: engineGemini, GeminiAPIKey: "k", GeminiModel: "gemini-2.5-pro"})
 	if name != "gemini/gemini-2.5-pro" {
@@ -292,9 +298,79 @@ func TestNewCuratorFactory(t *testing.T) {
 	if _, _, err := NewCurator(Config{Engine: engineGroq}); err == nil {
 		t.Error("expected error for groq without key")
 	}
+	if _, _, err := NewCurator(Config{Engine: engineLiteLLM}); err == nil {
+		t.Error("expected error for litellm without a base URL")
+	}
 	// Unknown engine → error.
 	if _, _, err := NewCurator(Config{Engine: "ollama", GeminiAPIKey: "k"}); err == nil {
 		t.Error("expected error for unknown engine")
+	}
+}
+
+// TestLiteLLMCuratorEndpointJoin: the gateway base URL is joined to the OpenAI
+// chat-completions path, tolerating a trailing slash.
+func TestLiteLLMCuratorEndpointJoin(t *testing.T) {
+	for _, base := range []string{"http://gw:4000/v1", "http://gw:4000/v1/"} {
+		if got := newLiteLLMCurator(base, "", "m").endpoint; got != "http://gw:4000/v1/chat/completions" {
+			t.Errorf("base %q -> endpoint %q, want .../v1/chat/completions", base, got)
+		}
+	}
+}
+
+// TestLiteLLMCuratorRequestAndResponse: the curator sends an OpenAI chat-completions
+// request (model + system/user messages + json_object format) and returns the message
+// content. With a key set it sends a bearer Authorization header.
+func TestLiteLLMCuratorRequestAndResponse(t *testing.T) {
+	var gotAuth, gotPath string
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		gotPath = r.URL.Path
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"content_markdown\":\"ok\"}"}}]}`))
+	}))
+	defer srv.Close()
+
+	c := &liteLLMCurator{apiKey: "secret", model: "claude-sonnet-4-6", endpoint: srv.URL + "/chat/completions"}
+	out, err := c.Curate(context.Background(), "sys", "in")
+	if err != nil {
+		t.Fatalf("curate: %v", err)
+	}
+	if !strings.Contains(out, "content_markdown") {
+		t.Errorf("unexpected output: %q", out)
+	}
+	if gotAuth != "Bearer secret" {
+		t.Errorf("Authorization = %q, want bearer secret", gotAuth)
+	}
+	if gotPath != "/chat/completions" {
+		t.Errorf("path = %q, want /chat/completions", gotPath)
+	}
+	if gotBody["model"] != "claude-sonnet-4-6" {
+		t.Errorf("request model = %v, want claude-sonnet-4-6", gotBody["model"])
+	}
+	if _, ok := gotBody["messages"].([]any); !ok {
+		t.Errorf("request missing messages array: %v", gotBody["messages"])
+	}
+}
+
+// TestLiteLLMCuratorOmitsAuthWhenKeyless: a self-hosted gateway may run keyless — no
+// Authorization header is sent when the key is empty.
+func TestLiteLLMCuratorOmitsAuthWhenKeyless(t *testing.T) {
+	var gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{}"}}]}`))
+	}))
+	defer srv.Close()
+
+	c := &liteLLMCurator{apiKey: "", model: "m", endpoint: srv.URL + "/chat/completions"}
+	if _, err := c.Curate(context.Background(), "s", "i"); err != nil {
+		t.Fatalf("curate: %v", err)
+	}
+	if gotAuth != "" {
+		t.Errorf("keyless gateway should send no Authorization header, got %q", gotAuth)
 	}
 }
 
