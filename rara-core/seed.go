@@ -83,20 +83,23 @@ func seedCapabilities(ctx context.Context, db Database) error {
 func seedSharedProviders(ctx context.Context, db Database) error {
 	thirdParty := []byte(`{"sensitivity":"third_party"}`)
 	providers := []Provider{
-		// destilar: the priciest step (model tokens), high quality.
+		// destilar: the priciest step (model tokens), high quality. Cloud is on_demand (woken
+		// via Cloud Run Jobs `run`); the self-host variant is resident on the always-on VPC, so
+		// the reconciler never tries to "wake" it (and the router's health gate applies, with
+		// bootstrap grace until its first heartbeat — the asr-youtube model).
 		{Name: provDistill, Capability: capDestilar, Runtime: runtimeCloudRun, Activation: activationOnDemand,
 			Cost: 2.00, Quality: 0.92, LatencyMs: 30000, Constraints: thirdParty, Enabled: true},
-		{Name: provDistillLocal, Capability: capDestilar, Runtime: runtimeVPC, Activation: activationOnDemand,
+		{Name: provDistillLocal, Capability: capDestilar, Runtime: runtimeVPC, Activation: activationResident,
 			Cost: 3.00, Quality: 0.84, LatencyMs: 60000, Enabled: true},
 		// gate_barato / gate_rico: the cascade gates (rules -> profile -> LLM-judge). Cheap on
 		// average (only the borderline middle pays the LLM call).
 		{Name: provGateBarato, Capability: capGateBarato, Runtime: runtimeCloudRun, Activation: activationOnDemand,
 			Cost: 0.50, Quality: 0.88, LatencyMs: 5000, Constraints: thirdParty, Enabled: true},
-		{Name: provGateBaratoLocal, Capability: capGateBarato, Runtime: runtimeVPC, Activation: activationOnDemand,
+		{Name: provGateBaratoLocal, Capability: capGateBarato, Runtime: runtimeVPC, Activation: activationResident,
 			Cost: 0.90, Quality: 0.80, LatencyMs: 9000, Enabled: true},
 		{Name: provGateRico, Capability: capGateRico, Runtime: runtimeCloudRun, Activation: activationOnDemand,
 			Cost: 0.60, Quality: 0.90, LatencyMs: 8000, Constraints: thirdParty, Enabled: true},
-		{Name: provGateRicoLocal, Capability: capGateRico, Runtime: runtimeVPC, Activation: activationOnDemand,
+		{Name: provGateRicoLocal, Capability: capGateRico, Runtime: runtimeVPC, Activation: activationResident,
 			Cost: 1.00, Quality: 0.82, LatencyMs: 14000, Enabled: true},
 	}
 	for _, p := range providers {
@@ -136,8 +139,8 @@ func seedLaneFlow(ctx context.Context, db Database, name, sourceType string, cap
 	if err != nil {
 		return err
 	}
-	for i, cap := range capabilities {
-		if err := db.UpsertFlowStep(ctx, FlowStep{FlowID: flowID, Seq: i + 1, Capability: cap, Enabled: true}); err != nil {
+	for i, capName := range capabilities {
+		if err := db.UpsertFlowStep(ctx, FlowStep{FlowID: flowID, Seq: i + 1, Capability: capName, Enabled: true}); err != nil {
 			return err
 		}
 	}
