@@ -36,9 +36,15 @@ changing any worker's domain logic. Phase 1 ships:
 - **Pass-through gates**: `gate_barato`/`gate_rico` always `keep` (recorded in
   `gate_decisions`, `decided_by=passthrough`). Real curation is Phase 3.
 
-Routing (cost/quality/constraints + fallback + heartbeat) is **Phase 2**; until then the
-reconciler selects the single enabled provider per capability and the residential
-constraint is recorded but not yet enforced.
+Routing (cost/quality/constraints + fallback) is **Phase 2**; until then the reconciler
+selects the single enabled provider per capability and the residential constraint is
+recorded but not yet enforced. A minimal **liveness backstop** is in, though: a claimed
+(`running`) step whose heartbeat goes stale past `RECONCILE_STALE_SECONDS` is returned to
+the pending frontier for re-claim. Other robustness edges handled this phase: a transient
+worker miss (e.g. distill's batch hasn't reached a transcript yet) re-queues the step up to
+an attempt ceiling instead of failing the item; an empty (no-speech) transcript curates the
+item out (`filtered`) rather than driving it into a distill that must fail; and the loops
+honour SIGINT/SIGTERM for graceful shutdown.
 
 ### Commands
 

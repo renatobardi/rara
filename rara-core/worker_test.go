@@ -6,18 +6,21 @@ import (
 	"testing"
 )
 
-// fakeRunner is a StepRunner that returns a canned output_ref (or error) and records the
-// items it was asked to run — so the claim/advance orchestration is tested with zero I/O.
+// fakeRunner is a StepRunner that returns a canned result (or error) and records the items
+// it was asked to run — so the claim/advance orchestration is tested with zero I/O.
 type fakeRunner struct {
-	outputRef string
-	err       error
-	ran       []string // source_refs seen
+	result RunResult
+	err    error
+	ran    []string // source_refs seen
 }
 
-func (f *fakeRunner) Run(_ context.Context, item Item, _ ItemStep) (string, error) {
+func (f *fakeRunner) Run(_ context.Context, item Item, _ ItemStep) (RunResult, error) {
 	f.ran = append(f.ran, item.SourceRef)
-	return f.outputRef, f.err
+	return f.result, f.err
 }
+
+// out is a small constructor for a successful run returning an output_ref.
+func out(ref string) RunResult { return RunResult{OutputRef: ref} }
 
 // assignTranscrever drives the reconciler far enough to leave a pending transcrever step.
 func assignTranscrever(t *testing.T, db *MockDatabase) int {
@@ -35,7 +38,7 @@ func TestWorkerClaimsAndCompletes(t *testing.T) {
 	ctx := context.Background()
 	db := newMockDatabase()
 	itemID := assignTranscrever(t, db)
-	runner := &fakeRunner{outputRef: "transcript-7"}
+	runner := &fakeRunner{result: out("transcript-7")}
 	w := NewWorker(db, capTranscrever, runner)
 
 	claimed, err := w.RunOnce(ctx)
@@ -139,7 +142,7 @@ func TestRunUntilDrained(t *testing.T) {
 		id, _ := db.UpsertItem(ctx, Item{Lane: laneYouTube, SourceRef: ref, FlowID: flowID, FlowVersion: 1, Status: itemDiscovered})
 		mustStep(t, db, ItemStep{ItemID: id, Seq: 3, Capability: capTranscrever, Status: stepPending, AssignedProvider: provASRYouTube})
 	}
-	runner := &fakeRunner{outputRef: "x"}
+	runner := &fakeRunner{result: out("x")}
 	if err := NewWorker(db, capTranscrever, runner).RunUntilDrained(ctx); err != nil {
 		t.Fatalf("drain: %v", err)
 	}
@@ -157,8 +160,8 @@ func TestEndToEndYouTubeFlow(t *testing.T) {
 	itemID := seedAndIngestOne(t, db, "vid1")
 	act := &fakeActivator{}
 	r := NewReconciler(db, act)
-	scribe := NewWorker(db, capTranscrever, &fakeRunner{outputRef: "transcript-7"})
-	distill := NewWorker(db, capDestilar, &fakeRunner{outputRef: "distill-9"})
+	scribe := NewWorker(db, capTranscrever, &fakeRunner{result: out("transcript-7")})
+	distill := NewWorker(db, capDestilar, &fakeRunner{result: out("distill-9")})
 
 	// Run to a fixed point: reconcile, then let both shims drain, until the item is done.
 	for pass := 0; pass < 6; pass++ {
@@ -202,5 +205,102 @@ func mustStep(t *testing.T, db *MockDatabase, s ItemStep) {
 	t.Helper()
 	if err := db.UpsertItemStep(context.Background(), s); err != nil {
 		t.Fatalf("upsert step: %v", err)
+	}
+}
+
+// TestWorkerFiltersEmptyTranscript (#2): a benign no-content result marks the step done
+// with its output_ref AND curates the item out (terminal `filtered`, not failed), so it
+// is never driven into a distill that must fail.
+func TestWorkerFiltersEmptyTranscript(t *testing.T) {
+	ctx := context.Background()
+	db := newMockDatabase()
+	itemID := assignTranscrever(t, db)
+	runner := &fakeRunner{result: RunResult{OutputRef: "transcript-empty", Filtered: true}}
+
+	claimed, err := NewWorker(db, capTranscrever, runner).RunOnce(ctx)
+	if err != nil || !claimed {
+		t.Fatalf("RunOnce: claimed=%v err=%v", claimed, err)
+	}
+	s := db.itemSteps[itemStepKey{itemID, 3}]
+	if s.Status != stepDone || s.OutputRef != "transcript-empty" {
+		t.Errorf("step = %+v, want done with output_ref", s)
+	}
+	if got := db.itemByID[itemID].Status; got != itemFiltered {
+		t.Errorf("item status = %q, want filtered", got)
+	}
+	active, _ := db.ListActiveItems(ctx)
+	if len(active) != 0 {
+		t.Errorf("filtered item should leave the active set, got %d active", len(active))
+	}
+}
+
+// TestWorkerRetriesTransientThenFails (#4): a retryable miss (distill's batch hasn't
+// produced the row yet) re-queues the step as pending instead of failing the item — until
+// the attempt ceiling, after which it fails for good.
+func TestWorkerRetriesTransientThenFails(t *testing.T) {
+	ctx := context.Background()
+	db := newMockDatabase()
+	itemID := assignTranscrever(t, db)
+	runner := &fakeRunner{err: errRetryable}
+
+	// First claim+run: transient -> re-queued pending, not failed.
+	if _, err := NewWorker(db, capTranscrever, runner).RunOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	s := db.itemSteps[itemStepKey{itemID, 3}]
+	if s.Status != stepPending {
+		t.Fatalf("after a transient miss the step should be re-queued pending, got %q", s.Status)
+	}
+	if s.HeartbeatAt != nil {
+		t.Error("re-queued step should have its heartbeat cleared")
+	}
+
+	// Draining keeps retrying until the attempt ceiling, then fails for good.
+	if err := NewWorker(db, capTranscrever, runner).RunUntilDrained(ctx); err != nil {
+		t.Fatal(err)
+	}
+	s = db.itemSteps[itemStepKey{itemID, 3}]
+	if s.Status != stepFailed {
+		t.Errorf("after %d attempts the step should fail, got %q", maxStepAttempts, s.Status)
+	}
+	if s.Attempt != maxStepAttempts {
+		t.Errorf("attempt = %d, want the ceiling %d", s.Attempt, maxStepAttempts)
+	}
+}
+
+// itemGoneDB makes GetItem report not-found while delegating everything else to the mock,
+// to exercise the orphan-step path without an (un-)deletable item in the mock.
+type itemGoneDB struct{ *MockDatabase }
+
+func (itemGoneDB) GetItem(context.Context, int) (Item, bool, error) { return Item{}, false, nil }
+
+// TestWorkerItemNotFound (#5): if the item vanished between claim and read, the orphan step
+// is marked failed so it leaves the running set.
+func TestWorkerItemNotFound(t *testing.T) {
+	ctx := context.Background()
+	db := newMockDatabase()
+	itemID := assignTranscrever(t, db)
+
+	claimed, err := NewWorker(itemGoneDB{db}, capTranscrever, &fakeRunner{result: out("x")}).RunOnce(ctx)
+	if err != nil || !claimed {
+		t.Fatalf("RunOnce: claimed=%v err=%v", claimed, err)
+	}
+	s := db.itemSteps[itemStepKey{itemID, 3}]
+	if s.Status != stepFailed || s.Error != "item not found" {
+		t.Errorf("orphan step = %+v, want failed 'item not found'", s)
+	}
+}
+
+// TestRunUntilDrainedStopsOnContextCancel (#1): a cancelled context stops the drain loop
+// promptly — the basis for graceful SIGTERM shutdown of the resident/on_demand workers.
+func TestRunUntilDrainedStopsOnContextCancel(t *testing.T) {
+	db := newMockDatabase()
+	assignTranscrever(t, db) // a pending step is waiting
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := NewWorker(db, capTranscrever, &fakeRunner{result: out("x")}).RunUntilDrained(ctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("drain should stop with context.Canceled, got %v", err)
 	}
 }

@@ -25,15 +25,30 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log"
 )
 
-// StepRunner executes one claimed step against its domain worker and returns the
-// output_ref (the worker-owned domain row id, e.g. transcripts.id / distillations.id) to
-// record on the item_step. An error means the step failed; the orchestration marks it
-// failed and the reconciler decides what to do next pass.
+// maxStepAttempts caps how many times a transient (retryable) step is re-queued before it
+// is failed for good — mirroring scribe/distill's own per-row attempt ceiling.
+const maxStepAttempts = 5
+
+// RunResult is what a StepRunner reports back. OutputRef is the worker-owned domain row id
+// to record on the item_step. Filtered marks a benign, no-content outcome (e.g. an empty
+// transcript with no speech): the step is legitimately done, but there is nothing to carry
+// downstream, so the item is curated out (terminal `filtered`) instead of marched into a
+// distill that must fail.
+type RunResult struct {
+	OutputRef string
+	Filtered  bool
+}
+
+// StepRunner executes one claimed step against its domain worker. A returned error means
+// the step did not succeed; if it wraps errRetryable (e.g. distill's batch hasn't reached
+// this row yet) the orchestration re-queues the step until maxStepAttempts, otherwise it
+// marks it failed for the reconciler to act on next pass.
 type StepRunner interface {
-	Run(ctx context.Context, item Item, step ItemStep) (outputRef string, err error)
+	Run(ctx context.Context, item Item, step ItemStep) (RunResult, error)
 }
 
 // Worker is one capability's pull loop: claim a pending step, run it, write it back.
@@ -70,12 +85,30 @@ func (w *Worker) RunOnce(ctx context.Context) (claimed bool, err error) {
 		return true, w.finish(ctx, *step, stepFailed, "", "item not found")
 	}
 
-	outputRef, runErr := w.runner.Run(ctx, item, *step)
+	res, runErr := w.runner.Run(ctx, item, *step)
 	if runErr != nil {
+		// Transient (e.g. distill's batch hasn't produced this row yet): re-queue the
+		// step as pending so a later claim retries it, until the attempt ceiling.
+		if errors.Is(runErr, errRetryable) && step.Attempt < maxStepAttempts {
+			log.Printf("worker %s: step item=%d seq=%d transient (attempt %d/%d): %v",
+				w.capability, step.ItemID, step.Seq, step.Attempt, maxStepAttempts, runErr)
+			return true, w.requeue(ctx, *step, runErr.Error())
+		}
 		log.Printf("worker %s: step item=%d seq=%d failed: %v", w.capability, step.ItemID, step.Seq, runErr)
 		return true, w.finish(ctx, *step, stepFailed, "", runErr.Error())
 	}
-	return true, w.finish(ctx, *step, stepDone, outputRef, "")
+
+	if res.Filtered {
+		// Benign no-content: record the step done with its output, then curate the item
+		// out. This is the one sanctioned case where a worker writes item status — a
+		// terminal hand-off (the item leaves the active set; the reconciler never
+		// contends), made here because emptiness is a domain fact only the worker knows.
+		if err := w.finish(ctx, *step, stepDone, res.OutputRef, ""); err != nil {
+			return true, err
+		}
+		return true, w.filterItem(ctx, item)
+	}
+	return true, w.finish(ctx, *step, stepDone, res.OutputRef, "")
 }
 
 // RunUntilDrained claims and processes steps until the queue is empty (the on_demand
@@ -104,4 +137,25 @@ func (w *Worker) finish(ctx context.Context, step ItemStep, status, outputRef, e
 	step.OutputRef = outputRef
 	step.Error = errMsg
 	return w.db.UpsertItemStep(ctx, step)
+}
+
+// requeue returns a transiently-failed step to the pending frontier (heartbeat cleared so
+// it reads as un-owned) so the next claim retries it. attempt is left as the claim bumped
+// it — the ceiling in RunOnce reads it to stop eventually.
+func (w *Worker) requeue(ctx context.Context, step ItemStep, errMsg string) error {
+	step.Status = stepPending
+	step.HeartbeatAt = nil
+	step.OutputRef = ""
+	step.Error = errMsg
+	return w.db.UpsertItemStep(ctx, step)
+}
+
+// filterItem marks an item terminal `filtered` (curated out, not an error). See RunOnce.
+func (w *Worker) filterItem(ctx context.Context, item Item) error {
+	if item.Status == itemFiltered {
+		return nil
+	}
+	item.Status = itemFiltered
+	_, err := w.db.UpsertItem(ctx, item)
+	return err
 }

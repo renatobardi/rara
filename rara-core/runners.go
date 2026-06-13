@@ -22,9 +22,14 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// errNoOutputRow signals the worker ran but its domain row is not (yet) present — distinct
-// from a hard failure, useful for diagnosis in the logs.
-var errNoOutputRow = errors.New("worker produced no output row")
+// errNoOutputRow is a HARD failure: the worker ran but produced no usable domain row
+// (e.g. scribe could not transcribe at all). errRetryable is a TRANSIENT miss: the row is
+// expected to appear on a later attempt (e.g. distill's batch hasn't reached it yet), so
+// the worker re-queues the step instead of failing the item. worker.go branches on these.
+var (
+	errNoOutputRow = errors.New("worker produced no output row")
+	errRetryable   = errors.New("retryable: output not yet available")
+)
 
 func envOr(key, def string) string {
 	if v := os.Getenv(key); v != "" {
@@ -46,26 +51,28 @@ func newScribeRunner(conn *pgx.Conn) *scribeRunner {
 	return &scribeRunner{conn: conn, bin: envOr("SCRIBE_BIN", "scribe-job")}
 }
 
-func (r *scribeRunner) Run(ctx context.Context, item Item, _ ItemStep) (string, error) {
+func (r *scribeRunner) Run(ctx context.Context, item Item, _ ItemStep) (RunResult, error) {
 	// Translate the spine's natural key into scribe's current single-source entrypoint.
 	url := "https://www.youtube.com/watch?v=" + item.SourceRef
 	cmd := exec.CommandContext(ctx, r.bin, "--source", url, "--limit", "1")
 	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("scribe %s: %w", url, err)
+		return RunResult{}, fmt.Errorf("scribe %s: %w", url, err)
 	}
-	// Capture the transcript row scribe wrote. 'empty' (no speech) still counts as a
-	// produced row for the step; the downstream gate/distill handles thin text.
-	const q = `SELECT id FROM transcripts
+	// Capture the transcript scribe wrote. 'empty' (no speech) is a benign no-content
+	// outcome: the row exists but there is nothing to distill, so the item is filtered
+	// rather than driven into a distill that must fail. No row at all is a hard failure.
+	const q = `SELECT id, status FROM transcripts
 	           WHERE youtube_video_id = $1 AND status IN ('done', 'empty')`
 	var id int
-	switch err := r.conn.QueryRow(ctx, q, item.SourceRef).Scan(&id); {
+	var status string
+	switch err := r.conn.QueryRow(ctx, q, item.SourceRef).Scan(&id, &status); {
 	case errors.Is(err, pgx.ErrNoRows):
-		return "", fmt.Errorf("transcrever %s: %w", item.SourceRef, errNoOutputRow)
+		return RunResult{}, fmt.Errorf("transcrever %s: %w", item.SourceRef, errNoOutputRow)
 	case err != nil:
-		return "", err
+		return RunResult{}, err
 	}
-	return strconv.Itoa(id), nil
+	return RunResult{OutputRef: strconv.Itoa(id), Filtered: status == "empty"}, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -86,25 +93,27 @@ func newDistillRunner(conn *pgx.Conn) *distillRunner {
 	}
 }
 
-func (r *distillRunner) Run(ctx context.Context, item Item, _ ItemStep) (string, error) {
+func (r *distillRunner) Run(ctx context.Context, item Item, _ ItemStep) (RunResult, error) {
 	// distill batch-pulls its own queue; force a large batch so this transcript is
 	// included in the single run. Idempotent — re-distilling already-done rows is a no-op.
 	cmd := exec.CommandContext(ctx, r.bin)
 	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 	cmd.Env = append(os.Environ(), "DISTILL_BATCH_SIZE="+r.batchSize)
 	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("distill: %w", err)
+		return RunResult{}, fmt.Errorf("distill: %w", err)
 	}
-	// For a YouTube source, distillations.source_key is the youtube_video_id.
+	// For a YouTube source, distillations.source_key is the youtube_video_id. A missing
+	// row is TRANSIENT, not fatal: with a large backlog one drain may not have reached
+	// this transcript yet, so re-queue (capped) rather than failing the item.
 	const q = `SELECT id FROM distillations WHERE source_key = $1 AND status = 'done'`
 	var id int
 	switch err := r.conn.QueryRow(ctx, q, item.SourceRef).Scan(&id); {
 	case errors.Is(err, pgx.ErrNoRows):
-		return "", fmt.Errorf("destilar %s: %w", item.SourceRef, errNoOutputRow)
+		return RunResult{}, fmt.Errorf("destilar %s: %w", item.SourceRef, errRetryable)
 	case err != nil:
-		return "", err
+		return RunResult{}, err
 	}
-	return strconv.Itoa(id), nil
+	return RunResult{OutputRef: strconv.Itoa(id)}, nil
 }
 
 // ---------------------------------------------------------------------------

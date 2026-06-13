@@ -29,7 +29,14 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"time"
 )
+
+// defaultStaleAfter is how long a claimed (running) step may go without a heartbeat before
+// the reconciler assumes its worker died and returns the step to the pending frontier for
+// re-claim. A conservative default; tunable via RECONCILE_STALE_SECONDS. (Full
+// timeout->reactivate/fallback routing is Phase 2; this is the minimal liveness backstop.)
+const defaultStaleAfter = 10 * time.Minute
 
 // Activator wakes an on_demand provider so it starts pulling its assignment. For resident
 // providers it is a no-op (they are always awake). The concrete implementation calls
@@ -40,18 +47,22 @@ type Activator interface {
 	Activate(ctx context.Context, p Provider) error
 }
 
-// Reconciler is the control loop. clock is injectable so tests stay deterministic.
+// Reconciler is the control loop. now + staleAfter are injectable so the heartbeat-liveness
+// backstop is deterministic in tests.
 type Reconciler struct {
-	db        Database
-	activator Activator
+	db         Database
+	activator  Activator
+	now        func() time.Time
+	staleAfter time.Duration
 }
 
-// NewReconciler wires a reconciler. A nil activator falls back to a logging no-op.
+// NewReconciler wires a reconciler. A nil activator falls back to a logging no-op. now and
+// staleAfter default to wall-clock and defaultStaleAfter; tests overwrite them directly.
 func NewReconciler(db Database, activator Activator) *Reconciler {
 	if activator == nil {
 		activator = logActivator{}
 	}
-	return &Reconciler{db: db, activator: activator}
+	return &Reconciler{db: db, activator: activator, now: time.Now, staleAfter: defaultStaleAfter}
 }
 
 // ReconcileOnce runs a single pass over every active item. The always-on loop in main()
@@ -109,8 +120,18 @@ func (r *Reconciler) reconcileItem(ctx context.Context, item Item) error {
 		case actFail:
 			return r.setItemStatus(ctx, item, itemFailed)
 		case actWait:
-			// A work step is pending/assigned/running — the worker owns it now. Just
-			// keep the item's status in sync with what has completed and return.
+			// A work step is pending/assigned/running — the worker owns it now. If it is
+			// running but its heartbeat has gone stale, the worker likely died; return the
+			// step to the pending frontier so it can be re-claimed, then continue.
+			if st := bySeq[fs.Seq]; st.Status == stepRunning && r.isStale(st) {
+				log.Printf("reconcile item %d seq %d: stale heartbeat, re-queuing for claim", item.ID, fs.Seq)
+				st.Status = stepPending
+				st.HeartbeatAt = nil
+				if err := r.db.UpsertItemStep(ctx, st); err != nil {
+					return err
+				}
+			}
+			// Keep the item's status in sync with what has completed and return.
 			return r.syncItemStatus(ctx, item, flowSteps, bySeq)
 		case actMaterialize:
 			done, err := r.materialize(ctx, item, fs)
@@ -268,6 +289,12 @@ func computeItemStatus(flowSteps []FlowStep, bySeq map[int]ItemStep) string {
 	default:
 		return itemDiscovered
 	}
+}
+
+// isStale reports whether a running step's worker has likely died: it has a heartbeat
+// (stamped at claim) older than staleAfter. A step with no heartbeat is never stale.
+func (r *Reconciler) isStale(s ItemStep) bool {
+	return s.HeartbeatAt != nil && r.now().Sub(*s.HeartbeatAt) > r.staleAfter
 }
 
 // isGate reports whether a capability is a curation gate.

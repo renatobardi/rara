@@ -16,7 +16,9 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/signal"
 	"strconv"
+	"syscall"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -535,7 +537,10 @@ func main() {
 	if dbURL == "" {
 		log.Fatalf("DATABASE_URL environment variable is required")
 	}
-	ctx := context.Background()
+	// Signal-aware context: SIGINT/SIGTERM cancel it, so the always-on reconcile loop and
+	// the worker drain stop gracefully (the VPC/Cloud Run lifecycle delivers SIGTERM).
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
 	connectCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	conn, err := pgx.Connect(connectCtx, dbURL)
 	cancel()
@@ -586,6 +591,11 @@ func runReconcile(ctx context.Context, db Database, argv []string) {
 	_ = fs.Parse(argv)
 
 	r := NewReconciler(db, logActivator{}) // real Cloud Run activator is Phase 2
+	if v := os.Getenv("RECONCILE_STALE_SECONDS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			r.staleAfter = time.Duration(n) * time.Second
+		}
+	}
 	if !*loop {
 		if err := r.ReconcileOnce(ctx); err != nil {
 			log.Fatalf("reconcile: %v", err)

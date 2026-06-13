@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"testing"
+	"time"
 )
 
 // fakeActivator records which on_demand providers the reconciler tried to wake.
@@ -229,6 +230,49 @@ func TestReconcileNoProviderErrors(t *testing.T) {
 	// transcrever must remain unmaterialized (nothing to undo).
 	if _, ok := stepBySeq(db, itemID, 3); ok {
 		t.Error("transcrever step should not be created without a provider")
+	}
+}
+
+// TestReconcileRequeuesStaleRunningStep (#3): a running step whose heartbeat has gone
+// stale (worker likely died) is returned to the pending frontier for re-claim; a fresh
+// heartbeat is left alone.
+func TestReconcileRequeuesStaleRunningStep(t *testing.T) {
+	ctx := context.Background()
+	base := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+
+	// Helper: put the transcrever step into `running` with the given heartbeat age, run a
+	// reconcile pass, and return the resulting step.
+	runWithHeartbeat := func(heartbeat time.Time) ItemStep {
+		db := newMockDatabase()
+		itemID := seedAndIngestOne(t, db, "vid1")
+		r := NewReconciler(db, &fakeActivator{})
+		if err := r.ReconcileOnce(ctx); err != nil { // assigns transcrever (pending)
+			t.Fatal(err)
+		}
+		s := db.itemSteps[itemStepKey{itemID, 3}]
+		s.Status = stepRunning
+		s.HeartbeatAt = &heartbeat
+		if err := db.UpsertItemStep(ctx, s); err != nil {
+			t.Fatal(err)
+		}
+		r.now = func() time.Time { return base }
+		r.staleAfter = 10 * time.Minute
+		if err := r.ReconcileOnce(ctx); err != nil {
+			t.Fatal(err)
+		}
+		return db.itemSteps[itemStepKey{itemID, 3}]
+	}
+
+	// Stale (heartbeat 30m old) -> re-queued pending, heartbeat cleared.
+	stale := runWithHeartbeat(base.Add(-30 * time.Minute))
+	if stale.Status != stepPending || stale.HeartbeatAt != nil {
+		t.Errorf("stale running step = %+v, want pending with heartbeat cleared", stale)
+	}
+
+	// Fresh (heartbeat 1m old) -> left running, untouched.
+	fresh := runWithHeartbeat(base.Add(-1 * time.Minute))
+	if fresh.Status != stepRunning || fresh.HeartbeatAt == nil {
+		t.Errorf("fresh running step = %+v, want still running", fresh)
 	}
 }
 
