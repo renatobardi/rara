@@ -1,0 +1,7 @@
+node_modules/
+/.svelte-kit/
+# Ignore build OUTPUT but keep the dir (.gitkeep) so the Go //go:embed compiles in CI without npm.
+# Excluding contents (/build/*) rather than the dir itself is required — git can't re-include a
+# file whose parent directory is excluded.
+/build/*
+!/build/.gitkeep

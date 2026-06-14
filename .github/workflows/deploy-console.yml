@@ -1,0 +1,84 @@
+name: Deploy rara-console
+
+on:
+  workflow_dispatch:
+
+# The console lives on the same Oracle ARM VM as rara-core, under /opt/rara-console (rara-core uses
+# the DEPLOY_PATH secret = /opt/rara-core, so the console path is hard-coded here to avoid clashing).
+env:
+  DEPLOY_PATH: /opt/rara-console
+
+jobs:
+  deploy:
+    name: Build & Deploy (ARM64, SPA embed, rsync+systemd)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: rara-console/web/package-lock.json
+
+      - name: Build SvelteKit SPA
+        run: |
+          cd rara-console/web
+          npm ci
+          npm run build
+
+      - name: Setup Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
+        with:
+          go-version-file: rara-console/go.mod
+
+      - name: Build ARM64 binary (SPA embedded)
+        run: |
+          cd rara-console
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 \
+            go build -ldflags="-w -s" -o console .
+
+      - name: Setup SSH
+        uses: webfactory/ssh-agent@dc588b651fe13675774614f8e6a936a468676387 # v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+
+      - name: Add server to known_hosts
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: Upload binary and service file
+        env:
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          ssh "${DEPLOY_USER}@${DEPLOY_HOST}" "mkdir -p ${DEPLOY_PATH}/bin"
+          rsync -az rara-console/console \
+            "${DEPLOY_USER}@${DEPLOY_HOST}:${DEPLOY_PATH}/bin/console"
+          rsync -az rara-console/deploy/rara-console.service \
+            "${DEPLOY_USER}@${DEPLOY_HOST}:/tmp/rara-console.service"
+
+      - name: Install service and restart
+        env:
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          ssh "${DEPLOY_USER}@${DEPLOY_HOST}" bash <<'EOF'
+            set -euo pipefail
+            sudo cp /tmp/rara-console.service /etc/systemd/system/rara-console.service
+            sudo systemctl daemon-reload
+            sudo systemctl enable rara-console
+            if sudo systemctl is-active --quiet rara-console; then
+              sudo systemctl restart rara-console
+            else
+              sudo systemctl start rara-console
+            fi
+            sleep 3
+            sudo systemctl status rara-console --no-pager -l | head -20
+          EOF

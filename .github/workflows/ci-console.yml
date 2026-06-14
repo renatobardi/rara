@@ -1,0 +1,93 @@
+name: CI rara-console
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+    paths:
+      - 'rara-console/**'
+      - '.github/workflows/ci-console.yml'
+  pull_request:
+    branches:
+      - main
+      - develop
+    paths:
+      - 'rara-console/**'
+      - '.github/workflows/ci-console.yml'
+
+jobs:
+  code-quality:
+    name: Code Quality & Tests
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: Setup Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
+        with:
+          go-version-file: rara-console/go.mod
+
+      - name: Cache Go modules
+        uses: actions/cache@6f8efc29b200d32929f49075959781ed54ec270c # v3
+        with:
+          path: ~/go/pkg/mod
+          key: ${{ runner.os }}-go-console-${{ hashFiles('rara-console/go.mod') }}
+          restore-keys: |
+            ${{ runner.os }}-go-console-
+
+      - name: Format check
+        run: |
+          cd rara-console
+          if [ -n "$(gofmt -s -l .)" ]; then
+            echo "❌ Code formatting issues found. Run: gofmt -w ."
+            gofmt -s -d .
+            exit 1
+          fi
+          echo "✅ Code format OK"
+
+      - name: Lint
+        # The committed web/build/.gitkeep satisfies the //go:embed at compile time, so the Go
+        # toolchain runs without building the SPA.
+        run: |
+          cd rara-console
+          go vet ./...
+          echo "✅ Vet check passed"
+
+      - name: Run tests
+        run: |
+          cd rara-console
+          go test -v -race -coverprofile=coverage.out ./...
+          echo "✅ Tests passed"
+
+  security:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
+        with:
+          go-version-file: rara-console/go.mod
+
+      - name: Vulnerability scan (govulncheck)
+        run: |
+          cd rara-console
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          "$(go env GOPATH)/bin/govulncheck" ./...
+
+      - name: Secret scan (gitleaks)
+        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
