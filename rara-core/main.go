@@ -95,17 +95,16 @@ const (
 	targetDistillation = "distillation"
 )
 
-// The capability catalog. The first six mirror the seed in 001_initial_schema.sql; Phase 6 adds
-// revise_profile (the learning-loop reviser), seeded by seedCapabilities (Go) — an on_demand,
-// non-item task fired by cadence/threshold, not routed per item.
+// The capability catalog mirrors the seed in 001_initial_schema.sql. The learning-loop reviser is
+// NO LONGER a control-plane capability: it moved out to rara-hone, a periodic systemd-timer job
+// that proposes interest_profile revisions off the routing path entirely (no provider, no claim).
 const (
-	capColetar       = "coletar"
-	capTranscrever   = "transcrever"
-	capExtrair       = "extrair"
-	capGateBarato    = "gate_barato"
-	capGateRico      = "gate_rico"
-	capDestilar      = "destilar"
-	capReviseProfile = "revise_profile"
+	capColetar     = "coletar"
+	capTranscrever = "transcrever"
+	capExtrair     = "extrair"
+	capGateBarato  = "gate_barato"
+	capGateRico    = "gate_rico"
+	capDestilar    = "destilar"
 )
 
 // interest_profile.status — proposed-vs-active (migration 006). A revision is appended as
@@ -465,22 +464,18 @@ type Database interface {
 	// sample), ordered by id.
 	ListQuarantinedItems(ctx context.Context) ([]Item, error)
 
-	// --- Learning loop (Phase 6) ---------------------------------------------
-	// The reviser reads the active profile (its base) + the accumulated feedback, computes a
-	// new structured version deterministically, and appends it as `proposed`; an explicit
-	// approval activates it. The gate path reads the ACTIVE version, never "the latest".
+	// --- interest_profile lifecycle ------------------------------------------
+	// The gate cascade reads the ACTIVE version; the surface lists every version so an operator
+	// can see a pending proposal and approve it. PROPOSING revisions moved out to rara-hone (a
+	// periodic job); the control plane keeps only the read + the human APPROVAL.
 
 	// GetActiveInterestProfile returns the single `active` interest_profile (the version in
 	// force, read by the gate cascade), found=false if none is active. (GetLatestInterestProfile
-	// returns the highest version regardless of status — used only for next-version numbering.)
+	// returns the highest version regardless of status — used only for the seed's existence check.)
 	GetActiveInterestProfile(ctx context.Context) (InterestProfile, bool, error)
 	// ListInterestProfiles returns every interest_profile version (config-as-data for the
-	// surface and the reviser's debounce/numbering), ordered by version.
+	// surface, so a pending proposal is visible for approval), ordered by version.
 	ListInterestProfiles(ctx context.Context) ([]InterestProfile, error)
-	// ListFeedbackSince returns the feedback rows created strictly after `since`, ordered by id
-	// (the reviser's learning signal, windowed at the source so the scan never grows unbounded).
-	// A zero `since` returns all of it.
-	ListFeedbackSince(ctx context.Context, since time.Time) ([]Feedback, error)
 	// ActivateInterestProfile activates a `proposed` version (human approval), atomically
 	// demoting the current active to `superseded`. Returns errProfileNotProposed if the target
 	// does not exist or is not proposed.
@@ -802,8 +797,6 @@ Commands:
                              (SURFACE_TOKEN required; --addr defaults to SURFACE_ADDR/:8080)
   feedback --distillation <id> --signal <up|down>
                              Record explicit thumbs on a distillation
-  revise [--force]           Run the interest_profile learning loop: if cadence/threshold say
-                             so (or --force), propose a new profile version (awaits approval)
   quarantine list            List items deferred to quarantine (the cold-start review sample)
   quarantine review --item <id> --signal <up|down>
                              Review a quarantined item: up rescues it, down confirms the drop
@@ -862,9 +855,6 @@ func main() {
 
 	case "feedback":
 		runFeedback(ctx, db, os.Args[2:])
-
-	case "revise":
-		runRevise(ctx, db, conn, os.Args[2:])
 
 	case "quarantine":
 		runQuarantine(ctx, db, os.Args[2:])
@@ -1013,58 +1003,6 @@ func runFeedback(ctx context.Context, db Database, argv []string) {
 		log.Fatalf("feedback: %v", err)
 	}
 	log.Printf("rara-core: recorded %q feedback on distillation %s", *signal, *distillation)
-}
-
-// runRevise runs the Phase 6 learning loop: it decides (cadence/threshold/debounce, or --force)
-// whether to revise the interest_profile and, if so, proposes a new version. Wire it on a weekly
-// cron (Cloud Scheduler / launchd); the deterministic engine + the trigger logic decide whether
-// each run actually proposes anything. The narrator is best-effort — a missing LiteLLM gateway
-// only means the proposal carries a deterministic template narrative.
-func runRevise(ctx context.Context, db Database, conn *pgx.Conn, argv []string) {
-	fs := flag.NewFlagSet("revise", flag.ExitOnError)
-	force := fs.Bool("force", false, "bypass the cadence/threshold/debounce gate (still no-ops if there is no new feedback)")
-	_ = fs.Parse(argv)
-
-	cfg := defaultReviseConfig()
-	if v := os.Getenv("REVISE_CADENCE_HOURS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			cfg.Cadence = time.Duration(n) * time.Hour
-		}
-	}
-	if v := os.Getenv("REVISE_FEEDBACK_THRESHOLD"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			cfg.FeedbackThreshold = n
-		}
-	}
-	if v := os.Getenv("REVISE_DEBOUNCE_HOURS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
-			cfg.Debounce = time.Duration(n) * time.Hour
-		}
-	}
-	if *force {
-		// --force bypasses cadence/threshold/debounce (an operator forcing a revision now), but
-		// the engine still no-ops when there is genuinely no new feedback to learn from.
-		cfg.Cadence, cfg.Debounce, cfg.FeedbackThreshold = 0, 0, 1
-	}
-
-	// The narrator is optional: without a LiteLLM gateway the proposal still gets a deterministic
-	// template narrative (the structured revision is the part that must always work).
-	var narrator ProfileNarrator
-	if n, err := newLiteLLMNarrator(); err != nil {
-		log.Printf("revise: narrator unavailable (%v); proposals will carry a template narrative", err)
-	} else {
-		narrator = n
-	}
-
-	version, revised, err := ReviseProfile(ctx, db, newPgxDistillationResolver(conn), narrator, time.Now(), cfg)
-	if err != nil {
-		log.Fatalf("revise: %v", err)
-	}
-	if !revised {
-		log.Printf("rara-core: no revision proposed (trigger not met or no new feedback)")
-		return
-	}
-	log.Printf("rara-core: proposed interest_profile v%d — approve it via the surface to take effect", version)
 }
 
 // runQuarantine lists or reviews the quarantine sample (deliverable #5). `list` prints the

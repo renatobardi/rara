@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 )
 
@@ -87,8 +88,9 @@ func TestSeedYouTubeLane(t *testing.T) {
 	if got := string(p.Weights); got != `{"keep_threshold":0.6}` {
 		t.Errorf("profile weights = %q, want a keep_threshold", got)
 	}
-	if len(parseStringArray(p.Topics)) == 0 {
-		t.Error("profile v1 should seed starter topics")
+	var topics []string
+	if err := json.Unmarshal(p.Topics, &topics); err != nil || len(topics) == 0 {
+		t.Errorf("profile v1 should seed starter topics (err=%v, topics=%v)", err, topics)
 	}
 }
 
@@ -106,10 +108,11 @@ func TestSeedIdempotent(t *testing.T) {
 	if got := db.flows[youtubeFlowName].ID; got != id1 {
 		t.Errorf("flow id changed on re-seed: %d -> %d", id1, got)
 	}
-	// 7 shared work providers (gate-barato/-local, gate-rico/-local, distill/-local,
-	// profile-reviser) + 3 YouTube-specific (harvest, shelf, asr-youtube).
-	if len(db.providers) != 10 {
-		t.Errorf("expected 10 providers after re-seed, got %d", len(db.providers))
+	// 6 shared work providers (gate-barato/-local, gate-rico/-local, distill/-local) + 3
+	// YouTube-specific (harvest, shelf, asr-youtube). The learning-loop reviser is no longer a
+	// control-plane provider — it moved out to rara-hone (a periodic job, off the routing path).
+	if len(db.providers) != 9 {
+		t.Errorf("expected 9 providers after re-seed, got %d", len(db.providers))
 	}
 	if len(db.flowSteps) != 5 {
 		t.Errorf("expected 5 flow steps after re-seed, got %d", len(db.flowSteps))

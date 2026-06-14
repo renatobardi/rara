@@ -389,46 +389,45 @@ func TestReviseProfileNoActiveBase(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// proposed-vs-active invariants at the seam.
+// Append-only / one-active invariants at the hone seam (the half of the contract hone owns:
+// it APPENDS a proposed version; activation stays in rara-core's surface).
 // ---------------------------------------------------------------------------
 
-func TestInterestProfileOneActiveInvariant(t *testing.T) {
+func TestInsertInterestProfileVersionImmutable(t *testing.T) {
 	ctx := context.Background()
 	db := newMockDatabase()
 	if err := db.InsertInterestProfile(ctx, InterestProfile{Version: 1, Status: profileActive}); err != nil {
 		t.Fatal(err)
 	}
-	// A second active row is rejected (mirrors the partial unique index).
+	// Re-inserting the same version is rejected — a revision is a NEW version.
+	if err := db.InsertInterestProfile(ctx, InterestProfile{Version: 1, Status: profileProposed}); err == nil {
+		t.Fatal("UNIQUE(version) should reject a duplicate version")
+	}
+	// A second active row is rejected (mirrors the partial unique index); a proposed one is fine.
 	if err := db.InsertInterestProfile(ctx, InterestProfile{Version: 2, Status: profileActive}); err == nil {
 		t.Error("a second active interest_profile should be rejected")
 	}
-	// A proposed row is fine.
 	if err := db.InsertInterestProfile(ctx, InterestProfile{Version: 2, Status: profileProposed}); err != nil {
 		t.Fatal(err)
 	}
 }
 
-func TestActivateInterestProfileSwap(t *testing.T) {
-	ctx := context.Background()
-	db := newMockDatabase()
-	_ = db.InsertInterestProfile(ctx, InterestProfile{Version: 1, Status: profileActive})
-	_ = db.InsertInterestProfile(ctx, InterestProfile{Version: 2, Status: profileProposed})
+// ---------------------------------------------------------------------------
+// configFromEnv — env overrides + --force collapse.
+// ---------------------------------------------------------------------------
 
-	if err := db.ActivateInterestProfile(ctx, 2); err != nil {
-		t.Fatalf("activate v2: %v", err)
+func TestConfigFromEnv(t *testing.T) {
+	t.Setenv("REVISE_CADENCE_HOURS", "48")
+	t.Setenv("REVISE_FEEDBACK_THRESHOLD", "7")
+	t.Setenv("REVISE_DEBOUNCE_HOURS", "2")
+	cfg := configFromEnv(false)
+	if cfg.Cadence != 48*time.Hour || cfg.FeedbackThreshold != 7 || cfg.Debounce != 2*time.Hour {
+		t.Errorf("env overrides not applied: %+v", cfg)
 	}
-	if db.profiles[1].Status != profileSuperseded {
-		t.Errorf("v1 should be superseded, got %q", db.profiles[1].Status)
-	}
-	if db.profiles[2].Status != profileActive {
-		t.Errorf("v2 should be active, got %q", db.profiles[2].Status)
-	}
-	// Activating a non-proposed version is rejected, and nothing changes.
-	if err := db.ActivateInterestProfile(ctx, 1); err == nil {
-		t.Error("activating a superseded version should error")
-	}
-	if db.profiles[2].Status != profileActive {
-		t.Error("a rejected activation must not mutate the current active")
+	// --force collapses the trigger gate (but the engine still no-ops with no new feedback).
+	forced := configFromEnv(true)
+	if forced.Cadence != 0 || forced.Debounce != 0 || forced.FeedbackThreshold != 1 {
+		t.Errorf("--force should collapse cadence/debounce/threshold: %+v", forced)
 	}
 }
 
