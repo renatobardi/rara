@@ -22,20 +22,41 @@ import (
 // Pure helpers
 // ---------------------------------------------------------------------------
 
-func TestDetectSourceType(t *testing.T) {
-	cases := map[string]string{
-		"https://www.youtube.com/watch?v=dQw4w9WgXcQ": "youtube",
-		"https://youtu.be/dQw4w9WgXcQ":                "youtube",
-		"http://youtube.com/shorts/abc":               "youtube",
-		"https://vimeo.com/123456789":                 "url",
-		"https://example.com/video.mp4":               "url",
-		"/Users/bardi/Videos/talk.mp4":                "local",
-		"talk.mp4":                                    "local",
-	}
-	for ref, want := range cases {
-		if got := detectSourceType(ref); got != want {
-			t.Errorf("detectSourceType(%q) = %q, want %q", ref, got, want)
+func TestValidateFetchURL(t *testing.T) {
+	for _, ok := range []string{"https://cdn.example.com/ep.mp3", "http://cdn.example.com/ep.mp3"} {
+		if err := validateFetchURL(ok); err != nil {
+			t.Errorf("validateFetchURL(%q) = %v, want nil", ok, err)
 		}
+	}
+	for _, bad := range []string{"file:///etc/passwd", "ftp://x/y.mp3", "gopher://x", "data:audio/mp3;base64,AAAA"} {
+		if err := validateFetchURL(bad); err == nil {
+			t.Errorf("validateFetchURL(%q) = nil, want a rejection", bad)
+		}
+	}
+}
+
+func TestDownloadDirect(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("AUDIOBYTES"))
+	}))
+	defer srv.Close()
+
+	dest := filepath.Join(t.TempDir(), "audio.bin")
+	got, err := downloadDirect(context.Background(), srv.URL, dest)
+	if err != nil || got != dest {
+		t.Fatalf("downloadDirect = %q, %v", got, err)
+	}
+	if b, _ := os.ReadFile(dest); string(b) != "AUDIOBYTES" {
+		t.Errorf("downloaded content = %q, want AUDIOBYTES", b)
+	}
+
+	// A non-200 response is an error (no file passed on to ffmpeg).
+	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer bad.Close()
+	if _, err := downloadDirect(context.Background(), bad.URL, dest); err == nil {
+		t.Error("expected an error on a non-200 response")
 	}
 }
 
@@ -967,6 +988,20 @@ func TestHandlerEnclosureNotReadyIsRetryable(t *testing.T) {
 	_, err := runHandler(store, newMockAcquirer(), newMockTranscriber(), provASRDirectAudio, "guid-missing")
 	if !errors.Is(err, addon.ErrRetryable) {
 		t.Errorf("err = %v, want wrapping addon.ErrRetryable", err)
+	}
+	if len(store.transcripts) != 0 {
+		t.Errorf("nothing should be saved, got %d", len(store.transcripts))
+	}
+}
+
+// TestHandlerRejectsNonHttpEnclosure: a feed-supplied enclosure with a non-http(s) scheme is
+// rejected before any download (the SSRF/local-file guard) — a terminal error, nothing saved.
+func TestHandlerRejectsNonHttpEnclosure(t *testing.T) {
+	store := newMockStore()
+	store.enclosures["guid-evil"] = "file:///etc/passwd"
+	_, err := runHandler(store, newMockAcquirer(), newMockTranscriber(), provASRDirectAudio, "guid-evil")
+	if err == nil || errors.Is(err, addon.ErrRetryable) {
+		t.Errorf("err = %v, want a terminal (non-retryable) rejection", err)
 	}
 	if len(store.transcripts) != 0 {
 		t.Errorf("nothing should be saved, got %d", len(store.transcripts))

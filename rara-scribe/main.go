@@ -211,18 +211,6 @@ type Transcriber interface {
 
 var videoIDRe = regexp.MustCompile(`(?:youtu\.be/|/shorts/|/embed/|/live/|/v/|[?&]v=)([A-Za-z0-9_-]{11})`)
 
-// detectSourceType classifies a raw reference into a Source type.
-func detectSourceType(ref string) string {
-	if u, err := url.Parse(ref); err == nil && (u.Scheme == "http" || u.Scheme == "https") {
-		host := strings.ToLower(u.Host)
-		if strings.Contains(host, "youtube.") || strings.Contains(host, "youtu.be") {
-			return "youtube"
-		}
-		return "url"
-	}
-	return "local"
-}
-
 // extractVideoID pulls the 11-char YouTube id from any common URL shape, or
 // accepts a bare id. Returns "" when none is found.
 func extractVideoID(s string) string {
@@ -545,12 +533,31 @@ func resolveTarget(ctx context.Context, store ScribeStore, provider string, item
 			// The collector row may lag the spine item; let the SDK requeue rather than fail.
 			return fetchTarget{}, fmt.Errorf("transcrever %s: podcast enclosure not ready: %w", item.SourceRef, addon.ErrRetryable)
 		}
+		// Defense-in-depth: the enclosure URL comes from the (feed-controlled) podcast_episodes
+		// row. Only http(s) is fetched, so a hostile feed can't point the downloader at file:// or
+		// another scheme. (A bad scheme is a data problem, not transient — fail terminally.)
+		if err := validateFetchURL(enclosure); err != nil {
+			return fetchTarget{}, fmt.Errorf("transcrever %s: %w", item.SourceRef, err)
+		}
 		// The transcript is keyed on the spine's source_ref (the GUID) + lane=podcast, NOT the
 		// enclosure URL — so the downstream gate/distill lookups chain on the same GUID.
 		return fetchTarget{source: Source{Type: "url", Ref: enclosure}, keySourceType: lanePodcast, keySourceRef: item.SourceRef, keyYoutubeID: ""}, nil
 	default:
 		return fetchTarget{}, fmt.Errorf("transcrever: unknown provider %q", provider)
 	}
+}
+
+// validateFetchURL rejects any non-http(s) enclosure URL before it reaches the downloader, so a
+// feed-supplied ref cannot become an SSRF/local-file fetch via an unexpected scheme.
+func validateFetchURL(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("invalid enclosure url %q: %w", raw, err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("enclosure url scheme %q not allowed (http/https only)", u.Scheme)
+	}
+	return nil
 }
 
 // transcribeHandler is the domain logic behind addon.Run: transcribe ONE claimed item. The SDK
@@ -623,8 +630,16 @@ func (a *ytDlpAcquirer) Acquire(ctx context.Context, src Source) ([]AudioChunk, 
 		return nil, fmt.Errorf("failed to create temp dir: %w", err)
 	}
 
+	// Acquire the source media to a local file. The fetch tool is chosen by source type:
+	//   - youtube: yt-dlp (needs a residential IP; handles the player-client/cookie dance);
+	//   - url:     a direct media enclosure (podcast) — a plain http(s) GET, lighter than yt-dlp
+	//              and with no extra protocol surface (the scheme is validated in resolveTarget);
+	//   - local:   already a file path, nothing to download.
 	input := src.Ref
-	if src.Type != "local" {
+	switch src.Type {
+	case "local":
+		// input is already the local file path.
+	case "youtube":
 		// Download best native audio format; ffmpeg conversion happens in the
 		// next step via our own explicit binary path. Avoids yt-dlp postprocessing
 		// which requires ffmpeg in PATH (broken under launchd's minimal environment).
@@ -655,6 +670,13 @@ func (a *ytDlpAcquirer) Acquire(ctx context.Context, src Source) ([]AudioChunk, 
 			return nil, fmt.Errorf("yt-dlp produced no audio file for %s", src.Ref)
 		}
 		input = matches[0]
+	default: // "url": a direct media enclosure
+		path, err := downloadDirect(ctx, src.Ref, filepath.Join(workDir, "audio.bin"))
+		if err != nil {
+			_ = os.RemoveAll(workDir)
+			return nil, err
+		}
+		input = path
 	}
 
 	// Decode to 16 kHz mono and split into fixed-length chunks.
@@ -689,6 +711,45 @@ func (a *ytDlpAcquirer) Acquire(ctx context.Context, src Source) ([]AudioChunk, 
 func lastLine(b []byte) string {
 	lines := strings.Split(strings.TrimSpace(string(b)), "\n")
 	return lines[len(lines)-1]
+}
+
+// downloadClient fetches a direct media enclosure. It has no client-level timeout — the per-item
+// ctx (sourceTimeout) bounds the whole acquire — and it constrains redirects to http(s) so a 30x
+// cannot escalate into a file:// (or other-scheme) fetch.
+var downloadClient = &http.Client{
+	CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		if req.URL.Scheme != "http" && req.URL.Scheme != "https" {
+			return fmt.Errorf("refusing redirect to scheme %q", req.URL.Scheme)
+		}
+		return nil
+	},
+}
+
+// downloadDirect streams a direct media URL to dest and returns dest. Used for podcast enclosures
+// (asr-direct-audio): a plain http(s) GET is lighter than yt-dlp and has no extra protocol surface.
+// Only http(s) reaches here (validated in resolveTarget).
+func downloadDirect(ctx context.Context, rawURL, dest string) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return "", fmt.Errorf("download %s: %w", rawURL, err)
+	}
+	resp, err := downloadClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("download %s: %w", rawURL, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("download %s: status %d", rawURL, resp.StatusCode)
+	}
+	f, err := os.Create(dest)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	if _, err := io.Copy(f, resp.Body); err != nil {
+		return "", fmt.Errorf("download %s: %w", rawURL, err)
+	}
+	return dest, nil
 }
 
 // safeFFmpegInput stops a source ref from being interpreted by ffmpeg as an option
