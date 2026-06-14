@@ -790,10 +790,8 @@ func ytSource(id string) Source { return Source{Type: "youtube", Ref: videoURL(i
 func TestTranscribeSourceSingleChunk(t *testing.T) {
 	const vid = "dQw4w9WgXcQ"
 	src := ytSource(vid)
-	acq := newMockAcquirer()
-	acq.chunks[src.Ref] = []AudioChunk{{Path: "/tmp/x/chunk_000.mp3", Offset: 0}}
-	tr := newMockTranscriber()
-	tr.results["/tmp/x/chunk_000.mp3"] = mockResult{text: "olá mundo", language: "pt", segs: []Segment{{Start: 0, End: 2, Text: "olá"}, {Start: 2, End: 4, Text: "mundo"}}}
+	acq, tr := oneChunk(src.Ref, "/tmp/x/chunk_000.mp3", "olá mundo", "pt",
+		Segment{Start: 0, End: 2, Text: "olá"}, Segment{Start: 2, End: 4, Text: "mundo"})
 
 	got, segs := transcribeSource(context.Background(), acq, tr, groqModelName, src)
 	if got.Status != statusDone || got.Language != "pt" || got.Text != "olá mundo" || len(segs) != 2 {
@@ -842,10 +840,7 @@ func TestTranscribeSourceLanguageByMajority(t *testing.T) {
 // TestTranscribeSourceEmptyMarkedEmpty: no text + no segments → status 'empty'.
 func TestTranscribeSourceEmptyMarkedEmpty(t *testing.T) {
 	src := ytSource("silent")
-	acq := newMockAcquirer()
-	acq.chunks[src.Ref] = []AudioChunk{{Path: "/s/0.mp3", Offset: 0}}
-	tr := newMockTranscriber()
-	tr.results["/s/0.mp3"] = mockResult{text: "", language: "pt"}
+	acq, tr := oneChunk(src.Ref, "/s/0.mp3", "", "pt")
 
 	got, segs := transcribeSource(context.Background(), acq, tr, groqModelName, src)
 	if got.Status != statusEmpty || len(segs) != 0 {
@@ -868,9 +863,7 @@ func TestTranscribeSourceAcquireFailure(t *testing.T) {
 // and is NOT flagged transient.
 func TestTranscribeSourcePermanentASRFailure(t *testing.T) {
 	src := ytSource("vid1")
-	acq := newMockAcquirer()
-	acq.chunks[src.Ref] = []AudioChunk{{Path: "/x/0.mp3", Offset: 0}}
-	tr := newMockTranscriber()
+	acq, tr := oneChunk(src.Ref, "/x/0.mp3", "ignored", "en")
 	tr.err = errors.New("groq API error (status 400): bad request")
 	got, _ := transcribeSource(context.Background(), acq, tr, groqModelName, src)
 	if got.Status != statusFailed || got.TransientFailure {
@@ -887,14 +880,21 @@ func runHandler(store *mockStore, acq *MockAcquirer, tr *MockTranscriber, provid
 	return h(context.Background(), addon.Item{SourceRef: sourceRef}, addon.Step{Seq: 1})
 }
 
+// oneChunk wires a mock acquirer + transcriber for a source that produces a single chunk with the
+// given ASR result (factored out so the per-test setup isn't repeated boilerplate).
+func oneChunk(srcRef, chunkPath, text, lang string, segs ...Segment) (*MockAcquirer, *MockTranscriber) {
+	acq := newMockAcquirer()
+	acq.chunks[srcRef] = []AudioChunk{{Path: chunkPath, Offset: 0}}
+	tr := newMockTranscriber()
+	tr.results[chunkPath] = mockResult{text: text, language: lang, segs: segs}
+	return acq, tr
+}
+
 // TestHandlerYouTubeHappyPath: asr-youtube builds the watch URL from the video id, transcribes, and
 // saves a transcript keyed by youtube_video_id; OutputRef is the new row id.
 func TestHandlerYouTubeHappyPath(t *testing.T) {
 	store := newMockStore()
-	acq := newMockAcquirer()
-	acq.chunks[videoURL("vid1")] = []AudioChunk{{Path: "/x/0.mp3", Offset: 0}}
-	tr := newMockTranscriber()
-	tr.results["/x/0.mp3"] = mockResult{text: "olá", language: "pt", segs: []Segment{{Start: 0, End: 1, Text: "olá"}}}
+	acq, tr := oneChunk(videoURL("vid1"), "/x/0.mp3", "olá", "pt", Segment{Start: 0, End: 1, Text: "olá"})
 
 	res, err := runHandler(store, acq, tr, provASRYouTube, "vid1")
 	if err != nil {
@@ -915,10 +915,7 @@ func TestHandlerYouTubeHappyPath(t *testing.T) {
 func TestHandlerDirectAudioReKeysToPodcast(t *testing.T) {
 	store := newMockStore()
 	store.enclosures["guid-42"] = "https://cdn.example.com/ep42.mp3"
-	acq := newMockAcquirer()
-	acq.chunks["https://cdn.example.com/ep42.mp3"] = []AudioChunk{{Path: "/p/0.mp3", Offset: 0}}
-	tr := newMockTranscriber()
-	tr.results["/p/0.mp3"] = mockResult{text: "hello", language: "en", segs: []Segment{{Start: 0, End: 1, Text: "hello"}}}
+	acq, tr := oneChunk("https://cdn.example.com/ep42.mp3", "/p/0.mp3", "hello", "en", Segment{Start: 0, End: 1, Text: "hello"})
 
 	res, err := runHandler(store, acq, tr, provASRDirectAudio, "guid-42")
 	if err != nil {
@@ -936,10 +933,7 @@ func TestHandlerDirectAudioReKeysToPodcast(t *testing.T) {
 // TestHandlerEmptyIsFiltered: a no-speech transcript is benign no-content — the item is curated out.
 func TestHandlerEmptyIsFiltered(t *testing.T) {
 	store := newMockStore()
-	acq := newMockAcquirer()
-	acq.chunks[videoURL("silent")] = []AudioChunk{{Path: "/s/0.mp3", Offset: 0}}
-	tr := newMockTranscriber()
-	tr.results["/s/0.mp3"] = mockResult{text: "", language: "pt"}
+	acq, tr := oneChunk(videoURL("silent"), "/s/0.mp3", "", "pt")
 
 	res, err := runHandler(store, acq, tr, provASRYouTube, "silent")
 	if err != nil {
@@ -991,10 +985,7 @@ func TestHandlerUnknownProvider(t *testing.T) {
 func TestHandlerSaveErrorPropagates(t *testing.T) {
 	store := newMockStore()
 	store.saveErr = errors.New("neon write timeout")
-	acq := newMockAcquirer()
-	acq.chunks[videoURL("vid1")] = []AudioChunk{{Path: "/x/0.mp3", Offset: 0}}
-	tr := newMockTranscriber()
-	tr.results["/x/0.mp3"] = mockResult{text: "ok", language: "en", segs: []Segment{{Start: 0, End: 1, Text: "ok"}}}
+	acq, tr := oneChunk(videoURL("vid1"), "/x/0.mp3", "ok", "en", Segment{Start: 0, End: 1, Text: "ok"})
 
 	_, err := runHandler(store, acq, tr, provASRYouTube, "vid1")
 	if err == nil || !strings.Contains(err.Error(), "neon write timeout") {
