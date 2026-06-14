@@ -19,6 +19,14 @@ jobs:
         with:
           go-version-file: rara-core/go.mod
 
+      - name: Cache Go modules
+        uses: actions/cache@6f8efc29b200d32929f49075959781ed54ec270c # v3
+        with:
+          path: ~/go/pkg/mod
+          key: ${{ runner.os }}-go-core-${{ hashFiles('rara-core/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-core-
+
       - name: Build ARM64 binary
         # rara-core imports rara-addon via a replace directive (../rara-addon). The full
         # repo checkout satisfies the sibling path; CGO_ENABLED=0 lets us cross-compile

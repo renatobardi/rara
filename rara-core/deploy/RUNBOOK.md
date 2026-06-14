@@ -94,6 +94,8 @@ rara-core surface: listening on 100.x.x.x:8080
 One-shot, from the VM:
 
 ```bash
+# source the env first — systemd does this automatically, manual runs don't
+set -a; source /etc/rara-core/env; set +a
 /opt/rara-core/bin/core-job seed
 ```
 
@@ -117,7 +119,7 @@ TAILSCALE_IP=100.x.x.x
 curl -s http://${TAILSCALE_IP}:8080/healthz
 
 # Authenticated check
-TOKEN=$(cat /etc/rara-core/env | grep SURFACE_TOKEN | cut -d= -f2)
+TOKEN=$(grep '^SURFACE_TOKEN=' /etc/rara-core/env | cut -d= -f2-)
 curl -s -H "Authorization: Bearer ${TOKEN}" \
   http://${TAILSCALE_IP}:8080/capabilities | jq .
 ```
