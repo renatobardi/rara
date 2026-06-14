@@ -1,7 +1,7 @@
 .PHONY: help test test-verbose test-coverage test-race lint fmt clean build docker-build deps all
 
 help:
-	@echo "rara-mail - Makefile Commands"
+	@echo "rara-dial - Makefile Commands"
 	@echo ""
 	@echo "Testing:"
 	@echo "  make test              Run all tests"
@@ -51,17 +51,17 @@ fmt:
 
 build:
 	@echo "Building for current OS..."
-	go build -ldflags="-w -s" -o mail-job .
-	@echo "Built: mail-job"
+	go build -ldflags="-w -s" -o dial-job .
+	@echo "Built: dial-job"
 
 docker-build:
 	@echo "Building Docker image..."
-	docker build -t rara-mail:latest .
-	@echo "Docker image built: rara-mail:latest"
+	docker build -t rara-dial:latest .
+	@echo "Docker image built: rara-dial:latest"
 
 clean:
 	@echo "Cleaning build artifacts..."
-	rm -f mail-job coverage.out
+	rm -f dial-job coverage.out
 	@echo "Clean complete"
 
 deps:

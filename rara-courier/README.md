@@ -1,4 +1,4 @@
-# rara-mail
+# rara-courier
 
 The 2.0 **Email lane** collector. An isolated agent that collects messages from Gmail (OAuth
 refresh-token auth, the same pattern as `rara-shelf`) and catalogs each into its own domain

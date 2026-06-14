@@ -14,7 +14,7 @@ COPY *.go ./
 # which is what Cloud Run runs. No hardcoded GOARCH cross-compile.
 RUN CGO_ENABLED=0 GOOS=linux go build \
     -ldflags="-w -s" \
-    -o podcast-job .
+    -o courier-job .
 
 FROM alpine:3.21
 
@@ -22,9 +22,9 @@ RUN apk add --no-cache ca-certificates
 
 WORKDIR /app
 
-COPY --from=builder /build/podcast-job /app/podcast-job
+COPY --from=builder /build/courier-job /app/courier-job
 
 # Run as an unprivileged user.
 USER nobody
 
-ENTRYPOINT ["/app/podcast-job"]
+ENTRYPOINT ["/app/courier-job"]

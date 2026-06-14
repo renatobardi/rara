@@ -1,4 +1,4 @@
-module rara-podcast
+module rara-courier
 
 go 1.26.4
 

@@ -1,4 +1,4 @@
-module rara-mail
+module rara-dial
 
 go 1.26.4
 

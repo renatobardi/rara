@@ -1,7 +1,7 @@
 .PHONY: help test test-verbose test-coverage test-race lint fmt clean build docker-build deps all
 
 help:
-	@echo "rara-podcast - Makefile Commands"
+	@echo "rara-courier - Makefile Commands"
 	@echo ""
 	@echo "Testing:"
 	@echo "  make test              Run all tests"
@@ -51,17 +51,17 @@ fmt:
 
 build:
 	@echo "Building for current OS..."
-	go build -ldflags="-w -s" -o podcast-job .
-	@echo "Built: podcast-job"
+	go build -ldflags="-w -s" -o courier-job .
+	@echo "Built: courier-job"
 
 docker-build:
 	@echo "Building Docker image..."
-	docker build -t rara-podcast:latest .
-	@echo "Docker image built: rara-podcast:latest"
+	docker build -t rara-courier:latest .
+	@echo "Docker image built: rara-courier:latest"
 
 clean:
 	@echo "Cleaning build artifacts..."
-	rm -f podcast-job coverage.out
+	rm -f courier-job coverage.out
 	@echo "Clean complete"
 
 deps:
