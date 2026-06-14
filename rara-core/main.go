@@ -477,9 +477,10 @@ type Database interface {
 	// ListInterestProfiles returns every interest_profile version (config-as-data for the
 	// surface and the reviser's debounce/numbering), ordered by version.
 	ListInterestProfiles(ctx context.Context) ([]InterestProfile, error)
-	// ListFeedback returns every feedback row (the reviser's learning signal), ordered by id;
-	// CreatedAt is populated so the reviser can window by it.
-	ListFeedback(ctx context.Context) ([]Feedback, error)
+	// ListFeedbackSince returns the feedback rows created strictly after `since`, ordered by id
+	// (the reviser's learning signal, windowed at the source so the scan never grows unbounded).
+	// A zero `since` returns all of it.
+	ListFeedbackSince(ctx context.Context, since time.Time) ([]Feedback, error)
 	// ActivateInterestProfile activates a `proposed` version (human approval), atomically
 	// demoting the current active to `superseded`. Returns errProfileNotProposed if the target
 	// does not exist or is not proposed.

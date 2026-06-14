@@ -14,6 +14,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -253,11 +254,13 @@ func (d *pgxDatabase) ListInterestProfiles(ctx context.Context) ([]InterestProfi
 	return out, rows.Err()
 }
 
-// ListFeedback returns every feedback row ordered by id, with created_at populated so the reviser
-// can window by it.
-func (d *pgxDatabase) ListFeedback(ctx context.Context) ([]Feedback, error) {
-	const q = `SELECT target_type, target_ref, signal, source, created_at FROM feedback ORDER BY id`
-	rows, err := d.conn.Query(ctx, q)
+// ListFeedbackSince returns the feedback rows created after `since`, ordered by id, with
+// created_at populated. Windowing at the source keeps the reviser's scan bounded to the new
+// signal since the last revision instead of the whole (ever-growing) table.
+func (d *pgxDatabase) ListFeedbackSince(ctx context.Context, since time.Time) ([]Feedback, error) {
+	const q = `SELECT target_type, target_ref, signal, source, created_at
+	           FROM feedback WHERE created_at > $1 ORDER BY id`
+	rows, err := d.conn.Query(ctx, q, since)
 	if err != nil {
 		return nil, err
 	}

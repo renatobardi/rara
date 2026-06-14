@@ -219,16 +219,15 @@ func reviseProfileStructured(base revisedStructured, agg feedbackAggregate, cfg 
 	sortCandidates(promote)
 	sortCandidates(demote)
 
-	// Demotions first (a downvoted term leaves its bucket and joins anti_topics), capped.
+	// Demotions first (a downvoted term joins anti_topics), capped. Remove it from BOTH buckets,
+	// not just the one it was signalled in, so a term can never sit in anti_topics AND topics/
+	// authors at once (which would net out in profileMatch).
 	for i, c := range demote {
 		if i >= cfg.MaxDemotions {
 			break
 		}
-		if c.author {
-			authors.del(c.term)
-		} else {
-			topics.del(c.term)
-		}
+		topics.del(c.term)
+		authors.del(c.term)
 		anti.add(c.term)
 	}
 	// Promotions (a term joins its bucket and leaves anti_topics if it was there), capped.
@@ -328,15 +327,9 @@ func ReviseProfile(ctx context.Context, db Database, resolver DistillationResolv
 		}
 	}
 
-	feedback, err := db.ListFeedback(ctx)
+	window, err := db.ListFeedbackSince(ctx, lastRevision)
 	if err != nil {
 		return 0, false, err
-	}
-	var window []Feedback
-	for _, fb := range feedback {
-		if fb.CreatedAt.After(lastRevision) {
-			window = append(window, fb)
-		}
 	}
 
 	if !shouldRevise(now, lastRevision, proposedPending, len(window), cfg) {

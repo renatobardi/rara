@@ -417,9 +417,13 @@ func (m *MockDatabase) ListInterestProfiles(_ context.Context) ([]InterestProfil
 	return out, nil
 }
 
-func (m *MockDatabase) ListFeedback(_ context.Context) ([]Feedback, error) {
-	out := make([]Feedback, len(m.feedback))
-	copy(out, m.feedback) // append-only slice preserves insertion (id) order
+func (m *MockDatabase) ListFeedbackSince(_ context.Context, since time.Time) ([]Feedback, error) {
+	var out []Feedback
+	for _, f := range m.feedback { // append-only slice preserves insertion (id) order
+		if f.CreatedAt.After(since) {
+			out = append(out, f)
+		}
+	}
 	return out, nil
 }
 
