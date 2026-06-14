@@ -733,6 +733,16 @@ func TestRecipeResolverBadOptions(t *testing.T) {
 	}
 }
 
+// TestRecipeResolverRecipeWithoutPatternsErrors: a recipe block present but missing patterns
+// (e.g. {"recipe":{"context":"software-ai"}}) is a config error, surfaced loudly rather than
+// silently falling back to the default and dropping the context it did set.
+func TestRecipeResolverRecipeWithoutPatternsErrors(t *testing.T) {
+	rr := newRecipeResolver([]string{"extract_wisdom"}, "", "")
+	if _, err := rr.resolve(json.RawMessage(`{"recipe":{"context":"software-ai"}}`)); err == nil {
+		t.Error("expected error for a recipe with no patterns")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // distillHandler — the bridge-total claim-worker domain (mock Store + fake LLM)
 // ---------------------------------------------------------------------------
@@ -774,23 +784,53 @@ func TestHandlerInputNotReadyIsRetryable(t *testing.T) {
 	}
 }
 
-// TestHandlerDistillFailedPersistsAndFails: a curation failure persists the failed row (for
-// observability) and fails the step (a non-retryable error).
-func TestHandlerDistillFailedPersistsAndFails(t *testing.T) {
+// TestHandlerDistillFailedPersistsAndRetries: a curation failure persists the failed row (for
+// observability) AND surfaces as retryable, so the SDK requeues up to MaxAttempts (the 1.0
+// retry-to-cap) instead of terminally failing the item on the first blip.
+func TestHandlerDistillFailedPersistsAndRetries(t *testing.T) {
 	store := newMockStore()
 	store.docs["vid1"] = SourceDoc{SourceKey: "vid1", SourceRef: "vid1", Transcript: "x"}
 	cur := &MockCurator{err: errors.New("llm 500")}
 	h := distillHandler(store, cur, "mock/engine", newRecipeResolver(nil, "", ""))
 
 	_, err := h(context.Background(), addon.Item{SourceRef: "vid1", FlowID: 1}, addon.Step{Seq: 1})
-	if err == nil {
-		t.Fatal("expected an error so the step fails")
-	}
-	if errors.Is(err, addon.ErrRetryable) {
-		t.Error("a curation failure is terminal, not retryable")
+	if !errors.Is(err, addon.ErrRetryable) {
+		t.Errorf("err = %v, want wrapping addon.ErrRetryable (requeue up to the cap)", err)
 	}
 	if len(store.saved) != 1 || store.saved[0].Status != statusFailed {
 		t.Errorf("expected one persisted failed row, got %+v", store.saved)
+	}
+}
+
+// TestHandlerSaveErrorPropagates: a store write failure propagates (the step is not silently
+// marked done) and is not mistaken for a transient input miss.
+func TestHandlerSaveErrorPropagates(t *testing.T) {
+	store := newMockStore()
+	store.docs["vid1"] = SourceDoc{SourceKey: "vid1", SourceRef: "vid1", Transcript: "x"}
+	store.saveErr = errors.New("neon write timeout")
+	cur := &MockCurator{results: []string{curationJSON("# ok", "d")}}
+	h := distillHandler(store, cur, "mock/engine", newRecipeResolver(nil, "", ""))
+
+	_, err := h(context.Background(), addon.Item{SourceRef: "vid1", FlowID: 1}, addon.Step{Seq: 1})
+	if err == nil || !strings.Contains(err.Error(), "neon write timeout") {
+		t.Errorf("err = %v, want the save error propagated", err)
+	}
+}
+
+// TestHandlerRecipeOptionsErrorPropagates: a failure reading the per-step recipe config propagates
+// (the handler does not fall back to the default on a real DB error).
+func TestHandlerRecipeOptionsErrorPropagates(t *testing.T) {
+	store := newMockStore()
+	store.recipeErr = errors.New("flow_steps read failed")
+	store.docs["vid1"] = SourceDoc{SourceKey: "vid1", SourceRef: "vid1", Transcript: "x"}
+	h := distillHandler(store, &MockCurator{}, "mock/engine", newRecipeResolver(nil, "", ""))
+
+	_, err := h(context.Background(), addon.Item{SourceRef: "vid1", FlowID: 1}, addon.Step{Seq: 1})
+	if err == nil || !strings.Contains(err.Error(), "flow_steps read failed") {
+		t.Errorf("err = %v, want the recipe-options error propagated", err)
+	}
+	if len(store.saved) != 0 {
+		t.Errorf("nothing should be saved when the recipe could not be resolved, saved %d", len(store.saved))
 	}
 }
 

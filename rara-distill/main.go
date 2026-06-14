@@ -381,7 +381,13 @@ func (rr *recipeResolver) resolve(optsRaw json.RawMessage) (Recipe, error) {
 		if err := json.Unmarshal(optsRaw, &o); err != nil {
 			return Recipe{}, fmt.Errorf("parse flow_step options: %w", err)
 		}
-		if o.Recipe != nil && len(o.Recipe.Patterns) > 0 {
+		if o.Recipe != nil {
+			// A recipe override must name its patterns; a recipe block with none (e.g.
+			// {"recipe":{"context":"software-ai"}}) is a config error — surfaced loudly rather
+			// than silently falling back to the default and ignoring whatever it did set.
+			if len(o.Recipe.Patterns) == 0 {
+				return Recipe{}, fmt.Errorf("flow_step recipe has no patterns (set recipe.patterns or omit the recipe key)")
+			}
 			patterns, contextName, strategy = o.Recipe.Patterns, o.Recipe.Context, o.Recipe.Strategy
 		}
 	}
@@ -648,8 +654,13 @@ func distillHandler(store DistillStore, cur Curator, engineName string, rr *reci
 		}
 
 		if d.Status == statusFailed {
-			// Row persisted for observability; fail the step so the SDK records the failure.
-			return addon.Result{}, fmt.Errorf("destilar %s: %s", doc.SourceKey, d.Error)
+			// Row persisted for observability. Surface as retryable so the SDK requeues up to
+			// MaxAttempts (matching the 1.0 retry-to-cap, where a failed distillation was
+			// re-selected until attempt_count hit the ceiling). postWithRetry already absorbs
+			// transient 429/5xx within a call; this covers a timeout or a sustained outage so a
+			// blip does not terminally fail the item on the first miss. A persistent failure still
+			// terminates — just after the bounded retries.
+			return addon.Result{}, fmt.Errorf("destilar %s: %w: %s", doc.SourceKey, addon.ErrRetryable, d.Error)
 		}
 		log.Printf("distilled %s (%s, structured=%s) -> distillation %d", doc.SourceKey, doc.Title, d.StructuredStatus, id)
 		return addon.Result{OutputRef: strconv.Itoa(id)}, nil
@@ -1080,6 +1091,7 @@ func (db *appDB) LoadSourceDoc(ctx context.Context, sourceRef string) (SourceDoc
 			  AND t.transcript IS NOT NULL
 			  AND length(btrim(t.transcript)) > 0
 			  AND COALESCE(t.youtube_video_id, t.source_ref) = $1
+			ORDER BY t.id DESC
 			LIMIT 1
 		)
 		SELECT src.youtube_video_id, src.source_type, src.source_ref, src.source_key,
