@@ -1,0 +1,16 @@
+[Unit]
+Description=rara-core (2.0 control plane: reconciler + surface)
+After=network.target
+
+[Service]
+Type=exec
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/rara-core
+ExecStart=/opt/rara-core/bin/core-job reconcile --loop
+Restart=on-failure
+RestartSec=5s
+EnvironmentFile=/etc/rara-core/env
+
+[Install]
+WantedBy=multi-user.target

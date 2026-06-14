@@ -1,25 +1,93 @@
-# Infrastructure — rara ecosystem
+# Infrastructure — rara ecosystem (2.0)
 
-The concrete infrastructure behind the four agents: GCP (for the Cloud Run agents harvest,
-shelf and distill), the shared Neon database, GitHub Actions CI/CD, and the local Mac setup
-(for the scribe transcriber).
+The rara 2.0 topology is four zones: a VPC always-on brain (`rara-core`), a
+residential Mac (audio transcription), GCP Cloud Run on-demand workers, and the
+shared Neon database. The control plane lives in the VPC; workers are dispatched
+from there.
 
-> Placeholders `<PROJECT_ID>` and `<REGION>` are stored in GitHub Variables `GCP_PROJECT_ID` and
-> `GCP_REGION`; real values are not committed.
+For the 1.0 agent-by-agent design see `ARCHITECTURE.md`. For the 2.0 control
+plane design see `ARCHITECTURE-2.0.pt-BR.md`.
+
+> Placeholders `<PROJECT_ID>` and `<REGION>` are stored in GitHub Variables
+> `GCP_PROJECT_ID` and `GCP_REGION`; real values are not committed.
+
+---
 
 ## Runtime topology
 
-| Agent | Runtime | Trigger | Where |
-|-------|---------|---------|-------|
-| rara-harvest | GCP Cloud Run Job | daily | GCP datacenter |
-| rara-shelf | GCP Cloud Run Job | daily | GCP datacenter |
-| rara-scribe | macOS `launchd` agent | daily at 02:00 | owner's Mac (residential IP) |
-| rara-distill | GCP Cloud Run Job | daily, after scribe | GCP datacenter |
-| rara-feed | GCP Cloud Run Job | daily | GCP datacenter |
+| Component | Runtime | Where | How it runs |
+|-----------|---------|-------|-------------|
+| **rara-core** (reconciler + surface) | Oracle ARM VM | VPC | systemd service, always-on; `reconcile --loop` embeds the HTTP/MCP surface when `SURFACE_ADDR` is set |
+| **rara-scribe** | macOS `launchd` | owner's Mac (residential IP) | daily at 02:00 via launchd; YouTube blocks datacenter IPs |
+| **rara-distill** | GCP Cloud Run Job | GCP datacenter | on-demand, dispatched by rara-core (P2) |
+| **rara-sift** | GCP Cloud Run Job | GCP datacenter | on-demand, dispatched by rara-core (P2) |
+| **rara-harvest** | GCP Cloud Run Job | GCP datacenter | daily scheduled job |
+| **rara-shelf** | GCP Cloud Run Job | GCP datacenter | daily scheduled job |
+| **rara-feed** | GCP Cloud Run Job | GCP datacenter | daily scheduled job |
+| **rara-dial** | GCP Cloud Run Job | GCP datacenter | on-demand / scheduled |
+| **rara-courier** | GCP Cloud Run Job | GCP datacenter | on-demand / scheduled |
 
-All five read/write the **same Neon database**, using isolated tables.
+All components read/write the **same Neon database**, using isolated tables.
+Cross-agent coupling is database-only — no agent calls another's API.
 
-## GCP (Cloud Run: harvest + shelf + distill)
+---
+
+## VPC (rara-core: Oracle ARM VM)
+
+### Deploy pattern
+
+Mirrors the kura-server pattern: native binary + rsync + systemd, no Docker.
+
+| Detail | Value |
+|--------|-------|
+| VM | Oracle ARM (Ampere A1, Ubuntu 22.04 aarch64) |
+| Binary | `core-job` (CGO_ENABLED=0 GOOS=linux GOARCH=arm64, cross-compiled on `ubuntu-latest`) |
+| Install path | `/opt/rara-core/bin/core-job` |
+| Config | `/etc/rara-core/env` (chmod 640, gitignored) |
+| Service | `/etc/systemd/system/rara-core.service` (Type=exec, Restart=on-failure) |
+| Trigger | `workflow_dispatch` on `.github/workflows/deploy-core.yml` |
+| Auth | SSH key (`SSH_PRIVATE_KEY` GitHub Secret) |
+
+Deploy artifacts: `rara-core/deploy/` — service unit, env.example, RUNBOOK.md.
+
+### Network access
+
+- **Public IP**: SSH only (port 22). Port 8080 should be blocked at the Oracle firewall or OS firewall (`ufw`).
+- **Tailscale**: the control surface (`SURFACE_ADDR=100.x.x.x:8080`) is reachable only over the Tailnet — from your Mac, from Kura, from any authorized node.
+- The surface binds explicitly to the Tailscale IP; it never listens on `0.0.0.0`.
+
+### Subcommands in production
+
+| Command | Purpose |
+|---------|---------|
+| `core-job reconcile --loop` | Always-on (systemd); embeds surface when `SURFACE_ADDR` set |
+| `core-job seed` | One-shot lane config seed (idempotent) |
+| `core-job ingest --lane <lane>` | Populate items spine from collector tables |
+
+---
+
+## Local Mac (rara-scribe)
+
+rara-scribe runs under `launchd`, installed by `rara-scribe/install-local.sh`.
+
+```
+~/.rara-scribe/
+  rara-scribe          # compiled binary
+  .env                 # DATABASE_URL, GROQ_API_KEY, SCRIBE_PROVIDER, ...
+  run.sh               # exports Homebrew PATH; sources .env; execs binary
+~/Library/LaunchAgents/com.rara.scribe.plist   # daily 02:00
+~/Library/Logs/rara-scribe/{output,error}.log
+```
+
+`launchd` runs with minimal `PATH`; `run.sh` prepends `/opt/homebrew/bin` so
+`yt-dlp`/`ffmpeg` are found. Binary paths in `.env` are absolute.
+
+Secrets are read from `~/.rara-scribe/.env` (gitignored). GCP Secret Manager is
+not used by scribe.
+
+---
+
+## GCP (Cloud Run workers)
 
 | Component | Value |
 |-----------|-------|
@@ -28,128 +96,78 @@ All five read/write the **same Neon database**, using isolated tables.
 | Artifact Registry | `<REGION>-docker.pkg.dev/<PROJECT_ID>/rara/` |
 | Deployer SA | `rara-deployer@<PROJECT_ID>.iam.gserviceaccount.com` |
 | Auth | Workload Identity Federation (no SA key files) |
-| Build | Cloud Build → amd64 images → Cloud Run Job |
+| Build | Cloud Build → arm64 images → Cloud Run Job |
 
-Images are built **amd64** (the early arm64 default was a bug, corrected in
-[rara-harvest/DEPLOY.md](./rara-harvest/DEPLOY.md)).
+Workers that import `rara-addon` via `replace rara-addon => ../rara-addon` require
+a multi-module Docker build (rara-addon + worker in the same build context).
+`rara-distill` and `rara-sift` have their deploy workflows gated until the
+multi-module build is wired (P2).
 
 ### Secret Manager
 
 | Secret | Used by |
 |--------|---------|
 | `youtube-api-key` | rara-harvest |
-| `database-url` | rara-harvest + rara-shelf |
-| `shelf-oauth-client-id` | rara-shelf |
-| `shelf-oauth-client-secret` | rara-shelf |
-| `shelf-oauth-refresh-token` | rara-shelf |
-| `gemini-api-key` | rara-distill (curation LLM, default engine) |
-| `anthropic-api-key` / `groq-api-key` | rara-distill (only if `CURATE_ENGINE` is switched) |
+| `database-url` | all Cloud Run workers |
+| `shelf-oauth-client-id/secret/refresh-token` | rara-shelf |
+| `gemini-api-key` | rara-distill (default curate engine) |
+| `anthropic-api-key` / `groq-api-key` | rara-distill (optional engines) |
 
-The runtime SA (compute default) and `rara-deployer` hold `secretmanager.secretAccessor` at
-project level, so adding a new secret needs no IAM change — but the secret value itself must
-exist **before** the first deploy. The first distill deploy failed precisely because
-`gemini-api-key` had not been created yet; the job mounts it at boot via `--set-secrets`.
-
-## Local Mac (transcriber: scribe)
-
-rara-scribe is **not** on GCP. It is installed by `rara-scribe/install-local.sh`, which builds
-the binary, writes config, and registers a `launchd` agent.
-
-### On-disk layout
-
-```
-~/.rara-scribe/
-  rara-scribe        # compiled binary
-  .env               # DATABASE_URL, GROQ_API_KEY, YT_DLP_BIN, FFMPEG_BIN, BATCH_SIZE
-  run.sh             # wrapper: exports Homebrew PATH, sources .env, execs the binary
-~/Library/LaunchAgents/com.rara.scribe.plist   # launchd job (daily 02:00)
-~/Library/Logs/rara-scribe/{output,error}.log  # logs
-```
-
-### Why the wrapper exports PATH
-
-`launchd` runs with a minimal `PATH` that excludes `/opt/homebrew/bin`. yt-dlp needs to find
-`ffmpeg`/`ffprobe` at runtime, so `run.sh` exports `PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"`
-before exec. The binary paths in `.env` (`YT_DLP_BIN`, `FFMPEG_BIN`) are absolute for the same
-reason — no reliance on `$PATH` lookup.
-
-### Secrets
-
-scribe reads `DATABASE_URL` and `GROQ_API_KEY` from `~/.rara-scribe/.env` (gitignored, never
-committed). It does **not** use GCP Secret Manager. The `groq-api-key` and `yt-dlp-cookies`
-secrets from its old Cloud Run deployment can be deleted — see
-[rara-scribe/DEPLOY.md](./rara-scribe/DEPLOY.md).
-
-### Useful commands
-
-```bash
-launchctl start com.rara.scribe              # force a run now
-tail -f ~/Library/Logs/rara-scribe/output.log
-launchctl unload ~/Library/LaunchAgents/com.rara.scribe.plist  # stop
-```
+---
 
 ## Database (Neon, shared)
 
-One Neon PostgreSQL instance (free tier, 0.5 GB). Tables are isolated per agent; migrations are
-applied per agent by the `database-*.yml` workflows (BEGIN/ROLLBACK validation on PR, apply on
-merge to `main`). Storage usage is tiny — the full transcript backlog is well under 20 MB.
+One Neon PostgreSQL instance. Tables are isolated per agent; no FK crosses agent
+boundaries. Migrations are applied per agent by `database-*.yml` (BEGIN/ROLLBACK
+on PR, apply on merge to `main`).
+
+---
 
 ## CI/CD (GitHub Actions)
 
-Fourteen workflows, path-filtered per agent. See [.github/workflows/README.md](./.github/workflows/README.md)
-for details.
+Path-filtered per agent — a change to `rara-core/**` only triggers core's three
+workflows.
 
 | Workflow | Agent | Purpose |
 |----------|-------|---------|
-| `ci.yml` | harvest | fmt/vet/test/security |
-| `ci-shelf.yml` | shelf | fmt/vet/test/security |
-| `ci-scribe.yml` | scribe | fmt/vet/test/security |
-| `ci-distill.yml` | distill | fmt/vet/test/security |
-| `ci-feed.yml` | feed | fmt/vet/test/security |
-| `database.yml` | harvest | migrations |
-| `database-shelf.yml` | shelf | migrations |
-| `database-scribe.yml` | scribe | migrations |
+| `ci-core.yml` | core | vet + staticcheck + tests (also triggers on rara-addon changes) |
+| `ci-addon.yml` | addon | SDK unit tests |
+| `ci-distill.yml` | distill | vet + tests |
+| `ci-scribe.yml` | scribe | vet + tests |
+| `ci-sift.yml` | sift | vet + tests |
+| `ci-shelf.yml` | shelf | vet + tests |
+| `ci-feed.yml` | feed | vet + tests |
+| `ci.yml` | harvest | vet + tests |
+| `database-core.yml` | core | migrations |
 | `database-distill.yml` | distill | migrations |
+| `database-scribe.yml` | scribe | migrations |
+| `database-shelf.yml` | shelf | migrations |
 | `database-feed.yml` | feed | migrations |
-| `deploy.yml` | harvest | Cloud Run deploy |
-| `deploy-shelf.yml` | shelf | Cloud Run deploy |
-| `deploy-distill.yml` | distill | Cloud Run deploy |
-| `deploy-feed.yml` | feed | Cloud Run deploy |
+| `database.yml` | harvest | migrations |
+| `deploy-core.yml` | core | rsync + systemd (VPC, `workflow_dispatch`) |
+| `deploy-feed.yml` | feed | Cloud Run |
+| `deploy-shelf.yml` | shelf | Cloud Run |
+| `deploy.yml` | harvest | Cloud Run |
 
-scribe has **no deploy workflow** — it is installed and updated locally with
-`make build && bash install-local.sh`.
+rara-scribe: no deploy workflow — installed locally with `make build && bash install-local.sh`.  
+rara-distill / rara-sift: deploy workflows gated pending multi-module Docker build (P2).
 
-## Security controls (WIF / IAM)
+---
 
-This is a **public** repository. No secret values are committed — secrets live in GitHub Secrets
-+ GCP Secret Manager, and GCP auth is keyless via Workload Identity Federation. Because the GCP
-project ID and the `rara-deployer` SA email appear in git history, the control that prevents
-abuse is the **WIF attribute condition**, not the secrecy of those identifiers. Verify
+## Security controls
+
+Public repo — no secret values committed. GCP auth is keyless (WIF). Verify
 periodically:
 
-- [ ] The WIF provider restricts token issuance to this repo only, e.g.
-      `attribute.repository == 'renatobardi/rara'` (a missing/loose condition would let any
-      GitHub repo impersonate `rara-deployer`).
-- [ ] `rara-deployer` holds only the minimal roles it needs (Cloud Run deploy, Artifact Registry
-      write, Secret Manager accessor, Cloud Build) — **never** `roles/editor` or `roles/owner`.
-- [ ] Secret Manager secrets are readable only by the runtime SA, and the OAuth refresh token is
-      rotated periodically.
+- [ ] WIF provider restricts token issuance to `attribute.repository == 'renatobardi/rara'`.
+- [ ] `rara-deployer` holds only minimal roles (Cloud Run deploy, Artifact Registry write,
+      Secret Manager accessor, Cloud Build).
+- [ ] Oracle VM port 8080 is blocked on the public interface (surface is Tailscale-only).
+- [ ] `/etc/rara-core/env` is `chmod 640` (owner ubuntu, no world read).
 
-Verify the WIF condition with:
 ```bash
+# Verify WIF attribute condition
 gcloud iam workload-identity-pools providers describe <PROVIDER> \
   --location=global --workload-identity-pool=<POOL> --project <PROJECT_ID> \
   --format='value(attributeCondition)'
 ```
-
-## Cost
-
-| Item | Cost |
-|------|------|
-| GitHub Actions | Free (public repo) |
-| Neon DB | Free tier |
-| Cloud Run (harvest + shelf + distill) | ~$0.02/month each |
-| Cloud Build | Free tier |
-| rara-scribe compute | $0 (local Mac) |
-| Groq ASR | ~$0.111/h of audio (backlog is a one-time few tens of dollars) |
-| Curation LLM (distill) | per transcript; cheap on Gemini Flash, more on `gemini-2.5-pro` |
