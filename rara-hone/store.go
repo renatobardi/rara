@@ -64,13 +64,10 @@ const (
 	signalDown = "down"
 )
 
-// feedback.source — provenance of a learning signal (migration 005). The reviser consumes them
-// all; quarantine_review tunes keep_threshold, the other two attribute term signal.
-const (
-	sourceUserExplicit     = "user_explicit"
-	sourceQuarantineReview = "quarantine_review"
-	sourceKURAImplicit     = "kura_implicit"
-)
+// feedback.source — hone branches only on quarantine_review (it tunes keep_threshold). The other
+// sources (user_explicit, kura_implicit) flow through the distillation-attribution path, which
+// keys off target_type rather than source, so they need no named constant here.
+const sourceQuarantineReview = "quarantine_review"
 
 // feedback.target_type — what a signal is attached to.
 const (
@@ -206,9 +203,21 @@ func (d *pgxStore) ListFeedbackSince(ctx context.Context, since time.Time) ([]Fe
 	return out, rows.Err()
 }
 
+// errVersionExists is returned by InsertInterestProfile when a row with the target version already
+// exists — a concurrent proposal (a human surface `AddInterestProfile`, or an overlapping run)
+// claimed the number first. It is a benign, expected outcome of the shared proposal-version
+// namespace, NOT a fatal error: the caller skips this run and the next timer fire renumbers.
+var errVersionExists = errors.New("interest_profile version already exists")
+
 // InsertInterestProfile appends a new version (append-only — versions are immutable). hone always
 // supplies `proposed`; the partial unique index forbids a second `active`, so a programming slip
 // that tried to write `active` here would be rejected by the DB anyway.
+//
+// The version number is computed from a non-transactional read (ListInterestProfiles) so a
+// concurrent writer can claim it first. Rather than let that surface as a raw duplicate-key error
+// (which would `log.Fatalf` the periodic job and drop the run), the insert is `ON CONFLICT
+// (version) DO NOTHING` and a 0-row result is reported as the typed errVersionExists — the caller
+// turns it into a graceful skip.
 func (d *pgxStore) InsertInterestProfile(ctx context.Context, p InterestProfile) error {
 	status := profileStatusOr(p.Status)
 	if !isValidProfileStatus(status) {
@@ -216,12 +225,19 @@ func (d *pgxStore) InsertInterestProfile(ctx context.Context, p InterestProfile)
 	}
 	const q = `
 		INSERT INTO interest_profile (version, topics, authors, anti_topics, weights, status, narrative)
-		VALUES ($1, $2::jsonb, $3::jsonb, $4::jsonb, $5::jsonb, $6, $7)`
-	_, err := d.conn.Exec(ctx, q, p.Version,
+		VALUES ($1, $2::jsonb, $3::jsonb, $4::jsonb, $5::jsonb, $6, $7)
+		ON CONFLICT (version) DO NOTHING`
+	ct, err := d.conn.Exec(ctx, q, p.Version,
 		jsonOrEmpty(p.Topics, "[]"), jsonOrEmpty(p.Authors, "[]"),
 		jsonOrEmpty(p.AntiTopics, "[]"), jsonOrEmpty(p.Weights, "{}"),
 		status, nullStr(p.Narrative))
-	return err
+	if err != nil {
+		return err
+	}
+	if ct.RowsAffected() == 0 {
+		return errVersionExists
+	}
+	return nil
 }
 
 func jsonOrEmpty(raw json.RawMessage, def string) string {

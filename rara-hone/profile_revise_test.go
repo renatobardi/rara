@@ -3,8 +3,17 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
+)
+
+// feedback.source values used only as test fixtures. Production hone branches solely on
+// sourceQuarantineReview (store.go); the distillation-attribution path keys off target_type, not
+// source, so these two carry no production constant.
+const (
+	sourceUserExplicit = "user_explicit"
+	sourceKURAImplicit = "kura_implicit"
 )
 
 // testReviseConfig is a relaxed config that makes the deterministic engine easy to reason about
@@ -388,6 +397,35 @@ func TestReviseProfileNoActiveBase(t *testing.T) {
 	}
 }
 
+// versionTakenDB wraps the mock but fails every InsertInterestProfile with errVersionExists,
+// modelling a race: a concurrent proposal (a human surface add, or an overlapping run) claimed the
+// computed version number between the reviser's read and its insert.
+type versionTakenDB struct{ *MockDatabase }
+
+func (v versionTakenDB) InsertInterestProfile(_ context.Context, _ InterestProfile) error {
+	return errVersionExists
+}
+
+// TestReviseProfileVersionTakenSkips covers the shared proposal-version namespace: a taken version
+// surfaces as the typed errVersionExists (not a raw duplicate-key error), and ReviseProfile reports
+// revised=false so the caller (main) can skip the run gracefully instead of dying.
+func TestReviseProfileVersionTakenSkips(t *testing.T) {
+	ctx := context.Background()
+	db := newMockDatabase()
+	t0 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	seedActiveProfile(t, db, t0, `["ai"]`)
+	if err := db.InsertFeedback(ctx, Feedback{TargetType: targetItem, TargetRef: "1", Signal: signalUp, Source: sourceQuarantineReview, CreatedAt: t0.Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	_, revised, err := ReviseProfile(ctx, versionTakenDB{db}, fakeResolver{}, nil, t0.Add(8*24*time.Hour), testReviseConfig())
+	if !errors.Is(err, errVersionExists) {
+		t.Fatalf("a taken version should surface errVersionExists, got revised=%v err=%v", revised, err)
+	}
+	if revised {
+		t.Error("a collided version must not report a successful revision")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Append-only / one-active invariants at the hone seam (the half of the contract hone owns:
 // it APPENDS a proposed version; activation stays in rara-core's surface).
@@ -399,9 +437,10 @@ func TestInsertInterestProfileVersionImmutable(t *testing.T) {
 	if err := db.InsertInterestProfile(ctx, InterestProfile{Version: 1, Status: profileActive}); err != nil {
 		t.Fatal(err)
 	}
-	// Re-inserting the same version is rejected — a revision is a NEW version.
-	if err := db.InsertInterestProfile(ctx, InterestProfile{Version: 1, Status: profileProposed}); err == nil {
-		t.Fatal("UNIQUE(version) should reject a duplicate version")
+	// Re-inserting the same version yields the typed errVersionExists (ON CONFLICT DO NOTHING →
+	// 0 rows) — a benign "already taken", not a hard failure.
+	if err := db.InsertInterestProfile(ctx, InterestProfile{Version: 1, Status: profileProposed}); !errors.Is(err, errVersionExists) {
+		t.Fatalf("a duplicate version should yield errVersionExists, got %v", err)
 	}
 	// A second active row is rejected (mirrors the partial unique index); a proposed one is fine.
 	if err := db.InsertInterestProfile(ctx, InterestProfile{Version: 2, Status: profileActive}); err == nil {
