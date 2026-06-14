@@ -59,6 +59,14 @@ type Reconciler struct {
 	now        func() time.Time
 	staleAfter time.Duration
 	healthTTL  time.Duration
+
+	// activatedThisPass coalesces wakes WITHIN a single ReconcileOnce: a provider is activated at
+	// most once per pass, however many items were assigned to it this pass. One wake drains the
+	// whole queue for that provider (a poke coalesces on the worker; a Cloud Run `run` execution
+	// drains via SKIP LOCKED), so N items assigning the same provider must not fan out into N job
+	// executions / N pokes to a sleeping Mac. It is reset at the start of every pass — no state is
+	// carried BETWEEN passes (ReconcileOnce is never called concurrently on one Reconciler).
+	activatedThisPass map[string]bool
 }
 
 // NewReconciler wires a reconciler. A nil activator falls back to a logging no-op. now,
@@ -79,6 +87,7 @@ func NewReconciler(db Database, activator Activator) *Reconciler {
 // continues — one stuck item must not stall the others (level-triggered: the next pass
 // retries it).
 func (r *Reconciler) ReconcileOnce(ctx context.Context) error {
+	r.activatedThisPass = make(map[string]bool) // coalesce wakes within this pass (see activate)
 	items, err := r.db.ListActiveItems(ctx)
 	if err != nil {
 		return err
@@ -278,9 +287,10 @@ func (r *Reconciler) handleStaleStep(ctx context.Context, item Item, st ItemStep
 // (unassigned) provider is skipped, there being nothing to wake. Best-effort: a failed wake is
 // logged, not fatal — the pending assignment stands and the worker's own poll still drains it.
 func (r *Reconciler) activate(ctx context.Context, item Item, prov Provider) {
-	if prov.Name == "" {
-		return
+	if prov.Name == "" || r.activatedThisPass[prov.Name] {
+		return // nothing to wake, or already woken this pass (one wake drains the whole queue)
 	}
+	r.activatedThisPass[prov.Name] = true
 	if err := r.activator.Activate(ctx, prov); err != nil {
 		log.Printf("activate %s for item %d: %v", prov.Name, item.ID, err)
 	}

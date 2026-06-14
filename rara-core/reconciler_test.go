@@ -171,6 +171,32 @@ func TestReconcileActivatesResidentOnAssign(t *testing.T) {
 	}
 }
 
+// TestReconcileCoalescesActivationPerPass: when several items are assigned to the SAME provider in
+// one pass, the reconciler wakes it ONCE — one wake drains the whole queue, so it must not fan out
+// into N Cloud Run executions / N pokes. Two fresh items both assign gate-barato on the first pass.
+func TestReconcileCoalescesActivationPerPass(t *testing.T) {
+	ctx := context.Background()
+	db := newMockDatabase()
+	_ = seedAndIngestOne(t, db, "vid1")
+	_ = seedAndIngestOne(t, db, "vid2")
+	act := &fakeActivator{}
+	r := NewReconciler(db, act)
+
+	if err := r.ReconcileOnce(ctx); err != nil { // both items assign gate-barato
+		t.Fatal(err)
+	}
+
+	var n int
+	for _, name := range act.woken {
+		if name == provGateBarato {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Errorf("gate-barato activated %d times in one pass, want 1 (coalesced), woken=%v", n, act.woken)
+	}
+}
+
 // TestReconcileGateDropFilters: a dropped gate_barato terminates the item as `filtered` —
 // transcrever is never materialized, and the item leaves the active set.
 func TestReconcileGateDropFilters(t *testing.T) {
