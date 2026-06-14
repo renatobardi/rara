@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"strings"
 	"testing"
 )
 
@@ -16,57 +15,9 @@ func (f fakeEmailSource) Emails(_ context.Context) ([]EmailItem, error) {
 	return f.emails, f.err
 }
 
-// ---------------------------------------------------------------------------
-// cleanEmailText — pure, zero I/O.
-// ---------------------------------------------------------------------------
-
-func TestCleanEmailTextPlain(t *testing.T) {
-	in := "Hi team,\n\nShipping the fix today.\n\nThanks"
-	if got := cleanEmailText(in); got != in {
-		t.Errorf("plain text should pass through unchanged:\n got %q\nwant %q", got, in)
-	}
-}
-
-func TestCleanEmailTextStripsHTML(t *testing.T) {
-	in := `<html><head><style>p{color:red}</style></head><body><p>Hello &amp; welcome</p><p>Second line</p><script>evil()</script></body></html>`
-	got := cleanEmailText(in)
-	if strings.Contains(got, "<") || strings.Contains(got, "color:red") || strings.Contains(got, "evil()") {
-		t.Errorf("HTML/script/style not stripped: %q", got)
-	}
-	if !strings.Contains(got, "Hello & welcome") || !strings.Contains(got, "Second line") {
-		t.Errorf("body text lost: %q", got)
-	}
-}
-
-func TestCleanEmailTextDropsSignature(t *testing.T) {
-	in := "The actual message.\n\n-- \nRenato Bardi\nSoftware Architect\nphone: 555-1234"
-	got := cleanEmailText(in)
-	if strings.Contains(got, "Software Architect") || strings.Contains(got, "555-1234") {
-		t.Errorf("signature not removed: %q", got)
-	}
-	if !strings.Contains(got, "The actual message.") {
-		t.Errorf("body lost: %q", got)
-	}
-}
-
-func TestCleanEmailTextDropsQuotedReply(t *testing.T) {
-	in := "My reply on top.\n\nOn Mon, 9 Jun 2025, Alice <a@x.com> wrote:\n> previous message\n> more quoted text"
-	got := cleanEmailText(in)
-	if strings.Contains(got, "previous message") || strings.Contains(got, "Alice") {
-		t.Errorf("quoted reply not removed: %q", got)
-	}
-	if !strings.Contains(got, "My reply on top.") {
-		t.Errorf("reply body lost: %q", got)
-	}
-}
-
-func TestCleanEmailTextEmptyResult(t *testing.T) {
-	// Pure signature + quote -> nothing meaningful left.
-	in := "> only quoted\n> text here\n-- \nsig"
-	if got := cleanEmailText(in); got != "" {
-		t.Errorf("an all-quote/sig email should clean to empty, got %q", got)
-	}
-}
+// The email body cleaning (cleanEmailText) is no longer in rara-core — extrair is its own app,
+// rara-glean, where the cleaner and its unit tests now live. The tests below cover what the core
+// still owns of the email lane: the seed, ingest, and the reconciler routing extrair to its provider.
 
 // ---------------------------------------------------------------------------
 // Seed + ingest.

@@ -25,42 +25,27 @@ func (f *fakeLinkedInStore) UpsertLinkedInPost(_ context.Context, p LinkedInPost
 }
 
 // ---------------------------------------------------------------------------
-// cleanPostText — pure, zero I/O.
+// postHasContent — the collector's emptiness gate, pure + zero I/O. The full to-text cleaning
+// now lives in the rara-glean app (with its own tests); the core keeps only this predicate.
 // ---------------------------------------------------------------------------
 
-func TestCleanPostTextPlainPassThrough(t *testing.T) {
-	in := "Shipping a control plane today.\n\nThe contract is the table."
-	if got := cleanPostText(in); got != in {
-		t.Errorf("plain post should pass through:\n got %q\nwant %q", got, in)
+func TestPostHasContent(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want bool
+	}{
+		{"plain text", "Shipping a control plane today.", true},
+		{"text inside HTML", `<div><p>Hello &amp; welcome</p></div>`, true},
+		{"whitespace only", "   \n\t\n  ", false},
+		{"empty markup only", "<div></div>", false},
+		{"entity-only whitespace", "<p>&nbsp;</p>", false}, // &nbsp; unescapes to a space -> empty
+		{"truly empty", "", false},
 	}
-}
-
-func TestCleanPostTextStripsHTML(t *testing.T) {
-	// A future Bright Data collector may yield HTML; the cleaner must reduce it to text.
-	in := `<div><p>Hello &amp; welcome</p><p>Second line</p><script>evil()</script></div>`
-	got := cleanPostText(in)
-	if strings.Contains(got, "<") || strings.Contains(got, "evil()") {
-		t.Errorf("HTML/script not stripped: %q", got)
-	}
-	if !strings.Contains(got, "Hello & welcome") || !strings.Contains(got, "Second line") {
-		t.Errorf("body text lost: %q", got)
-	}
-}
-
-func TestCleanPostTextCollapsesBlankRuns(t *testing.T) {
-	in := "Line one.\n\n\n\n\nLine two.   \n"
-	got := cleanPostText(in)
-	if strings.Contains(got, "\n\n\n") {
-		t.Errorf("blank runs not collapsed: %q", got)
-	}
-	if got != "Line one.\n\nLine two." {
-		t.Errorf("normalize = %q, want collapsed + trimmed", got)
-	}
-}
-
-func TestCleanPostTextEmpty(t *testing.T) {
-	if got := cleanPostText("   \n\t\n  "); got != "" {
-		t.Errorf("whitespace-only post should clean to empty, got %q", got)
+	for _, c := range cases {
+		if got := postHasContent(c.in); got != c.want {
+			t.Errorf("%s: postHasContent(%q) = %v, want %v", c.name, c.in, got, c.want)
+		}
 	}
 }
 

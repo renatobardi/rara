@@ -13,6 +13,7 @@ to one agent never triggers another's pipeline.
 | `ci-distill.yml` | rara-distill | `rara-distill/**` | Code quality, tests, security scan |
 | `ci-feed.yml` | rara-feed | `rara-feed/**` | Code quality, tests, security scan |
 | `ci-core.yml` | rara-core | `rara-core/**` | Code quality, tests, security scan |
+| `ci-glean.yml` | rara-glean | `rara-glean/**`, `rara-addon/**` | Code quality, tests, security scan |
 | `database.yml` | rara-harvest | `rara-harvest/migrations/**` | Validate + apply migrations |
 | `database-shelf.yml` | rara-shelf | `rara-shelf/migrations/**` | Validate + apply migrations |
 | `database-scribe.yml` | rara-scribe | `rara-scribe/migrations/**` | Validate + apply migrations |
@@ -33,6 +34,10 @@ to one agent never triggers another's pipeline.
 > **rara-core has CI + Database only (no deploy yet).** Phase 0 ships the control-plane schema
 > and scaffold; the reconciler is not built. rara-core will run always-on in the VPC (not as a
 > Cloud Run Job), so its deploy workflow lands with the reconciler in a later phase.
+>
+> **rara-glean (and rara-sift) have CI only.** They are new bridge-total claim-workers that own no
+> table of their own (they read/write the shared Neon schema), so there is no `database-*.yml`; the
+> Cloud Run deploy workflow lands in a later phase (no gate yet).
 
 ## Workflow types
 

@@ -534,7 +534,7 @@ type Database interface {
 // ---------------------------------------------------------------------------
 
 // pgConn is the subset of the pgx query API the store uses, satisfied by BOTH a single
-// *pgx.Conn (the single-threaded commands: seed/ingest/reconcile/work) and a *pgxpool.Pool
+// *pgx.Conn (the single-threaded commands: seed/ingest/reconcile) and a *pgxpool.Pool
 // (the concurrent control surface — pgx.Conn is NOT safe for concurrent use, so the always-on
 // HTTP/MCP surface runs over a pool while the reconciler keeps its own single conn).
 type pgConn interface {
@@ -784,11 +784,11 @@ func sensitivityOr(s string) string {
 
 func loadDatabaseURL() string { return os.Getenv("DATABASE_URL") }
 
-// usage documents the Phase 1 subcommands. rara-core is one binary with several roles, each
-// deployed where the architecture puts it: `reconcile` runs always-on in the VPC; `work` serves the
-// capabilities the core still backs in-process (extrair, the gates); `seed`/`ingest` are operational
-// one-shots. (transcrever and destilar are not core roles — each is its own app, rara-scribe and
-// rara-distill, on the SDK.)
+// usage documents the subcommands. rara-core is one binary with several roles, each deployed where
+// the architecture puts it: `reconcile` runs always-on in the VPC; `seed`/`ingest`/`collect` are
+// operational one-shots; `surface` serves the control plane. rara-core no longer runs a `work` role
+// — every capability (transcrever, destilar, the gates, extrair) is its own app on the SDK
+// (rara-scribe, rara-distill, rara-sift, rara-glean); the core only ROUTES and ACTIVATES them.
 const usage = `rara-core — 2.0 control plane
 
 Usage: core-job <command> [flags]
@@ -802,9 +802,6 @@ Commands:
                              (--loop also mounts the surface if SURFACE_ADDR is set)
   surface [--addr :8080]     Serve the control surface (HTTP núcleo + MCP adapter) standalone
                              (SURFACE_TOKEN required; --addr defaults to SURFACE_ADDR/:8080)
-  work --capability <cap> --provider <name>
-                             Run a worker shim that pulls and processes its assignments
-                             (cap: extrair | gate_barato | gate_rico)
   feedback --distillation <id> --signal <up|down>
                              Record explicit thumbs on a distillation
   revise [--force]           Run the interest_profile learning loop: if cadence/threshold say
@@ -867,9 +864,6 @@ func main() {
 
 	case "surface":
 		runSurface(ctx, dbURL, os.Args[2:])
-
-	case "work":
-		runWork(ctx, db, conn, os.Args[2:])
 
 	case "feedback":
 		runFeedback(ctx, db, os.Args[2:])

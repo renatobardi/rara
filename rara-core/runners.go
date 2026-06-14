@@ -1,16 +1,15 @@
-// runners.go — the I/O edge of the worker shims (Phase 1 deliverable #5).
+// runners.go — the I/O edge (pgx + CLI) of the roles the core still runs in-process.
 //
-// These concrete StepRunners are the thin adapters for the capabilities the core still backs
-// in-process: the email/linkedin to-text extractors (extrair) and the curation gates
-// (gate_barato/gate_rico), plus the Bright Data linkedin collector's CLI edge. They are
-// deliberately minimal glue: clean/judge/exec + one SELECT. Like the pgx writes in main.go, they
-// are exercised by real deploys/integration, not unit tests — the claim/advance orchestration now
-// lives in the rara-addon SDK (proven by addon_work.go's handler, which these runners back).
+// rara-core no longer runs a `work` role: every domain worker — transcrever (rara-scribe), destilar
+// (rara-distill), the curation gates (rara-sift) and the to-text extractor (rara-glean) — is its own
+// sovereign app on the rara-addon SDK, claiming its steps through the Neon contract. What remains
+// here is the orchestrator's own I/O edges: the read sides of ingest (channel_videos / podcast /
+// email), the LinkedIn collectors (the manual-inbox write + the Bright Data CLI), and the reviser's
+// distillation read + LiteLLM narrator. They are deliberately minimal glue, exercised by real
+// deploys/integration, not unit tests — the pure logic each backs is what the unit tests cover.
 //
 // Where a runner shells out, the binary path is environment-configured so a deploy points it at the
-// right artifact (e.g. BDATA_BIN for the linkedin collector) without code changes. None of this
-// touches the workers' domain logic. (transcrever and destilar are no longer here — each is its own
-// app, rara-scribe and rara-distill, on the SDK.)
+// right artifact (e.g. BDATA_BIN for the linkedin collector) without code changes.
 package main
 
 import (
@@ -22,38 +21,11 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 )
-
-// errNoOutputRow is a HARD failure: the worker ran but produced no usable domain row
-// (e.g. scribe could not transcribe at all). errRetryable is a TRANSIENT miss: the outcome is
-// expected to succeed on a later attempt (e.g. a gate cascade hit a transient provider error), so
-// the worker re-queues the step instead of failing the item. The addon handler branches on these.
-var (
-	errNoOutputRow = errors.New("worker produced no output row")
-	errRetryable   = errors.New("retryable: output not yet available")
-)
-
-// RunResult is what a StepRunner reports back. OutputRef is the worker-owned domain row id to
-// record on the item_step. Filtered marks a benign, no-content outcome (e.g. an empty transcript):
-// the step is legitimately done, but there is nothing to carry downstream, so the item is curated
-// out (terminal `filtered`) instead of marched into a distill that must fail.
-type RunResult struct {
-	OutputRef string
-	Filtered  bool
-}
-
-// StepRunner executes one claimed step against its domain worker. A returned error means the step
-// did not succeed; if it wraps errRetryable (e.g. a transient provider error) the addon SDK
-// re-queues the step until its attempt ceiling, otherwise it marks it failed for the reconciler to
-// act on next pass.
-type StepRunner interface {
-	Run(ctx context.Context, item Item, step ItemStep) (RunResult, error)
-}
 
 func envOr(key, def string) string {
 	if v := os.Getenv(key); v != "" {
@@ -62,159 +34,10 @@ func envOr(key, def string) string {
 	return def
 }
 
-// transcrever has NO runner here: it is its own independent app (rara-scribe) that claims its steps
-// through the rara-addon SDK (bridge-total, P1c). One app serves both providers — asr-youtube
-// (residential-IP YouTube download on the Mac) and asr-direct-audio (a podcast enclosure download
-// anywhere), selecting the fetch strategy by provider/lane and re-keying the transcript to the
-// spine's source_ref. The orchestrator still ROUTES transcrever and ACTIVATES the provider; it never
-// transcribes.
-
-// destilar has NO runner here: it is its own independent app (rara-distill) that claims its steps
-// through the rara-addon SDK (bridge-total, P1c). The orchestrator still ROUTES destilar (assigns
-// a provider) and ACTIVATES it (Cloud Run `run` / poke), but never runs the distillation itself.
-
-// ---------------------------------------------------------------------------
-// extract shim (extrair, email) — clean an email body into a to-text artifact.
-//
-// The email lane's to-text worker. It reads the raw email body from the emails table (the
-// rara-courier collector's domain table, SELECT only), runs the PURE cleaner (extract.go:
-// strip HTML/signature/quoted-reply), and stores the result as a transcripts row
-// (source_type=email, source_ref=message_id) so distill consumes it exactly like a
-// transcript. Writing transcripts is the one sanctioned cross-agent write — the to-text
-// artifact table is shared by design (the universal "to-text store"). Sensitivity is handled
-// by ROUTING (private items only reach self-host LLMs), not by where the text is stored.
-//
-// Like the other shims this glue is exercised by integration, not unit tests; cleanEmailText
-// is what the pure tests cover.
-// ---------------------------------------------------------------------------
-
-// extractEngine labels the transcripts.engine of an email to-text row (a NOT NULL column),
-// distinguishing extractor output from real ASR engines.
-const extractEngine = "rara-core/extrair"
-
-type extractRunner struct {
-	conn *pgx.Conn
-}
-
-func newExtractRunner(conn *pgx.Conn) *extractRunner { return &extractRunner{conn: conn} }
-
-func (r *extractRunner) Run(ctx context.Context, item Item, _ ItemStep) (RunResult, error) {
-	raw, err := r.readEmailBody(ctx, item.SourceRef)
-	if err != nil {
-		return RunResult{}, err
-	}
-	clean := cleanEmailText(raw)
-	id, err := r.writeTranscript(ctx, item.SourceRef, clean)
-	if err != nil {
-		return RunResult{}, err
-	}
-	// An email that cleans to nothing (pure signature/quote) is benign no-content: the step is
-	// done, but the item is curated out rather than marched into a distill that must fail.
-	return RunResult{OutputRef: strconv.Itoa(id), Filtered: strings.TrimSpace(clean) == ""}, nil
-}
-
-// readEmailBody fetches the raw email body. A missing row is a hard failure (extrair runs only
-// after the email was collected).
-func (r *extractRunner) readEmailBody(ctx context.Context, messageID string) (string, error) {
-	const q = `SELECT COALESCE(body, '') FROM emails WHERE message_id = $1`
-	var body string
-	switch err := r.conn.QueryRow(ctx, q, messageID).Scan(&body); {
-	case errors.Is(err, pgx.ErrNoRows):
-		return "", fmt.Errorf("extrair %s: %w", messageID, errNoOutputRow)
-	case err != nil:
-		return "", err
-	}
-	return body, nil
-}
-
-// writeTranscript stores the email's cleaned text as a transcripts row (source_type=email),
-// delegating to the shared writeToText upsert.
-func (r *extractRunner) writeTranscript(ctx context.Context, sourceRef, text string) (int, error) {
-	return writeToText(ctx, r.conn, laneEmail, sourceRef, text, extractEngine)
-}
-
-// writeToText stores a non-youtube to-text artifact as a transcripts row keyed on (source_ref,
-// source_type) — the contract the gate_rico/distill lookups chain on. transcripts has no unique
-// key for non-youtube sources, so it upserts manually (UPDATE, else INSERT) — a retry re-cleans
-// in place rather than duplicating. Shared by every `extrair` lane (email, linkedin). An empty
-// text is stored with status='empty' (benign no-content; the worker then curates the item out).
-// (A partial unique index on transcripts(source_ref) WHERE youtube_video_id IS NULL in
-// rara-scribe would make this a one-statement ON CONFLICT; recommended but not required.)
-func writeToText(ctx context.Context, conn *pgx.Conn, sourceType, sourceRef, text, engine string) (int, error) {
-	status := "done"
-	if strings.TrimSpace(text) == "" {
-		status = "empty"
-	}
-	const upd = `
-		UPDATE transcripts SET transcript = $3, status = $4, engine = $5
-		WHERE source_ref = $1 AND source_type = $2
-		RETURNING id`
-	var id int
-	switch err := conn.QueryRow(ctx, upd, sourceRef, sourceType, text, status, engine).Scan(&id); {
-	case errors.Is(err, pgx.ErrNoRows):
-		const ins = `
-			INSERT INTO transcripts (source_type, source_ref, engine, transcript, status)
-			VALUES ($1, $2, $3, $4, $5)
-			RETURNING id`
-		if err := conn.QueryRow(ctx, ins, sourceType, sourceRef, engine, text, status).Scan(&id); err != nil {
-			return 0, err
-		}
-	case err != nil:
-		return 0, err
-	}
-	return id, nil
-}
-
-// ---------------------------------------------------------------------------
-// linkedin extract shim (extrair, linkedin) — normalize a pasted post into a to-text artifact.
-//
-// The LinkedIn counterpart of extractRunner: it reads the post body from linkedin_posts (the
-// manual-inbox collector's domain table — and, later, Bright Data's — SELECT only), runs the
-// PURE cleaner (cleanPostText), and stores the result as a transcripts row
-// (source_type=linkedin, source_ref=url) so distill consumes it exactly like any transcript.
-// Pinned to the lane by the provider's accepts=["linkedin"]. Exercised by integration, not unit
-// tests; cleanPostText is what the pure tests cover.
-// ---------------------------------------------------------------------------
-
-// linkedinExtractEngine labels the transcripts.engine of a LinkedIn to-text row.
-const linkedinExtractEngine = "rara-core/extrair-linkedin"
-
-type linkedinExtractRunner struct {
-	conn *pgx.Conn
-}
-
-func newLinkedInExtractRunner(conn *pgx.Conn) *linkedinExtractRunner {
-	return &linkedinExtractRunner{conn: conn}
-}
-
-func (r *linkedinExtractRunner) Run(ctx context.Context, item Item, _ ItemStep) (RunResult, error) {
-	raw, err := r.readPostBody(ctx, item.SourceRef)
-	if err != nil {
-		return RunResult{}, err
-	}
-	clean := cleanPostText(raw)
-	id, err := writeToText(ctx, r.conn, laneLinkedIn, item.SourceRef, clean, linkedinExtractEngine)
-	if err != nil {
-		return RunResult{}, err
-	}
-	// A post that cleans to nothing is benign no-content: the step is done, but the item is
-	// curated out rather than marched into a distill that must fail.
-	return RunResult{OutputRef: strconv.Itoa(id), Filtered: strings.TrimSpace(clean) == ""}, nil
-}
-
-// readPostBody fetches the raw post body. A missing row is a hard failure (extrair runs only
-// after the post was submitted).
-func (r *linkedinExtractRunner) readPostBody(ctx context.Context, url string) (string, error) {
-	const q = `SELECT COALESCE(body, '') FROM linkedin_posts WHERE url = $1`
-	var body string
-	switch err := r.conn.QueryRow(ctx, q, url).Scan(&body); {
-	case errors.Is(err, pgx.ErrNoRows):
-		return "", fmt.Errorf("extrair linkedin %s: %w", url, errNoOutputRow)
-	case err != nil:
-		return "", err
-	}
-	return body, nil
-}
+// transcrever, destilar, the curation gates and extrair have NO runner here: each is its own
+// independent app on the rara-addon SDK (rara-scribe, rara-distill, rara-sift, rara-glean), claiming
+// its steps through the Neon contract. The orchestrator still ROUTES every capability and ACTIVATES
+// the assigned provider (Cloud Run `run` / tailnet poke); it never executes the work itself.
 
 func joinOrNone(items []string) string {
 	if len(items) == 0 {
