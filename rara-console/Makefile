@@ -13,6 +13,8 @@ help:
 	@echo "  make all            clean + lint + test + build"
 
 # Frontend: SvelteKit (adapter-static) -> web/build, which the Go binary embeds.
+# Note: adapter-static WIPES web/build on each run (incl. the .gitkeep placeholder); `make clean`
+# restores the placeholder so a no-SPA checkout still compiles the embed.
 web:
 	cd web && npm ci && npm run build
 

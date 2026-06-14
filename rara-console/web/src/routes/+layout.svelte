@@ -4,16 +4,16 @@
 
 	let { children } = $props();
 
-	// Clean is the default; Dark is opt-in and persisted. The pre-paint script in app.html applies
-	// the saved choice; here we keep the toggle in sync.
+	// Clean is the default; Dark is opt-in and persisted. The pre-paint script in app.html already
+	// applied the saved choice before render; this syncs the toggle's state to it once on mount.
 	let theme = $state<'clean' | 'dark'>('clean');
 	$effect(() => {
-		theme = document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'clean';
+		theme = document.documentElement.dataset.theme === 'dark' ? 'dark' : 'clean';
 	});
 	function setTheme(next: 'clean' | 'dark') {
 		theme = next;
-		if (next === 'dark') document.documentElement.setAttribute('data-theme', 'dark');
-		else document.documentElement.removeAttribute('data-theme');
+		if (next === 'dark') document.documentElement.dataset.theme = 'dark';
+		else delete document.documentElement.dataset.theme;
 		localStorage.setItem('theme', next);
 	}
 

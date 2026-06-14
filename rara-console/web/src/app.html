@@ -7,7 +7,7 @@
 		<script>
 			// Apply the saved theme before first paint to avoid a flash. Clean is the default.
 			if (localStorage.getItem('theme') === 'dark')
-				document.documentElement.setAttribute('data-theme', 'dark');
+				document.documentElement.dataset.theme = 'dark';
 		</script>
 		%sveltekit.head%
 	</head>
