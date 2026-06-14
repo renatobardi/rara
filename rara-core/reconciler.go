@@ -40,11 +40,12 @@ import (
 // handleStaleStep). A conservative default; tunable via RECONCILE_STALE_SECONDS.
 const defaultStaleAfter = 10 * time.Minute
 
-// Activator wakes an on_demand provider so it starts pulling its assignment. For resident
-// providers it is a no-op (they are always awake). The concrete implementation calls
-// Cloud Run Jobs `run`; tests inject a fake to assert it fires for on_demand and not for
-// resident. Phase 1 keeps it best-effort: a failed activation is logged, not fatal — the
-// pending row remains and a later pass (or the worker's own cron) still drains it.
+// Activator wakes a provider so it starts pulling its assignment NOW instead of waiting for its
+// next poll tick (symmetric activation, architecture §4). The reconciler calls it for EVERY
+// assignment; the concrete Activator dispatches by provider shape — runtime=cloudrun via Cloud Run
+// Jobs `run`, activation=resident via a tailnet poke (see activator.go). It is best-effort: a failed
+// activation is logged, not fatal — the pending row remains and the worker's own poll (the safety
+// net) still drains it. Tests inject a fake to assert the right path fires per provider type.
 type Activator interface {
 	Activate(ctx context.Context, p Provider) error
 }
@@ -58,6 +59,14 @@ type Reconciler struct {
 	now        func() time.Time
 	staleAfter time.Duration
 	healthTTL  time.Duration
+
+	// activatedThisPass coalesces wakes WITHIN a single ReconcileOnce: a provider is activated at
+	// most once per pass, however many items were assigned to it this pass. One wake drains the
+	// whole queue for that provider (a poke coalesces on the worker; a Cloud Run `run` execution
+	// drains via SKIP LOCKED), so N items assigning the same provider must not fan out into N job
+	// executions / N pokes to a sleeping Mac. It is reset at the start of every pass — no state is
+	// carried BETWEEN passes (ReconcileOnce is never called concurrently on one Reconciler).
+	activatedThisPass map[string]bool
 }
 
 // NewReconciler wires a reconciler. A nil activator falls back to a logging no-op. now,
@@ -78,6 +87,7 @@ func NewReconciler(db Database, activator Activator) *Reconciler {
 // continues — one stuck item must not stall the others (level-triggered: the next pass
 // retries it).
 func (r *Reconciler) ReconcileOnce(ctx context.Context) error {
+	r.activatedThisPass = make(map[string]bool) // coalesce wakes within this pass (see activate)
 	items, err := r.db.ListActiveItems(ctx)
 	if err != nil {
 		return err
@@ -222,7 +232,7 @@ func (r *Reconciler) materialize(ctx context.Context, item Item, fs FlowStep) (d
 		}); err != nil {
 			return false, err
 		}
-		r.activateIfOnDemand(ctx, item, prov)
+		r.activate(ctx, item, prov)
 		return false, nil
 	}
 }
@@ -267,18 +277,20 @@ func (r *Reconciler) handleStaleStep(ctx context.Context, item Item, st ItemStep
 	if err := r.db.UpsertItemStep(ctx, st); err != nil {
 		return err
 	}
-	r.activateIfOnDemand(ctx, item, chosen)
+	r.activate(ctx, item, chosen)
 	return nil
 }
 
-// activateIfOnDemand wakes an on_demand provider so it starts pulling. Resident providers
-// and the empty (unassigned) provider are skipped. Best-effort: a failed wake is logged,
-// not fatal — the pending assignment stands and a later pass (or the worker's own schedule)
-// still drains it.
-func (r *Reconciler) activateIfOnDemand(ctx context.Context, item Item, prov Provider) {
-	if prov.Name == "" || prov.Activation != activationOnDemand {
-		return
+// activate wakes the provider an assignment was just routed to (symmetric activation): it is called
+// for EVERY assignment, and the Activator decides per provider HOW to wake it (Cloud Run `run` for
+// cloudrun, tailnet poke for residents, no-op otherwise — see activator.go). Only the empty
+// (unassigned) provider is skipped, there being nothing to wake. Best-effort: a failed wake is
+// logged, not fatal — the pending assignment stands and the worker's own poll still drains it.
+func (r *Reconciler) activate(ctx context.Context, item Item, prov Provider) {
+	if prov.Name == "" || r.activatedThisPass[prov.Name] {
+		return // nothing to wake, or already woken this pass (one wake drains the whole queue)
 	}
+	r.activatedThisPass[prov.Name] = true
 	if err := r.activator.Activate(ctx, prov); err != nil {
 		log.Printf("activate %s for item %d: %v", prov.Name, item.ID, err)
 	}

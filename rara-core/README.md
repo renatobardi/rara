@@ -174,3 +174,20 @@ worker shims run where their domain binary lives — `work --capability transcre
 alongside scribe on the Mac, `work --capability destilar` and the gate workers
 (`gate_barato`/`gate_rico`) as woken Cloud Run jobs. The gate workers reach the VPC LiteLLM
 gateway for the LLM-judge.
+
+### Symmetric activation (P1b)
+
+Trabalho = pull always; ativação = symmetric. On every assignment the reconciler calls the
+**Activator**, which dispatches by provider shape ([activator.go](activator.go)):
+
+- **runtime=cloudrun** → **Cloud Run Jobs `run`**: an authenticated `POST .../jobs/<job>:run`
+  starts a fresh execution. The job is named after the provider (`CLOUD_RUN_JOB_PREFIX` + name);
+  `CLOUD_RUN_PROJECT`/`CLOUD_RUN_REGION` and a token (`CLOUD_RUN_OAUTH_TOKEN`, a seam for a
+  service-account source with `run.jobs.run`) come from env.
+- **activation=resident** → a **tailnet poke**: `POST <providers.poke_url>/poke` (Bearer
+  `POKE_AUTH_TOKEN`), which the worker's poke listener turns into a drain.
+
+Both are **best-effort**: a failed activation is logged, never fatal — a poke cannot wake a
+sleeping Mac, and the Cloud Run call may hit a transient error. The worker's own slow poll is the
+safety net, so the queue always drains regardless. With no activation env configured the reconciler
+is pull-only (a logged no-op), which is the correct posture on a box without activation credentials.

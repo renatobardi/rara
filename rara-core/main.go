@@ -266,6 +266,10 @@ type Provider struct {
 	Constraints json.RawMessage `json:"constraints,omitempty"` // "" => '{}'
 	Enabled     bool            `json:"enabled"`
 	HeartbeatAt *time.Time      `json:"heartbeat_at,omitempty"`
+	// PokeURL is a resident worker's tailnet endpoint for symmetric activation; the reconciler
+	// POSTs <PokeURL>/poke (Bearer) to make it drain now. Empty for on_demand cloudrun providers
+	// (woken via Cloud Run Jobs `run` instead) and for residents that rely on the slow poll alone.
+	PokeURL string `json:"poke_url,omitempty"`
 }
 
 // Flow is one declarative pipeline per source lane.
@@ -573,8 +577,8 @@ func (d *pgxDatabase) UpsertProvider(ctx context.Context, p Provider) error {
 	}
 	const q = `
 		INSERT INTO providers
-			(name, capability, runtime, activation, cost, quality, latency_ms, constraints, enabled, heartbeat_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10)
+			(name, capability, runtime, activation, cost, quality, latency_ms, constraints, enabled, heartbeat_at, poke_url)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11)
 		ON CONFLICT (name) DO UPDATE SET
 			capability   = EXCLUDED.capability,
 			runtime      = EXCLUDED.runtime,
@@ -584,10 +588,11 @@ func (d *pgxDatabase) UpsertProvider(ctx context.Context, p Provider) error {
 			latency_ms   = EXCLUDED.latency_ms,
 			constraints  = EXCLUDED.constraints,
 			enabled      = EXCLUDED.enabled,
-			heartbeat_at = EXCLUDED.heartbeat_at`
+			heartbeat_at = EXCLUDED.heartbeat_at,
+			poke_url     = EXCLUDED.poke_url`
 	_, err := d.conn.Exec(ctx, q,
 		p.Name, p.Capability, p.Runtime, p.Activation, p.Cost, p.Quality, p.LatencyMs,
-		jsonOrEmpty(p.Constraints, "{}"), p.Enabled, p.HeartbeatAt)
+		jsonOrEmpty(p.Constraints, "{}"), p.Enabled, p.HeartbeatAt, nullStr(p.PokeURL))
 	return err
 }
 
@@ -962,7 +967,7 @@ func runReconcile(ctx context.Context, db Database, dbURL string, argv []string)
 		}
 	}
 
-	r := NewReconciler(db, logActivator{}) // real Cloud Run activator is Phase 2
+	r := NewReconciler(db, newActivatorFromEnv()) // real Cloud Run `run` + tailnet poke (P1b)
 	if v := os.Getenv("RECONCILE_STALE_SECONDS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			r.staleAfter = time.Duration(n) * time.Second
