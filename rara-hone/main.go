@@ -20,6 +20,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"log"
 	"os"
@@ -65,7 +66,14 @@ func main() {
 	}
 
 	version, revised, err := ReviseProfile(ctx, newPgxStore(conn), newPgxDistillationResolver(conn), narrator, time.Now(), cfg)
-	if err != nil {
+	switch {
+	case errors.Is(err, errVersionExists):
+		// A concurrent proposal (a human surface add, or an overlapping run) claimed the version
+		// number first. Benign: skip this run cleanly; the next timer fire renumbers off the new
+		// max. NOT fatal — exiting non-zero here would needlessly alarm the systemd timer.
+		log.Printf("rara-hone: profile version already taken by a concurrent proposal; skipping this run")
+		return
+	case err != nil:
 		log.Fatalf("hone: %v", err)
 	}
 	if !revised {

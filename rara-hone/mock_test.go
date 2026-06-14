@@ -64,7 +64,7 @@ func (m *MockDatabase) ListFeedbackSince(_ context.Context, since time.Time) ([]
 
 func (m *MockDatabase) InsertInterestProfile(_ context.Context, p InterestProfile) error {
 	if _, ok := m.profiles[p.Version]; ok {
-		return errUniqueViolation // UNIQUE(version) — versions are immutable
+		return errVersionExists // ON CONFLICT (version) DO NOTHING → 0 rows affected
 	}
 	p.Status = profileStatusOr(p.Status)
 	if !isValidProfileStatus(p.Status) {
