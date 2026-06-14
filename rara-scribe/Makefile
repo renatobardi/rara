@@ -57,15 +57,15 @@ build:
 	go build -ldflags="-w -s" -o scribe-job .
 	@echo "Built: scribe-job"
 
-# Run one batch locally. Requires a .env file in this directory.
-# Copy .env.example → .env and fill in your values before running.
+# Claim & drain the transcrever queue for SCRIBE_PROVIDER, then exit. Requires a .env in this
+# directory (copy .env.example → .env and fill in your values, incl. SCRIBE_PROVIDER).
 run: build
 	@if [ ! -f .env ]; then \
 		echo "Missing .env — copy .env.example and fill in real values:"; \
 		echo "  cp .env.example .env && \$$EDITOR .env"; \
 		exit 1; \
 	fi
-	@echo "Running scribe batch..."
+	@echo "Running scribe worker (drain once)..."
 	@set -a; . ./.env; set +a; ./scribe-job
 
 # Install the binary as a macOS launchd agent that runs daily at 02:00.

@@ -36,7 +36,7 @@ import (
 )
 
 // maxStepAttempts caps how many times a transient (retryable) step is re-queued before it is failed
-// for good — mirroring scribe/distill's own per-row attempt ceiling. It tracks the SDK default.
+// for good — mirroring the workers' own per-row attempt ceiling. It tracks the SDK default.
 const maxStepAttempts = addon.DefaultMaxAttempts
 
 // coreStore adapts rara-core's Database to addon.Store. The SDK owns the contract tables; this just
@@ -184,7 +184,7 @@ func workHandler(db Database, capability string, runner StepRunner) addon.Handle
 // WORK_POLL_INTERVAL (the safety-net poll) and/or POKE_ADDR + POKE_TOKEN (the tailnet poke listener).
 func runWork(ctx context.Context, db Database, conn *pgx.Conn, argv []string) {
 	fs := flag.NewFlagSet("work", flag.ExitOnError)
-	capability := fs.String("capability", "", "capability to serve: transcrever | extrair | gate_barato | gate_rico")
+	capability := fs.String("capability", "", "capability to serve: extrair | gate_barato | gate_rico")
 	provider := fs.String("provider", "", "the provider this worker serves (the reconciler assigns steps to it)")
 	_ = fs.Parse(argv)
 	if *provider == "" {
@@ -223,20 +223,10 @@ func envDuration(key string, def time.Duration) time.Duration {
 	return def
 }
 
-// selectRunner maps a (capability, provider) pair to its StepRunner shim. transcrever has two
-// providers with different entrypoints (asr-youtube builds a watch URL; asr-direct-audio reads a
-// direct enclosure URL), so the provider — not just the capability — selects the runner.
+// selectRunner maps a (capability, provider) pair to its StepRunner shim. extrair has a provider
+// per text lane (email vs linkedin), so the provider — not just the capability — selects the runner.
 func selectRunner(db Database, conn *pgx.Conn, capability, provider string) StepRunner {
 	switch capability {
-	case capTranscrever:
-		switch provider {
-		case provASRYouTube:
-			return newScribeRunner(conn)
-		case provASRDirectAudio:
-			return newASRDirectAudioRunner(conn)
-		default:
-			log.Fatalf("work transcrever: unknown provider %q", provider)
-		}
 	case capExtrair:
 		// extrair has a provider per text lane (email vs linkedin); each reads a different domain
 		// table, so the provider — not just the capability — selects the runner.
@@ -248,8 +238,9 @@ func selectRunner(db Database, conn *pgx.Conn, capability, provider string) Step
 		default:
 			log.Fatalf("work extrair: unknown provider %q", provider)
 		}
-	// destilar is intentionally absent: it is its own app (rara-distill) on the SDK, not a runner
-	// the core work role serves. The reconciler still routes/activates it; the core never runs it.
+	// transcrever and destilar are intentionally absent: each is its own app on the SDK (rara-scribe,
+	// rara-distill), not a runner the core work role serves. The reconciler still routes/activates
+	// them; the core never transcribes or distills.
 	case capGateBarato, capGateRico:
 		judge, err := newLiteLLMJudge()
 		if err != nil {
@@ -257,7 +248,7 @@ func selectRunner(db Database, conn *pgx.Conn, capability, provider string) Step
 		}
 		return newGateRunner(db, conn, capability, judge)
 	default:
-		log.Fatalf("work: --capability must be one of transcrever|extrair|gate_barato|gate_rico, got %q", capability)
+		log.Fatalf("work: --capability must be one of extrair|gate_barato|gate_rico, got %q", capability)
 	}
 	return nil // unreachable: every branch above either returns or log.Fatalf-exits
 }

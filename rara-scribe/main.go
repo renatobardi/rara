@@ -6,7 +6,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"log"
@@ -16,15 +15,19 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	addon "rara-addon"
 )
 
 // Engine identifiers (TRANSCRIBE_ENGINE) and their display names (stored per row).
@@ -45,6 +48,18 @@ const (
 	statusEmpty  = "empty"  // transcribed but no speech (silent/music) — terminal
 )
 
+// capTranscrever is the logical task this app serves (the capability name in the schema; never
+// renamed). One app, two providers selected by env — the handler picks the fetch strategy by
+// provider/lane:
+//   - asr-youtube: residential-IP YouTube download (yt-dlp), runs on the Mac;
+//   - asr-direct-audio: a plain CDN enclosure download (podcast), runs anywhere (cloud/VPC).
+const (
+	capTranscrever     = "transcrever"
+	provASRYouTube     = "asr-youtube"
+	provASRDirectAudio = "asr-direct-audio"
+	lanePodcast        = "podcast" // transcripts.source_type for a podcast (the spine's lane)
+)
+
 const (
 	// remoteChunkSeconds is the ffmpeg segment length for the API engines: each
 	// 10-minute chunk of 16 kHz mono audio stays well under Groq's 25 MB upload
@@ -55,8 +70,6 @@ const (
 	remoteChunkSeconds = 600
 	localChunkSeconds  = 3600
 
-	defaultBatchSize = 25
-
 	// remoteSourceTimeout / localSourceTimeout bound the work on a single video
 	// (download + transcribe), so a stuck yt-dlp/ffmpeg or a hung upload cannot
 	// block the whole batch. Local large-v3 is wall-clock work (~0.1x real-time on
@@ -65,14 +78,9 @@ const (
 	remoteSourceTimeout = 20 * time.Minute
 	localSourceTimeout  = 60 * time.Minute
 
-	// saveTimeout bounds the per-video database write, so a hung DB connection
-	// cannot stall the whole batch on its own (the batch ctx is unbounded).
+	// saveTimeout bounds the per-item database write, so a hung DB connection
+	// cannot stall the claim loop on its own.
 	saveTimeout = 30 * time.Second
-
-	// maxFailedAttempts caps how many times a failing video is retried. Past this,
-	// PendingVideos skips it so permanently-broken videos (deleted/private) stop
-	// burning yt-dlp/ASR calls every run. A 'done' save resets the counter.
-	maxFailedAttempts = 5
 
 	// whisperCppBeamSize is the default beam-search width for the local whisper.cpp
 	// engine. 1 = greedy (fastest); override with WHISPER_CPP_BEAM_SIZE. large-v3
@@ -155,12 +163,6 @@ type Transcript struct {
 	TransientFailure bool
 }
 
-// VideoRef is a video pending transcription, discovered from the collector tables.
-type VideoRef struct {
-	YoutubeVideoID string
-	URL            string
-}
-
 // Config is the runtime configuration, sourced from environment variables.
 type Config struct {
 	DatabaseURL        string
@@ -173,18 +175,23 @@ type Config struct {
 	WhisperCppBeam     int    // beam-search width (1=greedy/fast, 5=quality)
 	WhisperCppThreads  int    // CPU threads for pre/post-processing
 	Cookies            string
-	BatchSize          int
 }
 
 // ---------------------------------------------------------------------------
 // Interfaces (the seams that make the pipeline unit-testable with zero I/O)
 // ---------------------------------------------------------------------------
 
-// Database is the persistence seam. The real implementation talks to Neon; the
-// tests use an in-memory mock that mirrors the SQL uniqueness constraints.
-type Database interface {
-	PendingVideos(ctx context.Context, limit int) ([]VideoRef, error)
-	SaveTranscript(ctx context.Context, t Transcript, segs []Segment) error
+// ScribeStore is the DOMAIN persistence seam the handler needs (distinct from the CONTRACT store,
+// which is the SDK's addon.NewPgxStore over item_steps/providers/items). The real implementation
+// (appDB) talks to Neon; tests use an in-memory mock.
+//
+//   - SaveTranscript upserts the transcript + its segments and returns the row id (the OutputRef
+//     recorded on the step).
+//   - EnclosureURL resolves a podcast episode's direct audio URL from podcast_episodes (the
+//     rara-dial collector's domain table, SELECT only) — used by the asr-direct-audio provider.
+type ScribeStore interface {
+	SaveTranscript(ctx context.Context, t Transcript, segs []Segment) (int, error)
+	EnclosureURL(ctx context.Context, guid string) (string, bool, error)
 }
 
 // AudioAcquirer turns a Source into one or more decoded audio chunks on disk.
@@ -512,48 +519,74 @@ func majorityLanguage(counts map[string]int) string {
 	return best
 }
 
-// runBatch transcribes the next batch of pending videos from the collector
-// tables. A failure on one video is recorded and the batch continues.
-func runBatch(ctx context.Context, db Database, acq AudioAcquirer, tr Transcriber, engineName string, limit int) error {
-	refs, err := db.PendingVideos(ctx, limit)
-	if err != nil {
-		return fmt.Errorf("failed to load pending videos: %w", err)
-	}
-	if len(refs) == 0 {
-		log.Println("No pending videos to transcribe")
-		return nil
-	}
-	log.Printf("Transcribing %d pending video(s) with %s\n", len(refs), engineName)
+// fetchTarget is what one provider resolves for an item: the Source the acquirer downloads, plus
+// how the resulting transcripts row is keyed for the spine contract (which is decided by the
+// provider/lane, NOT by the fetch URL).
+type fetchTarget struct {
+	source        Source // what yt-dlp/ffmpeg downloads (a watch URL or a direct enclosure URL)
+	keySourceType string // transcripts.source_type (youtube | podcast)
+	keySourceRef  string // transcripts.source_ref = the spine's item.SourceRef
+	keyYoutubeID  string // transcripts.youtube_video_id ("" => NULL, for non-youtube)
+}
 
-	done, failed := 0, 0
-	for _, ref := range refs {
-		src := Source{Type: "youtube", Ref: ref.URL}
-		srcCtx, cancel := context.WithTimeout(ctx, sourceTimeout)
-		t, segs := transcribeSource(srcCtx, acq, tr, engineName, src)
-		cancel()
-		if t.YoutubeVideoID == "" {
-			t.YoutubeVideoID = ref.YoutubeVideoID // fall back to the known id
-		}
-		// Bound the DB write on its own timeout — the batch ctx is unbounded, so a
-		// hung connection here must not stall the whole run.
-		saveCtx, cancelSave := context.WithTimeout(ctx, saveTimeout)
-		err := db.SaveTranscript(saveCtx, t, segs)
-		cancelSave()
+// resolveTarget maps (provider, item) to a fetchTarget. asr-youtube builds the watch URL from the
+// video id; asr-direct-audio resolves the podcast episode's enclosure URL from podcast_episodes.
+func resolveTarget(ctx context.Context, store ScribeStore, provider string, item addon.Item) (fetchTarget, error) {
+	switch provider {
+	case provASRYouTube:
+		url := videoURL(item.SourceRef) // item.SourceRef is the youtube_video_id
+		return fetchTarget{source: Source{Type: "youtube", Ref: url}, keySourceType: "youtube", keySourceRef: url, keyYoutubeID: item.SourceRef}, nil
+	case provASRDirectAudio:
+		enclosure, found, err := store.EnclosureURL(ctx, item.SourceRef) // item.SourceRef is the episode GUID
 		if err != nil {
-			log.Printf("Warning: failed to save transcript for %s: %v\n", t.YoutubeVideoID, err)
-			continue
+			return fetchTarget{}, fmt.Errorf("transcrever %s: enclosure: %w", item.SourceRef, err)
 		}
-		if t.Status == "failed" {
-			failed++
-			log.Printf("Failed: %s — %s\n", t.YoutubeVideoID, t.Error)
-		} else {
-			done++
-			log.Printf("Transcribed: %s (%s, %d segments)\n", t.YoutubeVideoID, t.Language, len(segs))
+		if !found {
+			// The collector row may lag the spine item; let the SDK requeue rather than fail.
+			return fetchTarget{}, fmt.Errorf("transcrever %s: podcast enclosure not ready: %w", item.SourceRef, addon.ErrRetryable)
 		}
+		// The transcript is keyed on the spine's source_ref (the GUID) + lane=podcast, NOT the
+		// enclosure URL — so the downstream gate/distill lookups chain on the same GUID.
+		return fetchTarget{source: Source{Type: "url", Ref: enclosure}, keySourceType: lanePodcast, keySourceRef: item.SourceRef, keyYoutubeID: ""}, nil
+	default:
+		return fetchTarget{}, fmt.Errorf("transcrever: unknown provider %q", provider)
 	}
+}
 
-	log.Printf("Batch complete: %d done, %d failed\n", done, failed)
-	return nil
+// transcribeHandler is the domain logic behind addon.Run: transcribe ONE claimed item. The SDK
+// owns claim/heartbeat/result/requeue/poke; this only does the work — resolve the fetch target by
+// provider, download + ASR (transcribeSource), persist the transcript, report the OutputRef.
+//
+// A failed transcription (download or ASR) is persisted for observability and surfaced as
+// addon.ErrRetryable, so the SDK requeues up to MaxAttempts — covering transiently-unavailable
+// audio; a persistent failure still terminates after the bounded retries. An 'empty' transcript
+// (no speech) is benign no-content: the item is curated out (Filtered).
+func transcribeHandler(store ScribeStore, acq AudioAcquirer, tr Transcriber, engineName, provider string) addon.Handler {
+	return func(ctx context.Context, item addon.Item, step addon.Step) (addon.Result, error) {
+		target, err := resolveTarget(ctx, store, provider, item)
+		if err != nil {
+			return addon.Result{}, err
+		}
+
+		srcCtx, cancel := context.WithTimeout(ctx, sourceTimeout)
+		t, segs := transcribeSource(srcCtx, acq, tr, engineName, target.source)
+		cancel()
+		// Re-key to the spine contract: the provider/lane decides the keying, not the fetch URL.
+		t.SourceType, t.SourceRef, t.YoutubeVideoID = target.keySourceType, target.keySourceRef, target.keyYoutubeID
+
+		saveCtx, cancelSave := context.WithTimeout(ctx, saveTimeout)
+		id, saveErr := store.SaveTranscript(saveCtx, t, segs)
+		cancelSave()
+		if saveErr != nil {
+			return addon.Result{}, fmt.Errorf("transcrever %s: save: %w", item.SourceRef, saveErr)
+		}
+
+		if t.Status == statusFailed {
+			return addon.Result{}, fmt.Errorf("transcrever %s: %w: %s", item.SourceRef, addon.ErrRetryable, t.Error)
+		}
+		log.Printf("transcribed %s (%s, %d segments) -> transcript %d", item.SourceRef, t.Language, len(segs), id)
+		return addon.Result{OutputRef: strconv.Itoa(id), Filtered: t.Status == statusEmpty}, nil
+	}
 }
 
 // cleanupChunks removes the temp working directory holding the audio chunks.
@@ -1066,66 +1099,43 @@ func (f *fallbackTranscriber) Transcribe(ctx context.Context, audioPath string) 
 // and Neon's pooler drops idle connections — which used to surface as "conn
 // closed" / "broken pipe" and lose an already-transcribed video. The pool
 // validates and recreates connections on acquire, so each save gets a live one.
-type pgxDatabase struct{ pool *pgxpool.Pool }
+type appDB struct{ pool *pgxpool.Pool }
 
-// PendingVideos returns videos present in either collector table that do not yet
-// have a completed transcript, capped at limit.
-func (d *pgxDatabase) PendingVideos(ctx context.Context, limit int) ([]VideoRef, error) {
-	// Pending = videos in either collector table without a terminal transcript.
-	// Terminal = 'done' (has content) or 'empty' (no speech) — neither is retried.
-	// Failed videos past the retry cap are also excluded (so deleted/private videos
-	// stop being retried forever).
-	//
-	// Ordering, in priority order:
-	//   1. never-attempted videos before previously-failed ones, so a backlog of
-	//      failures can never starve fresh work;
-	//   2. among failed rows, fewest attempts first;
-	//   3. then least-recently-tried first (updated_at ASC) — a round-robin so a
-	//      large transient backlog (all at attempt_count=0, e.g. quota-starved
-	//      videos awaiting the no-quota local engine) drains fairly instead of the
-	//      same rows being re-tried every run while others wait forever.
-	const query = `
-		SELECT v.youtube_video_id, MIN(v.url) AS url
-		FROM (
-			SELECT youtube_video_id, url FROM channel_videos
-			UNION ALL
-			SELECT youtube_video_id, url FROM playlist_videos
-		) v
-		LEFT JOIN transcripts t ON t.youtube_video_id = v.youtube_video_id
-		WHERE (t.youtube_video_id IS NULL OR t.status NOT IN ('done', 'empty'))
-		  AND (t.status IS DISTINCT FROM 'failed' OR t.attempt_count < $2)
-		GROUP BY v.youtube_video_id
-		ORDER BY
-			MIN(CASE WHEN t.status = 'failed' THEN 1 ELSE 0 END) ASC,
-			MIN(COALESCE(t.attempt_count, 0)) ASC,
-			MIN(t.updated_at) ASC NULLS FIRST
-		LIMIT $1`
-	rows, err := d.pool.Query(ctx, query, limit, maxFailedAttempts)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
+var _ ScribeStore = (*appDB)(nil)
 
-	var refs []VideoRef
-	for rows.Next() {
-		var r VideoRef
-		if err := rows.Scan(&r.YoutubeVideoID, &r.URL); err != nil {
-			return nil, err
-		}
-		refs = append(refs, r)
+// EnclosureURL resolves a podcast episode's direct audio URL from the rara-dial collector's domain
+// table (SELECT only). found=false when the episode row is not there (yet).
+func (d *appDB) EnclosureURL(ctx context.Context, guid string) (string, bool, error) {
+	const q = `SELECT enclosure_url FROM podcast_episodes WHERE guid = $1`
+	var url string
+	switch err := d.pool.QueryRow(ctx, q, guid).Scan(&url); {
+	case errors.Is(err, pgx.ErrNoRows):
+		return "", false, nil
+	case err != nil:
+		return "", false, err
 	}
-	return refs, rows.Err()
+	return url, true, nil
 }
 
-// SaveTranscript writes the header and its segments in a single transaction.
-// Idempotent on youtube_video_id: a re-run replaces the transcript and its
-// segments (e.g. retrying a previously failed video).
-func (d *pgxDatabase) SaveTranscript(ctx context.Context, t Transcript, segs []Segment) error {
+// SaveTranscript writes the header and its segments in a single transaction, returning the row id.
+// YouTube rows are idempotent on youtube_video_id (the UNIQUE key). Non-youtube rows (podcast) have
+// a NULL youtube_video_id, which the ON CONFLICT key does NOT dedup — so a re-run (an SDK requeue
+// after a transient miss) would accumulate duplicate rows. For those, pre-delete any existing row
+// for this (source_type, source_ref) so the save is idempotent (latest wins; segments cascade).
+func (d *appDB) SaveTranscript(ctx context.Context, t Transcript, segs []Segment) (int, error) {
 	tx, err := d.pool.Begin(ctx)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	defer tx.Rollback(ctx)
+
+	if t.YoutubeVideoID == "" {
+		if _, err := tx.Exec(ctx,
+			`DELETE FROM transcripts WHERE youtube_video_id IS NULL AND source_type = $1 AND source_ref = $2`,
+			t.SourceType, t.SourceRef); err != nil {
+			return 0, err
+		}
+	}
 
 	// attempt_count tracks consecutive *permanent* failures: start a brand-new
 	// permanent-failed row at 1, every other brand-new row (done/empty, or a
@@ -1170,14 +1180,14 @@ func (d *pgxDatabase) SaveTranscript(ctx context.Context, t Transcript, segs []S
 		initialAttempt,
 		t.TransientFailure,
 	).Scan(&id); err != nil {
-		return err
+		return 0, err
 	}
 
 	// Replace any existing segments for this transcript. CopyFrom streams all
 	// segments in one round-trip — far cheaper than per-row INSERTs for long
-	// videos (hundreds of segments) at large batch sizes.
+	// videos (hundreds of segments).
 	if _, err := tx.Exec(ctx, `DELETE FROM transcript_segments WHERE transcript_id = $1`, id); err != nil {
-		return err
+		return 0, err
 	}
 	if len(segs) > 0 {
 		rows := make([][]any, len(segs))
@@ -1189,11 +1199,14 @@ func (d *pgxDatabase) SaveTranscript(ctx context.Context, t Transcript, segs []S
 			[]string{"transcript_id", "seq", "start_seconds", "end_seconds", "text"},
 			pgx.CopyFromRows(rows),
 		); err != nil {
-			return err
+			return 0, err
 		}
 	}
 
-	return tx.Commit(ctx)
+	if err := tx.Commit(ctx); err != nil {
+		return 0, err
+	}
+	return id, nil
 }
 
 func nullStr(s string) *string {
@@ -1225,12 +1238,6 @@ func resolveBin(envVar, defaultPath string) string {
 }
 
 func loadConfig() Config {
-	batch := defaultBatchSize
-	if v := os.Getenv("BATCH_SIZE"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			batch = n
-		}
-	}
 	beam := whisperCppBeamSize
 	if v := os.Getenv("WHISPER_CPP_BEAM_SIZE"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
@@ -1253,36 +1260,42 @@ func loadConfig() Config {
 		WhisperCppVADModel: os.Getenv("WHISPER_CPP_VAD_MODEL"),
 		WhisperCppBeam:     beam,
 		WhisperCppThreads:  threads,
-		Cookies:            os.Getenv("YT_DLP_COOKIES"),
-		BatchSize:          batch,
+		Cookies:            resolveCookies(),
 	}
 }
 
-// applyOverrides lets a single manual run override the .env-sourced engine and
-// batch size via CLI flags, without editing the file the scheduled run reads. An
-// empty engine or non-positive limit leaves that field untouched.
-func applyOverrides(cfg Config, engine string, limit int) Config {
-	if engine != "" {
-		cfg.Engine = engine
+// envDuration reads a Go duration (e.g. "30s", "2m") or a bare integer (seconds) from env, or
+// returns def when unset/invalid. Mirrors rara-core's work loop so a resident deploy tunes the same.
+func envDuration(key string, def time.Duration) time.Duration {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
 	}
-	if limit > 0 {
-		cfg.BatchSize = limit
+	if d, err := time.ParseDuration(v); err == nil && d > 0 {
+		return d
 	}
-	return cfg
+	if n, err := strconv.Atoi(v); err == nil && n > 0 {
+		return time.Duration(n) * time.Second
+	}
+	log.Printf("scribe: ignoring invalid %s=%q", key, v)
+	return def
 }
 
+// main wires the bridge-total claim-worker: the SDK (addon.Run) owns the queue protocol; this
+// process only supplies the transcrever domain (transcribeHandler). It serves ONE provider
+// (SCRIBE_PROVIDER: asr-youtube on the Mac with a residential IP, or asr-direct-audio for podcast
+// enclosures anywhere) so it claims only the steps the reconciler routed to it. Default is
+// on_demand (drain once and exit); a resident deploy opts into the long-running loop + symmetric
+// activation via WORK_POLL_INTERVAL and/or POKE_ADDR + POKE_TOKEN. (The Mac's asr-youtube runs
+// resident under launchd — that wiring is deploy, not code.)
 func main() {
-	sourceFlag := flag.String("source", "", "Transcribe a single source (YouTube/url/local path) instead of the batch")
-	engineFlag := flag.String("engine", "", "override TRANSCRIBE_ENGINE for this run (groq|gemini|local)")
-	limitFlag := flag.Int("limit", 0, "override how many videos to process this run (default: BATCH_SIZE)")
-	flag.Parse()
-
-	cfg := applyOverrides(loadConfig(), *engineFlag, *limitFlag)
-	if *engineFlag != "" || *limitFlag > 0 {
-		log.Printf("CLI overrides applied: engine=%s limit=%d (this run only)\n", cfg.Engine, cfg.BatchSize)
-	}
+	cfg := loadConfig()
 	if cfg.DatabaseURL == "" {
 		log.Fatalf("DATABASE_URL environment variable is required")
+	}
+	provider := os.Getenv("SCRIBE_PROVIDER")
+	if provider == "" {
+		log.Fatalf("SCRIBE_PROVIDER is required (the provider this worker serves: %s | %s)", provASRYouTube, provASRDirectAudio)
 	}
 
 	tr, engineName, err := NewTranscriber(cfg)
@@ -1291,8 +1304,7 @@ func main() {
 	}
 
 	// Engine-aware tuning: local transcription is slower wall-clock work and has no
-	// upload limit, so it gets a larger per-video budget and bigger audio chunks
-	// (fewer whisper.cpp model reloads).
+	// upload limit, so it gets a larger per-item budget and bigger audio chunks.
 	sourceTimeout = resolveSourceTimeout(cfg.Engine)
 
 	cookieFile, cleanup, err := writeCookieFile(cfg.Cookies)
@@ -1301,23 +1313,21 @@ func main() {
 	}
 	defer cleanup()
 
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	poolCfg, err := pgxpool.ParseConfig(cfg.DatabaseURL)
 	if err != nil {
 		log.Fatalf("Failed to parse DATABASE_URL: %v", err)
 	}
-	// A single-worker batch needs only a connection or two; cap the pool to stay
-	// well under Neon's connection limit, and recycle idle connections before
-	// Neon's pooler drops them. MaxConnIdleTime applies to the *gap between
-	// database calls* — a long local chunk sits minutes between saves, so 5min
-	// recycles the connection proactively before Neon's pooler does it first.
+	// A single-item worker needs only a connection or two (the drain loop + the SDK's heartbeat
+	// goroutine in resident mode); cap the pool to stay well under Neon's connection limit, and
+	// recycle idle connections before Neon's pooler drops them (a long local chunk sits minutes
+	// between saves).
 	poolCfg.MaxConns = 2
 	poolCfg.MaxConnIdleTime = 5 * time.Minute
 	poolCfg.MaxConnLifetime = 30 * time.Minute
 
-	// NewWithConfig validates config only; Ping below forces a real connection
-	// so bad creds/host still fail fast at startup. context.Background() is
-	// intentional: the pool lives until defer pool.Close(), not until any
-	// request ctx is cancelled.
 	pool, err := pgxpool.NewWithConfig(context.Background(), poolCfg)
 	if err != nil {
 		log.Fatalf("Failed to create database pool: %v", err)
@@ -1329,40 +1339,46 @@ func main() {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
 	defer pool.Close()
-	log.Println("Connected to database successfully")
+	log.Printf("rara-scribe worker %s/%s ready [engine %s]", capTranscrever, provider, engineName)
 
-	db := &pgxDatabase{pool: pool}
-	// Resolve the external binaries to absolute paths (no $PATH lookup, which
-	// could be hijacked). Local runs set YT_DLP_BIN / FFMPEG_BIN (Homebrew paths)
-	// via ~/.rara-scribe/.env; the fallbacks below are last-resort defaults.
+	// Resolve the external binaries to absolute paths (no $PATH lookup, which could be hijacked).
+	// One acquirer serves both providers: yt-dlp downloads a YouTube watch URL (with cookies, on the
+	// residential-IP Mac) or a plain enclosure URL (no cookies needed) the same way.
 	acq := newYtDlpAcquirer(
 		resolveBin("YT_DLP_BIN", "/opt/homebrew/bin/yt-dlp"),
 		resolveBin("FFMPEG_BIN", "/opt/homebrew/bin/ffmpeg"),
 		cookieFile,
 		chunkSecondsFor(cfg.Engine),
 	)
-	ctx := context.Background()
 
-	if *sourceFlag != "" {
-		src := Source{Type: detectSourceType(*sourceFlag), Ref: *sourceFlag}
-		log.Printf("Transcribing single source (%s): %s\n", src.Type, src.Ref)
-		srcCtx, cancel := context.WithTimeout(ctx, sourceTimeout)
-		t, segs := transcribeSource(srcCtx, acq, tr, engineName, src)
-		cancel()
-		if err := db.SaveTranscript(ctx, t, segs); err != nil {
-			log.Fatalf("Failed to save transcript: %v", err)
-		}
-		if t.Status == "failed" {
-			log.Fatalf("Transcription failed: %s", t.Error)
-		}
-		log.Printf("Done: %s (%s, %d segments)\n", t.SourceRef, t.Language, len(segs))
-		return
+	ac := addon.Config{
+		Capability:   capTranscrever,
+		Provider:     provider,
+		Store:        addon.NewPgxStore(pool),
+		MaxAttempts:  addon.DefaultMaxAttempts,
+		PollInterval: envDuration("WORK_POLL_INTERVAL", 0),
+		PokeAddr:     os.Getenv("POKE_ADDR"),
+		PokeToken:    os.Getenv("POKE_TOKEN"),
 	}
+	if err := addon.Run(ctx, ac, transcribeHandler(&appDB{pool: pool}, acq, tr, engineName, provider)); err != nil {
+		log.Fatalf("scribe worker %s/%s: %v", capTranscrever, provider, err)
+	}
+	log.Printf("rara-scribe worker %s/%s: queue drained", capTranscrever, provider)
+}
 
-	if err := runBatch(ctx, db, acq, tr, engineName, cfg.BatchSize); err != nil {
-		log.Fatalf("Batch failed: %v", err)
+// resolveCookies returns the Netscape cookie content to pass to writeCookieFile.
+// It prefers YT_DLP_COOKIES_FILE (a path to a cookies.txt) over the inline
+// YT_DLP_COOKIES env var, so large cookie files don't need to be embedded in .env.
+func resolveCookies() string {
+	if path := os.Getenv("YT_DLP_COOKIES_FILE"); path != "" {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			log.Printf("Warning: could not read YT_DLP_COOKIES_FILE %q: %v", path, err)
+			return ""
+		}
+		return string(data)
 	}
-	log.Println("Scribe job completed successfully")
+	return os.Getenv("YT_DLP_COOKIES")
 }
 
 // writeCookieFile materializes the YT_DLP_COOKIES secret to a temp file (yt-dlp

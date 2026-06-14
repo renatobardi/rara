@@ -8,13 +8,14 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	addon "rara-addon"
 )
 
 // ---------------------------------------------------------------------------
@@ -418,30 +419,6 @@ func TestChunkSecondsFor(t *testing.T) {
 	}
 }
 
-// TestApplyOverrides: CLI flags override the .env-sourced engine and batch size
-// for a single run (empty engine / non-positive limit leave the config untouched),
-// so the scheduled run keeps its .env defaults while a manual run can pick the
-// engine and how many videos to process.
-func TestApplyOverrides(t *testing.T) {
-	base := Config{Engine: "groq", BatchSize: 25}
-
-	if got := applyOverrides(base, "", 0); got != base {
-		t.Errorf("no override should leave cfg unchanged, got %+v", got)
-	}
-	if got := applyOverrides(base, "local", 0); got.Engine != "local" || got.BatchSize != 25 {
-		t.Errorf("engine-only override: got %+v", got)
-	}
-	if got := applyOverrides(base, "", 20); got.BatchSize != 20 || got.Engine != "groq" {
-		t.Errorf("limit-only override: got %+v", got)
-	}
-	if got := applyOverrides(base, "local", 5); got.Engine != "local" || got.BatchSize != 5 {
-		t.Errorf("both overrides: got %+v", got)
-	}
-	if got := applyOverrides(base, "", -3); got.BatchSize != 25 {
-		t.Errorf("non-positive limit should be ignored: got %+v", got)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // Groq transient-error retry (429 / 5xx)
 // ---------------------------------------------------------------------------
@@ -713,98 +690,52 @@ func TestGeminiClassifiesTransientVsPermanent(t *testing.T) {
 // Mocks
 // ---------------------------------------------------------------------------
 
-// MockDatabase mirrors the SQL contract: idempotent on youtube_video_id, and
-// PendingVideos excludes anything already transcribed with status 'done'.
-type MockDatabase struct {
-	pending     []VideoRef
-	transcripts map[string]Transcript // keyed by dedup key
+// mockStore is the in-memory ScribeStore for handler tests: saved transcripts keyed by dedupKey,
+// a guid->enclosure map for the asr-direct-audio path, and a synthetic returned id. Error fields
+// force each seam to fail.
+type mockStore struct {
+	transcripts map[string]Transcript // keyed by dedupKey
 	segments    map[string][]Segment
-	attempts    map[string]int // failed-attempt counter per dedup key
-	savedSeq    map[string]int // last save order per key — mirrors updated_at
-	saveCounter int            // monotonic save sequence
+	enclosures  map[string]string // guid -> enclosure url
 	saveErr     error
-	pendingErr  error
+	enclErr     error
+	saved       int // monotonic save count -> the returned id
 }
 
-func newMockDatabase() *MockDatabase {
-	return &MockDatabase{
+func newMockStore() *mockStore {
+	return &mockStore{
 		transcripts: make(map[string]Transcript),
 		segments:    make(map[string][]Segment),
-		attempts:    make(map[string]int),
-		savedSeq:    make(map[string]int),
+		enclosures:  make(map[string]string),
 	}
 }
 
 // dedupKey mirrors the uniqueness contract: youtube id when present, else the
-// source ref (distinct per local/url source).
+// (source_type, source_ref) pair (distinct per podcast/url source).
 func dedupKey(t Transcript) string {
 	if t.YoutubeVideoID != "" {
 		return "yt:" + t.YoutubeVideoID
 	}
-	return "ref:" + t.SourceRef
+	return t.SourceType + ":" + t.SourceRef
 }
 
-func (m *MockDatabase) PendingVideos(ctx context.Context, limit int) ([]VideoRef, error) {
-	if m.pendingErr != nil {
-		return nil, m.pendingErr
-	}
-	// Mirror the SQL contract: exclude 'done', exclude failed videos past the
-	// retry cap, and order never-attempted videos before previously-failed ones
-	// so failures can't starve the backlog.
-	var fresh, retry []VideoRef
-	for _, ref := range m.pending {
-		key := "yt:" + ref.YoutubeVideoID
-		existing, ok := m.transcripts[key]
-		switch {
-		case ok && (existing.Status == statusDone || existing.Status == statusEmpty):
-			continue // terminal: transcribed (with or without speech)
-		case ok && existing.Status == statusFailed:
-			if m.attempts[key] >= maxFailedAttempts {
-				continue // exhausted retries — drop from the backlog
-			}
-			retry = append(retry, ref)
-		default:
-			fresh = append(fresh, ref)
-		}
-	}
-	// Mirror the SQL ordering among failed rows: fewest attempts first, then the
-	// least-recently-saved (updated_at ASC, round-robin) so a large backlog at the
-	// same attempt_count can't starve itself.
-	sort.SliceStable(retry, func(i, j int) bool {
-		ki, kj := "yt:"+retry[i].YoutubeVideoID, "yt:"+retry[j].YoutubeVideoID
-		if m.attempts[ki] != m.attempts[kj] {
-			return m.attempts[ki] < m.attempts[kj]
-		}
-		return m.savedSeq[ki] < m.savedSeq[kj]
-	})
-	out := append(fresh, retry...)
-	if limit > 0 && len(out) > limit {
-		out = out[:limit]
-	}
-	return out, nil
-}
-
-func (m *MockDatabase) SaveTranscript(ctx context.Context, t Transcript, segs []Segment) error {
+func (m *mockStore) SaveTranscript(ctx context.Context, t Transcript, segs []Segment) (int, error) {
 	if m.saveErr != nil {
-		return m.saveErr
+		return 0, m.saveErr
 	}
 	key := dedupKey(t)
-	m.transcripts[key] = t // upsert: replaces, mirroring ON CONFLICT DO UPDATE
-	m.segments[key] = segs // replace segments
-	m.saveCounter++
-	m.savedSeq[key] = m.saveCounter // mirror updated_at = CURRENT_TIMESTAMP
-	// Mirror attempt_count: a permanent failure increments, a 'done'/'empty' save
-	// resets to 0, and a transient failure (rate limit / 5xx) leaves it unchanged
-	// so a daily-quota starvation never counts toward the retry cap.
-	switch {
-	case t.Status == statusFailed && t.TransientFailure:
-		// leave unchanged
-	case t.Status == statusFailed:
-		m.attempts[key]++
-	default:
-		m.attempts[key] = 0
+	m.transcripts[key] = t // upsert: replaces, mirroring the SQL idempotency
+	m.segments[key] = segs
+	m.saved++
+	return 1000 + m.saved, nil // first save -> 1001 (deterministic OutputRef)
+}
+
+func (m *mockStore) EnclosureURL(ctx context.Context, guid string) (string, bool, error) {
+	if m.enclErr != nil {
+		return "", false, m.enclErr
 	}
-	return nil
+	u, ok := m.enclosures[guid]
+	return u, ok, nil
 }
 
 // MockAcquirer returns preconfigured chunks per source ref, or an error.
@@ -848,609 +779,329 @@ func (tr *MockTranscriber) Transcribe(ctx context.Context, audioPath string) (st
 	return r.text, r.language, r.segs, nil
 }
 
-// TestPendingVideosPrioritizesFreshOverFailed: with limited capacity, a
-// never-attempted video is returned before a previously-failed one, so a
-// permanently-failing video cannot starve the backlog.
-func TestPendingVideosPrioritizesFreshOverFailed(t *testing.T) {
-	m := newMockDatabase()
-	m.pending = []VideoRef{
-		{YoutubeVideoID: "failed1", URL: videoURL("failed1")},
-		{YoutubeVideoID: "fresh1", URL: videoURL("fresh1")},
-	}
-	m.transcripts["yt:failed1"] = Transcript{YoutubeVideoID: "failed1", Status: "failed"}
+// ---------------------------------------------------------------------------
+// transcribeSource — the engine/db-agnostic transcription core (driven directly)
+// ---------------------------------------------------------------------------
 
-	got, err := m.PendingVideos(context.Background(), 1)
-	if err != nil {
-		t.Fatalf("PendingVideos failed: %v", err)
+func ytSource(id string) Source { return Source{Type: "youtube", Ref: videoURL(id)} }
+
+// TestTranscribeSourceSingleChunk: the happy path for one short source — text, language, segments,
+// and the youtube_video_id parsed from the watch URL (an 11-char id).
+func TestTranscribeSourceSingleChunk(t *testing.T) {
+	const vid = "dQw4w9WgXcQ"
+	src := ytSource(vid)
+	acq := newMockAcquirer()
+	acq.chunks[src.Ref] = []AudioChunk{{Path: "/tmp/x/chunk_000.mp3", Offset: 0}}
+	tr := newMockTranscriber()
+	tr.results["/tmp/x/chunk_000.mp3"] = mockResult{text: "olá mundo", language: "pt", segs: []Segment{{Start: 0, End: 2, Text: "olá"}, {Start: 2, End: 4, Text: "mundo"}}}
+
+	got, segs := transcribeSource(context.Background(), acq, tr, groqModelName, src)
+	if got.Status != statusDone || got.Language != "pt" || got.Text != "olá mundo" || len(segs) != 2 {
+		t.Errorf("transcribeSource = %+v, segs=%d", got, len(segs))
 	}
-	if len(got) != 1 || got[0].YoutubeVideoID != "fresh1" {
-		t.Errorf("PendingVideos = %+v, want only [fresh1]", got)
+	if got.YoutubeVideoID != vid {
+		t.Errorf("youtube id = %q, want %q", got.YoutubeVideoID, vid)
 	}
 }
 
-// TestPendingVideosExcludesExhaustedFailures: a video that has failed
-// maxFailedAttempts times drops out of the backlog, so permanently-broken
-// videos (deleted/private) stop being retried every run.
-func TestPendingVideosExcludesExhaustedFailures(t *testing.T) {
-	m := newMockDatabase()
-	m.pending = []VideoRef{{YoutubeVideoID: "perma", URL: videoURL("perma")}}
-	m.transcripts["yt:perma"] = Transcript{YoutubeVideoID: "perma", Status: "failed"}
+// TestTranscribeSourceMultiChunkStitchAndReindex: two chunks → text stitched and the second
+// chunk's segment timestamps shifted by the chunk offset.
+func TestTranscribeSourceMultiChunkStitchAndReindex(t *testing.T) {
+	src := ytSource("long1")
+	acq := newMockAcquirer()
+	acq.chunks[src.Ref] = []AudioChunk{{Path: "/tmp/y/chunk_000.mp3", Offset: 0}, {Path: "/tmp/y/chunk_001.mp3", Offset: 600}}
+	tr := newMockTranscriber()
+	tr.results["/tmp/y/chunk_000.mp3"] = mockResult{text: "primeira parte", language: "pt", segs: []Segment{{Start: 0, End: 30, Text: "primeira parte"}}}
+	tr.results["/tmp/y/chunk_001.mp3"] = mockResult{text: "segunda parte", language: "pt", segs: []Segment{{Start: 10, End: 40, Text: "segunda parte"}}}
 
-	// One short of the cap: still retried.
-	m.attempts["yt:perma"] = maxFailedAttempts - 1
-	if got, _ := m.PendingVideos(context.Background(), 25); len(got) != 1 {
-		t.Fatalf("below cap: want video retried, got %+v", got)
+	got, segs := transcribeSource(context.Background(), acq, tr, groqModelName, src)
+	if got.Text != "primeira parte\nsegunda parte" {
+		t.Errorf("stitched text = %q", got.Text)
 	}
-
-	// At the cap: excluded.
-	m.attempts["yt:perma"] = maxFailedAttempts
-	if got, _ := m.PendingVideos(context.Background(), 25); len(got) != 0 {
-		t.Errorf("at cap: want video excluded, got %+v", got)
+	if len(segs) != 2 || segs[1].Start != 610 { // 10 + 600 offset
+		t.Errorf("reindex: segs=%+v", segs)
 	}
 }
 
-// TestPendingVideosFewerAttemptsFirst: among failed rows, the one with fewer
-// attempts is retried before one closer to the cap.
-func TestPendingVideosFewerAttemptsFirst(t *testing.T) {
-	m := newMockDatabase()
-	m.pending = []VideoRef{
-		{YoutubeVideoID: "near", URL: videoURL("near")},
-		{YoutubeVideoID: "far", URL: videoURL("far")},
-	}
-	m.transcripts["yt:near"] = Transcript{YoutubeVideoID: "near", Status: statusFailed}
-	m.transcripts["yt:far"] = Transcript{YoutubeVideoID: "far", Status: statusFailed}
-	m.attempts["yt:near"] = maxFailedAttempts - 1 // almost retired
-	m.attempts["yt:far"] = 1                      // plenty of headroom
+// TestTranscribeSourceLanguageByMajority: pt, en, pt → majority pt (not the first chunk's en).
+func TestTranscribeSourceLanguageByMajority(t *testing.T) {
+	src := ytSource("mixed")
+	acq := newMockAcquirer()
+	acq.chunks[src.Ref] = []AudioChunk{{Path: "/m/0.mp3", Offset: 0}, {Path: "/m/1.mp3", Offset: 600}, {Path: "/m/2.mp3", Offset: 1200}}
+	tr := newMockTranscriber()
+	tr.results["/m/0.mp3"] = mockResult{text: "a", language: "en", segs: []Segment{{Start: 0, End: 1, Text: "a"}}}
+	tr.results["/m/1.mp3"] = mockResult{text: "b", language: "pt", segs: []Segment{{Start: 0, End: 1, Text: "b"}}}
+	tr.results["/m/2.mp3"] = mockResult{text: "c", language: "pt", segs: []Segment{{Start: 0, End: 1, Text: "c"}}}
 
-	got, err := m.PendingVideos(context.Background(), 25)
-	if err != nil {
-		t.Fatalf("PendingVideos: %v", err)
-	}
-	if len(got) != 2 || got[0].YoutubeVideoID != "far" {
-		t.Errorf("want [far, near] (fewest attempts first), got %+v", got)
+	got, _ := transcribeSource(context.Background(), acq, tr, groqModelName, src)
+	if got.Language != "pt" {
+		t.Errorf("language = %q, want pt (majority)", got.Language)
 	}
 }
 
-// TestPendingVideosRoundRobinAmongFailed: a backlog of equally-failed rows (same
-// attempt_count, e.g. quota-starved transient failures) is drained round-robin —
-// the least-recently-tried first — so re-trying one row sends it to the back
-// instead of the same rows being picked every run while others wait forever.
-func TestPendingVideosRoundRobinAmongFailed(t *testing.T) {
-	ctx := context.Background()
-	m := newMockDatabase()
-	m.pending = []VideoRef{
-		{YoutubeVideoID: "a", URL: videoURL("a")},
-		{YoutubeVideoID: "b", URL: videoURL("b")},
-	}
-	// Both transient-failed at attempt_count=0; 'a' was tried (saved) first.
-	if err := m.SaveTranscript(ctx, Transcript{YoutubeVideoID: "a", SourceRef: videoURL("a"), Status: statusFailed, TransientFailure: true}, nil); err != nil {
-		t.Fatalf("save a: %v", err)
-	}
-	if err := m.SaveTranscript(ctx, Transcript{YoutubeVideoID: "b", SourceRef: videoURL("b"), Status: statusFailed, TransientFailure: true}, nil); err != nil {
-		t.Fatalf("save b: %v", err)
-	}
+// TestTranscribeSourceEmptyMarkedEmpty: no text + no segments → status 'empty'.
+func TestTranscribeSourceEmptyMarkedEmpty(t *testing.T) {
+	src := ytSource("silent")
+	acq := newMockAcquirer()
+	acq.chunks[src.Ref] = []AudioChunk{{Path: "/s/0.mp3", Offset: 0}}
+	tr := newMockTranscriber()
+	tr.results["/s/0.mp3"] = mockResult{text: "", language: "pt"}
 
-	got, _ := m.PendingVideos(ctx, 25)
-	if len(got) != 2 || got[0].YoutubeVideoID != "a" {
-		t.Fatalf("want [a, b] (a tried longest ago leads), got %+v", got)
+	got, segs := transcribeSource(context.Background(), acq, tr, groqModelName, src)
+	if got.Status != statusEmpty || len(segs) != 0 {
+		t.Errorf("empty: status=%q segs=%d", got.Status, len(segs))
 	}
+}
 
-	// Re-try 'a' (saved again now): it becomes the most-recent, so 'b' should lead.
-	if err := m.SaveTranscript(ctx, Transcript{YoutubeVideoID: "a", SourceRef: videoURL("a"), Status: statusFailed, TransientFailure: true}, nil); err != nil {
-		t.Fatalf("re-save a: %v", err)
+// TestTranscribeSourceAcquireFailure: a download failure is captured as a failed Transcript with
+// no segments (the handler then persists it and requeues).
+func TestTranscribeSourceAcquireFailure(t *testing.T) {
+	acq := newMockAcquirer()
+	acq.err = errors.New("yt-dlp: Sign in to confirm you're not a bot")
+	got, segs := transcribeSource(context.Background(), acq, newMockTranscriber(), groqModelName, ytSource("bad"))
+	if got.Status != statusFailed || got.Error == "" || segs != nil {
+		t.Errorf("acquire failure: %+v segs=%v", got, segs)
 	}
-	got, _ = m.PendingVideos(ctx, 25)
-	if len(got) != 2 || got[0].YoutubeVideoID != "b" {
-		t.Errorf("after retrying a, want [b, a], got %+v", got)
+}
+
+// TestTranscribeSourcePermanentASRFailure: a permanent ASR error fails the source (no segments)
+// and is NOT flagged transient.
+func TestTranscribeSourcePermanentASRFailure(t *testing.T) {
+	src := ytSource("vid1")
+	acq := newMockAcquirer()
+	acq.chunks[src.Ref] = []AudioChunk{{Path: "/x/0.mp3", Offset: 0}}
+	tr := newMockTranscriber()
+	tr.err = errors.New("groq API error (status 400): bad request")
+	got, _ := transcribeSource(context.Background(), acq, tr, groqModelName, src)
+	if got.Status != statusFailed || got.TransientFailure {
+		t.Errorf("permanent ASR failure: status=%q transient=%v", got.Status, got.TransientFailure)
 	}
 }
 
 // ---------------------------------------------------------------------------
-// Fluent harness
+// transcribeHandler — the bridge-total claim-worker domain (mock store + fakes)
 // ---------------------------------------------------------------------------
 
-type ScribeHarness struct {
-	t          *testing.T
-	db         *MockDatabase
-	acq        *MockAcquirer
-	tr         *MockTranscriber
-	engineName string
+func runHandler(store *mockStore, acq *MockAcquirer, tr *MockTranscriber, provider, sourceRef string) (addon.Result, error) {
+	h := transcribeHandler(store, acq, tr, groqModelName, provider)
+	return h(context.Background(), addon.Item{SourceRef: sourceRef}, addon.Step{Seq: 1})
 }
 
-func NewScribeHarness(t *testing.T) *ScribeHarness {
-	return &ScribeHarness{
-		t:          t,
-		db:         newMockDatabase(),
-		acq:        newMockAcquirer(),
-		tr:         newMockTranscriber(),
-		engineName: groqModelName,
-	}
-}
+// TestHandlerYouTubeHappyPath: asr-youtube builds the watch URL from the video id, transcribes, and
+// saves a transcript keyed by youtube_video_id; OutputRef is the new row id.
+func TestHandlerYouTubeHappyPath(t *testing.T) {
+	store := newMockStore()
+	acq := newMockAcquirer()
+	acq.chunks[videoURL("vid1")] = []AudioChunk{{Path: "/x/0.mp3", Offset: 0}}
+	tr := newMockTranscriber()
+	tr.results["/x/0.mp3"] = mockResult{text: "olá", language: "pt", segs: []Segment{{Start: 0, End: 1, Text: "olá"}}}
 
-// WithPendingVideos registers the videos discovered from the collector tables.
-func (h *ScribeHarness) WithPendingVideos(refs ...VideoRef) *ScribeHarness {
-	h.db.pending = append(h.db.pending, refs...)
-	return h
-}
-
-// WithChunks attaches the audio chunks a source ref will produce.
-func (h *ScribeHarness) WithChunks(ref string, chunks ...AudioChunk) *ScribeHarness {
-	h.acq.chunks[ref] = append(h.acq.chunks[ref], chunks...)
-	return h
-}
-
-// WithTranscription sets the ASR result for a given chunk path.
-func (h *ScribeHarness) WithTranscription(path, text, language string, segs ...Segment) *ScribeHarness {
-	h.tr.results[path] = mockResult{text: text, language: language, segs: segs}
-	return h
-}
-
-func (h *ScribeHarness) WithAcquireError(err error) *ScribeHarness {
-	h.acq.err = err
-	return h
-}
-
-func (h *ScribeHarness) WithTranscribeError(err error) *ScribeHarness {
-	h.tr.err = err
-	return h
-}
-
-func (h *ScribeHarness) Execute(ctx context.Context, limit int) error {
-	return runBatch(ctx, h.db, h.acq, h.tr, h.engineName, limit)
-}
-
-func (h *ScribeHarness) get(videoID string) (Transcript, bool) {
-	t, ok := h.db.transcripts["yt:"+videoID]
-	return t, ok
-}
-
-func (h *ScribeHarness) AssertTranscriptCount(expected int) {
-	if len(h.db.transcripts) != expected {
-		h.t.Errorf("transcript count = %d, want %d", len(h.db.transcripts), expected)
-	}
-}
-
-func (h *ScribeHarness) AssertStatus(videoID, status string) {
-	t, ok := h.get(videoID)
-	if !ok {
-		h.t.Errorf("transcript %q not found", videoID)
-		return
-	}
-	if t.Status != status {
-		h.t.Errorf("transcript %q status = %q, want %q", videoID, t.Status, status)
-	}
-}
-
-func (h *ScribeHarness) AssertText(videoID, text string) {
-	t, ok := h.get(videoID)
-	if !ok {
-		h.t.Errorf("transcript %q not found", videoID)
-		return
-	}
-	if t.Text != text {
-		h.t.Errorf("transcript %q text = %q, want %q", videoID, t.Text, text)
-	}
-}
-
-func (h *ScribeHarness) AssertLanguage(videoID, lang string) {
-	t, ok := h.get(videoID)
-	if !ok {
-		h.t.Errorf("transcript %q not found", videoID)
-		return
-	}
-	if t.Language != lang {
-		h.t.Errorf("transcript %q language = %q, want %q", videoID, t.Language, lang)
-	}
-}
-
-func (h *ScribeHarness) AssertSegmentCount(videoID string, expected int) {
-	if got := len(h.db.segments["yt:"+videoID]); got != expected {
-		h.t.Errorf("transcript %q segment count = %d, want %d", videoID, got, expected)
-	}
-}
-
-func (h *ScribeHarness) AssertSegmentStart(videoID string, seq int, start float64) {
-	segs := h.db.segments["yt:"+videoID]
-	if seq >= len(segs) {
-		h.t.Errorf("transcript %q has no segment %d", videoID, seq)
-		return
-	}
-	if segs[seq].Start != start {
-		h.t.Errorf("transcript %q segment %d start = %v, want %v", videoID, seq, segs[seq].Start, start)
-	}
-}
-
-func (h *ScribeHarness) AssertAttemptCount(videoID string, expected int) {
-	if got := h.db.attempts["yt:"+videoID]; got != expected {
-		h.t.Errorf("transcript %q attempt_count = %d, want %d", videoID, got, expected)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Harness tests
-// ---------------------------------------------------------------------------
-
-// TestHarnessSingleVideoSingleChunk: the happy path for one short video.
-func TestHarnessSingleVideoSingleChunk(t *testing.T) {
-	url := videoURL("vid1")
-	h := NewScribeHarness(t).
-		WithPendingVideos(VideoRef{YoutubeVideoID: "vid1", URL: url}).
-		WithChunks(url, AudioChunk{Path: "/tmp/x/chunk_000.mp3", Offset: 0}).
-		WithTranscription("/tmp/x/chunk_000.mp3", "olá mundo", "pt",
-			Segment{Start: 0, End: 2, Text: "olá"}, Segment{Start: 2, End: 4, Text: "mundo"})
-
-	if err := h.Execute(context.Background(), 25); err != nil {
-		t.Fatalf("execute failed: %v", err)
-	}
-	h.AssertTranscriptCount(1)
-	h.AssertStatus("vid1", "done")
-	h.AssertLanguage("vid1", "pt")
-	h.AssertText("vid1", "olá mundo")
-	h.AssertSegmentCount("vid1", 2)
-}
-
-// TestHarnessMultiChunkStitchAndReindex: two chunks → text stitched and the
-// second chunk's segment timestamps shifted by the chunk offset.
-func TestHarnessMultiChunkStitchAndReindex(t *testing.T) {
-	url := videoURL("long1")
-	h := NewScribeHarness(t).
-		WithPendingVideos(VideoRef{YoutubeVideoID: "long1", URL: url}).
-		WithChunks(url,
-			AudioChunk{Path: "/tmp/y/chunk_000.mp3", Offset: 0},
-			AudioChunk{Path: "/tmp/y/chunk_001.mp3", Offset: 600}).
-		WithTranscription("/tmp/y/chunk_000.mp3", "primeira parte", "pt",
-			Segment{Start: 0, End: 30, Text: "primeira parte"}).
-		WithTranscription("/tmp/y/chunk_001.mp3", "segunda parte", "pt",
-			Segment{Start: 10, End: 40, Text: "segunda parte"})
-
-	if err := h.Execute(context.Background(), 25); err != nil {
-		t.Fatalf("execute failed: %v", err)
-	}
-	h.AssertText("long1", "primeira parte\nsegunda parte")
-	h.AssertSegmentCount("long1", 2)
-	h.AssertSegmentStart("long1", 1, 610) // 10 + 600 offset
-}
-
-// TestHarnessLanguageByMajority: three chunks detect pt, en, pt → the transcript
-// language is the majority (pt), not whatever the first chunk happened to report.
-func TestHarnessLanguageByMajority(t *testing.T) {
-	url := videoURL("mixed")
-	h := NewScribeHarness(t).
-		WithPendingVideos(VideoRef{YoutubeVideoID: "mixed", URL: url}).
-		WithChunks(url,
-			AudioChunk{Path: "/tmp/m/chunk_000.mp3", Offset: 0},
-			AudioChunk{Path: "/tmp/m/chunk_001.mp3", Offset: 600},
-			AudioChunk{Path: "/tmp/m/chunk_002.mp3", Offset: 1200}).
-		WithTranscription("/tmp/m/chunk_000.mp3", "a", "en", Segment{Start: 0, End: 1, Text: "a"}).
-		WithTranscription("/tmp/m/chunk_001.mp3", "b", "pt", Segment{Start: 0, End: 1, Text: "b"}).
-		WithTranscription("/tmp/m/chunk_002.mp3", "c", "pt", Segment{Start: 0, End: 1, Text: "c"})
-
-	if err := h.Execute(context.Background(), 25); err != nil {
-		t.Fatalf("execute failed: %v", err)
-	}
-	h.AssertLanguage("mixed", "pt") // 2×pt beats 1×en, despite en being first
-}
-
-// TestHarnessEmptyTranscriptMarkedEmpty: a video with no speech (no text, no
-// segments) is saved as 'empty' — distinguishable from a real transcript and
-// terminal, so PendingVideos does not keep reprocessing it.
-func TestHarnessEmptyTranscriptMarkedEmpty(t *testing.T) {
-	url := videoURL("silent")
-	h := NewScribeHarness(t).
-		WithPendingVideos(VideoRef{YoutubeVideoID: "silent", URL: url}).
-		WithChunks(url, AudioChunk{Path: "/tmp/s/chunk_000.mp3", Offset: 0}).
-		WithTranscription("/tmp/s/chunk_000.mp3", "", "pt") // no text, no segments
-
-	ctx := context.Background()
-	if err := h.Execute(ctx, 25); err != nil {
-		t.Fatalf("execute failed: %v", err)
-	}
-	h.AssertStatus("silent", statusEmpty)
-	h.AssertSegmentCount("silent", 0)
-
-	// Terminal: an empty result is not reprocessed on the next run.
-	pending, err := h.db.PendingVideos(ctx, 25)
+	res, err := runHandler(store, acq, tr, provASRYouTube, "vid1")
 	if err != nil {
-		t.Fatalf("PendingVideos: %v", err)
+		t.Fatalf("handler: %v", err)
 	}
-	if len(pending) != 0 {
-		t.Errorf("empty video still pending: %+v", pending)
+	if res.OutputRef != "1001" || res.Filtered {
+		t.Errorf("result = %+v, want OutputRef 1001, Filtered false", res)
 	}
-}
-
-// TestHarnessAcquireFailureContinues: a download failure is recorded as failed
-// and the batch carries on to the next video.
-func TestHarnessAcquireFailureContinues(t *testing.T) {
-	good := videoURL("good")
-	h := NewScribeHarness(t).
-		WithPendingVideos(
-			VideoRef{YoutubeVideoID: "bad", URL: videoURL("bad")},
-			VideoRef{YoutubeVideoID: "good", URL: good}).
-		WithChunks(good, AudioChunk{Path: "/tmp/z/chunk_000.mp3", Offset: 0}).
-		WithTranscription("/tmp/z/chunk_000.mp3", "ok", "en", Segment{Start: 0, End: 1, Text: "ok"}).
-		WithAcquireError(errors.New("yt-dlp: Sign in to confirm you're not a bot"))
-
-	if err := h.Execute(context.Background(), 25); err != nil {
-		t.Fatalf("execute failed: %v", err)
-	}
-	// Both rows persisted; one failed, one done.
-	h.AssertTranscriptCount(2)
-	h.AssertStatus("bad", "failed")
-	h.AssertSegmentCount("bad", 0)
-}
-
-// TestHarnessFailedTranscriptHasNoSegments verifies a transcribe error is
-// captured with the message and no segments.
-func TestHarnessFailedTranscriptHasNoSegments(t *testing.T) {
-	url := videoURL("vid1")
-	h := NewScribeHarness(t).
-		WithPendingVideos(VideoRef{YoutubeVideoID: "vid1", URL: url}).
-		WithChunks(url, AudioChunk{Path: "/tmp/x/chunk_000.mp3", Offset: 0}).
-		WithTranscribeError(errors.New("groq 429"))
-
-	if err := h.Execute(context.Background(), 25); err != nil {
-		t.Fatalf("execute failed: %v", err)
-	}
-	h.AssertStatus("vid1", "failed")
-	h.AssertSegmentCount("vid1", 0)
-	if tr, _ := h.get("vid1"); tr.Error == "" {
-		t.Error("expected failed transcript to carry an error message")
+	got, ok := store.transcripts["yt:vid1"]
+	if !ok || got.Status != statusDone || got.YoutubeVideoID != "vid1" || got.SourceType != "youtube" || got.SourceRef != videoURL("vid1") {
+		t.Errorf("saved transcript = %+v (ok=%v)", got, ok)
 	}
 }
 
-// TestHarnessIdempotentReRun: re-running does not re-transcribe an already-done
-// video (PendingVideos excludes it), so the count stays stable.
-func TestHarnessIdempotentReRun(t *testing.T) {
-	url := videoURL("vid1")
-	h := NewScribeHarness(t).
-		WithPendingVideos(VideoRef{YoutubeVideoID: "vid1", URL: url}).
-		WithChunks(url, AudioChunk{Path: "/tmp/x/chunk_000.mp3", Offset: 0}).
-		WithTranscription("/tmp/x/chunk_000.mp3", "olá", "pt", Segment{Start: 0, End: 1, Text: "olá"})
+// TestHandlerDirectAudioReKeysToPodcast: asr-direct-audio resolves the enclosure URL from
+// podcast_episodes, transcribes it, but keys the transcript on the spine's GUID + lane=podcast (NOT
+// the enclosure URL), so the downstream gate/distill lookups chain on the same GUID.
+func TestHandlerDirectAudioReKeysToPodcast(t *testing.T) {
+	store := newMockStore()
+	store.enclosures["guid-42"] = "https://cdn.example.com/ep42.mp3"
+	acq := newMockAcquirer()
+	acq.chunks["https://cdn.example.com/ep42.mp3"] = []AudioChunk{{Path: "/p/0.mp3", Offset: 0}}
+	tr := newMockTranscriber()
+	tr.results["/p/0.mp3"] = mockResult{text: "hello", language: "en", segs: []Segment{{Start: 0, End: 1, Text: "hello"}}}
 
-	ctx := context.Background()
-	if err := h.Execute(ctx, 25); err != nil {
-		t.Fatalf("first run failed: %v", err)
-	}
-	h.AssertTranscriptCount(1)
-	h.AssertSegmentCount("vid1", 1)
-
-	if err := h.Execute(ctx, 25); err != nil {
-		t.Fatalf("second run failed: %v", err)
-	}
-	h.AssertTranscriptCount(1) // still 1 — already done, excluded from pending
-}
-
-// TestHarnessExhaustedFailureLeavesBacklog: a video that fails every run is
-// retried up to the cap and then drops out of the pending set entirely.
-func TestHarnessExhaustedFailureLeavesBacklog(t *testing.T) {
-	url := videoURL("perma")
-	h := NewScribeHarness(t).
-		WithPendingVideos(VideoRef{YoutubeVideoID: "perma", URL: url}).
-		WithAcquireError(errors.New("yt-dlp: Video unavailable"))
-
-	ctx := context.Background()
-	for i := 0; i < maxFailedAttempts; i++ {
-		if err := h.Execute(ctx, 25); err != nil {
-			t.Fatalf("run %d failed: %v", i, err)
-		}
-	}
-	h.AssertStatus("perma", "failed")
-
-	// Retries exhausted → no longer pending.
-	pending, err := h.db.PendingVideos(ctx, 25)
+	res, err := runHandler(store, acq, tr, provASRDirectAudio, "guid-42")
 	if err != nil {
-		t.Fatalf("PendingVideos: %v", err)
+		t.Fatalf("handler: %v", err)
 	}
-	if len(pending) != 0 {
-		t.Errorf("exhausted video still pending: %+v", pending)
+	if res.OutputRef == "" {
+		t.Error("expected an OutputRef")
+	}
+	got, ok := store.transcripts["podcast:guid-42"]
+	if !ok || got.SourceType != lanePodcast || got.SourceRef != "guid-42" || got.YoutubeVideoID != "" {
+		t.Errorf("re-keyed transcript = %+v (ok=%v), want (podcast, guid-42, no yt id)", got, ok)
 	}
 }
 
-// TestHarnessBatchSizeLimit: only `limit` videos are processed per run.
-func TestHarnessBatchSizeLimit(t *testing.T) {
-	h := NewScribeHarness(t)
-	for _, id := range []string{"a", "b", "c"} {
-		u := videoURL(id)
-		h.WithPendingVideos(VideoRef{YoutubeVideoID: id, URL: u}).
-			WithChunks(u, AudioChunk{Path: "/tmp/" + id + "/chunk_000.mp3", Offset: 0}).
-			WithTranscription("/tmp/"+id+"/chunk_000.mp3", id, "en", Segment{Start: 0, End: 1, Text: id})
-	}
+// TestHandlerEmptyIsFiltered: a no-speech transcript is benign no-content — the item is curated out.
+func TestHandlerEmptyIsFiltered(t *testing.T) {
+	store := newMockStore()
+	acq := newMockAcquirer()
+	acq.chunks[videoURL("silent")] = []AudioChunk{{Path: "/s/0.mp3", Offset: 0}}
+	tr := newMockTranscriber()
+	tr.results["/s/0.mp3"] = mockResult{text: "", language: "pt"}
 
-	if err := h.Execute(context.Background(), 2); err != nil {
-		t.Fatalf("execute failed: %v", err)
-	}
-	h.AssertTranscriptCount(2) // limited to 2 of 3
-}
-
-// TestTransientFailureDoesNotCountTowardCap: a video failing with a transient ASR
-// error (rate limit / 5xx) is recorded failed but its attempt_count is never
-// bumped, so it stays in the backlog and is retried indefinitely — exhausting a
-// daily quota must not retire an otherwise-fine video.
-func TestTransientFailureDoesNotCountTowardCap(t *testing.T) {
-	url := videoURL("ratelimited")
-	h := NewScribeHarness(t).
-		WithPendingVideos(VideoRef{YoutubeVideoID: "ratelimited", URL: url}).
-		WithChunks(url, AudioChunk{Path: "/tmp/r/chunk_000.mp3", Offset: 0}).
-		WithTranscribeError(&transientError{errors.New("groq API error (status 429): rate limit")})
-
-	ctx := context.Background()
-	// Fail well past the cap; a transient failure must never count toward it.
-	for i := 0; i < maxFailedAttempts+2; i++ {
-		if err := h.Execute(ctx, 25); err != nil {
-			t.Fatalf("run %d failed: %v", i, err)
-		}
-	}
-	h.AssertStatus("ratelimited", statusFailed)
-	h.AssertAttemptCount("ratelimited", 0)
-
-	// Still pending despite many failures — not retired.
-	pending, err := h.db.PendingVideos(ctx, 25)
+	res, err := runHandler(store, acq, tr, provASRYouTube, "silent")
 	if err != nil {
-		t.Fatalf("PendingVideos: %v", err)
+		t.Fatalf("handler: %v", err)
 	}
-	if len(pending) != 1 {
-		t.Errorf("rate-limited video should remain pending, got %+v", pending)
-	}
-}
-
-// TestPermanentFailureCountsTowardCap: a permanent ASR error bumps attempt_count
-// each run and the video is retired once the cap is reached.
-func TestPermanentFailureCountsTowardCap(t *testing.T) {
-	url := videoURL("badreq")
-	h := NewScribeHarness(t).
-		WithPendingVideos(VideoRef{YoutubeVideoID: "badreq", URL: url}).
-		WithChunks(url, AudioChunk{Path: "/tmp/b/chunk_000.mp3", Offset: 0}).
-		WithTranscribeError(errors.New("groq API error (status 400): bad request"))
-
-	ctx := context.Background()
-	for i := 0; i < maxFailedAttempts; i++ {
-		if err := h.Execute(ctx, 25); err != nil {
-			t.Fatalf("run %d failed: %v", i, err)
-		}
-	}
-	h.AssertStatus("badreq", statusFailed)
-	h.AssertAttemptCount("badreq", maxFailedAttempts)
-
-	pending, err := h.db.PendingVideos(ctx, 25)
-	if err != nil {
-		t.Fatalf("PendingVideos: %v", err)
-	}
-	if len(pending) != 0 {
-		t.Errorf("permanently-failing video should be retired, got %+v", pending)
+	if !res.Filtered {
+		t.Error("empty transcript should be Filtered")
 	}
 }
 
-// TestDoneSaveResetsAttemptCount: a previously-failed video (attempt_count > 0)
-// that finally transcribes resets the counter to 0.
-func TestDoneSaveResetsAttemptCount(t *testing.T) {
-	url := videoURL("flap")
-	chunk := "/tmp/f/chunk_000.mp3"
-	h := NewScribeHarness(t).
-		WithPendingVideos(VideoRef{YoutubeVideoID: "flap", URL: url}).
-		WithChunks(url, AudioChunk{Path: chunk, Offset: 0}).
-		WithTranscribeError(errors.New("groq API error (status 400): bad request"))
+// TestHandlerFailedIsRetryableAndPersisted: a download/ASR failure persists a failed row (for
+// observability) and surfaces as addon.ErrRetryable so the SDK requeues.
+func TestHandlerFailedIsRetryableAndPersisted(t *testing.T) {
+	store := newMockStore()
+	acq := newMockAcquirer()
+	acq.err = errors.New("yt-dlp: Video unavailable")
 
-	ctx := context.Background()
-	for i := 0; i < 2; i++ { // two permanent failures: counter climbs
-		if err := h.Execute(ctx, 25); err != nil {
-			t.Fatalf("failing run %d: %v", i, err)
-		}
+	_, err := runHandler(store, acq, newMockTranscriber(), provASRYouTube, "vid1")
+	if !errors.Is(err, addon.ErrRetryable) {
+		t.Errorf("err = %v, want wrapping addon.ErrRetryable", err)
 	}
-	h.AssertAttemptCount("flap", 2)
+	if got, ok := store.transcripts["yt:vid1"]; !ok || got.Status != statusFailed {
+		t.Errorf("expected a persisted failed row, got %+v (ok=%v)", got, ok)
+	}
+}
 
-	// Now it transcribes cleanly: the counter resets.
-	h.tr.err = nil
-	h.WithTranscription(chunk, "olá", "pt", Segment{Start: 0, End: 1, Text: "olá"})
-	if err := h.Execute(ctx, 25); err != nil {
-		t.Fatalf("success run: %v", err)
+// TestHandlerEnclosureNotReadyIsRetryable: a missing podcast_episodes row is transient (the
+// collector may lag) → ErrRetryable, and nothing is transcribed or saved.
+func TestHandlerEnclosureNotReadyIsRetryable(t *testing.T) {
+	store := newMockStore() // no enclosure registered
+	_, err := runHandler(store, newMockAcquirer(), newMockTranscriber(), provASRDirectAudio, "guid-missing")
+	if !errors.Is(err, addon.ErrRetryable) {
+		t.Errorf("err = %v, want wrapping addon.ErrRetryable", err)
 	}
-	h.AssertStatus("flap", statusDone)
-	h.AssertAttemptCount("flap", 0)
+	if len(store.transcripts) != 0 {
+		t.Errorf("nothing should be saved, got %d", len(store.transcripts))
+	}
+}
+
+// TestHandlerUnknownProvider: an unrecognized provider is a config error (terminal, not retryable).
+func TestHandlerUnknownProvider(t *testing.T) {
+	_, err := runHandler(newMockStore(), newMockAcquirer(), newMockTranscriber(), "asr-bogus", "x")
+	if err == nil || errors.Is(err, addon.ErrRetryable) {
+		t.Errorf("err = %v, want a terminal (non-retryable) error", err)
+	}
+}
+
+// TestHandlerSaveErrorPropagates: a store write failure propagates.
+func TestHandlerSaveErrorPropagates(t *testing.T) {
+	store := newMockStore()
+	store.saveErr = errors.New("neon write timeout")
+	acq := newMockAcquirer()
+	acq.chunks[videoURL("vid1")] = []AudioChunk{{Path: "/x/0.mp3", Offset: 0}}
+	tr := newMockTranscriber()
+	tr.results["/x/0.mp3"] = mockResult{text: "ok", language: "en", segs: []Segment{{Start: 0, End: 1, Text: "ok"}}}
+
+	_, err := runHandler(store, acq, tr, provASRYouTube, "vid1")
+	if err == nil || !strings.Contains(err.Error(), "neon write timeout") {
+		t.Errorf("err = %v, want the save error propagated", err)
+	}
 }
 
 // ---------------------------------------------------------------------------
 // Integration test (real SQL) — opt-in via SCRIBE_TEST_DATABASE_URL.
 //
-// Unit tests above use MockDatabase, which cannot reproduce SQL three-valued
-// (NULL) logic. This test runs the actual PendingVideos query against Postgres
-// to guard the NULL edge cases a mock will always miss:
-//
-//   - a video with NO transcript row MUST be returned (the bug case: a naive
-//     NOT (status='failed' AND attempt_count>=cap) evaluates to NULL when
-//     t.status IS NULL, silently dropping every never-attempted video);
-//   - a video with status='done' MUST be excluded;
-//   - a video with status='empty' MUST be excluded;
-//   - a video with status='failed' and attempt_count < cap MUST be returned;
-//   - a video with status='failed' and attempt_count >= cap MUST be excluded.
-//
-// Skipped unless SCRIBE_TEST_DATABASE_URL points at a throwaway Postgres.
+// Exercises the app's domain DB (appDB) against Postgres: SaveTranscript returns the row id and is
+// idempotent — YouTube via the youtube_video_id UNIQUE key; podcast/non-youtube via the explicit
+// pre-delete on (source_type, source_ref), since a NULL youtube_video_id does not dedup — and
+// EnclosureURL resolves the podcast enclosure. Skipped unless SCRIBE_TEST_DATABASE_URL points at a
+// throwaway Postgres.
 // ---------------------------------------------------------------------------
 
-func TestPendingVideosIntegration(t *testing.T) {
+func TestSaveTranscriptIntegration(t *testing.T) {
 	dsn := os.Getenv("SCRIBE_TEST_DATABASE_URL")
 	if dsn == "" {
 		t.Skip("set SCRIBE_TEST_DATABASE_URL to a throwaway Postgres to run the integration test")
 	}
 	ctx := context.Background()
-	pool, err := pgxpool.New(ctx, dsn)
+
+	const schema = "scribe_it_test"
+	boot, err := pgxpool.New(ctx, dsn)
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
-	defer pool.Close()
-
-	const schema = "scribe_it_test"
+	defer boot.Close()
 	exec := func(sql string, args ...any) {
 		t.Helper()
-		if _, err := pool.Exec(ctx, sql, args...); err != nil {
+		if _, err := boot.Exec(ctx, sql, args...); err != nil {
 			t.Fatalf("exec %.60q: %v", sql, err)
 		}
 	}
-
 	exec("DROP SCHEMA IF EXISTS " + schema + " CASCADE")
 	exec("CREATE SCHEMA " + schema)
-	t.Cleanup(func() { pool.Exec(ctx, "DROP SCHEMA IF EXISTS "+schema+" CASCADE") })
+	t.Cleanup(func() { _, _ = boot.Exec(ctx, "DROP SCHEMA IF EXISTS "+schema+" CASCADE") })
 	exec("SET search_path TO " + schema)
 
-	exec(`CREATE TABLE channel_videos (
-		youtube_video_id TEXT PRIMARY KEY,
-		url              TEXT NOT NULL
-	)`)
-	exec(`CREATE TABLE playlist_videos (
-		youtube_video_id TEXT NOT NULL,
-		url              TEXT NOT NULL
-	)`)
 	exec(`CREATE TABLE transcripts (
-		id               SERIAL PRIMARY KEY,
-		source_type      TEXT NOT NULL DEFAULT 'youtube',
-		youtube_video_id TEXT UNIQUE,
-		source_ref       TEXT NOT NULL DEFAULT '',
-		engine           TEXT NOT NULL DEFAULT 'groq/whisper-large-v3',
-		status           TEXT NOT NULL DEFAULT 'done',
-		error            TEXT,
-		attempt_count    INT  NOT NULL DEFAULT 0,
-		created_at       TIMESTAMPTZ DEFAULT now(),
-		updated_at       TIMESTAMPTZ DEFAULT now()
-	)`)
+		id SERIAL PRIMARY KEY, source_type TEXT NOT NULL, youtube_video_id TEXT UNIQUE,
+		source_ref TEXT NOT NULL, language TEXT, engine TEXT NOT NULL, transcript TEXT,
+		duration_seconds INT, status TEXT NOT NULL, error TEXT, attempt_count INT NOT NULL DEFAULT 0,
+		updated_at TIMESTAMPTZ DEFAULT now())`)
+	exec(`CREATE TABLE transcript_segments (
+		id SERIAL PRIMARY KEY, transcript_id INT NOT NULL REFERENCES transcripts(id) ON DELETE CASCADE,
+		seq INT NOT NULL, start_seconds NUMERIC(10,3) NOT NULL, end_seconds NUMERIC(10,3) NOT NULL, text TEXT NOT NULL)`)
+	exec(`CREATE TABLE podcast_episodes (guid TEXT PRIMARY KEY, enclosure_url TEXT NOT NULL)`)
+	exec(`INSERT INTO podcast_episodes (guid, enclosure_url) VALUES ('g1', 'https://cdn/ep.mp3')`)
 
-	// Helper: insert a video into channel_videos and optionally its transcript.
-	insertVideo := func(id string, status *string, attemptCount int) {
-		exec("INSERT INTO channel_videos (youtube_video_id, url) VALUES ($1, $2)",
-			id, "https://youtu.be/"+id)
-		if status != nil {
-			exec(`INSERT INTO transcripts (youtube_video_id, status, attempt_count)
-				  VALUES ($1, $2, $3)`, id, *status, attemptCount)
-		}
-	}
-	sp := func(s string) *string { return &s }
-
-	insertVideo("never_attempted", nil, 0)                             // no row — MUST be returned
-	insertVideo("done_video", sp("done"), 0)                           // MUST be excluded
-	insertVideo("empty_video", sp("empty"), 0)                         // MUST be excluded
-	insertVideo("failed_under_cap", sp("failed"), maxFailedAttempts-1) // MUST be returned
-	insertVideo("failed_at_cap", sp("failed"), maxFailedAttempts)      // MUST be excluded
-
-	db := &pgxDatabase{pool: pool}
-	refs, err := db.PendingVideos(ctx, 100)
+	poolCfg, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
-		t.Fatalf("PendingVideos: %v", err)
+		t.Fatalf("pool config: %v", err)
+	}
+	poolCfg.ConnConfig.RuntimeParams["search_path"] = schema
+	pool, err := pgxpool.NewWithConfig(ctx, poolCfg)
+	if err != nil {
+		t.Fatalf("pool: %v", err)
+	}
+	defer pool.Close()
+	db := &appDB{pool: pool}
+
+	// EnclosureURL: found and not-found.
+	if u, ok, err := db.EnclosureURL(ctx, "g1"); err != nil || !ok || u != "https://cdn/ep.mp3" {
+		t.Errorf("EnclosureURL(g1) = %q,%v,%v", u, ok, err)
+	}
+	if _, ok, _ := db.EnclosureURL(ctx, "nope"); ok {
+		t.Error("EnclosureURL(nope) should not be found")
 	}
 
-	got := make(map[string]bool, len(refs))
-	for _, r := range refs {
-		got[r.YoutubeVideoID] = true
-	}
-
-	mustInclude := []string{"never_attempted", "failed_under_cap"}
-	mustExclude := []string{"done_video", "empty_video", "failed_at_cap"}
-
-	for _, id := range mustInclude {
-		if !got[id] {
-			t.Errorf("PendingVideos missing %q (should be pending)", id)
+	assertCount := func(label, where string, want int) {
+		t.Helper()
+		var n int
+		if err := pool.QueryRow(ctx, "SELECT count(*) FROM transcripts WHERE "+where).Scan(&n); err != nil {
+			t.Fatalf("count %s: %v", label, err)
+		}
+		if n != want {
+			t.Errorf("%s: count = %d, want %d", label, n, want)
 		}
 	}
-	for _, id := range mustExclude {
-		if got[id] {
-			t.Errorf("PendingVideos includes %q (should be excluded)", id)
-		}
+
+	// YouTube: idempotent on youtube_video_id — two saves keep one row, id stable.
+	yt := Transcript{SourceType: "youtube", YoutubeVideoID: "vid1", SourceRef: videoURL("vid1"), Engine: "groq/whisper-large-v3", Text: "a", Status: statusDone}
+	id1, err := db.SaveTranscript(ctx, yt, []Segment{{Start: 0, End: 1, Text: "a"}})
+	if err != nil {
+		t.Fatalf("save yt 1: %v", err)
 	}
+	yt.Text = "b"
+	id2, err := db.SaveTranscript(ctx, yt, []Segment{{Start: 0, End: 2, Text: "b"}})
+	if err != nil {
+		t.Fatalf("save yt 2: %v", err)
+	}
+	if id1 != id2 {
+		t.Errorf("youtube re-save changed id: %d -> %d (should upsert in place)", id1, id2)
+	}
+	assertCount("youtube", "youtube_video_id = 'vid1'", 1)
+
+	// Podcast (non-youtube): two saves for the same (source_type, source_ref) keep ONE row thanks to
+	// the pre-delete (a NULL youtube_video_id would otherwise not dedup).
+	pod := Transcript{SourceType: lanePodcast, SourceRef: "g1", Engine: "groq/whisper-large-v3", Text: "x", Status: statusDone}
+	if _, err := db.SaveTranscript(ctx, pod, []Segment{{Start: 0, End: 1, Text: "x"}}); err != nil {
+		t.Fatalf("save pod 1: %v", err)
+	}
+	if _, err := db.SaveTranscript(ctx, pod, []Segment{{Start: 0, End: 1, Text: "x"}}); err != nil {
+		t.Fatalf("save pod 2: %v", err)
+	}
+	assertCount("podcast", "source_type = 'podcast' AND source_ref = 'g1'", 1)
 }
