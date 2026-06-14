@@ -100,5 +100,10 @@ default) and the Visão geral shows the seeded flows/providers from the core.
 
 - The console is **Tailscale-only**, same as the core surface. The Oracle public firewall should
   block 8081; allow it only from the Tailscale CGNAT range (`ufw allow in on tailscale0 to any port 8081`).
+- **Trust model:** the console's own endpoints (`/api/*`, `/healthz`) are **unauthenticated** — anyone
+  on the tailnet reaches core data through the console without a token. That is intentional (the
+  tailnet is the trust boundary, exactly like the core surface); the surface bearer token stays
+  server-side only to talk to the core. Do not expose the console beyond the tailnet without adding
+  edge auth.
 - No Neon access and no migrations — the console reads everything through the core surface.
 - No Docker: a native ARM64 binary, like rara-core.

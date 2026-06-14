@@ -14,6 +14,7 @@ import (
 	"context"
 	"embed"
 	"encoding/json"
+	"fmt"
 	"io"
 	"io/fs"
 	"log"
@@ -24,6 +25,11 @@ import (
 
 //go:embed all:web/build
 var embedded embed.FS
+
+// maxCoreBytes caps a single core-surface response. Far above any seeded config, but a backstop
+// against an unbounded body — exceeding it is an error, never a silent truncation served as 200.
+// A var (not const) so tests can shrink it.
+var maxCoreBytes int64 = 4 << 20
 
 // server is the BFF: it talks to the rara-core surface at coreURL, authenticating with the
 // server-side token. client is injected so handlers are unit-testable against an httptest core.
@@ -46,12 +52,15 @@ func (s *server) fetchCore(ctx context.Context, path string) (json.RawMessage, e
 		return nil, err
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxCoreBytes+1))
 	if err != nil {
 		return nil, err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, &gatewayError{status: resp.StatusCode}
+	}
+	if int64(len(body)) > maxCoreBytes {
+		return nil, fmt.Errorf("core surface response exceeds %d-byte limit", maxCoreBytes)
 	}
 	return body, nil
 }
@@ -59,7 +68,7 @@ func (s *server) fetchCore(ctx context.Context, path string) (json.RawMessage, e
 type gatewayError struct{ status int }
 
 func (e *gatewayError) Error() string {
-	return "core surface returned status " + http.StatusText(e.status)
+	return fmt.Sprintf("core surface returned status %d %s", e.status, http.StatusText(e.status))
 }
 
 // handleOverview aggregates the two seeded reads the Visão geral needs into one response, so the

@@ -45,17 +45,26 @@
 			{#each nav as it}
 				{#if it.section}
 					<div class="px-3 pb-1 pt-3 text-[11px] font-medium text-muted">{it.section}</div>
-				{:else}
+				{:else if it.active}
 					<a
 						href="/"
-						class="flex items-center gap-3 rounded-token px-3 py-2 text-[13.5px] text-text no-underline hover:bg-hover {it.active
-							? 'bg-hover font-semibold'
-							: ''}"
-						aria-current={it.active ? 'page' : undefined}
+						aria-current="page"
+						class="flex items-center gap-3 rounded-token bg-hover px-3 py-2 text-[13.5px] font-semibold text-text no-underline"
 					>
 						<span class="w-4 flex-none text-center opacity-70">{it.icon}</span>
 						{it.label}
 					</a>
+				{:else}
+					<!-- Shell placeholder: the screen lands in C1+. Rendered as a non-interactive item, not
+					     a dead link, so it isn't announced/focusable as navigable. -->
+					<span
+						aria-disabled="true"
+						title="Em breve"
+						class="flex cursor-default items-center gap-3 rounded-token px-3 py-2 text-[13.5px] text-muted"
+					>
+						<span class="w-4 flex-none text-center opacity-70">{it.icon}</span>
+						{it.label}
+					</span>
 				{/if}
 			{/each}
 		</nav>
@@ -87,7 +96,9 @@
 					onclick={() => setTheme('dark')}>{t.topbar.dark}</button
 				>
 			</div>
+			<!-- Decorative placeholder until ⌘K lands (C4); aria-hidden so it isn't a fake search field. -->
 			<div
+				aria-hidden="true"
 				class="ml-auto flex min-w-[220px] items-center gap-2 rounded-pill border border-border bg-surface-2 px-3.5 py-[7px] text-[13px] text-muted"
 			>
 				⌕ {t.topbar.search}

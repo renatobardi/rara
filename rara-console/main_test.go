@@ -73,6 +73,23 @@ func TestOverviewNeverLeaksToken(t *testing.T) {
 	}
 }
 
+// An oversized core response must fail as a bad gateway, never pass through truncated (which would
+// be invalid JSON served to the SPA as a 200).
+func TestOverviewRejectsOversizedCoreResponse(t *testing.T) {
+	core := fakeCore(t, "secret")
+	s := &server{coreURL: core.URL, token: "secret", client: core.Client()}
+	old := maxCoreBytes
+	maxCoreBytes = 8 // tiny: the fake flows body is larger than this
+	defer func() { maxCoreBytes = old }()
+
+	rec := httptest.NewRecorder()
+	s.handleOverview(rec, httptest.NewRequest("GET", "/api/overview", nil))
+
+	if rec.Code != http.StatusBadGateway {
+		t.Errorf("status = %d, want 502 (oversized core response must not pass as success)", rec.Code)
+	}
+}
+
 func TestOverviewReturns502WhenCoreUnreachable(t *testing.T) {
 	// A closed server URL: the dial fails, so the aggregate is a bad gateway, not a 200.
 	s := &server{coreURL: "http://127.0.0.1:1", token: "secret", client: http.DefaultClient}

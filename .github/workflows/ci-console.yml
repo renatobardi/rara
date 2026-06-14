@@ -36,7 +36,7 @@ jobs:
         uses: actions/cache@6f8efc29b200d32929f49075959781ed54ec270c # v3
         with:
           path: ~/go/pkg/mod
-          key: ${{ runner.os }}-go-console-${{ hashFiles('rara-console/go.sum') }}
+          key: ${{ runner.os }}-go-console-${{ hashFiles('rara-console/go.mod') }}
           restore-keys: |
             ${{ runner.os }}-go-console-
 
