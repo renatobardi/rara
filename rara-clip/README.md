@@ -26,11 +26,14 @@ a row. Turning `linkedin_posts` into spine items is `rara-core`'s ingest bridge 
 process them — `sensitivity=public`. This agent only *stores* the post; the routing guarantee is
 enforced by `rara-core`'s router.
 
-## Table (`migrations/001_initial_schema.sql`)
+## Table (`linkedin_posts`)
 
-- `linkedin_posts` — one row per post (`url` UNIQUE = the spine's `source_ref`, `author` optional,
-  `body` raw post text). Self-contained, additive twin of `rara-core`'s definition (whichever agent
-  applies first creates it; the other is a no-op).
+`linkedin_posts` (one row per post: `url` UNIQUE = the spine's `source_ref`, `author` optional,
+`body` raw post text) is **owned and migrated by `rara-core`** — it created the table for the manual
+inbox in Phase 5 (`rara-core/migrations/004_linkedin_posts.sql`). rara-clip is a second **writer** of
+that contract table, not a second owner: it carries no migration of its own, so the schema has a
+single source of truth and cannot drift. This mirrors how `rara-core`'s ingest *reads* the other
+agents' domain tables without redefining them — here the dependency just runs the other way.
 
 ## Run
 

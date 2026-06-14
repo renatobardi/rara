@@ -91,8 +91,9 @@ func run(ctx context.Context, db Database, collector LinkedInCollector) (int, er
 	catalogued := 0
 	for _, p := range posts {
 		p.URL = strings.TrimSpace(p.URL)
-		if p.URL == "" || !postHasContent(p.Text) {
-			log.Printf("clip: skipping partial post (url=%q, empty text=%v)", p.URL, !postHasContent(p.Text))
+		hasText := postHasContent(p.Text)
+		if p.URL == "" || !hasText {
+			log.Printf("clip: skipping partial post (url=%q, has_text=%v)", p.URL, hasText)
 			continue
 		}
 		if err := db.UpsertLinkedInPost(ctx, LinkedInPost{
@@ -242,22 +243,15 @@ type pgxDatabase struct{ conn *pgx.Conn }
 
 // UpsertLinkedInPost writes a collected post, idempotent on the canonical URL (a re-collect
 // refreshes the author/body in place). This is rara-clip's OWN write — the same linkedin_posts
-// contract rara-core's manual inbox upholds, but its own self-contained SQL.
+// contract rara-core's manual inbox upholds. The optional author maps to SQL NULL in-query
+// (NULLIF), so an authorless post stores NULL rather than an empty string.
 func (d *pgxDatabase) UpsertLinkedInPost(ctx context.Context, p LinkedInPost) error {
 	const q = `
 		INSERT INTO linkedin_posts (url, author, body)
-		VALUES ($1, $2, $3)
+		VALUES ($1, NULLIF($2, ''), $3)
 		ON CONFLICT (url) DO UPDATE SET
 			author = EXCLUDED.author,
 			body   = EXCLUDED.body`
-	_, err := d.conn.Exec(ctx, q, p.URL, nullStr(p.Author), p.Text)
+	_, err := d.conn.Exec(ctx, q, p.URL, p.Author, p.Text)
 	return err
-}
-
-// nullStr maps an empty string to a SQL NULL (author is optional in linkedin_posts).
-func nullStr(s string) any {
-	if strings.TrimSpace(s) == "" {
-		return nil
-	}
-	return s
 }
