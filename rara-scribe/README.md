@@ -13,14 +13,25 @@ datacenter IPs.
 
 ## How it works
 
-1. **Discovery** (batch mode): selects up to `BATCH_SIZE` videos present in
-   `channel_videos` ∪ `playlist_videos` that do not yet have a `done` transcript (idempotent).
-2. **Audio**: `yt-dlp` downloads the audio; `ffmpeg` converts to 16 kHz mono and splits into
-   10-minute segments (each chunk < 25 MB, within the Groq API limit).
-3. **Transcription**: each chunk is sent to the ASR engine; segment timestamps are re-indexed
-   to the global timeline and the text is stitched together.
-4. **Persistence**: header row (`transcripts`) + segments (`transcript_segments`) in a single
-   transaction. A failure on one video → `status='failed'` and the batch continues.
+Since P1c, rara-scribe is a 2.0 **bridge-total claim-worker**: it attaches to `rara-core` only
+through the Neon contract (a `providers` row + the `item_steps` protocol) via the
+[rara-addon](../rara-addon) SDK. The SDK owns claim/heartbeat/result/requeue/poke; this app supplies
+only the `transcrever` domain (`transcribeHandler`). The reconciler routes and activates it; it
+never decides *what* to transcribe.
+
+One app serves **two providers**, selected by `SCRIBE_PROVIDER`; the handler picks the fetch
+strategy by provider/lane:
+
+- **`asr-youtube`** (residential-IP Mac): builds the watch URL from the item's video id.
+- **`asr-direct-audio`** (anywhere): resolves the episode's enclosure URL from `podcast_episodes`
+  and re-keys the transcript to the spine's GUID + `source_type=podcast`.
+
+Per claimed item: 1) resolve the fetch target; 2) `yt-dlp` downloads the audio and `ffmpeg`
+converts to 16 kHz mono in ~10-minute chunks; 3) each chunk goes to the ASR engine, segment
+timestamps re-indexed to the global timeline and text stitched; 4) the `transcripts` row +
+`transcript_segments` are written in one transaction and the row id is returned as the step's
+`output_ref`. A no-speech result is `empty` (the item is curated out); a download/ASR failure is
+persisted and surfaced as **retryable** so the SDK requeues up to the cap.
 
 ## Local installation (once)
 
@@ -45,41 +56,22 @@ To change the schedule, edit `~/Library/LaunchAgents/com.rara.scribe.plist`.
 ## Daily usage
 
 ```bash
-# Force an immediate run with the .env defaults (engine + BATCH_SIZE)
-launchctl start com.rara.scribe
+# Claim & drain the transcrever queue for SCRIBE_PROVIDER, then exit (uses .env)
+cd rara-scribe && make run
 
 # Watch logs in real time (Go logs to stderr → error.log; output.log stays empty)
 tail -f ~/Library/Logs/rara-scribe/error.log
-
-# Manual run overriding the .env for this run only — e.g. switch to the local
-# engine and process 20 videos when Groq's daily quota is exhausted:
-bash ~/.rara-scribe/run.sh --engine local --limit 20
-
-# Single manual run from the repo (uses .env defaults)
-cd rara-scribe && make run
-
-# Ad-hoc single source
-cd rara-scribe && source ~/.rara-scribe/.env && ./scribe-job --source "https://youtu.be/VIDEO_ID"
-
-# Update after a new build
-cd rara-scribe && make build && bash install-local.sh
 ```
 
-### Runtime flags
+The binary is now configured entirely by env (no CLI flags). `SCRIBE_PROVIDER` selects the
+provider; `TRANSCRIBE_ENGINE` the ASR engine; set `WORK_POLL_INTERVAL` and/or `POKE_ADDR`/
+`POKE_TOKEN` to run resident with symmetric activation (otherwise it drains once and exits).
 
-`run.sh` forwards CLI flags to the binary, so a manual run can override the
-`.env` without editing it (the scheduled launchd run takes no flags and uses the
-`.env` defaults):
-
-| Flag | Overrides | Example |
-|------|-----------|---------|
-| `--engine` | `TRANSCRIBE_ENGINE` | `--engine local` |
-| `--limit` | `BATCH_SIZE` (videos this run) | `--limit 20` |
-| `--source` | batch mode → one source | `--source "https://youtu.be/ID"` |
-
-Operating model: keep `TRANSCRIBE_ENGINE=groq` in `.env` (fast, scheduled daily),
-and fire a manual `--engine local --limit N` run when Groq's 2000 req/day quota
-is exhausted — no quota, fully local.
+> **launchd deploy is P2.** The local-Mac launchd wiring (`install-local.sh`, `run.sh`,
+> `com.rara.scribe.plist`) still reflects the 1.0 batch model and the removed `--engine`/`--limit`/
+> `--source` flags. Re-wiring it for the resident claim-worker (set `SCRIBE_PROVIDER=asr-youtube`,
+> a `WORK_POLL_INTERVAL`/poke, drop the flags) lands in the P2 deploy phase alongside the
+> reconciler/VPC.
 
 ## Transcription engine (pluggable)
 
@@ -99,14 +91,16 @@ name is `whispercpp/whisper-large-v3` even when a chunk fell back to Groq).
 | Var | Required | Default | Description |
 |-----|----------|---------|-------------|
 | `DATABASE_URL` | yes | — | Neon PostgreSQL (shared) |
+| `SCRIBE_PROVIDER` | yes | — | the provider this worker serves: `asr-youtube` \| `asr-direct-audio`; the SDK claims its steps by `(transcrever, this provider)` |
+| `WORK_POLL_INTERVAL` | no | (unset → on_demand) | resident safety-net poll cadence (Go duration or bare seconds) |
+| `POKE_ADDR` / `POKE_TOKEN` | no | (unset) | tailnet poke listener (`POST /poke`, Bearer) for symmetric activation |
 | `TRANSCRIBE_ENGINE` | no | `groq` | `groq`, `gemini` or `local` |
 | `GROQ_API_KEY` | if engine=groq | — | https://console.groq.com (also enables the Groq fallback under `local`) |
 | `GEMINI_API_KEY` | if engine=gemini | — | https://aistudio.google.com |
 | `WHISPER_CPP_BIN` | if engine=local | `/opt/homebrew/bin/whisper-cli` | whisper.cpp CLI binary |
 | `WHISPER_CPP_MODEL` | if engine=local | — | Absolute path to the ggml `large-v3` model |
 | `WHISPER_CPP_VAD_MODEL` | no | — | Optional silero VAD model (trims silence/music, cuts hallucinations) |
-| `SOURCE_TIMEOUT_MINUTES` | no | `20` (`60` for local) | Per-video timeout (download + transcribe); raise for very long local videos |
-| `BATCH_SIZE` | no | `25` | Videos per run (default; raise freely — e.g. 100, 1000 — to drain the backlog faster, no hard cap) |
+| `SOURCE_TIMEOUT_MINUTES` | no | `20` (`60` for local) | Per-item timeout (download + transcribe); raise for very long local videos |
 | `YT_DLP_BIN` | yes (local) | — | Absolute path to `yt-dlp` |
 | `FFMPEG_BIN` | yes (local) | — | Absolute path to `ffmpeg` |
 | `YT_DLP_COOKIES` | no | — | cookies.txt (rarely needed from a residential IP) |
@@ -118,7 +112,10 @@ make test          # tests (TDD)
 make test-race     # tests with race detector
 make lint          # go vet + staticcheck
 make build         # local binary (scribe-job)
-make run           # build + run one batch (requires .env in this directory)
+make run           # build + claim/drain the queue once for SCRIBE_PROVIDER (requires .env)
+
+> Module wiring: rara-scribe couples to the SDK via `replace rara-addon => ../rara-addon` in
+> `go.mod` (no committed `go.work`). The launchd/Docker (multi-module) build is wired in P2.
 ```
 
 ## GCP infrastructure cleanup (Cloud Run removed)

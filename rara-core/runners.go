@@ -1,15 +1,16 @@
 // runners.go — the I/O edge of the worker shims (Phase 1 deliverable #5).
 //
-// These concrete StepRunners are the thin adapters that actually invoke the existing
-// scribe/extract workers and read back the domain row they wrote. They are deliberately
-// minimal glue: exec/clean + one SELECT. Like the pgx writes in main.go, they are exercised by
-// real deploys/integration, not unit tests — the claim/advance orchestration now lives in the
-// rara-addon SDK (proven by addon_work.go's handler, which these runners back).
+// These concrete StepRunners are the thin adapters for the capabilities the core still backs
+// in-process: the email/linkedin to-text extractors (extrair) and the curation gates
+// (gate_barato/gate_rico), plus the Bright Data linkedin collector's CLI edge. They are
+// deliberately minimal glue: clean/judge/exec + one SELECT. Like the pgx writes in main.go, they
+// are exercised by real deploys/integration, not unit tests — the claim/advance orchestration now
+// lives in the rara-addon SDK (proven by addon_work.go's handler, which these runners back).
 //
-// Binary paths and engines are environment-configured so a deploy points the shim at the
-// right artifact (SCRIBE_BIN on the Mac, ASR_DIRECT_BIN in the Cloud Run image) without code
-// changes. None of this touches the workers' domain logic. (destilar is no longer here — it is
-// its own app, rara-distill, on the SDK.)
+// Where a runner shells out, the binary path is environment-configured so a deploy points it at the
+// right artifact (e.g. BDATA_BIN for the linkedin collector) without code changes. None of this
+// touches the workers' domain logic. (transcrever and destilar are no longer here — each is its own
+// app, rara-scribe and rara-distill, on the SDK.)
 package main
 
 import (
@@ -68,109 +69,16 @@ func envOr(key, def string) string {
 	return def
 }
 
-// ---------------------------------------------------------------------------
-// scribe shim (transcrever) — per-item entry: `--source <watch-url> --limit 1`.
-// ---------------------------------------------------------------------------
-
-type scribeRunner struct {
-	conn *pgx.Conn
-	bin  string // SCRIBE_BIN
-}
-
-func newScribeRunner(conn *pgx.Conn) *scribeRunner {
-	return &scribeRunner{conn: conn, bin: envOr("SCRIBE_BIN", "scribe-job")}
-}
-
-func (r *scribeRunner) Run(ctx context.Context, item Item, _ ItemStep) (RunResult, error) {
-	// Translate the spine's natural key into scribe's current single-source entrypoint.
-	url := "https://www.youtube.com/watch?v=" + item.SourceRef
-	cmd := exec.CommandContext(ctx, r.bin, "--source", url, "--limit", "1")
-	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
-	if err := cmd.Run(); err != nil {
-		return RunResult{}, fmt.Errorf("scribe %s: %w", url, err)
-	}
-	// Capture the transcript scribe wrote. 'empty' (no speech) is a benign no-content
-	// outcome: the row exists but there is nothing to distill, so the item is filtered
-	// rather than driven into a distill that must fail. No row at all is a hard failure.
-	const q = `SELECT id, status FROM transcripts
-	           WHERE youtube_video_id = $1 AND status IN ('done', 'empty')`
-	var id int
-	var status string
-	switch err := r.conn.QueryRow(ctx, q, item.SourceRef).Scan(&id, &status); {
-	case errors.Is(err, pgx.ErrNoRows):
-		return RunResult{}, fmt.Errorf("transcrever %s: %w", item.SourceRef, errNoOutputRow)
-	case err != nil:
-		return RunResult{}, err
-	}
-	return RunResult{OutputRef: strconv.Itoa(id), Filtered: status == "empty"}, nil
-}
+// transcrever has NO runner here: it is its own independent app (rara-scribe) that claims its steps
+// through the rara-addon SDK (bridge-total, P1c). One app serves both providers — asr-youtube
+// (residential-IP YouTube download on the Mac) and asr-direct-audio (a podcast enclosure download
+// anywhere), selecting the fetch strategy by provider/lane and re-keying the transcript to the
+// spine's source_ref. The orchestrator still ROUTES transcrever and ACTIVATES the provider; it never
+// transcribes.
 
 // destilar has NO runner here: it is its own independent app (rara-distill) that claims its steps
 // through the rara-addon SDK (bridge-total, P1c). The orchestrator still ROUTES destilar (assigns
 // a provider) and ACTIVATES it (Cloud Run `run` / poke), but never runs the distillation itself.
-
-// ---------------------------------------------------------------------------
-// asr-direct-audio shim (transcrever, podcast) — transcribe a direct enclosure URL.
-//
-// The podcast counterpart of scribeRunner: instead of building a YouTube watch URL, it
-// resolves the episode's direct CDN audio URL from podcast_episodes (the collector's domain
-// table, SELECT only) and hands it to the ASR binary. The binary writes a transcripts row
-// with source_type=podcast and source_ref=GUID — the same GUID the spine carries — so the
-// downstream gate_rico and distill lookups chain on source_ref. No residential IP is needed
-// (the enclosure is a plain CDN download), so this provider runs on Cloud Run/VPC. Like the
-// other shims, it is exercised by integration, not unit tests.
-//
-// Integration contract: ASR_DIRECT_BIN must accept `--source <url> --source-type podcast
-// --source-ref <guid>` and write the transcripts row keyed on that source_ref/source_type.
-// ---------------------------------------------------------------------------
-
-type asrDirectAudioRunner struct {
-	conn *pgx.Conn
-	bin  string // ASR_DIRECT_BIN (the ASR binary deployed on Cloud Run; transcribes a direct URL)
-}
-
-func newASRDirectAudioRunner(conn *pgx.Conn) *asrDirectAudioRunner {
-	return &asrDirectAudioRunner{conn: conn, bin: envOr("ASR_DIRECT_BIN", "scribe-job")}
-}
-
-func (r *asrDirectAudioRunner) Run(ctx context.Context, item Item, _ ItemStep) (RunResult, error) {
-	audioURL, err := r.enclosureURL(ctx, item.SourceRef)
-	if err != nil {
-		return RunResult{}, err
-	}
-	cmd := exec.CommandContext(ctx, r.bin,
-		"--source", audioURL, "--source-type", lanePodcast, "--source-ref", item.SourceRef, "--limit", "1")
-	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
-	if err := cmd.Run(); err != nil {
-		return RunResult{}, fmt.Errorf("asr-direct-audio %s: %w", item.SourceRef, err)
-	}
-	// Capture the transcript keyed on the spine's source_ref. 'empty' (no speech) is benign
-	// no-content; no row at all is a hard failure.
-	const q = `SELECT id, status FROM transcripts
-	           WHERE source_ref = $1 AND source_type = $2 AND status IN ('done', 'empty')`
-	var id int
-	var status string
-	switch err := r.conn.QueryRow(ctx, q, item.SourceRef, lanePodcast).Scan(&id, &status); {
-	case errors.Is(err, pgx.ErrNoRows):
-		return RunResult{}, fmt.Errorf("transcrever podcast %s: %w", item.SourceRef, errNoOutputRow)
-	case err != nil:
-		return RunResult{}, err
-	}
-	return RunResult{OutputRef: strconv.Itoa(id), Filtered: status == "empty"}, nil
-}
-
-// enclosureURL resolves an episode's direct audio URL from the collector's domain table.
-func (r *asrDirectAudioRunner) enclosureURL(ctx context.Context, guid string) (string, error) {
-	const q = `SELECT enclosure_url FROM podcast_episodes WHERE guid = $1`
-	var url string
-	switch err := r.conn.QueryRow(ctx, q, guid).Scan(&url); {
-	case errors.Is(err, pgx.ErrNoRows):
-		return "", fmt.Errorf("asr-direct-audio: no podcast_episodes row for guid %q: %w", guid, errNoOutputRow)
-	case err != nil:
-		return "", err
-	}
-	return url, nil
-}
 
 // ---------------------------------------------------------------------------
 // extract shim (extrair, email) — clean an email body into a to-text artifact.
@@ -323,7 +231,7 @@ func (r *linkedinExtractRunner) readPostBody(ctx context.Context, url string) (s
 // rules (rara-core's own tables), reads the item's metadata/text (the worker domain tables,
 // SELECT only — no FK, the 1.0 isolation convention holds), runs the PURE cascade (gates.go),
 // and returns its verdict. The decision recording + routing happen in worker.go / the
-// reconciler. Like the scribe/distill shims, this glue is exercised by integration, not unit
+// reconciler. Like the other runner glue, this is exercised by integration, not unit
 // tests — runCascade is what the pure tests cover (with a fake judge).
 // ---------------------------------------------------------------------------
 
@@ -825,10 +733,10 @@ func (s *pgxLinkedInInbox) UpsertLinkedInPost(ctx context.Context, p LinkedInPos
 // The I/O edge of CollectLinkedIn (linkedin_collect.go): it pulls posts from Bright Data via
 // the `bdata` CLI (the Bright Data agent skill's tool) and normalizes them into []LinkedInPost,
 // which CollectLinkedIn then feeds through the SAME contract the manual inbox uses. Like the
-// scribe/distill shims, this glue is exercised by integration, not unit tests — CollectLinkedIn
-// is what the pure tests cover (with a fake collector).
+// other runner glue, this is exercised by integration, not unit tests — CollectLinkedIn is what
+// the pure tests cover (with a fake collector).
 //
-// Integration contract (config, not code — mirrors SCRIBE_BIN/DISTILL_BIN):
+// Integration contract (config, not code):
 //   - BDATA_BIN                  the Bright Data CLI (default "bdata").
 //   - BRIGHTDATA_LINKEDIN_ARGS   the pipeline subcommand + flags, space-separated
 //                                (default "pipelines linkedin-posts --json"); the input URLs are
