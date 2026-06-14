@@ -31,10 +31,11 @@ enforced by `rara-core`'s router.
 `linkedin_posts` — one row per post (`url` UNIQUE = the spine's `source_ref`, `author` optional,
 `body` raw post text). It is a **contract table** that `rara-core` first created for the manual inbox
 in Phase 5 (`rara-core/migrations/004_linkedin_posts.sql`); rara-clip ships the **additive,
-idempotent twin** (`CREATE TABLE IF NOT EXISTS`, a namespaced `clip_set_updated_at` trigger) so the
-agent owns its own schema per the per-agent migration convention. Whichever agent applies first
-creates the table; the other is a no-op. The column shape and `UNIQUE (url)` are identical, so the
-two producers can never disagree on the contract.
+idempotent twin** (`CREATE TABLE IF NOT EXISTS`) so the agent guarantees the table exists for an
+independent deploy. Whichever agent applies first creates the table; the other is a no-op, and the
+column shape and `UNIQUE (url)` are identical, so the two producers can never disagree on the
+contract. The `updated_at` trigger is a shared mutable object with a single owner — rara-core — so
+rara-clip does **not** redefine it (avoiding an apply-order rebind on the shared table).
 
 ## Run
 

@@ -20,23 +20,18 @@
 --   process them. This table is just storage; the sensitivity guarantee is rara-core's router's.
 
 -- ---------------------------------------------------------------------------
--- updated_at trigger function — namespaced to avoid colliding with the other agents'
--- set_updated_at() variants in the shared Neon database. Functionally identical to rara-core's
--- core_set_updated_at(): both set updated_at = now(), so whichever agent's trigger is installed
--- last on the shared table behaves the same.
--- ---------------------------------------------------------------------------
-CREATE OR REPLACE FUNCTION clip_set_updated_at()
-RETURNS TRIGGER AS $$
-BEGIN
-    NEW.updated_at = CURRENT_TIMESTAMP;
-    RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-
--- ---------------------------------------------------------------------------
 -- linkedin_posts — one row per collected post. Global uniqueness on the canonical post URL — the
 -- same value rara-core uses as the spine's source_ref. body is the raw post text the
 -- extrair-linkedin worker cleans; author is optional (the gate's "channel" signal).
+--
+-- This is the additive twin of rara-core/migrations/004_linkedin_posts.sql: it only GUARANTEES the
+-- shared contract table exists (CREATE TABLE IF NOT EXISTS) so rara-clip can be applied/deployed on
+-- its own. The updated_at trigger is a SHARED mutable object, so it has a single owner — rara-core,
+-- which originated the table for the manual inbox — and is deliberately NOT (re)defined here. If
+-- both agents installed a trigger of the same name bound to their own function, the apply order
+-- would silently rebind it (and a later DROP FUNCTION ... CASCADE could drop the trigger out from
+-- under the other producer). created_at/updated_at default to now() on insert, so rows are correct
+-- even if rara-clip's migration runs first; rara-core's migration owns ON-UPDATE bumping.
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS linkedin_posts (
     id         SERIAL PRIMARY KEY,
@@ -47,13 +42,6 @@ CREATE TABLE IF NOT EXISTS linkedin_posts (
     updated_at TIMESTAMPTZ  DEFAULT CURRENT_TIMESTAMP,
     UNIQUE (url)
 );
-
--- updated_at trigger.
-DROP TRIGGER IF EXISTS trg_linkedin_posts_updated_at ON linkedin_posts;
-CREATE TRIGGER trg_linkedin_posts_updated_at
-    BEFORE UPDATE ON linkedin_posts
-    FOR EACH ROW
-    EXECUTE FUNCTION clip_set_updated_at();
 
 COMMENT ON TABLE  linkedin_posts        IS 'One row per collected LinkedIn post; public content. Contract table written by rara-clip (Bright Data) and rara-core (manual inbox), idempotent on url';
 COMMENT ON COLUMN linkedin_posts.url    IS 'Canonical post URL; the same value rara-core uses as items.source_ref';

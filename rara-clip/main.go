@@ -86,11 +86,9 @@ func mustConnect(ctx context.Context, databaseURL string) *pgx.Conn {
 	return conn
 }
 
-// run is the collector loop: fetch the current batch from Bright Data and upsert each post into
-// linkedin_posts, idempotent on the URL. A partial row (no URL or no real text) is SKIPPED — Bright
-// Data occasionally yields incomplete posts, and one must not abort the whole crawl. A per-post
-// upsert error is logged and the loop continues (one bad row must not stall the run); a fetch error
-// IS propagated — it is a real source fault, not a per-post quirk. Returns the count catalogued.
+// run is the collector loop: fetch the current batch from Bright Data and catalog each post (see
+// catalogPost for the per-post policy). A fetch error IS propagated — it is a real source fault, not
+// a per-post quirk — so the whole run aborts. Returns the count of posts stored.
 func run(ctx context.Context, db Database, collector LinkedInCollector) (int, error) {
 	posts, err := collector.FetchPosts(ctx)
 	if err != nil {
