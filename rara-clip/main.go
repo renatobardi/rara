@@ -96,23 +96,31 @@ func run(ctx context.Context, db Database, collector LinkedInCollector) (int, er
 	if err != nil {
 		return 0, err
 	}
-	catalogued := 0
+	stored := 0
 	for _, p := range posts {
-		p.URL = strings.TrimSpace(p.URL)
-		hasText := postHasContent(p.Text)
-		if p.URL == "" || !hasText {
-			log.Printf("clip: skipping partial post (url=%q, has_text=%v)", p.URL, hasText)
-			continue
+		if catalogPost(ctx, db, p) {
+			stored++
 		}
-		if err := db.UpsertLinkedInPost(ctx, LinkedInPost{
-			URL: p.URL, Author: strings.TrimSpace(p.Author), Text: strings.TrimSpace(p.Text),
-		}); err != nil {
-			log.Printf("upsert post %s: %v", p.URL, err)
-			continue
-		}
-		catalogued++
 	}
-	return catalogued, nil
+	return stored, nil
+}
+
+// catalogPost normalizes one fetched post and upserts it, reporting whether it was stored. A partial
+// row (no URL or no real text) is skipped, and a per-post upsert error is logged and skipped — one
+// bad row must not stall the crawl. The URL is trimmed before it becomes the idempotency key.
+func catalogPost(ctx context.Context, db Database, p LinkedInPost) bool {
+	url := strings.TrimSpace(p.URL)
+	if url == "" || !postHasContent(p.Text) {
+		log.Printf("clip: skipping partial post (url=%q)", url)
+		return false
+	}
+	if err := db.UpsertLinkedInPost(ctx, LinkedInPost{
+		URL: url, Author: strings.TrimSpace(p.Author), Text: strings.TrimSpace(p.Text),
+	}); err != nil {
+		log.Printf("clip: upsert post %s: %v", url, err)
+		return false
+	}
+	return true
 }
 
 // reTag matches any HTML tag — the only regex the partial-row check needs.
