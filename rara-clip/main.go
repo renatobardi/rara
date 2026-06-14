@@ -128,13 +128,6 @@ func postHasContent(raw string) bool {
 	return strings.TrimSpace(html.UnescapeString(reTag.ReplaceAllString(raw, ""))) != ""
 }
 
-func envOr(key, def string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return def
-}
-
 // splitList splits a comma- or newline-separated env value into trimmed, non-empty entries.
 func splitList(s string) []string {
 	var out []string
@@ -182,11 +175,20 @@ type brightDataLinkedInSource struct {
 	urls []string // BRIGHTDATA_LINKEDIN_URLS, split
 }
 
-// newBrightDataLinkedInSource builds the collector from the environment.
+// newBrightDataLinkedInSource builds the collector from the environment, applying the defaults for
+// the CLI binary and the pipeline args inline.
 func newBrightDataLinkedInSource() *brightDataLinkedInSource {
+	bin := os.Getenv("BDATA_BIN")
+	if bin == "" {
+		bin = "bdata"
+	}
+	args := os.Getenv("BRIGHTDATA_LINKEDIN_ARGS")
+	if args == "" {
+		args = "pipelines linkedin-posts --json"
+	}
 	return &brightDataLinkedInSource{
-		bin:  envOr("BDATA_BIN", "bdata"),
-		args: strings.Fields(envOr("BRIGHTDATA_LINKEDIN_ARGS", "pipelines linkedin-posts --json")),
+		bin:  bin,
+		args: strings.Fields(args),
 		urls: splitList(os.Getenv("BRIGHTDATA_LINKEDIN_URLS")),
 	}
 }
