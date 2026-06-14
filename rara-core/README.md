@@ -108,20 +108,23 @@ honour SIGINT/SIGTERM for graceful shutdown.
 ### Commands
 
 ```bash
-core-job seed                      # seed the YouTube lane config (idempotent)
+core-job seed                      # seed the lane config (idempotent)
 core-job ingest                    # items spine <- channel_videos ∪ playlist_videos
+core-job collect --lane linkedin   # run an automated collector (Bright Data) for a lane
 core-job reconcile [--loop]        # one pass, or always-on (VPC) on RECONCILE_INTERVAL_SECONDS
-core-job work --capability transcrever   # scribe shim (resident, on the Mac)
-core-job work --capability destilar      # distill shim (on_demand, Cloud Run)
-core-job work --capability gate_barato   # metadata gate worker (cascade + LiteLLM judge)
-core-job work --capability gate_rico     # full-text gate worker
 core-job feedback --distillation <id> --signal up|down   # explicit thumbs
 core-job quarantine list                 # the cold-start review sample (deferred items)
 core-job quarantine review --item <id> --signal up|down  # up rescues, down confirms drop
 core-job surface [--addr :8080]    # serve the control surface (HTTP núcleo + MCP) standalone
-core-job work --capability extrair --provider extrair-linkedin  # LinkedIn post normalizer
 core-job status                    # health check: control tables reachable
 ```
+
+rara-core no longer runs a `work` role: every capability is its own bridge-total claim-worker
+app on the [rara-addon](../rara-addon) SDK — `transcrever` ([rara-scribe](../rara-scribe)),
+`destilar` ([rara-distill](../rara-distill)), the curation gates `gate_barato`/`gate_rico`
+([rara-sift](../rara-sift)), and the already-text extractor `extrair`
+([rara-glean](../rara-glean)). The core only **routes** and **activates** them through the
+contract tables; it never executes a capability.
 
 The reconciler also mounts the surface in-process when run with `--loop` and `SURFACE_ADDR`
 set (`SURFACE_TOKEN` required) — the always-on VPC deployment.

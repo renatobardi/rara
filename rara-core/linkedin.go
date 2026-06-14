@@ -14,13 +14,19 @@
 //
 // Everything here is PURE orchestration over the Database seam + the store seam (zero I/O of
 // its own) plus the deterministic cleanPostText, so the whole lane is unit-tested with the
-// MockDatabase and a fake store. The pgx implementations (the store write + the extract
-// runner) live at the I/O edge in runners.go, like every other lane's.
+// MockDatabase and a fake store. The pgx store write lives at the I/O edge in runners.go.
+//
+// The to-text step itself (extrair — writing the cleaned post into the shared transcripts store)
+// is no longer here: it is its own app, rara-glean, on the SDK. The core only seeds the lane,
+// collects/validates submissions (cleanPostText is the emptiness check the collector applies), and
+// routes; rara-glean does the extraction. The html-cleaning helpers below back that collector check.
 package main
 
 import (
 	"context"
 	"fmt"
+	"html"
+	"regexp"
 	"strings"
 )
 
@@ -89,6 +95,32 @@ func SubmitLinkedInPost(ctx context.Context, db Database, store LinkedInPostStor
 		Status:      itemDiscovered,
 		Sensitivity: sensitivityPublic,
 	})
+}
+
+// HTML-cleaning helpers for the collector's emptiness check (cleanPostText). The to-text worker
+// (rara-glean) owns its own copy of the equivalent cleaners; this keeps the core's collector
+// validation self-contained — a post that reduces to no text after HTML stripping is rejected at
+// submission, never ingested as an empty item.
+var (
+	// reScriptStyle drops <script>/<style> blocks whole (their content is never message text).
+	reScriptStyle = regexp.MustCompile(`(?is)<(script|style)\b[^>]*>.*?</(script|style)>`)
+	// reBlockTag turns block-level boundaries into newlines so stripped HTML stays readable.
+	reBlockTag = regexp.MustCompile(`(?i)<(br|/p|/div|/tr|/h[1-6]|/li)\s*/?>`)
+	// reAnyTag removes every remaining tag.
+	reAnyTag = regexp.MustCompile(`(?s)<[^>]+>`)
+	// reHTMLish detects whether a body is HTML (so plain-text bodies are left untouched).
+	reHTMLish = regexp.MustCompile(`(?i)<(html|body|div|p|br|table|span|a|img|head)\b`)
+	// reBlankRun collapses 3+ consecutive newlines to a single blank line.
+	reBlankRun = regexp.MustCompile(`\n{3,}`)
+)
+
+// stripHTML reduces an HTML body to plain text: drop script/style, turn block boundaries into
+// newlines, remove the remaining tags, and unescape entities.
+func stripHTML(s string) string {
+	s = reScriptStyle.ReplaceAllString(s, "")
+	s = reBlockTag.ReplaceAllString(s, "\n")
+	s = reAnyTag.ReplaceAllString(s, "")
+	return html.UnescapeString(s)
 }
 
 // cleanPostText normalizes a pasted LinkedIn post into the text the gates/distill judge. Posts

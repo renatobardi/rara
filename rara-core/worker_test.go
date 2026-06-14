@@ -2,121 +2,16 @@ package main
 
 import (
 	"context"
-	"errors"
 	"testing"
-
-	addon "rara-addon"
 )
 
-// These tests cover rara-core's `work` role now that the claim/advance orchestration lives in the
-// rara-addon SDK. They drive the SDK end to end through rara-core's adapters (coreStore + the work
-// handler in addon_work.go), so they prove the wiring: the claim isolation, the done/failed/filtered
-// outcomes, the gate-decision recording, and the errRetryable -> requeue mapping. The SDK's own loop
-// mechanics (poke, poll, periodic heartbeat, the granular per-attempt requeue) are unit-tested in
-// the rara-addon module against a fake store.
-//
-// drainWork runs a (capability, provider) worker once over the queue (the on_demand drain-and-exit
-// pattern: PollInterval 0, no poke listener) through the real adapters, and returns the SDK error.
-func drainWork(ctx context.Context, db Database, capability, provider string, runner StepRunner) error {
-	return addon.Run(ctx, addon.Config{
-		Capability:  capability,
-		Provider:    provider,
-		Store:       newCoreStore(db),
-		MaxAttempts: maxStepAttempts,
-	}, workHandler(runner))
-}
-
-// fakeRunner is a StepRunner that returns a canned result (or error) and records the items it was
-// asked to run — so the adapter wiring is tested with zero I/O.
-type fakeRunner struct {
-	result RunResult
-	err    error
-	ran    []string // source_refs seen
-}
-
-func (f *fakeRunner) Run(_ context.Context, item Item, _ ItemStep) (RunResult, error) {
-	f.ran = append(f.ran, item.SourceRef)
-	return f.result, f.err
-}
-
-// out is a small constructor for a successful run returning an output_ref.
-func out(ref string) RunResult { return RunResult{OutputRef: ref} }
-
-// assignTranscrever drives the reconciler far enough to leave a pending transcrever step. The
-// metadata gate now precedes transcription, so we keep gate_barato (as its worker would) before the
-// reconciler reaches transcrever.
-func assignTranscrever(t *testing.T, db *MockDatabase) int {
-	t.Helper()
-	ctx := context.Background()
-	itemID := seedAndIngestOne(t, db, "vid1")
-	r := NewReconciler(db, &fakeActivator{})
-	if err := r.ReconcileOnce(ctx); err != nil { // assign gate_barato
-		t.Fatalf("reconcile: %v", err)
-	}
-	runGate(t, db, itemID, 2, gateBarato, decisionKeep)
-	if err := r.ReconcileOnce(ctx); err != nil { // assign transcrever
-		t.Fatalf("reconcile: %v", err)
-	}
-	return itemID
-}
-
-// TestWorkerClaimsAndCompletes: the worker claims its pending step, runs it, and writes the domain
-// row id back as output_ref with status done (heartbeat preserved from the claim).
-func TestWorkerClaimsAndCompletes(t *testing.T) {
-	ctx := context.Background()
-	db := newMockDatabase()
-	itemID := assignTranscrever(t, db)
-	runner := &fakeRunner{result: out("transcript-7")}
-
-	if err := drainWork(ctx, db, capTranscrever, provASRYouTube, runner); err != nil {
-		t.Fatalf("drainWork: %v", err)
-	}
-	if len(runner.ran) != 1 || runner.ran[0] != "vid1" {
-		t.Errorf("runner saw %v, want [vid1]", runner.ran)
-	}
-	s := db.itemSteps[itemStepKey{itemID, 3}]
-	if s.Status != stepDone || s.OutputRef != "transcript-7" {
-		t.Errorf("step = %+v, want done with output_ref=transcript-7", s)
-	}
-	if s.Attempt != 1 {
-		t.Errorf("claim should bump attempt to 1, got %d", s.Attempt)
-	}
-	if s.HeartbeatAt == nil {
-		t.Error("claim should stamp a heartbeat (preserved on done)")
-	}
-}
-
-// TestWorkerNoWork: an empty queue drains cleanly with no error and the runner is never called.
-func TestWorkerNoWork(t *testing.T) {
-	ctx := context.Background()
-	db := newMockDatabase()
-	if err := SeedYouTubeLane(ctx, db); err != nil {
-		t.Fatal(err)
-	}
-	runner := &fakeRunner{}
-	if err := drainWork(ctx, db, capTranscrever, provASRYouTube, runner); err != nil {
-		t.Errorf("empty queue should drain cleanly, got %v", err)
-	}
-	if len(runner.ran) != 0 {
-		t.Errorf("runner should not run on an empty queue, ran %v", runner.ran)
-	}
-}
-
-// TestWorkerRunFailureMarksFailed: a runner error marks the step failed with the message, so the
-// reconciler can fail the item next pass.
-func TestWorkerRunFailureMarksFailed(t *testing.T) {
-	ctx := context.Background()
-	db := newMockDatabase()
-	itemID := assignTranscrever(t, db)
-
-	if err := drainWork(ctx, db, capTranscrever, provASRYouTube, &fakeRunner{err: errors.New("asr exploded")}); err != nil {
-		t.Fatalf("drainWork: %v", err)
-	}
-	s := db.itemSteps[itemStepKey{itemID, 3}]
-	if s.Status != stepFailed || s.Error != "asr exploded" {
-		t.Errorf("step = %+v, want failed with the error recorded", s)
-	}
-}
+// These tests cover what rara-core itself still owns of the contract now that every domain worker is
+// its own app on the rara-addon SDK (rara-scribe, rara-distill, rara-sift, rara-glean): the
+// contract-table CLAIM (the atomic pull + the per-provider isolation) and the reconciler control
+// loop end to end. rara-core no longer runs a `work` role — the SDK's loop mechanics (poke, poll,
+// heartbeat, requeue) are unit-tested in the rara-addon module, and each worker's domain logic in
+// its own app — so the worker side here is SIMULATED the way an external app behaves: it completes
+// its claimed step (completeStep) / records its gate decision (runGate), and the reconciler routes.
 
 // TestClaimNoDoubleClaimFIFO: two pending steps of one capability are claimed in insertion order,
 // each exactly once; a third claim returns nothing (SKIP LOCKED). Exercises the store claim directly.
@@ -183,55 +78,42 @@ func TestClaimProviderIsolation(t *testing.T) {
 	}
 }
 
-// TestWorkerDrainsWholeQueue processes every pending step of a (capability, provider) in one drain.
-func TestWorkerDrainsWholeQueue(t *testing.T) {
-	ctx := context.Background()
-	db := newMockDatabase()
-	if err := SeedYouTubeLane(ctx, db); err != nil {
-		t.Fatal(err)
-	}
-	flowID := db.flows[youtubeFlowName].ID
-	for _, ref := range []string{"a", "b", "c"} {
-		id, _ := db.UpsertItem(ctx, Item{Lane: laneYouTube, SourceRef: ref, FlowID: flowID, FlowVersion: 1, Status: itemDiscovered})
-		mustStep(t, db, ItemStep{ItemID: id, Seq: 3, Capability: capTranscrever, Status: stepPending, AssignedProvider: provASRYouTube})
-	}
-	runner := &fakeRunner{result: out("x")}
-	if err := drainWork(ctx, db, capTranscrever, provASRYouTube, runner); err != nil {
-		t.Fatalf("drain: %v", err)
-	}
-	if len(runner.ran) != 3 {
-		t.Errorf("drained %d steps, want 3", len(runner.ran))
+// mustStep is a test helper that upserts an item_step or fails. (Shared by the reconciler/router/
+// surface/mcp tests as well as this file.)
+func mustStep(t *testing.T, db *MockDatabase, s ItemStep) {
+	t.Helper()
+	if err := db.UpsertItemStep(context.Background(), s); err != nil {
+		t.Fatalf("upsert step: %v", err)
 	}
 }
 
 // TestEndToEndYouTubeFlow drives a single video from discovery to done through alternating reconcile
-// passes and worker drains — the whole control loop end to end. The to-text and distill workers
-// (rara-scribe / rara-distill) are simulated via the SDK drain with fake runners; the curation gates
-// (rara-sift) are simulated by runGate — the external gate worker writes its gate_decision and marks
-// the step done, exactly as rara-sift does — since the core work role no longer runs gates. The only
-// seams are the fakes and a fake activator.
+// passes and SIMULATED worker completions — the whole control loop end to end. Every domain worker
+// now runs out of process on the SDK (rara-scribe, rara-distill, rara-sift); here the to-text and
+// distill workers are simulated by completeStep (the external app writes its domain row and marks the
+// step done) and the curation gates by runGate (rara-sift writes its gate_decision and marks the step
+// done). The only seams are the simulators and a fake activator; the reconciler under test is real.
 func TestEndToEndYouTubeFlow(t *testing.T) {
 	ctx := context.Background()
 	db := newMockDatabase()
 	itemID := seedAndIngestOne(t, db, "vid1")
 	act := &fakeActivator{}
 	r := NewReconciler(db, act)
-	// The SDK-driven workers core still simulates inline (scribe, distill). The gates run out of
-	// process (rara-sift) and are simulated by runGate after each pass.
-	workers := []struct {
-		capability, provider string
-		runner               StepRunner
-	}{
-		{capTranscrever, provASRYouTube, &fakeRunner{result: out("transcript-7")}},
-		{capDestilar, provDistill, &fakeRunner{result: out("distill-9")}},
-	}
+	// The work steps (transcrever seq 3, destilar seq 5) are completed by their out-of-process apps;
+	// we simulate each finishing its claimed step with its domain row id.
+	work := []struct {
+		seq int
+		ref string
+	}{{3, "transcript-7"}, {5, "distill-9"}}
+	// The gates (gate_barato seq 2, gate_rico seq 4) run out of process (rara-sift); runGate records
+	// the decision + marks the step done after each pass.
 	gates := []struct {
 		seq        int
 		capability string
 	}{{2, capGateBarato}, {4, capGateRico}}
 
-	// Run to a fixed point: reconcile, let the external gate workers decide, then let every SDK
-	// worker drain, until the item is done.
+	// Run to a fixed point: reconcile, let the external gate workers decide, then let every work step
+	// be completed by its app, until the item is done.
 	for pass := 0; pass < 10; pass++ {
 		if err := r.ReconcileOnce(ctx); err != nil {
 			t.Fatalf("pass %d reconcile: %v", pass, err)
@@ -241,9 +123,9 @@ func TestEndToEndYouTubeFlow(t *testing.T) {
 				runGate(t, db, itemID, g.seq, g.capability, decisionKeep) // rara-sift keeps
 			}
 		}
-		for _, w := range workers {
-			if err := drainWork(ctx, db, w.capability, w.provider, w.runner); err != nil {
-				t.Fatalf("pass %d worker %s: %v", pass, w.capability, err)
+		for _, w := range work {
+			if s := db.itemSteps[itemStepKey{itemID, w.seq}]; s.Status == stepPending {
+				completeStep(t, db, itemID, w.seq, w.ref) // rara-scribe / rara-distill finishes
 			}
 		}
 		if db.itemByID[itemID].Status == itemDone {
@@ -284,96 +166,5 @@ func TestEndToEndYouTubeFlow(t *testing.T) {
 		if !woken[n] {
 			t.Errorf("expected %s to be activated, got %v", n, act.woken)
 		}
-	}
-}
-
-// mustStep is a test helper that upserts an item_step or fails.
-func mustStep(t *testing.T, db *MockDatabase, s ItemStep) {
-	t.Helper()
-	if err := db.UpsertItemStep(context.Background(), s); err != nil {
-		t.Fatalf("upsert step: %v", err)
-	}
-}
-
-// TestWorkerFiltersEmptyTranscript: a benign no-content result marks the step done with its
-// output_ref AND curates the item out (terminal `filtered`, not failed), so it is never driven into
-// a distill that must fail.
-func TestWorkerFiltersEmptyTranscript(t *testing.T) {
-	ctx := context.Background()
-	db := newMockDatabase()
-	itemID := assignTranscrever(t, db)
-	runner := &fakeRunner{result: RunResult{OutputRef: "transcript-empty", Filtered: true}}
-
-	if err := drainWork(ctx, db, capTranscrever, provASRYouTube, runner); err != nil {
-		t.Fatalf("drainWork: %v", err)
-	}
-	s := db.itemSteps[itemStepKey{itemID, 3}]
-	if s.Status != stepDone || s.OutputRef != "transcript-empty" {
-		t.Errorf("step = %+v, want done with output_ref", s)
-	}
-	if got := db.itemByID[itemID].Status; got != itemFiltered {
-		t.Errorf("item status = %q, want filtered", got)
-	}
-	active, _ := db.ListActiveItems(ctx)
-	if len(active) != 0 {
-		t.Errorf("filtered item should leave the active set, got %d active", len(active))
-	}
-}
-
-// TestWorkerRetriesTransientThenFails: a retryable miss (distill's batch hasn't produced the row
-// yet) is re-queued instead of failing the item — until the attempt ceiling, after which it fails
-// for good. One drain drives the full retry chain; if the errRetryable -> addon.ErrRetryable mapping
-// were wrong the step would fail at attempt 1 instead of the ceiling.
-func TestWorkerRetriesTransientThenFails(t *testing.T) {
-	ctx := context.Background()
-	db := newMockDatabase()
-	itemID := assignTranscrever(t, db)
-	runner := &fakeRunner{err: errRetryable}
-
-	if err := drainWork(ctx, db, capTranscrever, provASRYouTube, runner); err != nil {
-		t.Fatal(err)
-	}
-	s := db.itemSteps[itemStepKey{itemID, 3}]
-	if s.Status != stepFailed {
-		t.Errorf("after %d attempts the step should fail, got %q", maxStepAttempts, s.Status)
-	}
-	if s.Attempt != maxStepAttempts {
-		t.Errorf("attempt = %d, want the ceiling %d", s.Attempt, maxStepAttempts)
-	}
-}
-
-// itemGoneDB makes GetItem report not-found while delegating everything else to the mock, to
-// exercise the orphan-step path without an (un-)deletable item in the mock.
-type itemGoneDB struct{ *MockDatabase }
-
-func (itemGoneDB) GetItem(context.Context, int) (Item, bool, error) { return Item{}, false, nil }
-
-// TestWorkerItemNotFound: if the item vanished between claim and read, the orphan step is marked
-// failed so it leaves the running set.
-func TestWorkerItemNotFound(t *testing.T) {
-	ctx := context.Background()
-	db := newMockDatabase()
-	itemID := assignTranscrever(t, db)
-
-	if err := drainWork(ctx, itemGoneDB{db}, capTranscrever, provASRYouTube, &fakeRunner{result: out("x")}); err != nil {
-		t.Fatalf("drainWork: %v", err)
-	}
-	s := db.itemSteps[itemStepKey{itemID, 3}]
-	if s.Status != stepFailed || s.Error != "item not found" {
-		t.Errorf("orphan step = %+v, want failed 'item not found'", s)
-	}
-}
-
-// TestWorkerStopsOnContextCancel: a cancelled context stops the drain promptly — the basis for
-// graceful SIGTERM shutdown of the resident/on_demand workers.
-func TestWorkerStopsOnContextCancel(t *testing.T) {
-	db := newMockDatabase()
-	assignTranscrever(t, db) // a pending step is waiting
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-
-	err := drainWork(ctx, db, capTranscrever, provASRYouTube, &fakeRunner{result: out("x")})
-	if !errors.Is(err, context.Canceled) {
-		t.Errorf("drain should stop with context.Canceled, got %v", err)
 	}
 }
