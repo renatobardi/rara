@@ -184,7 +184,7 @@ func workHandler(db Database, capability string, runner StepRunner) addon.Handle
 // WORK_POLL_INTERVAL (the safety-net poll) and/or POKE_ADDR + POKE_TOKEN (the tailnet poke listener).
 func runWork(ctx context.Context, db Database, conn *pgx.Conn, argv []string) {
 	fs := flag.NewFlagSet("work", flag.ExitOnError)
-	capability := fs.String("capability", "", "capability to serve: transcrever | extrair | destilar | gate_barato | gate_rico")
+	capability := fs.String("capability", "", "capability to serve: transcrever | extrair | gate_barato | gate_rico")
 	provider := fs.String("provider", "", "the provider this worker serves (the reconciler assigns steps to it)")
 	_ = fs.Parse(argv)
 	if *provider == "" {
@@ -248,8 +248,8 @@ func selectRunner(db Database, conn *pgx.Conn, capability, provider string) Step
 		default:
 			log.Fatalf("work extrair: unknown provider %q", provider)
 		}
-	case capDestilar:
-		return newDistillRunner(conn)
+	// destilar is intentionally absent: it is its own app (rara-distill) on the SDK, not a runner
+	// the core work role serves. The reconciler still routes/activates it; the core never runs it.
 	case capGateBarato, capGateRico:
 		judge, err := newLiteLLMJudge()
 		if err != nil {
@@ -257,7 +257,7 @@ func selectRunner(db Database, conn *pgx.Conn, capability, provider string) Step
 		}
 		return newGateRunner(db, conn, capability, judge)
 	default:
-		log.Fatalf("work: --capability must be one of transcrever|extrair|destilar|gate_barato|gate_rico, got %q", capability)
+		log.Fatalf("work: --capability must be one of transcrever|extrair|gate_barato|gate_rico, got %q", capability)
 	}
 	return nil // unreachable: every branch above either returns or log.Fatalf-exits
 }

@@ -790,8 +790,8 @@ func loadDatabaseURL() string { return os.Getenv("DATABASE_URL") }
 
 // usage documents the Phase 1 subcommands. rara-core is one binary with several roles,
 // each deployed where the architecture puts it: `reconcile` runs always-on in the VPC;
-// `work --capability transcrever` runs alongside scribe on the Mac; `work --capability
-// destilar` is the woken Cloud Run job; `seed`/`ingest` are operational one-shots.
+// `work --capability transcrever` runs alongside scribe on the Mac; `seed`/`ingest` are
+// operational one-shots. (destilar is not a core role — it is its own app, rara-distill.)
 const usage = `rara-core — 2.0 control plane
 
 Usage: core-job <command> [flags]
@@ -807,7 +807,7 @@ Commands:
                              (SURFACE_TOKEN required; --addr defaults to SURFACE_ADDR/:8080)
   work --capability <cap> --provider <name>
                              Run a worker shim that pulls and processes its assignments
-                             (cap: transcrever | extrair | destilar | gate_barato | gate_rico)
+                             (cap: transcrever | extrair | gate_barato | gate_rico)
   feedback --distillation <id> --signal <up|down>
                              Record explicit thumbs on a distillation
   revise [--force]           Run the interest_profile learning loop: if cadence/threshold say

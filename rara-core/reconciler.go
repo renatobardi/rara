@@ -20,7 +20,7 @@
 //	                            gate_decision, marks the step done)
 //	transcrever -> assign      (pending + provider; wait for the scribe shim)
 //	gate_rico   -> assign      (a real worker; the gate judges the full text)
-//	destilar    -> assign      (pending + provider; wait for the distill shim)
+//	destilar    -> assign      (pending + provider; wait for the distill app, rara-distill)
 //
 // A completed gate is ROUTED from its recorded decision (gateTerminalStatus): keep advances,
 // drop -> terminal filtered, defer -> terminal quarantine. One pass advances an item through
