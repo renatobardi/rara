@@ -28,6 +28,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	addon "rara-addon"
 )
 
 // httpDoer is the subset of *http.Client the activators use, injected so tests substitute a fake
@@ -153,7 +155,7 @@ func (a *pokeActivator) Activate(ctx context.Context, p Provider) error {
 // configured it returns the pure logActivator, so the reconciler still runs (and the worker poll
 // drains the queue) on a box that has not been given activation credentials yet.
 func newActivatorFromEnv() Activator {
-	client := &http.Client{Timeout: envDuration("ACTIVATE_TIMEOUT_SECONDS", 10*time.Second)}
+	client := &http.Client{Timeout: addon.EnvDuration("ACTIVATE_TIMEOUT_SECONDS", 10*time.Second)}
 	d := dispatchActivator{}
 
 	if project, region := os.Getenv("CLOUD_RUN_PROJECT"), os.Getenv("CLOUD_RUN_REGION"); project != "" && region != "" {

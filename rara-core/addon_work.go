@@ -26,9 +26,7 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"strconv"
 	"sync"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -197,7 +195,7 @@ func runWork(ctx context.Context, db Database, conn *pgx.Conn, argv []string) {
 		Provider:     *provider,
 		Store:        newCoreStore(db),
 		MaxAttempts:  maxStepAttempts,
-		PollInterval: envDuration("WORK_POLL_INTERVAL", 0),
+		PollInterval: addon.EnvDuration("WORK_POLL_INTERVAL", 0),
 		PokeAddr:     os.Getenv("POKE_ADDR"),
 		PokeToken:    os.Getenv("POKE_TOKEN"),
 	}
@@ -205,22 +203,6 @@ func runWork(ctx context.Context, db Database, conn *pgx.Conn, argv []string) {
 		log.Fatalf("work %s/%s: %v", *capability, *provider, err)
 	}
 	log.Printf("rara-core worker %s/%s: queue drained", *capability, *provider)
-}
-
-// envDuration reads a Go duration (e.g. "30s", "2m") from env, or returns def when unset/invalid.
-func envDuration(key string, def time.Duration) time.Duration {
-	v := os.Getenv(key)
-	if v == "" {
-		return def
-	}
-	if d, err := time.ParseDuration(v); err == nil && d > 0 {
-		return d
-	}
-	if n, err := strconv.Atoi(v); err == nil && n > 0 { // bare integer => seconds
-		return time.Duration(n) * time.Second
-	}
-	log.Printf("work: ignoring invalid %s=%q", key, v)
-	return def
 }
 
 // selectRunner maps a (capability, provider) pair to its StepRunner shim. extrair has a provider

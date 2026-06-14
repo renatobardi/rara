@@ -1264,23 +1264,6 @@ func loadConfig() Config {
 	}
 }
 
-// envDuration reads a Go duration (e.g. "30s", "2m") or a bare integer (seconds) from env, or
-// returns def when unset/invalid. Mirrors rara-core's work loop so a resident deploy tunes the same.
-func envDuration(key string, def time.Duration) time.Duration {
-	v := os.Getenv(key)
-	if v == "" {
-		return def
-	}
-	if d, err := time.ParseDuration(v); err == nil && d > 0 {
-		return d
-	}
-	if n, err := strconv.Atoi(v); err == nil && n > 0 {
-		return time.Duration(n) * time.Second
-	}
-	log.Printf("scribe: ignoring invalid %s=%q", key, v)
-	return def
-}
-
 // main wires the bridge-total claim-worker: the SDK (addon.Run) owns the queue protocol; this
 // process only supplies the transcrever domain (transcribeHandler). It serves ONE provider
 // (SCRIBE_PROVIDER: asr-youtube on the Mac with a residential IP, or asr-direct-audio for podcast
@@ -1356,7 +1339,7 @@ func main() {
 		Provider:     provider,
 		Store:        addon.NewPgxStore(pool),
 		MaxAttempts:  addon.DefaultMaxAttempts,
-		PollInterval: envDuration("WORK_POLL_INTERVAL", 0),
+		PollInterval: addon.EnvDuration("WORK_POLL_INTERVAL", 0),
 		PokeAddr:     os.Getenv("POKE_ADDR"),
 		PokeToken:    os.Getenv("POKE_TOKEN"),
 	}
