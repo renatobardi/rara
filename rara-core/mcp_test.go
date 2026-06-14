@@ -179,7 +179,7 @@ func TestMCPReviewQuarantineMapsToCore(t *testing.T) {
 		t.Fatal(err)
 	}
 	id, _ := db.UpsertItem(ctx, Item{Lane: "youtube", SourceRef: "q", FlowID: db.flows[youtubeFlowName].ID, FlowVersion: 1, Status: itemQuarantine})
-	_ = db.InsertGateDecision(ctx, GateDecision{ItemID: id, Gate: gateBarato, Decision: decisionDefer, DecidedBy: decidedByLLM})
+	_ = db.InsertGateDecision(ctx, GateDecision{ItemID: id, Gate: gateBarato, Decision: decisionDefer, DecidedBy: "llm"})
 	s := newMCPServer(core)
 
 	res, rerr := callTool(t, s, "rara_review_quarantine", map[string]any{"item_id": id, "signal": "down"})

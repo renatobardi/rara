@@ -431,6 +431,11 @@ func templateNarrative(p revisedStructured) string {
 		len(p.Topics), len(p.Authors), len(p.AntiTopics), p.KeepThreshold)
 }
 
+// defaultKeepThreshold is the profile-match keep threshold the reviser falls back to when a
+// profile's weights carry no valid keep_threshold. It must match rara-sift's cascade default (the
+// gate app reads the value back out of weights); they are independent copies of one tuned constant.
+const defaultKeepThreshold = 0.6
+
 // baseFromProfile parses an active profile's JSONB into the engine's base struct.
 func baseFromProfile(p InterestProfile) revisedStructured {
 	return revisedStructured{
@@ -441,8 +446,20 @@ func baseFromProfile(p InterestProfile) revisedStructured {
 	}
 }
 
+// parseStringArray unmarshals a JSONB string array, yielding nil on absence or malformed JSON.
+func parseStringArray(raw json.RawMessage) []string {
+	if len(raw) == 0 {
+		return nil
+	}
+	var out []string
+	if json.Unmarshal(raw, &out) != nil {
+		return nil
+	}
+	return out
+}
+
 // keepThresholdFromWeights reads weights.keep_threshold, defaulting when absent/invalid (mirrors
-// parseProfile's rule in gates.go).
+// rara-sift's parseProfile rule).
 func keepThresholdFromWeights(raw json.RawMessage) float64 {
 	if len(raw) > 0 {
 		var w struct {

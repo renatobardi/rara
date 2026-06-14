@@ -9,14 +9,14 @@
 //
 //   - coreStore adapts rara-core's existing Database (the tested pgx persistence) to addon.Store, so
 //     the claim SQL keeps running through the same code path the reconciler/surface tests cover;
-//   - workHandler adapts a rara-core StepRunner (the domain glue in runners.go) to addon.Handler. It
-//     is the one place that knows rara-core domain facts the SDK must not: a gate verdict becomes a
-//     gate_decisions row (the worker records the judgement; the reconciler still routes), and the
-//     core errRetryable sentinel is mapped to addon.ErrRetryable so the SDK requeues.
+//   - workHandler adapts a rara-core StepRunner (the domain glue in runners.go) to addon.Handler,
+//     mapping the core errRetryable sentinel to addon.ErrRetryable so the SDK requeues.
 //
-// Behaviour is unchanged from the old worker.go: same claim isolation, same done/failed/filtered
-// outcomes, same gate-decision recording, same retry-to-ceiling. The reconciler and surface are the
-// orchestrator and do not change.
+// The work role now serves only `extrair` (email/linkedin to-text); transcrever, destilar and the
+// curation gates (gate_barato/gate_rico) are their own SDK apps (rara-scribe, rara-distill,
+// rara-sift). Behaviour is unchanged from the old worker.go: same claim isolation, same
+// done/failed/filtered outcomes, same retry-to-ceiling. The reconciler and surface are the
+// orchestrator and do not change — they still route gate decisions, never make them.
 package main
 
 import (
@@ -130,10 +130,9 @@ func (s *coreStore) toItemStep(step addon.Step, status, outputRef, errMsg string
 	}
 }
 
-// workHandler adapts a rara-core StepRunner to an addon.Handler. It carries the only domain
-// knowledge the SDK must not have: recording a gate verdict as a gate_decisions row, and mapping the
-// core errRetryable sentinel onto addon.ErrRetryable.
-func workHandler(db Database, capability string, runner StepRunner) addon.Handler {
+// workHandler adapts a rara-core StepRunner to an addon.Handler. The only domain knowledge it
+// carries is mapping the core errRetryable sentinel onto addon.ErrRetryable so the SDK requeues.
+func workHandler(runner StepRunner) addon.Handler {
 	return func(ctx context.Context, item addon.Item, step addon.Step) (addon.Result, error) {
 		coreItem := Item{
 			ID: item.ID, Lane: item.Lane, SourceRef: item.SourceRef, Status: item.Status,
@@ -153,21 +152,6 @@ func workHandler(db Database, capability string, runner StepRunner) addon.Handle
 			}
 			return addon.Result{}, err
 		}
-
-		if res.Gate != nil {
-			// A curation gate judged the item. Record the decision (the audit + training substrate);
-			// the gate step is legitimately done. The handler does NOT route the item — the
-			// reconciler reads this decision next pass and routes keep/drop/defer. capability is the
-			// gate name (capGateBarato == gateBarato, capGateRico == gateRico).
-			if err := db.InsertGateDecision(ctx, GateDecision{
-				ItemID: item.ID, Gate: capability, Decision: res.Gate.Decision,
-				Score: res.Gate.Score, Rank: res.Gate.Rank,
-				DecidedBy: res.Gate.DecidedBy, Reason: res.Gate.Reason,
-			}); err != nil {
-				return addon.Result{}, err
-			}
-			return addon.Result{OutputRef: res.OutputRef}, nil
-		}
 		return addon.Result{OutputRef: res.OutputRef, Filtered: res.Filtered}, nil
 	}
 }
@@ -182,14 +166,14 @@ func workHandler(db Database, capability string, runner StepRunner) addon.Handle
 // WORK_POLL_INTERVAL (the safety-net poll) and/or POKE_ADDR + POKE_TOKEN (the tailnet poke listener).
 func runWork(ctx context.Context, db Database, conn *pgx.Conn, argv []string) {
 	fs := flag.NewFlagSet("work", flag.ExitOnError)
-	capability := fs.String("capability", "", "capability to serve: extrair | gate_barato | gate_rico")
+	capability := fs.String("capability", "", "capability to serve: extrair")
 	provider := fs.String("provider", "", "the provider this worker serves (the reconciler assigns steps to it)")
 	_ = fs.Parse(argv)
 	if *provider == "" {
 		log.Fatalf("work: --provider is required (a capability may have several providers with different runners)")
 	}
 
-	runner := selectRunner(db, conn, *capability, *provider)
+	runner := selectRunner(conn, *capability, *provider)
 	cfg := addon.Config{
 		Capability:   *capability,
 		Provider:     *provider,
@@ -199,19 +183,18 @@ func runWork(ctx context.Context, db Database, conn *pgx.Conn, argv []string) {
 		PokeAddr:     os.Getenv("POKE_ADDR"),
 		PokeToken:    os.Getenv("POKE_TOKEN"),
 	}
-	if err := addon.Run(ctx, cfg, workHandler(db, *capability, runner)); err != nil {
+	if err := addon.Run(ctx, cfg, workHandler(runner)); err != nil {
 		log.Fatalf("work %s/%s: %v", *capability, *provider, err)
 	}
 	log.Printf("rara-core worker %s/%s: queue drained", *capability, *provider)
 }
 
-// selectRunner maps a (capability, provider) pair to its StepRunner shim. extrair has a provider
-// per text lane (email vs linkedin), so the provider — not just the capability — selects the runner.
-func selectRunner(db Database, conn *pgx.Conn, capability, provider string) StepRunner {
+// selectRunner maps a (capability, provider) pair to its StepRunner shim. extrair is the only
+// capability the core work role still serves; it has a provider per text lane (email vs linkedin),
+// so the provider — not just the capability — selects the runner.
+func selectRunner(conn *pgx.Conn, capability, provider string) StepRunner {
 	switch capability {
 	case capExtrair:
-		// extrair has a provider per text lane (email vs linkedin); each reads a different domain
-		// table, so the provider — not just the capability — selects the runner.
 		switch provider {
 		case provExtrairEmail:
 			return newExtractRunner(conn)
@@ -220,17 +203,12 @@ func selectRunner(db Database, conn *pgx.Conn, capability, provider string) Step
 		default:
 			log.Fatalf("work extrair: unknown provider %q", provider)
 		}
-	// transcrever and destilar are intentionally absent: each is its own app on the SDK (rara-scribe,
-	// rara-distill), not a runner the core work role serves. The reconciler still routes/activates
-	// them; the core never transcribes or distills.
-	case capGateBarato, capGateRico:
-		judge, err := newLiteLLMJudge()
-		if err != nil {
-			log.Fatalf("work %s: %v", capability, err)
-		}
-		return newGateRunner(db, conn, capability, judge)
+	// transcrever, destilar, gate_barato and gate_rico are intentionally absent: each is its own app
+	// on the SDK (rara-scribe, rara-distill, rara-sift), not a runner the core work role serves. The
+	// reconciler still routes/activates them and routes their gate decisions; the core never executes
+	// the capability.
 	default:
-		log.Fatalf("work: --capability must be one of extrair|gate_barato|gate_rico, got %q", capability)
+		log.Fatalf("work: --capability must be extrair, got %q", capability)
 	}
 	return nil // unreachable: every branch above either returns or log.Fatalf-exits
 }

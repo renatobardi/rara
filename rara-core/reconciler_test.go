@@ -66,7 +66,7 @@ func completeStep(t *testing.T, db *MockDatabase, itemID, seq int, outputRef str
 func runGate(t *testing.T, db *MockDatabase, itemID, seq int, gate, decision string) {
 	t.Helper()
 	if err := db.InsertGateDecision(context.Background(), GateDecision{
-		ItemID: itemID, Gate: gate, Decision: decision, DecidedBy: decidedByProfile, Reason: "test gate",
+		ItemID: itemID, Gate: gate, Decision: decision, DecidedBy: "profile", Reason: "test gate",
 	}); err != nil {
 		t.Fatalf("gate decision: %v", err)
 	}
