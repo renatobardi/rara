@@ -256,7 +256,7 @@ func (m *MockDatabase) InsertGateDecision(_ context.Context, d GateDecision) err
 }
 
 func (m *MockDatabase) InsertFeedback(_ context.Context, f Feedback) error {
-	if !isValidTargetType(f.TargetType) {
+	if !isValidTargetType(f.TargetType) || !isValidFeedbackSource(f.Source) {
 		return errCheckViolation
 	}
 	m.feedback = append(m.feedback, f) // append-only
@@ -774,14 +774,32 @@ func TestGateDecisionRichScoreAndRank(t *testing.T) {
 func TestFeedbackTargetTypeChecked(t *testing.T) {
 	ctx := context.Background()
 	db := newMockDatabase()
-	if err := db.InsertFeedback(ctx, Feedback{TargetType: targetDistillation, TargetRef: "42", Signal: "up", Source: "explicit"}); err != nil {
+	if err := db.InsertFeedback(ctx, Feedback{TargetType: targetDistillation, TargetRef: "42", Signal: "up", Source: sourceUserExplicit}); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.InsertFeedback(ctx, Feedback{TargetType: "transcript", TargetRef: "1", Signal: "up", Source: "explicit"}); !errors.Is(err, errCheckViolation) {
+	if err := db.InsertFeedback(ctx, Feedback{TargetType: "transcript", TargetRef: "1", Signal: "up", Source: sourceUserExplicit}); !errors.Is(err, errCheckViolation) {
 		t.Fatalf("invalid target_type should fail CHECK, got %v", err)
 	}
 	if len(db.feedback) != 1 {
 		t.Fatalf("only the valid row should persist: %d rows", len(db.feedback))
+	}
+}
+
+// feedback.source is pinned to a CHECK enum (migration 005): the three known sources are
+// accepted (including the new kura_implicit), an unknown one is rejected.
+func TestFeedbackSourceChecked(t *testing.T) {
+	ctx := context.Background()
+	db := newMockDatabase()
+	for _, src := range []string{sourceUserExplicit, sourceQuarantineReview, sourceKURAImplicit} {
+		if err := db.InsertFeedback(ctx, Feedback{TargetType: targetDistillation, TargetRef: "1", Signal: signalUp, Source: src}); err != nil {
+			t.Errorf("source %q should be accepted: %v", src, err)
+		}
+	}
+	if err := db.InsertFeedback(ctx, Feedback{TargetType: targetDistillation, TargetRef: "1", Signal: signalUp, Source: "kura-usage"}); !errors.Is(err, errCheckViolation) {
+		t.Fatalf("unknown source should fail CHECK, got %v", err)
+	}
+	if !isValidFeedbackSource(sourceKURAImplicit) || isValidFeedbackSource("explicit") {
+		t.Error("isValidFeedbackSource enum mismatch")
 	}
 }
 

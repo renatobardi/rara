@@ -130,12 +130,21 @@ const (
 	signalDown = "down"
 )
 
-// feedback.source — provenance of a learning signal (free-text in SQL; these are the
-// sources Phase 3 writes). The interest_profile revision (Phase 6) consumes them.
+// feedback.source — provenance of a learning signal, pinned to a CHECK enum by
+// migration 005. The interest_profile revision (Phase 6) consumes them all.
 const (
 	sourceUserExplicit     = "user_explicit"     // explicit thumbs on a distillation
 	sourceQuarantineReview = "quarantine_review" // human review of a quarantined item
+	sourceKURAImplicit     = "kura_implicit"     // KURA engagement on a distillation (KURA-CONTRACT.md §2)
 )
+
+func isValidFeedbackSource(s string) bool {
+	switch s {
+	case sourceUserExplicit, sourceQuarantineReview, sourceKURAImplicit:
+		return true
+	}
+	return false
+}
 
 // policyScopeGlobal is the routing_policies.scope sentinel for the catch-all policy the
 // router uses when no capability-scoped policy exists.
@@ -658,6 +667,9 @@ func (d *pgxDatabase) InsertGateDecision(ctx context.Context, dec GateDecision) 
 func (d *pgxDatabase) InsertFeedback(ctx context.Context, f Feedback) error {
 	if !isValidTargetType(f.TargetType) {
 		return fmt.Errorf("invalid feedback target_type %q", f.TargetType)
+	}
+	if !isValidFeedbackSource(f.Source) {
+		return fmt.Errorf("invalid feedback source %q", f.Source)
 	}
 	const q = `
 		INSERT INTO feedback (target_type, target_ref, signal, source)
