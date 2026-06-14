@@ -22,13 +22,5 @@ jobs:
       - name: Guard — deploy is gated (P2)
         run: |
           echo "rara-distill deploy is GATED until the 2.0 reconciler/VPC phase (P2)."
-          echo
-          echo "Before re-enabling this workflow, the deploy needs:"
-          echo "  1. MULTI-MODULE Docker build — pack rara-addon + rara-distill into the build"
-          echo "     context (the app imports rara-addon via 'replace ../rara-addon')."
-          echo "  2. Claim-worker job env — set DISTILL_PROVIDER (e.g. distill); the news lane,"
-          echo "     DISTILL_SOURCE and DISTILL_BATCH_SIZE were removed in P1c."
-          echo "  3. Restore the push:main trigger once the reconciler routes 'destilar' steps."
-          echo
-          echo "Reference: the pre-P1c build/deploy steps live in git history for this file."
+          echo "Re-enabling it needs the rework documented in the comment at the top of this file."
           exit 1
