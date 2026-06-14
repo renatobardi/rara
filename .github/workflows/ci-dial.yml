@@ -1,0 +1,102 @@
+name: CI rara-dial
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+    paths:
+      - 'rara-dial/**'
+      - '.github/workflows/ci-dial.yml'
+  pull_request:
+    branches:
+      - main
+      - develop
+    paths:
+      - 'rara-dial/**'
+      - '.github/workflows/ci-dial.yml'
+
+jobs:
+  code-quality:
+    name: Code Quality & Tests
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: Setup Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
+        with:
+          go-version-file: rara-dial/go.mod
+
+      - name: Cache Go modules
+        uses: actions/cache@6f8efc29b200d32929f49075959781ed54ec270c # v3
+        with:
+          path: ~/go/pkg/mod
+          key: ${{ runner.os }}-go-dial-${{ hashFiles('rara-dial/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-dial-
+
+      - name: Download dependencies
+        run: |
+          cd rara-dial
+          go mod download
+
+      - name: Format check
+        run: |
+          cd rara-dial
+          if [ -n "$(gofmt -s -l .)" ]; then
+            echo "❌ Code formatting issues found. Run: gofmt -w ."
+            gofmt -s -d .
+            exit 1
+          fi
+          echo "✅ Code format OK"
+
+      - name: Lint
+        run: |
+          cd rara-dial
+          go vet ./...
+          echo "✅ Vet check passed"
+
+      - name: Run tests
+        run: |
+          cd rara-dial
+          go test -v -race -coverprofile=coverage.out ./...
+          echo "✅ Tests passed"
+
+      - name: Check coverage
+        run: |
+          cd rara-dial
+          go tool cover -func=coverage.out | tail -1
+          echo "✅ Coverage report generated"
+
+  security:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
+        with:
+          go-version-file: rara-dial/go.mod
+
+      - name: Vulnerability scan (govulncheck)
+        run: |
+          cd rara-dial
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          "$(go env GOPATH)/bin/govulncheck" ./...
+
+      - name: Secret scan (gitleaks)
+        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
