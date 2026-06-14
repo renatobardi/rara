@@ -176,7 +176,7 @@ func (r *asrDirectAudioRunner) enclosureURL(ctx context.Context, guid string) (s
 // extract shim (extrair, email) — clean an email body into a to-text artifact.
 //
 // The email lane's to-text worker. It reads the raw email body from the emails table (the
-// rara-mail collector's domain table, SELECT only), runs the PURE cleaner (extract.go:
+// rara-courier collector's domain table, SELECT only), runs the PURE cleaner (extract.go:
 // strip HTML/signature/quoted-reply), and stores the result as a transcripts row
 // (source_type=email, source_ref=message_id) so distill consumes it exactly like a
 // transcript. Writing transcripts is the one sanctioned cross-agent write — the to-text
@@ -743,7 +743,7 @@ func (s *pgxSpineSource) YouTubeVideos(ctx context.Context) ([]YouTubeVideo, err
 type pgxPodcastSource struct{ conn *pgx.Conn }
 
 // PodcastEpisodes returns every collected episode that carries a stable GUID. The spine is
-// keyed on (lane=podcast, source_ref=guid); the collector (rara-podcast) owns the table.
+// keyed on (lane=podcast, source_ref=guid); the collector (rara-dial) owns the table.
 func (s *pgxPodcastSource) PodcastEpisodes(ctx context.Context) ([]PodcastEpisode, error) {
 	const q = `
 		SELECT guid, COALESCE(title, '')
@@ -772,7 +772,7 @@ func (s *pgxPodcastSource) PodcastEpisodes(ctx context.Context) ([]PodcastEpisod
 type pgxEmailSource struct{ conn *pgx.Conn }
 
 // Emails returns every collected email that carries a message id. The spine is keyed on
-// (lane=email, source_ref=message_id); the collector (rara-mail) owns the table.
+// (lane=email, source_ref=message_id); the collector (rara-courier) owns the table.
 func (s *pgxEmailSource) Emails(ctx context.Context) ([]EmailItem, error) {
 	const q = `
 		SELECT message_id, COALESCE(subject, '')

@@ -1,4 +1,4 @@
-# rara-podcast
+# rara-dial
 
 The 2.0 **Podcast lane** collector. An isolated agent that polls operator-curated RSS feeds and
 catalogs each episode (an RSS `<item>` carrying an audio enclosure) into its own domain tables.

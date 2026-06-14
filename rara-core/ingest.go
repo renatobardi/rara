@@ -84,7 +84,7 @@ type PodcastEpisode struct {
 }
 
 // PodcastSource reads the collected-episode universe the podcast spine is built from. The
-// concrete implementation reads podcast_episodes (written by the rara-podcast collector).
+// concrete implementation reads podcast_episodes (written by the rara-dial collector).
 type PodcastSource interface {
 	PodcastEpisodes(ctx context.Context) ([]PodcastEpisode, error)
 }
@@ -133,7 +133,7 @@ type EmailItem struct {
 }
 
 // EmailSource reads the collected-email universe the email spine is built from. The concrete
-// implementation reads the emails table (written by the rara-mail collector).
+// implementation reads the emails table (written by the rara-courier collector).
 type EmailSource interface {
 	Emails(ctx context.Context) ([]EmailItem, error)
 }

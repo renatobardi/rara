@@ -1,4 +1,4 @@
-// rara-podcast is the 2.0 Podcast lane collector: a new, isolated agent that polls
+// rara-dial is the 2.0 Podcast lane collector: a new, isolated agent that polls
 // operator-curated RSS feeds and catalogs each episode (an <item> with an audio enclosure)
 // into its own domain table, podcast_episodes. Like every rara agent it shares nothing but the
 // Neon database and never calls another agent — the control plane (rara-core) reads
@@ -208,7 +208,7 @@ func httpFetch(ctx context.Context, url string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", "rara-podcast/1.0 (+https://github.com/RenatoBardi/rara)")
+	req.Header.Set("User-Agent", "rara-dial/1.0 (+https://github.com/RenatoBardi/rara)")
 	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, err

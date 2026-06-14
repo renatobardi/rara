@@ -1,7 +1,7 @@
 -- migrations/001_initial_schema.sql
--- Initial schema for rara-podcast (the 2.0 Podcast lane collector).
+-- Initial schema for rara-dial (the 2.0 Podcast lane collector).
 --
--- Description: rara-podcast is a new, isolated agent that discovers podcast episodes from RSS
+-- Description: rara-dial is a new, isolated agent that discovers podcast episodes from RSS
 --   feeds and catalogs them. Like every rara agent it owns ONLY its domain tables and shares
 --   nothing but the Neon database — no foreign keys across the agent boundary. The control
 --   plane (rara-core) reads podcast_episodes to build the items spine (lane=podcast,

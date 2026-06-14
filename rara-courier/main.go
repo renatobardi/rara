@@ -1,4 +1,4 @@
-// rara-mail is the 2.0 Email lane collector: a new, isolated agent that collects messages from
+// rara-courier is the 2.0 Email lane collector: a new, isolated agent that collects messages from
 // Gmail (OAuth refresh-token auth, the rara-shelf pattern) and catalogs each into its own
 // domain table, emails. Like every rara agent it shares nothing but the Neon database and never
 // calls another agent — the control plane (rara-core) reads emails to build the items spine

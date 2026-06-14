@@ -1,7 +1,7 @@
 -- migrations/001_initial_schema.sql
--- Initial schema for rara-mail (the 2.0 Email lane collector).
+-- Initial schema for rara-courier (the 2.0 Email lane collector).
 --
--- Description: rara-mail is a new, isolated agent that collects emails from Gmail (OAuth
+-- Description: rara-courier is a new, isolated agent that collects emails from Gmail (OAuth
 --   refresh-token auth, same pattern as rara-shelf) and catalogs them. Like every rara agent
 --   it owns ONLY its domain table and shares nothing but the Neon database — no foreign keys
 --   across the agent boundary. The control plane (rara-core) reads `emails` to build the items
