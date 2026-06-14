@@ -52,8 +52,8 @@ func CollectLinkedIn(ctx context.Context, db Database, store LinkedInPostStore, 
 	for _, p := range posts {
 		// Pre-filter the partial rows the source can yield, so a SubmitLinkedInPost error below
 		// is always a real fault (not an empty paste) and is worth aborting on.
-		if strings.TrimSpace(p.URL) == "" || cleanPostText(p.Text) == "" {
-			log.Printf("collect linkedin: skipping partial post (url=%q, empty text=%v)", p.URL, cleanPostText(p.Text) == "")
+		if strings.TrimSpace(p.URL) == "" || !postHasContent(p.Text) {
+			log.Printf("collect linkedin: skipping partial post (url=%q, empty text=%v)", p.URL, !postHasContent(p.Text))
 			continue
 		}
 		if _, err := SubmitLinkedInPost(ctx, db, store, p); err != nil {

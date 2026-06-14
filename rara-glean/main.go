@@ -116,20 +116,12 @@ func engineForLane(lane string) string {
 // (lines beginning with ">" and everything after a reply attribution) dropped. Deterministic
 // and cheap — the gates/distill then judge the message itself, not its decoration.
 func cleanEmailText(raw string) string {
-	s := raw
-	if reHTMLish.MatchString(s) {
-		s = stripHTML(s)
-	}
 	var out []string
-	for _, ln := range strings.Split(s, "\n") {
-		line := strings.TrimRight(ln, " \t\r")
+	for _, line := range splitClean(raw) {
 		trimmed := strings.TrimSpace(line)
-		// Signature delimiter ("-- " on its own line): everything below is the signature.
-		if trimmed == "--" {
-			break
-		}
-		// A reply attribution starts the quoted original thread: stop here.
-		if reAttribution.MatchString(trimmed) {
+		// Signature delimiter ("-- ") or a reply attribution starts the noise — everything below
+		// it (the signature / the quoted original thread) is dropped.
+		if trimmed == "--" || reAttribution.MatchString(trimmed) {
 			break
 		}
 		// Quoted lines ("> ...") are prior messages, not this one.
@@ -138,8 +130,7 @@ func cleanEmailText(raw string) string {
 		}
 		out = append(out, line)
 	}
-	cleaned := reBlankRun.ReplaceAllString(strings.Join(out, "\n"), "\n\n")
-	return strings.TrimSpace(cleaned)
+	return joinClean(out)
 }
 
 // cleanPostText normalizes a pasted LinkedIn post into the text the gates/distill judge. Posts
@@ -148,16 +139,26 @@ func cleanEmailText(raw string) string {
 // runs and trim. It does NOT strip signatures/quotes (a post has neither). Deterministic and
 // cheap — the real "to-text" work the lane does.
 func cleanPostText(raw string) string {
+	return joinClean(splitClean(raw))
+}
+
+// splitClean is the shared head of both cleaners: strip HTML if the body carries any, then split
+// into right-trimmed lines for the cleaner to filter.
+func splitClean(raw string) []string {
 	s := raw
 	if reHTMLish.MatchString(s) {
 		s = stripHTML(s)
 	}
-	var out []string
-	for _, ln := range strings.Split(s, "\n") {
-		out = append(out, strings.TrimRight(ln, " \t\r"))
+	lines := strings.Split(s, "\n")
+	for i, ln := range lines {
+		lines[i] = strings.TrimRight(ln, " \t\r")
 	}
-	cleaned := reBlankRun.ReplaceAllString(strings.Join(out, "\n"), "\n\n")
-	return strings.TrimSpace(cleaned)
+	return lines
+}
+
+// joinClean is the shared tail: rejoin, collapse blank runs to a single blank line, and trim.
+func joinClean(lines []string) string {
+	return strings.TrimSpace(reBlankRun.ReplaceAllString(strings.Join(lines, "\n"), "\n\n"))
 }
 
 // stripHTML reduces an HTML body to plain text: drop script/style, turn block boundaries into

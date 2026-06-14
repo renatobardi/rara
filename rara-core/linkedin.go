@@ -13,13 +13,13 @@
 // flow, the extractor and the gates never change — only who fills linkedin_posts.
 //
 // Everything here is PURE orchestration over the Database seam + the store seam (zero I/O of
-// its own) plus the deterministic cleanPostText, so the whole lane is unit-tested with the
+// its own) plus the deterministic postHasContent check, so the whole lane is unit-tested with the
 // MockDatabase and a fake store. The pgx store write lives at the I/O edge in runners.go.
 //
 // The to-text step itself (extrair — writing the cleaned post into the shared transcripts store)
 // is no longer here: it is its own app, rara-glean, on the SDK. The core only seeds the lane,
-// collects/validates submissions (cleanPostText is the emptiness check the collector applies), and
-// routes; rara-glean does the extraction. The html-cleaning helpers below back that collector check.
+// collects/validates submissions (postHasContent rejects empty pastes), and routes; rara-glean
+// does the extraction and owns the full HTML/signature/quote cleaners.
 package main
 
 import (
@@ -70,7 +70,7 @@ func SubmitLinkedInPost(ctx context.Context, db Database, store LinkedInPostStor
 	// Validate there is real content (reject a pure-whitespace/empty paste at the door), but
 	// store the RAW post: the to-text cleaning is the `extrair` step's job, exactly as the email
 	// lane stores raw bodies in `emails` and the Bright Data swap will store raw HTML here.
-	if cleanPostText(p.Text) == "" {
+	if !postHasContent(p.Text) {
 		return 0, fmt.Errorf("linkedin: post text is empty")
 	}
 	flow, found, err := db.GetFlow(ctx, linkedinFlowName)
@@ -97,48 +97,18 @@ func SubmitLinkedInPost(ctx context.Context, db Database, store LinkedInPostStor
 	})
 }
 
-// HTML-cleaning helpers for the collector's emptiness check (cleanPostText). The to-text worker
-// (rara-glean) owns its own copy of the equivalent cleaners; this keeps the core's collector
-// validation self-contained — a post that reduces to no text after HTML stripping is rejected at
-// submission, never ingested as an empty item.
-var (
-	// reScriptStyle drops <script>/<style> blocks whole (their content is never message text).
-	reScriptStyle = regexp.MustCompile(`(?is)<(script|style)\b[^>]*>.*?</(script|style)>`)
-	// reBlockTag turns block-level boundaries into newlines so stripped HTML stays readable.
-	reBlockTag = regexp.MustCompile(`(?i)<(br|/p|/div|/tr|/h[1-6]|/li)\s*/?>`)
-	// reAnyTag removes every remaining tag.
-	reAnyTag = regexp.MustCompile(`(?s)<[^>]+>`)
-	// reHTMLish detects whether a body is HTML (so plain-text bodies are left untouched).
-	reHTMLish = regexp.MustCompile(`(?i)<(html|body|div|p|br|table|span|a|img|head)\b`)
-	// reBlankRun collapses 3+ consecutive newlines to a single blank line.
-	reBlankRun = regexp.MustCompile(`\n{3,}`)
-)
+// reTag matches any HTML tag — the only regex the collector's emptiness check needs. The full
+// to-text cleaning (HTML/signature/quote stripping that writes the transcripts artifact) is no
+// longer rara-core's: it lives in the rara-glean app. The core keeps only this cheap predicate.
+var reTag = regexp.MustCompile(`(?s)<[^>]+>`)
 
-// stripHTML reduces an HTML body to plain text: drop script/style, turn block boundaries into
-// newlines, remove the remaining tags, and unescape entities.
-func stripHTML(s string) string {
-	s = reScriptStyle.ReplaceAllString(s, "")
-	s = reBlockTag.ReplaceAllString(s, "\n")
-	s = reAnyTag.ReplaceAllString(s, "")
-	return html.UnescapeString(s)
-}
-
-// cleanPostText normalizes a pasted LinkedIn post into the text the gates/distill judge. Posts
-// are already text, so this is lighter than email's cleaner: strip HTML if the body carries any
-// (so a future Bright Data collector that yields HTML needs no change), then collapse blank
-// runs and trim. It does NOT strip signatures/quotes (a post has neither). Deterministic and
-// cheap — the real "to-text" work the lane does.
-func cleanPostText(raw string) string {
-	s := raw
-	if reHTMLish.MatchString(s) {
-		s = stripHTML(s)
-	}
-	var out []string
-	for _, ln := range strings.Split(s, "\n") {
-		out = append(out, strings.TrimRight(ln, " \t\r"))
-	}
-	cleaned := reBlankRun.ReplaceAllString(strings.Join(out, "\n"), "\n\n")
-	return strings.TrimSpace(cleaned)
+// postHasContent reports whether a pasted post carries any real text — the collector's submission
+// gate. It strips tags and unescapes entities (so a pure-markup body like "<div></div>" or a lone
+// "&nbsp;" counts as empty) and checks for any non-whitespace remainder. It is deliberately NOT the
+// extractor: the collector stores the RAW post and rejects only empty pastes; the actual to-text
+// normalization is the `extrair` step's job (rara-glean), exactly as the email lane stores raw bodies.
+func postHasContent(raw string) bool {
+	return strings.TrimSpace(html.UnescapeString(reTag.ReplaceAllString(raw, ""))) != ""
 }
 
 // SeedLinkedInLane writes the LinkedIn lane: shared capabilities/providers/config plus the
