@@ -1030,65 +1030,6 @@ func serveSurfacePool(ctx context.Context, dbURL, addr, token string) error {
 	return ServeSurface(ctx, core, addr, token)
 }
 
-// runWork runs a (capability, provider) pull loop until its queue drains. A worker serves
-// exactly one provider so it claims only the steps the reconciler routed to it — required
-// once a capability has several providers with different runners (transcrever -> asr-youtube
-// on the Mac vs asr-direct-audio on Cloud Run).
-func runWork(ctx context.Context, db Database, conn *pgx.Conn, argv []string) {
-	fs := flag.NewFlagSet("work", flag.ExitOnError)
-	capability := fs.String("capability", "", "capability to serve: transcrever | extrair | destilar | gate_barato | gate_rico")
-	provider := fs.String("provider", "", "the provider this worker serves (the reconciler assigns steps to it)")
-	_ = fs.Parse(argv)
-	if *provider == "" {
-		log.Fatalf("work: --provider is required (a capability may have several providers with different runners)")
-	}
-
-	runner := selectRunner(db, conn, *capability, *provider)
-	if err := NewWorker(db, *capability, *provider, runner).RunUntilDrained(ctx); err != nil {
-		log.Fatalf("work %s/%s: %v", *capability, *provider, err)
-	}
-	log.Printf("rara-core worker %s/%s: queue drained", *capability, *provider)
-}
-
-// selectRunner maps a (capability, provider) pair to its StepRunner shim. transcrever has two
-// providers with different entrypoints (asr-youtube builds a watch URL; asr-direct-audio reads
-// a direct enclosure URL), so the provider — not just the capability — selects the runner.
-func selectRunner(db Database, conn *pgx.Conn, capability, provider string) StepRunner {
-	switch capability {
-	case capTranscrever:
-		switch provider {
-		case provASRYouTube:
-			return newScribeRunner(conn)
-		case provASRDirectAudio:
-			return newASRDirectAudioRunner(conn)
-		default:
-			log.Fatalf("work transcrever: unknown provider %q", provider)
-		}
-	case capExtrair:
-		// extrair has a provider per text lane (email vs linkedin); each reads a different
-		// domain table, so the provider — not just the capability — selects the runner.
-		switch provider {
-		case provExtrairEmail:
-			return newExtractRunner(conn)
-		case provExtrairLinked:
-			return newLinkedInExtractRunner(conn)
-		default:
-			log.Fatalf("work extrair: unknown provider %q", provider)
-		}
-	case capDestilar:
-		return newDistillRunner(conn)
-	case capGateBarato, capGateRico:
-		judge, err := newLiteLLMJudge()
-		if err != nil {
-			log.Fatalf("work %s: %v", capability, err)
-		}
-		return newGateRunner(db, conn, capability, judge)
-	default:
-		log.Fatalf("work: --capability must be one of transcrever|extrair|destilar|gate_barato|gate_rico, got %q", capability)
-	}
-	return nil // unreachable: every branch above either returns or log.Fatalf-exits
-}
-
 // runFeedback records explicit thumbs on a distillation (deliverable #4).
 func runFeedback(ctx context.Context, db Database, argv []string) {
 	fs := flag.NewFlagSet("feedback", flag.ExitOnError)

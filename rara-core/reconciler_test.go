@@ -59,7 +59,7 @@ func completeStep(t *testing.T, db *MockDatabase, itemID, seq int, outputRef str
 }
 
 // runGate simulates the gate worker finishing a gate step: it records the cascade decision
-// and marks the step done — exactly what worker.RunOnce does for a gate verdict. The
+// and marks the step done — exactly what the addon work handler does for a gate verdict. The
 // reconciler then routes the item from that decision on its next pass.
 func runGate(t *testing.T, db *MockDatabase, itemID, seq int, gate, decision string) {
 	t.Helper()

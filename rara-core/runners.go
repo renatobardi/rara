@@ -3,8 +3,8 @@
 // These concrete StepRunners are the thin adapters that actually invoke the existing
 // scribe/distill binaries and read back the domain row they wrote. They are deliberately
 // minimal glue: exec + one SELECT. Like the pgx writes in main.go, they are exercised by
-// real deploys/integration, not unit tests — the claim/advance orchestration in worker.go
-// is what the pure tests cover (via a fake StepRunner).
+// real deploys/integration, not unit tests — the claim/advance orchestration now lives in the
+// rara-addon SDK (proven by addon_work.go's handler, which these runners back).
 //
 // Binary paths and engines are environment-configured so a deploy points the shim at the
 // right artifact (SCRIBE_BIN on the Mac, DISTILL_BIN in the Cloud Run image) without code
@@ -36,6 +36,29 @@ var (
 	errNoOutputRow = errors.New("worker produced no output row")
 	errRetryable   = errors.New("retryable: output not yet available")
 )
+
+// RunResult is what a StepRunner reports back. OutputRef is the worker-owned domain row id to
+// record on the item_step. Filtered marks a benign, no-content outcome (e.g. an empty transcript):
+// the step is legitimately done, but there is nothing to carry downstream, so the item is curated
+// out (terminal `filtered`) instead of marched into a distill that must fail.
+//
+// Gate is non-nil ONLY for a curation-gate step (gate_barato / gate_rico): it carries the cascade's
+// verdict. The addon handler records it as a gate_decisions row and marks the step done; it does NOT
+// route the item — the reconciler reads the decision next pass and routes keep/drop/defer, keeping
+// judgement in the worker and routing in the control plane.
+type RunResult struct {
+	OutputRef string
+	Filtered  bool
+	Gate      *GateVerdict
+}
+
+// StepRunner executes one claimed step against its domain worker. A returned error means the step
+// did not succeed; if it wraps errRetryable (e.g. distill's batch hasn't reached this row yet) the
+// addon SDK re-queues the step until its attempt ceiling, otherwise it marks it failed for the
+// reconciler to act on next pass.
+type StepRunner interface {
+	Run(ctx context.Context, item Item, step ItemStep) (RunResult, error)
+}
 
 func envOr(key, def string) string {
 	if v := os.Getenv(key); v != "" {

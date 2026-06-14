@@ -2,7 +2,15 @@ module rara-core
 
 go 1.26.4
 
-require github.com/jackc/pgx/v5 v5.10.0
+require (
+	github.com/jackc/pgx/v5 v5.10.0
+	rara-addon v0.0.0
+)
+
+// rara-addon is the bridge-total SDK, a sibling module in this monorepo. A replace directive (not a
+// go.work) keeps rara-core self-contained: it builds standalone in CI (cd rara-core && go test) and
+// leaves the other agents' independent modules untouched.
+replace rara-addon => ../rara-addon
 
 require (
 	github.com/jackc/pgpassfile v1.0.0 // indirect

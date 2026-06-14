@@ -1,4 +1,4 @@
-name: CI rara-core
+name: CI rara-addon
 
 on:
   push:
@@ -6,17 +6,15 @@ on:
       - main
       - develop
     paths:
-      - 'rara-core/**'
-      - 'rara-addon/**' # rara-core imports the SDK via a local replace; re-test when it changes
-      - '.github/workflows/ci-core.yml'
+      - 'rara-addon/**'
+      - '.github/workflows/ci-addon.yml'
   pull_request:
     branches:
       - main
       - develop
     paths:
-      - 'rara-core/**'
-      - 'rara-addon/**' # rara-core imports the SDK via a local replace; re-test when it changes
-      - '.github/workflows/ci-core.yml'
+      - 'rara-addon/**'
+      - '.github/workflows/ci-addon.yml'
 
 jobs:
   code-quality:
@@ -32,24 +30,24 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
         with:
-          go-version-file: rara-core/go.mod
+          go-version-file: rara-addon/go.mod
 
       - name: Cache Go modules
         uses: actions/cache@6f8efc29b200d32929f49075959781ed54ec270c # v3
         with:
           path: ~/go/pkg/mod
-          key: ${{ runner.os }}-go-core-${{ hashFiles('rara-core/go.sum') }}
+          key: ${{ runner.os }}-go-addon-${{ hashFiles('rara-addon/go.sum') }}
           restore-keys: |
-            ${{ runner.os }}-go-core-
+            ${{ runner.os }}-go-addon-
 
       - name: Download dependencies
         run: |
-          cd rara-core
+          cd rara-addon
           go mod download
 
       - name: Format check
         run: |
-          cd rara-core
+          cd rara-addon
           if [ -n "$(gofmt -s -l .)" ]; then
             echo "❌ Code formatting issues found. Run: gofmt -w ."
             gofmt -s -d .
@@ -59,19 +57,19 @@ jobs:
 
       - name: Lint
         run: |
-          cd rara-core
+          cd rara-addon
           go vet ./...
           echo "✅ Vet check passed"
 
       - name: Run tests
         run: |
-          cd rara-core
+          cd rara-addon
           go test -v -race -coverprofile=coverage.out ./...
           echo "✅ Tests passed"
 
       - name: Check coverage
         run: |
-          cd rara-core
+          cd rara-addon
           go tool cover -func=coverage.out | tail -1
           echo "✅ Coverage report generated"
 
@@ -90,11 +88,11 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
         with:
-          go-version-file: rara-core/go.mod
+          go-version-file: rara-addon/go.mod
 
       - name: Vulnerability scan (govulncheck)
         run: |
-          cd rara-core
+          cd rara-addon
           go install golang.org/x/vuln/cmd/govulncheck@latest
           "$(go env GOPATH)/bin/govulncheck" ./...
 
