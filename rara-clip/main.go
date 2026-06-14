@@ -61,21 +61,29 @@ func main() {
 	if databaseURL == "" {
 		log.Fatalf("DATABASE_URL environment variable is required")
 	}
+	ctx := context.Background()
 
-	connectCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	conn, err := pgx.Connect(connectCtx, databaseURL)
-	cancel()
-	if err != nil {
-		log.Fatalf("Failed to connect to database: %v", err)
-	}
-	defer conn.Close(context.Background())
-	log.Println("Connected to database successfully")
+	conn := mustConnect(ctx, databaseURL)
+	defer conn.Close(ctx)
 
-	n, err := run(context.Background(), &pgxDatabase{conn: conn}, newBrightDataLinkedInSource())
+	n, err := run(ctx, &pgxDatabase{conn: conn}, newBrightDataLinkedInSource())
 	if err != nil {
 		log.Fatalf("linkedin collector: %v", err)
 	}
 	log.Printf("LinkedIn job completed: %d posts catalogued", n)
+}
+
+// mustConnect opens the Neon connection (bounded by a startup timeout) or exits — the only
+// startup I/O before the pure collector loop runs.
+func mustConnect(ctx context.Context, databaseURL string) *pgx.Conn {
+	connectCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	conn, err := pgx.Connect(connectCtx, databaseURL)
+	if err != nil {
+		log.Fatalf("Failed to connect to database: %v", err)
+	}
+	log.Println("Connected to database successfully")
+	return conn
 }
 
 // run is the collector loop: fetch the current batch from Bright Data and upsert each post into
