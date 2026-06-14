@@ -830,3 +830,112 @@ func (s *pgxLinkedInInbox) UpsertLinkedInPost(ctx context.Context, p LinkedInPos
 	_, err := s.conn.Exec(ctx, q, p.URL, nullStr(p.Author), p.Text)
 	return err
 }
+
+// ---------------------------------------------------------------------------
+// Bright Data LinkedIn collector (coletar, linkedin) — the automated source (Phase 6).
+//
+// The I/O edge of CollectLinkedIn (linkedin_collect.go): it pulls posts from Bright Data via
+// the `bdata` CLI (the Bright Data agent skill's tool) and normalizes them into []LinkedInPost,
+// which CollectLinkedIn then feeds through the SAME contract the manual inbox uses. Like the
+// scribe/distill shims, this glue is exercised by integration, not unit tests — CollectLinkedIn
+// is what the pure tests cover (with a fake collector).
+//
+// Integration contract (config, not code — mirrors SCRIBE_BIN/DISTILL_BIN):
+//   - BDATA_BIN                  the Bright Data CLI (default "bdata").
+//   - BRIGHTDATA_LINKEDIN_ARGS   the pipeline subcommand + flags, space-separated
+//                                (default "pipelines linkedin-posts --json"); the input URLs are
+//                                appended as trailing args.
+//   - BRIGHTDATA_LINKEDIN_URLS   the profile/post URLs to collect (comma- or newline-separated).
+// The command must print a JSON array of post objects on stdout. Field names are matched
+// flexibly (Bright Data's LinkedIn dataset keys vary): url|post_url, author|account|user_id,
+// post_text|text|body|headline. The Bright Data API key is read by the CLI from its own env
+// (BRIGHTDATA_API_KEY), so rara-core never handles the credential.
+// ---------------------------------------------------------------------------
+
+type brightDataLinkedInSource struct {
+	bin  string   // BDATA_BIN
+	args []string // BRIGHTDATA_LINKEDIN_ARGS, split
+	urls []string // BRIGHTDATA_LINKEDIN_URLS, split
+}
+
+// newBrightDataLinkedInSource builds the collector from the environment.
+func newBrightDataLinkedInSource() *brightDataLinkedInSource {
+	return &brightDataLinkedInSource{
+		bin:  envOr("BDATA_BIN", "bdata"),
+		args: strings.Fields(envOr("BRIGHTDATA_LINKEDIN_ARGS", "pipelines linkedin-posts --json")),
+		urls: splitList(os.Getenv("BRIGHTDATA_LINKEDIN_URLS")),
+	}
+}
+
+// FetchPosts runs the Bright Data CLI over the configured input URLs and decodes the result.
+func (s *brightDataLinkedInSource) FetchPosts(ctx context.Context) ([]LinkedInPost, error) {
+	if len(s.urls) == 0 {
+		return nil, fmt.Errorf("brightdata linkedin: BRIGHTDATA_LINKEDIN_URLS is empty (nothing to collect)")
+	}
+	args := append(append([]string{}, s.args...), s.urls...)
+	cmd := exec.CommandContext(ctx, s.bin, args...)
+	cmd.Stderr = os.Stderr
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("brightdata linkedin: %s: %w", s.bin, err)
+	}
+	return decodeBrightDataPosts(out)
+}
+
+// decodeBrightDataPosts parses the CLI's JSON array into normalized posts, matching the dataset's
+// varying key names flexibly. A row with neither a URL nor any text is dropped here too (so the
+// pure CollectLinkedIn never has to); the remaining filtering/idempotency is CollectLinkedIn's.
+func decodeBrightDataPosts(raw []byte) ([]LinkedInPost, error) {
+	var rows []brightDataPost
+	if err := json.Unmarshal(raw, &rows); err != nil {
+		return nil, fmt.Errorf("brightdata linkedin: decode JSON: %w", err)
+	}
+	out := make([]LinkedInPost, 0, len(rows))
+	for _, r := range rows {
+		p := LinkedInPost{
+			URL:    firstNonEmpty(r.URL, r.PostURL),
+			Author: firstNonEmpty(r.Author, r.Account, r.UserID),
+			Text:   firstNonEmpty(r.PostText, r.Text, r.Body, r.Headline),
+		}
+		if p.URL == "" && p.Text == "" {
+			continue
+		}
+		out = append(out, p)
+	}
+	return out, nil
+}
+
+// brightDataPost mirrors the candidate keys of Bright Data's LinkedIn-post dataset; the
+// normalizer above picks the first populated alias for each field.
+type brightDataPost struct {
+	URL      string `json:"url"`
+	PostURL  string `json:"post_url"`
+	Author   string `json:"author"`
+	Account  string `json:"account"`
+	UserID   string `json:"user_id"`
+	PostText string `json:"post_text"`
+	Text     string `json:"text"`
+	Body     string `json:"body"`
+	Headline string `json:"headline"`
+}
+
+// splitList splits a comma- or newline-separated env value into trimmed, non-empty entries.
+func splitList(s string) []string {
+	var out []string
+	for _, part := range strings.FieldsFunc(s, func(r rune) bool { return r == ',' || r == '\n' || r == '\r' }) {
+		if t := strings.TrimSpace(part); t != "" {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+// firstNonEmpty returns the first argument that is non-empty after trimming.
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if t := strings.TrimSpace(v); t != "" {
+			return t
+		}
+	}
+	return ""
+}
