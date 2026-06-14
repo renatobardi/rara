@@ -109,9 +109,42 @@ func TestCoreAddInterestProfileValidatesVersion(t *testing.T) {
 	if err := core.AddInterestProfile(ctx, InterestProfile{Version: 1}); err != nil {
 		t.Fatalf("valid version: %v", err)
 	}
+	// A manually added version is a PROPOSAL — it is NOT active until approved, so the active read
+	// finds nothing yet, while the versions list shows the proposed v1.
+	if _, found, err := core.InterestProfile(ctx); err != nil || found {
+		t.Errorf("a freshly added version must not be active (found=%v, err=%v)", found, err)
+	}
+	profs, err := core.InterestProfiles(ctx)
+	if err != nil || len(profs) != 1 || profs[0].Status != profileProposed {
+		t.Fatalf("versions = %+v (err=%v), want one proposed v1", profs, err)
+	}
+}
+
+// Approval activates a proposed version and makes it the one the active read returns; approving a
+// non-proposed (or absent) version is a 400-class caller error.
+func TestCoreApproveProfile(t *testing.T) {
+	ctx := context.Background()
+	core, _, _ := newTestCore(t)
+	if err := core.AddInterestProfile(ctx, InterestProfile{Version: 1, Topics: json.RawMessage(`["ai"]`)}); err != nil {
+		t.Fatal(err)
+	}
+	// Approving an absent version is bad input.
+	if err := core.ApproveProfile(ctx, 99); err == nil {
+		t.Error("approving an absent version should be bad input")
+	}
+	if err := core.ApproveProfile(ctx, 0); err == nil {
+		t.Error("approving version 0 should be bad input")
+	}
+	if err := core.ApproveProfile(ctx, 1); err != nil {
+		t.Fatalf("approve v1: %v", err)
+	}
 	prof, found, err := core.InterestProfile(ctx)
-	if err != nil || !found || prof.Version != 1 {
-		t.Errorf("read back v%d (found=%v): %v", prof.Version, found, err)
+	if err != nil || !found || prof.Version != 1 || prof.Status != profileActive {
+		t.Errorf("after approval, active = v%d/%s (found=%v): %v", prof.Version, prof.Status, found, err)
+	}
+	// Re-approving an already-active version is rejected (it is no longer proposed).
+	if err := core.ApproveProfile(ctx, 1); err == nil {
+		t.Error("re-approving an active version should be bad input")
 	}
 }
 

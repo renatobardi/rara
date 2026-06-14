@@ -14,6 +14,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -196,16 +197,20 @@ func (d *pgxDatabase) ListGateRules(ctx context.Context) ([]GateRule, error) {
 	return out, rows.Err()
 }
 
-// GetLatestInterestProfile returns the highest-version profile row. UNIQUE(version) plus
-// MAX(version) gives the single live document the gate cascade reads.
-func (d *pgxDatabase) GetLatestInterestProfile(ctx context.Context) (InterestProfile, bool, error) {
-	const q = `
-		SELECT version, topics, authors, anti_topics, weights
-		FROM interest_profile
-		ORDER BY version DESC
-		LIMIT 1`
+// profileColumns is the shared SELECT list for an interest_profile row.
+const profileColumns = `version, topics, authors, anti_topics, weights, status, COALESCE(narrative, ''), created_at`
+
+func scanProfile(row pgx.Row) (InterestProfile, error) {
 	var p InterestProfile
-	err := d.conn.QueryRow(ctx, q).Scan(&p.Version, &p.Topics, &p.Authors, &p.AntiTopics, &p.Weights)
+	err := row.Scan(&p.Version, &p.Topics, &p.Authors, &p.AntiTopics, &p.Weights, &p.Status, &p.Narrative, &p.CreatedAt)
+	return p, err
+}
+
+// GetLatestInterestProfile returns the highest-version profile row (regardless of status). Used
+// only for next-version numbering by the reviser; the gate path reads GetActiveInterestProfile.
+func (d *pgxDatabase) GetLatestInterestProfile(ctx context.Context) (InterestProfile, bool, error) {
+	const q = `SELECT ` + profileColumns + ` FROM interest_profile ORDER BY version DESC LIMIT 1`
+	p, err := scanProfile(d.conn.QueryRow(ctx, q))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return InterestProfile{}, false, nil
 	}
@@ -213,6 +218,85 @@ func (d *pgxDatabase) GetLatestInterestProfile(ctx context.Context) (InterestPro
 		return InterestProfile{}, false, err
 	}
 	return p, true, nil
+}
+
+// GetActiveInterestProfile returns the single `active` version (the document in force). The
+// partial unique index idx_interest_profile_active guarantees at most one.
+func (d *pgxDatabase) GetActiveInterestProfile(ctx context.Context) (InterestProfile, bool, error) {
+	const q = `SELECT ` + profileColumns + ` FROM interest_profile WHERE status = 'active' LIMIT 1`
+	p, err := scanProfile(d.conn.QueryRow(ctx, q))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return InterestProfile{}, false, nil
+	}
+	if err != nil {
+		return InterestProfile{}, false, err
+	}
+	return p, true, nil
+}
+
+// ListInterestProfiles returns every version, ordered by version (config-as-data + the reviser's
+// debounce/numbering view).
+func (d *pgxDatabase) ListInterestProfiles(ctx context.Context) ([]InterestProfile, error) {
+	const q = `SELECT ` + profileColumns + ` FROM interest_profile ORDER BY version`
+	rows, err := d.conn.Query(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []InterestProfile
+	for rows.Next() {
+		p, err := scanProfile(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+// ListFeedbackSince returns the feedback rows created after `since`, ordered by id, with
+// created_at populated. Windowing at the source keeps the reviser's scan bounded to the new
+// signal since the last revision instead of the whole (ever-growing) table.
+func (d *pgxDatabase) ListFeedbackSince(ctx context.Context, since time.Time) ([]Feedback, error) {
+	const q = `SELECT target_type, target_ref, signal, source, created_at
+	           FROM feedback WHERE created_at > $1 ORDER BY id`
+	rows, err := d.conn.Query(ctx, q, since)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Feedback
+	for rows.Next() {
+		var f Feedback
+		if err := rows.Scan(&f.TargetType, &f.TargetRef, &f.Signal, &f.Source, &f.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, f)
+	}
+	return out, rows.Err()
+}
+
+// ActivateInterestProfile activates a proposed version, atomically demoting the current active to
+// `superseded` first (the partial unique index forbids two actives, so the order matters). If the
+// target is not a proposed version the whole transaction rolls back and errProfileNotProposed is
+// returned — nothing is demoted.
+func (d *pgxDatabase) ActivateInterestProfile(ctx context.Context, version int) error {
+	tx, err := d.conn.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck // no-op after a successful Commit
+	if _, err := tx.Exec(ctx, `UPDATE interest_profile SET status = 'superseded' WHERE status = 'active'`); err != nil {
+		return err
+	}
+	ct, err := tx.Exec(ctx, `UPDATE interest_profile SET status = 'active' WHERE version = $1 AND status = 'proposed'`, version)
+	if err != nil {
+		return err
+	}
+	if ct.RowsAffected() == 0 {
+		return errProfileNotProposed // rolls back the demote above
+	}
+	return tx.Commit(ctx)
 }
 
 // LatestGateDecision returns the most recent decision for (item, gate). gate_decisions is

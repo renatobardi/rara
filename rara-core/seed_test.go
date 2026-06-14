@@ -106,10 +106,10 @@ func TestSeedIdempotent(t *testing.T) {
 	if got := db.flows[youtubeFlowName].ID; got != id1 {
 		t.Errorf("flow id changed on re-seed: %d -> %d", id1, got)
 	}
-	// 6 shared work providers (gate-barato/-local, gate-rico/-local, distill/-local) + 3
-	// YouTube-specific (harvest, shelf, asr-youtube).
-	if len(db.providers) != 9 {
-		t.Errorf("expected 9 providers after re-seed, got %d", len(db.providers))
+	// 7 shared work providers (gate-barato/-local, gate-rico/-local, distill/-local,
+	// profile-reviser) + 3 YouTube-specific (harvest, shelf, asr-youtube).
+	if len(db.providers) != 10 {
+		t.Errorf("expected 10 providers after re-seed, got %d", len(db.providers))
 	}
 	if len(db.flowSteps) != 5 {
 		t.Errorf("expected 5 flow steps after re-seed, got %d", len(db.flowSteps))

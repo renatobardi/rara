@@ -193,6 +193,70 @@ func TestMigration004LinkedInPosts(t *testing.T) {
 	}
 }
 
+// readMigration005 loads the Phase-6 feedback.source CHECK migration.
+func readMigration005(t *testing.T) string {
+	t.Helper()
+	b, err := os.ReadFile("migrations/005_feedback_source_check.sql")
+	if err != nil {
+		t.Fatalf("read migration 005: %v", err)
+	}
+	return string(b)
+}
+
+// TestMigration005FeedbackSourceCheck asserts the Phase-6 KURA-contract change: feedback.source
+// is constrained to the three known sources (admitting kura_implicit), the ADD CONSTRAINT is
+// guarded for idempotency, and no foreign domain tables are touched.
+func TestMigration005FeedbackSourceCheck(t *testing.T) {
+	sql := readMigration005(t)
+	if !strings.Contains(sql, "CHECK (source IN ('user_explicit', 'quarantine_review', 'kura_implicit'))") {
+		t.Error("missing feedback.source CHECK admitting kura_implicit")
+	}
+	// Guarded so re-applying is a no-op (no ADD CONSTRAINT IF NOT EXISTS for CHECKs in Postgres).
+	if !strings.Contains(sql, "conname = 'feedback_source_check'") {
+		t.Error("ADD CONSTRAINT must be guarded on pg_constraint for idempotency")
+	}
+	// Nothing else: this migration must not create any table.
+	if strings.Contains(sql, "CREATE TABLE") {
+		t.Error("migration 005 should only constrain feedback.source, not create tables")
+	}
+}
+
+// readMigration006 loads the Phase-6 interest_profile status/narrative migration.
+func readMigration006(t *testing.T) string {
+	t.Helper()
+	b, err := os.ReadFile("migrations/006_interest_profile_status.sql")
+	if err != nil {
+		t.Fatalf("read migration 006: %v", err)
+	}
+	return string(b)
+}
+
+// TestMigration006InterestProfileStatus asserts the Phase-6 learning-loop schema: the status +
+// narrative columns, the status CHECK, the at-most-one-active partial unique index, and the
+// defensive demote — all additive/idempotent, no foreign tables.
+func TestMigration006InterestProfileStatus(t *testing.T) {
+	sql := readMigration006(t)
+	for _, want := range []string{
+		"ADD COLUMN IF NOT EXISTS status",
+		"ADD COLUMN IF NOT EXISTS narrative",
+		"CHECK (status IN ('proposed', 'active', 'superseded'))",
+		"conname = 'interest_profile_status_check'", // guarded ADD CONSTRAINT
+		"CREATE UNIQUE INDEX IF NOT EXISTS idx_interest_profile_active",
+		"WHERE status = 'active'", // partial: at most one active
+	} {
+		if !strings.Contains(sql, want) {
+			t.Errorf("migration 006 missing %q", want)
+		}
+	}
+	// The defensive demote keeps only the highest version active before the unique index.
+	if !strings.Contains(sql, "SET status = 'superseded'") {
+		t.Error("migration 006 should demote all-but-max active before creating the unique index")
+	}
+	if strings.Contains(sql, "CREATE TABLE") {
+		t.Error("migration 006 should only alter interest_profile, not create tables")
+	}
+}
+
 // TestMigrationNoCrossAgentTables guards isolation: rara-core's migration must not
 // touch another agent's domain tables.
 func TestMigrationNoCrossAgentTables(t *testing.T) {

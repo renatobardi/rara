@@ -228,9 +228,30 @@ func buildTools(core *Core) []mcpTool {
 			Handler:     upsertHandler(func(ctx context.Context, r GateRule) error { return core.UpsertGateRule(ctx, r) }),
 		},
 		{
-			Name: "rara_add_interest_profile", Description: "Append a new interest_profile version (revisions are immutable, append-only).",
-			InputSchema: schemaObject(`{"version":{"type":"integer"},"topics":{"type":"array"},"authors":{"type":"array"},"anti_topics":{"type":"array"},"weights":{"type":"object"}}`, "version"),
+			Name: "rara_add_interest_profile", Description: "Append a new interest_profile version as a PROPOSAL (append-only; takes effect only after rara_approve_profile).",
+			InputSchema: schemaObject(`{"version":{"type":"integer"},"topics":{"type":"array"},"authors":{"type":"array"},"anti_topics":{"type":"array"},"weights":{"type":"object"},"narrative":{"type":"string"}}`, "version"),
 			Handler:     upsertHandler(func(ctx context.Context, p InterestProfile) error { return core.AddInterestProfile(ctx, p) }),
+		},
+		{
+			Name: "rara_list_interest_profiles", Description: "List every interest_profile version with its status (active | proposed | superseded) — to review a pending proposal.",
+			InputSchema: schemaObject(`{}`),
+			Handler:     func(ctx context.Context, _ json.RawMessage) (any, error) { return core.InterestProfiles(ctx) },
+		},
+		{
+			Name: "rara_approve_profile", Description: "Approve (activate) a proposed interest_profile version; the prior active version is superseded. Human approval before a revision takes effect.",
+			InputSchema: schemaObject(`{"version":{"type":"integer"}}`, "version"),
+			Handler: func(ctx context.Context, raw json.RawMessage) (any, error) {
+				var a struct {
+					Version int `json:"version"`
+				}
+				if err := json.Unmarshal(raw, &a); err != nil {
+					return nil, err
+				}
+				if err := core.ApproveProfile(ctx, a.Version); err != nil {
+					return nil, err
+				}
+				return okResult{OK: true}, nil
+			},
 		},
 		// --- human-in-the-loop ---
 		{
@@ -378,7 +399,7 @@ func (s *mcpServer) dispatch(ctx context.Context, req rpcRequest) (rpcResponse, 
 		resp.Result = map[string]any{
 			"protocolVersion": mcpProtocolVersion,
 			"capabilities":    map[string]any{"tools": map[string]any{}},
-			"serverInfo":      map[string]any{"name": "rara-core", "version": "phase5"},
+			"serverInfo":      map[string]any{"name": "rara-core", "version": "phase6"},
 		}
 	case "notifications/initialized":
 		return rpcResponse{}, false // notification: no response

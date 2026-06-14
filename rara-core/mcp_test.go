@@ -46,9 +46,10 @@ func TestMCPToolRegistryWellFormed(t *testing.T) {
 	want := []string{
 		"rara_list_items", "rara_item_steps", "rara_item_decisions", "rara_list_quarantine",
 		"rara_list_flows", "rara_flow_steps", "rara_list_providers", "rara_list_routing_policies",
-		"rara_list_gate_rules", "rara_get_interest_profile",
+		"rara_list_gate_rules", "rara_get_interest_profile", "rara_list_interest_profiles",
 		"rara_upsert_flow", "rara_upsert_flow_step", "rara_upsert_provider",
 		"rara_upsert_routing_policy", "rara_upsert_gate_rule", "rara_add_interest_profile",
+		"rara_approve_profile",
 		"rara_feedback_distillation", "rara_review_quarantine", "rara_submit_linkedin_post",
 	}
 	if len(s.tools) != len(want) {

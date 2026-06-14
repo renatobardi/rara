@@ -88,6 +88,10 @@ type MockDatabase struct {
 
 	nextFlowID int
 	nextItemID int
+
+	// nowFn stamps CreatedAt on appended feedback / inserted profiles when the caller leaves it
+	// zero (mirroring the SQL DEFAULT CURRENT_TIMESTAMP). Tests override it for determinism.
+	nowFn func() time.Time
 }
 
 type gateRuleKey struct {
@@ -110,6 +114,7 @@ func newMockDatabase() *MockDatabase {
 		profiles:     make(map[int]InterestProfile),
 		nextFlowID:   1,
 		nextItemID:   1,
+		nowFn:        time.Now,
 	}
 }
 
@@ -256,8 +261,11 @@ func (m *MockDatabase) InsertGateDecision(_ context.Context, d GateDecision) err
 }
 
 func (m *MockDatabase) InsertFeedback(_ context.Context, f Feedback) error {
-	if !isValidTargetType(f.TargetType) {
+	if !isValidTargetType(f.TargetType) || !isValidFeedbackSource(f.Source) {
 		return errCheckViolation
+	}
+	if f.CreatedAt.IsZero() {
+		f.CreatedAt = m.nowFn() // mirror the SQL DEFAULT CURRENT_TIMESTAMP
 	}
 	m.feedback = append(m.feedback, f) // append-only
 	return nil
@@ -266,6 +274,21 @@ func (m *MockDatabase) InsertFeedback(_ context.Context, f Feedback) error {
 func (m *MockDatabase) InsertInterestProfile(_ context.Context, p InterestProfile) error {
 	if _, ok := m.profiles[p.Version]; ok {
 		return errUniqueViolation // UNIQUE(version) — versions are immutable
+	}
+	p.Status = profileStatusOr(p.Status)
+	if !isValidProfileStatus(p.Status) {
+		return errCheckViolation
+	}
+	if p.Status == profileActive {
+		// Mirror the partial unique index idx_interest_profile_active: at most one active row.
+		for _, ex := range m.profiles {
+			if ex.Status == profileActive {
+				return errUniqueViolation
+			}
+		}
+	}
+	if p.CreatedAt.IsZero() {
+		p.CreatedAt = m.nowFn()
 	}
 	m.profiles[p.Version] = p
 	return nil
@@ -374,6 +397,53 @@ func (m *MockDatabase) GetLatestInterestProfile(_ context.Context) (InterestProf
 		}
 	}
 	return best, found, nil
+}
+
+func (m *MockDatabase) GetActiveInterestProfile(_ context.Context) (InterestProfile, bool, error) {
+	for _, p := range m.profiles {
+		if p.Status == profileActive {
+			return p, true, nil
+		}
+	}
+	return InterestProfile{}, false, nil
+}
+
+func (m *MockDatabase) ListInterestProfiles(_ context.Context) ([]InterestProfile, error) {
+	out := make([]InterestProfile, 0, len(m.profiles))
+	for _, p := range m.profiles {
+		out = append(out, p)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Version < out[j].Version })
+	return out, nil
+}
+
+func (m *MockDatabase) ListFeedbackSince(_ context.Context, since time.Time) ([]Feedback, error) {
+	var out []Feedback
+	for _, f := range m.feedback { // append-only slice preserves insertion (id) order
+		if f.CreatedAt.After(since) {
+			out = append(out, f)
+		}
+	}
+	return out, nil
+}
+
+// ActivateInterestProfile mirrors the pgx atomic swap: demote the current active, promote the
+// target proposed version. A target that is absent or not proposed is rejected (and, since the
+// mock applies the demote only after the check, nothing is mutated on rejection).
+func (m *MockDatabase) ActivateInterestProfile(_ context.Context, version int) error {
+	target, ok := m.profiles[version]
+	if !ok || target.Status != profileProposed {
+		return errProfileNotProposed
+	}
+	for v, p := range m.profiles {
+		if p.Status == profileActive {
+			p.Status = profileSuperseded
+			m.profiles[v] = p
+		}
+	}
+	target.Status = profileActive
+	m.profiles[version] = target
+	return nil
 }
 
 // LatestGateDecision returns the last-appended decision for (item, gate) — gate_decisions
@@ -774,14 +844,32 @@ func TestGateDecisionRichScoreAndRank(t *testing.T) {
 func TestFeedbackTargetTypeChecked(t *testing.T) {
 	ctx := context.Background()
 	db := newMockDatabase()
-	if err := db.InsertFeedback(ctx, Feedback{TargetType: targetDistillation, TargetRef: "42", Signal: "up", Source: "explicit"}); err != nil {
+	if err := db.InsertFeedback(ctx, Feedback{TargetType: targetDistillation, TargetRef: "42", Signal: "up", Source: sourceUserExplicit}); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.InsertFeedback(ctx, Feedback{TargetType: "transcript", TargetRef: "1", Signal: "up", Source: "explicit"}); !errors.Is(err, errCheckViolation) {
+	if err := db.InsertFeedback(ctx, Feedback{TargetType: "transcript", TargetRef: "1", Signal: "up", Source: sourceUserExplicit}); !errors.Is(err, errCheckViolation) {
 		t.Fatalf("invalid target_type should fail CHECK, got %v", err)
 	}
 	if len(db.feedback) != 1 {
 		t.Fatalf("only the valid row should persist: %d rows", len(db.feedback))
+	}
+}
+
+// feedback.source is pinned to a CHECK enum (migration 005): the three known sources are
+// accepted (including the new kura_implicit), an unknown one is rejected.
+func TestFeedbackSourceChecked(t *testing.T) {
+	ctx := context.Background()
+	db := newMockDatabase()
+	for _, src := range []string{sourceUserExplicit, sourceQuarantineReview, sourceKURAImplicit} {
+		if err := db.InsertFeedback(ctx, Feedback{TargetType: targetDistillation, TargetRef: "1", Signal: signalUp, Source: src}); err != nil {
+			t.Errorf("source %q should be accepted: %v", src, err)
+		}
+	}
+	if err := db.InsertFeedback(ctx, Feedback{TargetType: targetDistillation, TargetRef: "1", Signal: signalUp, Source: "kura-usage"}); !errors.Is(err, errCheckViolation) {
+		t.Fatalf("unknown source should fail CHECK, got %v", err)
+	}
+	if !isValidFeedbackSource(sourceKURAImplicit) || isValidFeedbackSource("explicit") {
+		t.Error("isValidFeedbackSource enum mismatch")
 	}
 }
 

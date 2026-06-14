@@ -26,10 +26,11 @@ import (
 
 // Lane + flow names and provider names for the LinkedIn lane (mirroring the other lanes).
 const (
-	laneLinkedIn      = "linkedin"
-	linkedinFlowName  = "linkedin"
-	provManualInbox   = "manual-inbox"     // coletar — manual post submission (swappable for Bright Data)
-	provExtrairLinked = "extrair-linkedin" // extrair — LinkedIn post normalizer (accepts linkedin)
+	laneLinkedIn         = "linkedin"
+	linkedinFlowName     = "linkedin"
+	provManualInbox      = "manual-inbox"        // coletar — manual post submission (fallback)
+	provBrightDataLinked = "brightdata-linkedin" // coletar — automated Bright Data crawl (Phase 6)
+	provExtrairLinked    = "extrair-linkedin"    // extrair — LinkedIn post normalizer (accepts linkedin)
 )
 
 // LinkedInPost is one manually-submitted post: its canonical URL (the spine's natural key)
@@ -119,12 +120,25 @@ func SeedLinkedInLane(ctx context.Context, db Database) error {
 	if err := seedSharedProviders(ctx, db); err != nil {
 		return err
 	}
-	// coletar: the manual inbox. Like the other collectors it is never actually routed
-	// (coletar is auto-satisfied by the reconciler — the item already exists once submitted);
-	// the row is seeded for completeness and the future Bright Data swap behind the same name.
+	// coletar: TWO collectors write the same linkedin_posts table behind the same contract.
+	// Like every other lane's collector neither is actually routed (coletar is auto-satisfied
+	// by the reconciler — the item already exists once a post is collected); the rows are seeded
+	// for completeness and config-as-data.
+	//   manual-inbox        — a person pastes a post through the surface (the Phase 5 stand-in,
+	//                         KEPT as a fallback for posts the crawl misses).
+	//   brightdata-linkedin — the automated Bright Data crawl (Phase 6), the default collector.
+	// The Bright Data swap changes only WHO fills linkedin_posts; the flow/extractor/gates never
+	// change (ARCHITECTURE-2.0: "swap collector behind the same contract, flow unchanged").
 	if err := db.UpsertProvider(ctx, Provider{
 		Name: provManualInbox, Capability: capColetar, Runtime: runtimeVPC, Activation: activationResident,
 		Cost: 0.10, Quality: 0.95, LatencyMs: 100,
+		Constraints: []byte(`{"accepts":["linkedin"]}`), Enabled: true,
+	}); err != nil {
+		return err
+	}
+	if err := db.UpsertProvider(ctx, Provider{
+		Name: provBrightDataLinked, Capability: capColetar, Runtime: runtimeCloudRun, Activation: activationOnDemand,
+		Cost: 0.30, Quality: 0.90, LatencyMs: 5000,
 		Constraints: []byte(`{"accepts":["linkedin"]}`), Enabled: true,
 	}); err != nil {
 		return err
