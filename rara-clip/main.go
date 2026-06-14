@@ -34,6 +34,16 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+// Environment variable names the collector reads — the single source of truth, shared with the
+// tests (which live in package main). The Bright Data API key itself is read by the bdata CLI from
+// its own env, so rara-clip never names or handles the credential.
+const (
+	envDatabaseURL    = "DATABASE_URL"
+	envBdataBin       = "BDATA_BIN"
+	envBrightDataArgs = "BRIGHTDATA_LINKEDIN_ARGS"
+	envBrightDataURLs = "BRIGHTDATA_LINKEDIN_URLS"
+)
+
 // LinkedInPost is one collected post: its canonical URL (the spine's natural key), the post text,
 // and the author (optional, carried downstream as the gate's "channel" signal).
 type LinkedInPost struct {
@@ -57,9 +67,9 @@ type Database interface {
 }
 
 func main() {
-	databaseURL := os.Getenv("DATABASE_URL")
+	databaseURL := os.Getenv(envDatabaseURL)
 	if databaseURL == "" {
-		log.Fatalf("DATABASE_URL environment variable is required")
+		log.Fatalf("%s environment variable is required", envDatabaseURL)
 	}
 	ctx := context.Background()
 
@@ -184,18 +194,18 @@ type brightDataLinkedInSource struct {
 // newBrightDataLinkedInSource builds the collector from the environment, applying the defaults for
 // the CLI binary and the pipeline args inline.
 func newBrightDataLinkedInSource() *brightDataLinkedInSource {
-	bin := os.Getenv("BDATA_BIN")
+	bin := os.Getenv(envBdataBin)
 	if bin == "" {
 		bin = "bdata"
 	}
-	args := os.Getenv("BRIGHTDATA_LINKEDIN_ARGS")
+	args := os.Getenv(envBrightDataArgs)
 	if args == "" {
 		args = "pipelines linkedin-posts --json"
 	}
 	return &brightDataLinkedInSource{
 		bin:  bin,
 		args: strings.Fields(args),
-		urls: splitList(os.Getenv("BRIGHTDATA_LINKEDIN_URLS")),
+		urls: splitList(os.Getenv(envBrightDataURLs)),
 	}
 }
 

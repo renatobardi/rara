@@ -7,6 +7,14 @@ import (
 	"testing"
 )
 
+// Repeated test fixtures, named once so no single literal recurs across the cases below.
+const (
+	urlA         = "https://lnkd.in/a"
+	urlB         = "https://lnkd.in/b"
+	urlX         = "https://lnkd.in/x"
+	authorRenato = "Renato"
+)
+
 // ---------------------------------------------------------------------------
 // Test doubles — the two seams, mocked, so the collector loop runs with zero I/O.
 // ---------------------------------------------------------------------------
@@ -47,8 +55,8 @@ func TestRunCatalogsPosts(t *testing.T) {
 	ctx := context.Background()
 	db := newMockDatabase()
 	collector := &fakeCollector{posts: []LinkedInPost{
-		{URL: "https://lnkd.in/a", Author: "Renato", Text: "on platform engineering"},
-		{URL: "https://lnkd.in/b", Author: "Ana", Text: "on distributed systems"},
+		{URL: urlA, Author: authorRenato, Text: "on platform engineering"},
+		{URL: urlB, Author: "Ana", Text: "on distributed systems"},
 	}}
 
 	n, err := run(ctx, db, collector)
@@ -58,7 +66,7 @@ func TestRunCatalogsPosts(t *testing.T) {
 	if n != 2 || len(db.posts) != 2 {
 		t.Fatalf("catalogued=%d posts=%d, want 2/2", n, len(db.posts))
 	}
-	if got := db.posts["https://lnkd.in/a"]; got.Author != "Renato" || got.Text != "on platform engineering" {
+	if got := db.posts[urlA]; got.Author != authorRenato || got.Text != "on platform engineering" {
 		t.Errorf("stored post = %+v", got)
 	}
 }
@@ -89,16 +97,16 @@ func TestRunSkipsPartialRows(t *testing.T) {
 func TestRunIdempotentOnURL(t *testing.T) {
 	ctx := context.Background()
 	db := newMockDatabase()
-	if _, err := run(ctx, db, &fakeCollector{posts: []LinkedInPost{{URL: "https://lnkd.in/x", Text: "first"}}}); err != nil {
+	if _, err := run(ctx, db, &fakeCollector{posts: []LinkedInPost{{URL: urlX, Text: "first"}}}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := run(ctx, db, &fakeCollector{posts: []LinkedInPost{{URL: "https://lnkd.in/x", Text: "edited"}}}); err != nil {
+	if _, err := run(ctx, db, &fakeCollector{posts: []LinkedInPost{{URL: urlX, Text: "edited"}}}); err != nil {
 		t.Fatal(err)
 	}
 	if len(db.posts) != 1 {
 		t.Errorf("re-collect must converge: %d rows", len(db.posts))
 	}
-	if got := db.posts["https://lnkd.in/x"].Text; got != "edited" {
+	if got := db.posts[urlX].Text; got != "edited" {
 		t.Errorf("re-collect should refresh the post: %q", got)
 	}
 }
@@ -108,10 +116,10 @@ func TestRunIdempotentOnURL(t *testing.T) {
 func TestRunTrimsURLKey(t *testing.T) {
 	ctx := context.Background()
 	db := newMockDatabase()
-	if _, err := run(ctx, db, &fakeCollector{posts: []LinkedInPost{{URL: "https://lnkd.in/x", Text: "a"}}}); err != nil {
+	if _, err := run(ctx, db, &fakeCollector{posts: []LinkedInPost{{URL: urlX, Text: "a"}}}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := run(ctx, db, &fakeCollector{posts: []LinkedInPost{{URL: "  https://lnkd.in/x  ", Text: "b"}}}); err != nil {
+	if _, err := run(ctx, db, &fakeCollector{posts: []LinkedInPost{{URL: "  " + urlX + "  ", Text: "b"}}}); err != nil {
 		t.Fatal(err)
 	}
 	if len(db.posts) != 1 {
@@ -164,10 +172,10 @@ func TestDecodeBrightDataPostsFlexibleKeys(t *testing.T) {
 	if len(posts) != 4 {
 		t.Fatalf("decoded %d posts, want 4", len(posts))
 	}
-	if posts[0].URL != "https://lnkd.in/a" || posts[0].Author != "Renato" || posts[0].Text != "hello" {
+	if posts[0].URL != urlA || posts[0].Author != authorRenato || posts[0].Text != "hello" {
 		t.Errorf("row 0 = %+v", posts[0])
 	}
-	if posts[1].URL != "https://lnkd.in/b" || posts[1].Author != "Ana" || posts[1].Text != "world" {
+	if posts[1].URL != urlB || posts[1].Author != "Ana" || posts[1].Text != "world" {
 		t.Errorf("row 1 (post_url/account/text aliases) = %+v", posts[1])
 	}
 	if posts[2].Author != "bob" || posts[2].Text != "body text" {
@@ -225,9 +233,9 @@ func TestPostHasContent(t *testing.T) {
 // With the env unset, the constructor falls back to the `bdata` binary and the default
 // linkedin-posts pipeline args, and parses the URL list (comma/newline separated, trimmed).
 func TestNewBrightDataLinkedInSourceDefaults(t *testing.T) {
-	t.Setenv("BDATA_BIN", "")
-	t.Setenv("BRIGHTDATA_LINKEDIN_ARGS", "")
-	t.Setenv("BRIGHTDATA_LINKEDIN_URLS", "https://lnkd.in/a , \n  https://lnkd.in/b  ")
+	t.Setenv(envBdataBin, "")
+	t.Setenv(envBrightDataArgs, "")
+	t.Setenv(envBrightDataURLs, urlA+" , \n  "+urlB+"  ")
 
 	s := newBrightDataLinkedInSource()
 	if s.bin != "bdata" {
@@ -236,16 +244,16 @@ func TestNewBrightDataLinkedInSourceDefaults(t *testing.T) {
 	if got := strings.Join(s.args, " "); got != "pipelines linkedin-posts --json" {
 		t.Errorf("default args = %q, want the linkedin-posts pipeline", got)
 	}
-	if len(s.urls) != 2 || s.urls[0] != "https://lnkd.in/a" || s.urls[1] != "https://lnkd.in/b" {
+	if len(s.urls) != 2 || s.urls[0] != urlA || s.urls[1] != urlB {
 		t.Errorf("urls = %v, want the two trimmed entries", s.urls)
 	}
 }
 
 // A populated env overrides every default (the binary path and the pipeline args).
 func TestNewBrightDataLinkedInSourceOverrides(t *testing.T) {
-	t.Setenv("BDATA_BIN", "/opt/bin/bdata")
-	t.Setenv("BRIGHTDATA_LINKEDIN_ARGS", "collect --raw")
-	t.Setenv("BRIGHTDATA_LINKEDIN_URLS", "https://lnkd.in/only")
+	t.Setenv(envBdataBin, "/opt/bin/bdata")
+	t.Setenv(envBrightDataArgs, "collect --raw")
+	t.Setenv(envBrightDataURLs, "https://lnkd.in/only")
 
 	s := newBrightDataLinkedInSource()
 	if s.bin != "/opt/bin/bdata" {
@@ -261,7 +269,7 @@ func TestNewBrightDataLinkedInSourceOverrides(t *testing.T) {
 
 // FetchPosts refuses to shell out when no input URLs are configured (nothing to collect).
 func TestFetchPostsNoURLs(t *testing.T) {
-	t.Setenv("BRIGHTDATA_LINKEDIN_URLS", "")
+	t.Setenv(envBrightDataURLs, "")
 	if _, err := newBrightDataLinkedInSource().FetchPosts(context.Background()); err == nil {
 		t.Error("FetchPosts with no URLs should error rather than run the CLI")
 	}
