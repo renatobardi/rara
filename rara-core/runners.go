@@ -4,12 +4,10 @@
 // (rara-distill), the curation gates (rara-sift) and the to-text extractor (rara-glean) — is its own
 // sovereign app on the rara-addon SDK, claiming its steps through the Neon contract. What remains
 // here is the orchestrator's own I/O edges: the read sides of ingest (channel_videos / podcast /
-// email), the LinkedIn collectors (the manual-inbox write + the Bright Data CLI), and the reviser's
-// distillation read + LiteLLM narrator. They are deliberately minimal glue, exercised by real
-// deploys/integration, not unit tests — the pure logic each backs is what the unit tests cover.
-//
-// Where a runner shells out, the binary path is environment-configured so a deploy points it at the
-// right artifact (e.g. BDATA_BIN for the linkedin collector) without code changes.
+// email), the LinkedIn manual-inbox write, and the reviser's distillation read + LiteLLM narrator.
+// They are deliberately minimal glue, exercised by real deploys/integration, not unit tests — the
+// pure logic each backs is what the unit tests cover. The AUTOMATED LinkedIn collector (Bright
+// Data) is no longer here: it is its own producer app, rara-clip.
 package main
 
 import (
@@ -20,7 +18,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"os/exec"
 	"strings"
 	"time"
 
@@ -142,9 +139,11 @@ func (s *pgxEmailSource) Emails(ctx context.Context) ([]EmailItem, error) {
 // ---------------------------------------------------------------------------
 // pgx LinkedInPostStore — the write side of the manual-inbox collector (linkedin_posts).
 //
-// rara-core OWNS linkedin_posts (the manual inbox lives inside the surface, so unlike the
-// other lanes there is no separate collector agent yet). When Bright Data takes over (Phase 6)
-// it writes the SAME table behind this SAME contract — the flow and extractor never change.
+// The manual inbox lives inside the surface (a person pastes a post through an MCP tool / HTTP
+// endpoint), so rara-core writes linkedin_posts directly here. It is a CONTRACT table: the
+// AUTOMATED Bright Data collector is its own app, rara-clip, which writes the SAME table behind
+// the SAME url-idempotent contract — multiple producers, one table. The flow and extractor never
+// change regardless of which producer filled a row.
 // ---------------------------------------------------------------------------
 
 type pgxLinkedInInbox struct{ conn pgConn }
@@ -164,93 +163,11 @@ func (s *pgxLinkedInInbox) UpsertLinkedInPost(ctx context.Context, p LinkedInPos
 	return err
 }
 
-// ---------------------------------------------------------------------------
-// Bright Data LinkedIn collector (coletar, linkedin) — the automated source (Phase 6).
-//
-// The I/O edge of CollectLinkedIn (linkedin_collect.go): it pulls posts from Bright Data via
-// the `bdata` CLI (the Bright Data agent skill's tool) and normalizes them into []LinkedInPost,
-// which CollectLinkedIn then feeds through the SAME contract the manual inbox uses. Like the
-// other runner glue, this is exercised by integration, not unit tests — CollectLinkedIn is what
-// the pure tests cover (with a fake collector).
-//
-// Integration contract (config, not code):
-//   - BDATA_BIN                  the Bright Data CLI (default "bdata").
-//   - BRIGHTDATA_LINKEDIN_ARGS   the pipeline subcommand + flags, space-separated
-//                                (default "pipelines linkedin-posts --json"); the input URLs are
-//                                appended as trailing args.
-//   - BRIGHTDATA_LINKEDIN_URLS   the profile/post URLs to collect (comma- or newline-separated).
-// The command must print a JSON array of post objects on stdout. Field names are matched
-// flexibly (Bright Data's LinkedIn dataset keys vary): url|post_url, author|account|user_id,
-// post_text|text|body|headline. The Bright Data API key is read by the CLI from its own env
-// (BRIGHTDATA_API_KEY), so rara-core never handles the credential.
-// ---------------------------------------------------------------------------
-
-type brightDataLinkedInSource struct {
-	bin  string   // BDATA_BIN
-	args []string // BRIGHTDATA_LINKEDIN_ARGS, split
-	urls []string // BRIGHTDATA_LINKEDIN_URLS, split
-}
-
-// newBrightDataLinkedInSource builds the collector from the environment.
-func newBrightDataLinkedInSource() *brightDataLinkedInSource {
-	return &brightDataLinkedInSource{
-		bin:  envOr("BDATA_BIN", "bdata"),
-		args: strings.Fields(envOr("BRIGHTDATA_LINKEDIN_ARGS", "pipelines linkedin-posts --json")),
-		urls: splitList(os.Getenv("BRIGHTDATA_LINKEDIN_URLS")),
-	}
-}
-
-// FetchPosts runs the Bright Data CLI over the configured input URLs and decodes the result.
-func (s *brightDataLinkedInSource) FetchPosts(ctx context.Context) ([]LinkedInPost, error) {
-	if len(s.urls) == 0 {
-		return nil, fmt.Errorf("brightdata linkedin: BRIGHTDATA_LINKEDIN_URLS is empty (nothing to collect)")
-	}
-	args := append(append([]string{}, s.args...), s.urls...)
-	cmd := exec.CommandContext(ctx, s.bin, args...)
-	cmd.Stderr = os.Stderr
-	out, err := cmd.Output()
-	if err != nil {
-		return nil, fmt.Errorf("brightdata linkedin: %s: %w", s.bin, err)
-	}
-	return decodeBrightDataPosts(out)
-}
-
-// decodeBrightDataPosts parses the CLI's JSON array into normalized posts, matching the dataset's
-// varying key names flexibly. A row with neither a URL nor any text is dropped here too (so the
-// pure CollectLinkedIn never has to); the remaining filtering/idempotency is CollectLinkedIn's.
-func decodeBrightDataPosts(raw []byte) ([]LinkedInPost, error) {
-	var rows []brightDataPost
-	if err := json.Unmarshal(raw, &rows); err != nil {
-		return nil, fmt.Errorf("brightdata linkedin: decode JSON: %w", err)
-	}
-	out := make([]LinkedInPost, 0, len(rows))
-	for _, r := range rows {
-		p := LinkedInPost{
-			URL:    firstNonEmpty(r.URL, r.PostURL),
-			Author: firstNonEmpty(r.Author, r.Account, r.UserID),
-			Text:   firstNonEmpty(r.PostText, r.Text, r.Body, r.Headline),
-		}
-		if p.URL == "" && p.Text == "" {
-			continue
-		}
-		out = append(out, p)
-	}
-	return out, nil
-}
-
-// brightDataPost mirrors the candidate keys of Bright Data's LinkedIn-post dataset; the
-// normalizer above picks the first populated alias for each field.
-type brightDataPost struct {
-	URL      string `json:"url"`
-	PostURL  string `json:"post_url"`
-	Author   string `json:"author"`
-	Account  string `json:"account"`
-	UserID   string `json:"user_id"`
-	PostText string `json:"post_text"`
-	Text     string `json:"text"`
-	Body     string `json:"body"`
-	Headline string `json:"headline"`
-}
+// The AUTOMATED Bright Data LinkedIn collector is no longer here: it is its own producer app,
+// rara-clip, which shells out to the `bdata` CLI, normalizes the dataset's varying keys, and writes
+// the SAME linkedin_posts contract table behind the SAME url-idempotent contract. rara-core keeps
+// only the manual-inbox write (above) and the linkedin_posts -> spine bridge (SubmitLinkedInPost's
+// DiscoverItem), both unchanged. rara-clip writes ONLY the domain table; it never touches the spine.
 
 // ---------------------------------------------------------------------------
 // pgx DistillationResolver — the read side of the reviser's attribution (Phase 6).
@@ -380,25 +297,4 @@ func narratorUserPrompt(old, proposed revisedStructured) string {
 	b.WriteString("- Authors: " + joinOrNone(old.Authors) + "\n")
 	b.WriteString("- Anti-topics: " + joinOrNone(old.AntiTopics) + "\n")
 	return b.String()
-}
-
-// splitList splits a comma- or newline-separated env value into trimmed, non-empty entries.
-func splitList(s string) []string {
-	var out []string
-	for _, part := range strings.FieldsFunc(s, func(r rune) bool { return r == ',' || r == '\n' || r == '\r' }) {
-		if t := strings.TrimSpace(part); t != "" {
-			out = append(out, t)
-		}
-	}
-	return out
-}
-
-// firstNonEmpty returns the first argument that is non-empty after trimming.
-func firstNonEmpty(vals ...string) string {
-	for _, v := range vals {
-		if t := strings.TrimSpace(v); t != "" {
-			return t
-		}
-	}
-	return ""
 }

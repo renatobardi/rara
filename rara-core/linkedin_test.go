@@ -228,3 +228,27 @@ func TestReconcileLinkedInRoutesToExtrairLinkedin(t *testing.T) {
 		t.Errorf("gate_rico step = %+v, want pending+gate-rico (third-party, public item)", g)
 	}
 }
+
+// The LinkedIn lane seeds BOTH collectors as config-as-data: the manual inbox (the surface's
+// fallback) and the automated brightdata-linkedin crawl (now its own app, rara-clip). Both
+// coletar, both accept only linkedin, so neither competes with another lane. The provider rows
+// describe the lane's collectors; the automated collector's CODE lives in rara-clip.
+func TestSeedLinkedInLaneSeedsBrightDataCollector(t *testing.T) {
+	ctx := context.Background()
+	db := newMockDatabase()
+	if err := SeedLinkedInLane(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{provManualInbox, provBrightDataLinked} {
+		p, ok := db.providers[name]
+		if !ok {
+			t.Fatalf("collector %q not seeded", name)
+		}
+		if p.Capability != capColetar {
+			t.Errorf("%q capability = %q, want coletar", name, p.Capability)
+		}
+		if got := string(p.Constraints); got != `{"accepts":["linkedin"]}` {
+			t.Errorf("%q constraints = %q, want accepts=[linkedin]", name, got)
+		}
+	}
+}

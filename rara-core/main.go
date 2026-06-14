@@ -785,7 +785,7 @@ func sensitivityOr(s string) string {
 func loadDatabaseURL() string { return os.Getenv("DATABASE_URL") }
 
 // usage documents the subcommands. rara-core is one binary with several roles, each deployed where
-// the architecture puts it: `reconcile` runs always-on in the VPC; `seed`/`ingest`/`collect` are
+// the architecture puts it: `reconcile` runs always-on in the VPC; `seed`/`ingest` are
 // operational one-shots; `surface` serves the control plane. rara-core no longer runs a `work` role
 // — every capability (transcrever, destilar, the gates, extrair) is its own app on the SDK
 // (rara-scribe, rara-distill, rara-sift, rara-glean); the core only ROUTES and ACTIVATES them.
@@ -796,8 +796,6 @@ Usage: core-job <command> [flags]
 Commands:
   seed                       Seed the YouTube lane config (capabilities, providers, flow)
   ingest                     Populate the items spine from channel_videos ∪ playlist_videos
-  collect --lane linkedin    Run an automated collector (Bright Data) that writes the lane's
-                             domain table and discovers items (manual inbox stays a fallback)
   reconcile [--loop]         Run the reconciler: one pass, or always-on with --loop
                              (--loop also mounts the surface if SURFACE_ADDR is set)
   surface [--addr :8080]     Serve the control surface (HTTP núcleo + MCP adapter) standalone
@@ -856,9 +854,6 @@ func main() {
 	case "ingest":
 		runIngest(ctx, db, conn, os.Args[2:])
 
-	case "collect":
-		runCollect(ctx, db, conn, os.Args[2:])
-
 	case "reconcile":
 		runReconcile(ctx, db, dbURL, os.Args[2:])
 
@@ -913,27 +908,6 @@ func runIngest(ctx context.Context, db Database, conn *pgx.Conn, argv []string) 
 		log.Fatalf("ingest %s: %v", *lane, err)
 	}
 	log.Printf("rara-core: ingested %d %s items into the spine", n, *lane)
-}
-
-// runCollect runs an automated collector for a lane: it fetches from the external source and
-// writes the lane's domain table + discovers spine items, behind the SAME contract the manual
-// path uses. Today only the LinkedIn lane has an automated collector (Bright Data); the manual
-// inbox stays available as a fallback for posts the crawl misses.
-func runCollect(ctx context.Context, db Database, conn *pgx.Conn, argv []string) {
-	fs := flag.NewFlagSet("collect", flag.ExitOnError)
-	lane := fs.String("lane", laneLinkedIn, "lane to collect: linkedin")
-	_ = fs.Parse(argv)
-
-	switch *lane {
-	case laneLinkedIn:
-		n, err := CollectLinkedIn(ctx, db, newPgxLinkedInInbox(conn), newBrightDataLinkedInSource())
-		if err != nil {
-			log.Fatalf("collect linkedin: %v", err)
-		}
-		log.Printf("rara-core: collected %d linkedin post(s) into the spine", n)
-	default:
-		log.Fatalf("collect: --lane must be linkedin, got %q", *lane)
-	}
 }
 
 // runReconcile runs one reconcile pass, or an always-on loop with --loop. The loop is the
