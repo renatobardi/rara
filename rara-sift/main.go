@@ -20,7 +20,7 @@
 // reconciler ROUTES from that row (keep -> advance, drop -> filtered, defer -> quarantine). This
 // app never routes and never touches item status; judgement here, routing in the control plane.
 //
-// The cascade (runCascade and below) is PURE: it takes the parsed profile + rules + an LLMJudge
+// The cascade (runCascade and below) is PURE: it takes the parsed profile + rules + a Judger
 // seam and returns a verdict with zero I/O, so the whole selection policy is unit-tested with a
 // fake judge. The I/O edge — reading the live interest_profile + gate_rules (rara-core's tables,
 // SELECT only, the 1.0 cross-agent isolation convention) and the item's metadata/text (the
@@ -163,10 +163,10 @@ type GateDecision struct {
 	Reason    string
 }
 
-// LLMJudge is the borderline decider — the only paid layer. In production it is the LiteLLM
+// Judger is the borderline decider — the only paid layer. In production it is the LiteLLM
 // gateway; in tests it is a fake, so the cascade's escalation logic is verified without a network
 // call. It judges only what rules + profile left "on the fence".
-type LLMJudge interface {
+type Judger interface {
 	Judge(ctx context.Context, gate string, in gateInput, prof profileDoc) (GateVerdict, error)
 }
 
@@ -184,7 +184,7 @@ const defaultKeepThreshold = 0.6
 // runCascade walks the three layers in cost order, returning the first decision. rules and the LLM
 // can keep/drop/defer; the profile layer only keeps-or-escalates. The LLM is consulted ONLY when
 // both cheaper layers abstain — the whole point of the cascade.
-func runCascade(ctx context.Context, gate string, in gateInput, prof profileDoc, judge LLMJudge) (GateVerdict, error) {
+func runCascade(ctx context.Context, gate string, in gateInput, prof profileDoc, judge Judger) (GateVerdict, error) {
 	// 1) Rules — deterministic allow/deny, ~free.
 	if v, decided := applyRules(in, prof.Rules); decided {
 		return v, nil
@@ -369,7 +369,7 @@ type SiftStore interface {
 // An input not yet produced (gate_rico before the to-text step landed) and a transient LLM-judge
 // error are both addon.ErrRetryable: the SDK requeues up to the cap rather than failing a good item
 // for good. A profile/rules read error or a write error is terminal.
-func siftHandler(store SiftStore, gate string, judge LLMJudge) addon.Handler {
+func siftHandler(store SiftStore, gate string, judge Judger) addon.Handler {
 	return func(ctx context.Context, item addon.Item, _ addon.Step) (addon.Result, error) {
 		prof, err := store.LoadProfile(ctx)
 		if err != nil {

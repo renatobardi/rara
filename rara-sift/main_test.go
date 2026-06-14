@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -34,7 +35,7 @@ func TestTruncateOnRune(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // The pure cascade (rules -> profile -> LLM-judge). These tests need no DB: the
-// cascade is a pure function over a profileDoc + gateInput + an LLMJudge seam.
+// cascade is a pure function over a profileDoc + gateInput + a Judger seam.
 // ---------------------------------------------------------------------------
 
 // fakeJudge is the LLM-judge seam stubbed: it records whether it was consulted (so tests can
@@ -325,31 +326,33 @@ func borderlineStore() *mockStore {
 // returns the row id as the step's OutputRef. It must NOT touch item status (the reconciler routes).
 func TestSiftHandlerRecordsDecision(t *testing.T) {
 	for _, dec := range []string{decisionKeep, decisionDrop, decisionDefer} {
-		t.Run(dec, func(t *testing.T) {
-			ctx := context.Background()
-			store := borderlineStore()
-			score := 0.71
-			judge := &fakeJudge{verdict: GateVerdict{Decision: dec, Score: &score, DecidedBy: decidedByLLM, Reason: "verdict"}}
+		t.Run(dec, func(t *testing.T) { assertRecordsDecision(t, dec) })
+	}
+}
 
-			res, err := siftHandler(store, capGateBarato, judge)(ctx, addon.Item{ID: 42}, addon.Step{Seq: 2})
-			if err != nil {
-				t.Fatalf("handler: %v", err)
-			}
-			if len(store.decisions) != 1 {
-				t.Fatalf("expected 1 gate_decision, got %d", len(store.decisions))
-			}
-			d := store.decisions[0]
-			if d.ItemID != 42 || d.Gate != capGateBarato || d.Decision != dec ||
-				d.DecidedBy != decidedByLLM || d.Reason != "verdict" || d.Score == nil || *d.Score != 0.71 {
-				t.Errorf("gate_decision = %+v, want item=42 %s by llm score 0.71", d, dec)
-			}
-			if res.OutputRef != "1" {
-				t.Errorf("OutputRef = %q, want the gate_decision id %q", res.OutputRef, "1")
-			}
-			if res.Filtered {
-				t.Error("a gate decision must not curate the item out; the reconciler routes")
-			}
-		})
+// assertRecordsDecision drives one verdict through the handler and checks the recorded row + result.
+func assertRecordsDecision(t *testing.T, dec string) {
+	t.Helper()
+	store := borderlineStore()
+	score := 0.71
+	judge := &fakeJudge{verdict: GateVerdict{Decision: dec, Score: &score, DecidedBy: decidedByLLM, Reason: "verdict"}}
+
+	res, err := siftHandler(store, capGateBarato, judge)(context.Background(), addon.Item{ID: 42}, addon.Step{Seq: 2})
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	if len(store.decisions) != 1 {
+		t.Fatalf("expected 1 gate_decision, got %d", len(store.decisions))
+	}
+	want := GateDecision{ItemID: 42, Gate: capGateBarato, Decision: dec, Score: &score, DecidedBy: decidedByLLM, Reason: "verdict"}
+	if !reflect.DeepEqual(store.decisions[0], want) {
+		t.Errorf("gate_decision = %+v, want %+v", store.decisions[0], want)
+	}
+	if res.OutputRef != "1" {
+		t.Errorf("OutputRef = %q, want the gate_decision id %q", res.OutputRef, "1")
+	}
+	if res.Filtered {
+		t.Error("a gate decision must not curate the item out; the reconciler routes")
 	}
 }
 
