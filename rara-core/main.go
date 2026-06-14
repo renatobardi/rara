@@ -137,13 +137,9 @@ func profileStatusOr(s string) string {
 	return s
 }
 
-// gate_decisions.decided_by — which cascade layer reached the decision (the audit trail
-// distinguishes the cheap deterministic layers from the paid LLM-judge).
-const (
-	decidedByRules   = "rules"   // deterministic allow/deny gate_rules
-	decidedByProfile = "profile" // interest_profile match
-	decidedByLLM     = "llm"     // LLM-judge via LiteLLM (the borderline middle only)
-)
+// gate_decisions.decided_by values are now written by the rara-sift gate app (rules | profile |
+// llm); rara-core no longer makes gate decisions. The one decided_by rara-core still writes is the
+// quarantine rescue's `quarantine_review` (sourceQuarantineReview, in feedback.go).
 
 // gate_rules.action
 const (

@@ -60,8 +60,8 @@ func TestCoreItemDecisionsFullTrail(t *testing.T) {
 	core, db, _ := newTestCore(t)
 	fid := seedFlow(t, db)
 	id, _ := db.UpsertItem(ctx, Item{Lane: "youtube", SourceRef: "x", FlowID: fid, FlowVersion: 1, Status: itemToText})
-	_ = db.InsertGateDecision(ctx, GateDecision{ItemID: id, Gate: gateBarato, Decision: decisionDefer, DecidedBy: decidedByRules})
-	_ = db.InsertGateDecision(ctx, GateDecision{ItemID: id, Gate: gateBarato, Decision: decisionKeep, DecidedBy: decidedByLLM})
+	_ = db.InsertGateDecision(ctx, GateDecision{ItemID: id, Gate: gateBarato, Decision: decisionDefer, DecidedBy: "rules"})
+	_ = db.InsertGateDecision(ctx, GateDecision{ItemID: id, Gate: gateBarato, Decision: decisionKeep, DecidedBy: "llm"})
 
 	decs, err := core.ItemDecisions(ctx, id)
 	if err != nil {
@@ -364,7 +364,7 @@ func TestHTTPReviewQuarantineRescues(t *testing.T) {
 	}
 	// An item parked in quarantine by a gate_barato defer.
 	id, _ := db.UpsertItem(ctx, Item{Lane: "youtube", SourceRef: "q1", FlowID: db.flows[youtubeFlowName].ID, FlowVersion: 1, Status: itemQuarantine})
-	_ = db.InsertGateDecision(ctx, GateDecision{ItemID: id, Gate: gateBarato, Decision: decisionDefer, DecidedBy: decidedByLLM})
+	_ = db.InsertGateDecision(ctx, GateDecision{ItemID: id, Gate: gateBarato, Decision: decisionDefer, DecidedBy: "llm"})
 
 	h := NewSurfaceMux(core, testToken)
 	rec := do(t, h, http.MethodPost, "/v1/quarantine/review", `{"item_id":`+strconv.Itoa(id)+`,"signal":"up"}`)

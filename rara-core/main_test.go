@@ -925,10 +925,10 @@ func TestLatestGateDecision(t *testing.T) {
 	if _, ok, _ := db.LatestGateDecision(ctx, itemID, gateBarato); ok {
 		t.Error("no decision yet -> found=false")
 	}
-	_ = db.InsertGateDecision(ctx, GateDecision{ItemID: itemID, Gate: gateBarato, Decision: decisionDefer, DecidedBy: decidedByProfile})
-	_ = db.InsertGateDecision(ctx, GateDecision{ItemID: itemID, Gate: gateBarato, Decision: decisionKeep, DecidedBy: decidedByLLM})
+	_ = db.InsertGateDecision(ctx, GateDecision{ItemID: itemID, Gate: gateBarato, Decision: decisionDefer, DecidedBy: "profile"})
+	_ = db.InsertGateDecision(ctx, GateDecision{ItemID: itemID, Gate: gateBarato, Decision: decisionKeep, DecidedBy: "llm"})
 	got, ok, _ := db.LatestGateDecision(ctx, itemID, gateBarato)
-	if !ok || got.Decision != decisionKeep || got.DecidedBy != decidedByLLM {
+	if !ok || got.Decision != decisionKeep || got.DecidedBy != "llm" {
 		t.Errorf("latest decision = %+v, want the keep (last appended)", got)
 	}
 	// A different gate is independent.

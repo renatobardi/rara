@@ -23,7 +23,7 @@ func drainWork(ctx context.Context, db Database, capability, provider string, ru
 		Provider:    provider,
 		Store:       newCoreStore(db),
 		MaxAttempts: maxStepAttempts,
-	}, workHandler(db, capability, runner))
+	}, workHandler(runner))
 }
 
 // fakeRunner is a StepRunner that returns a canned result (or error) and records the items it was
@@ -204,35 +204,42 @@ func TestWorkerDrainsWholeQueue(t *testing.T) {
 	}
 }
 
-// gateKeepRunner is a fake gate worker that always keeps (a verdict, no output_ref).
-func gateKeepRunner() *fakeRunner {
-	return &fakeRunner{result: RunResult{Gate: &GateVerdict{Decision: decisionKeep, DecidedBy: decidedByProfile, Reason: "e2e keep"}}}
-}
-
 // TestEndToEndYouTubeFlow drives a single video from discovery to done through alternating reconcile
-// passes and worker drains — the whole control loop end to end, WITH the two curation gates as real
-// workers (both keep). The only seams are the fake worker runners and a fake activator; the workers
-// run through the rara-addon SDK and rara-core's adapters.
+// passes and worker drains — the whole control loop end to end. The to-text and distill workers
+// (rara-scribe / rara-distill) are simulated via the SDK drain with fake runners; the curation gates
+// (rara-sift) are simulated by runGate — the external gate worker writes its gate_decision and marks
+// the step done, exactly as rara-sift does — since the core work role no longer runs gates. The only
+// seams are the fakes and a fake activator.
 func TestEndToEndYouTubeFlow(t *testing.T) {
 	ctx := context.Background()
 	db := newMockDatabase()
 	itemID := seedAndIngestOne(t, db, "vid1")
 	act := &fakeActivator{}
 	r := NewReconciler(db, act)
+	// The SDK-driven workers core still simulates inline (scribe, distill). The gates run out of
+	// process (rara-sift) and are simulated by runGate after each pass.
 	workers := []struct {
 		capability, provider string
 		runner               StepRunner
 	}{
-		{capGateBarato, provGateBarato, gateKeepRunner()},
 		{capTranscrever, provASRYouTube, &fakeRunner{result: out("transcript-7")}},
-		{capGateRico, provGateRico, gateKeepRunner()},
 		{capDestilar, provDistill, &fakeRunner{result: out("distill-9")}},
 	}
+	gates := []struct {
+		seq        int
+		capability string
+	}{{2, capGateBarato}, {4, capGateRico}}
 
-	// Run to a fixed point: reconcile, then let every worker drain, until the item is done.
+	// Run to a fixed point: reconcile, let the external gate workers decide, then let every SDK
+	// worker drain, until the item is done.
 	for pass := 0; pass < 10; pass++ {
 		if err := r.ReconcileOnce(ctx); err != nil {
 			t.Fatalf("pass %d reconcile: %v", pass, err)
+		}
+		for _, g := range gates {
+			if s := db.itemSteps[itemStepKey{itemID, g.seq}]; s.Status == stepPending {
+				runGate(t, db, itemID, g.seq, g.capability, decisionKeep) // rara-sift keeps
+			}
 		}
 		for _, w := range workers {
 			if err := drainWork(ctx, db, w.capability, w.provider, w.runner); err != nil {
@@ -310,62 +317,6 @@ func TestWorkerFiltersEmptyTranscript(t *testing.T) {
 	active, _ := db.ListActiveItems(ctx)
 	if len(active) != 0 {
 		t.Errorf("filtered item should leave the active set, got %d active", len(active))
-	}
-}
-
-// gateScore is a small *float64 helper for verdicts.
-func gateScore(f float64) *float64 { return &f }
-
-// TestGateWorkerRecordsDecision: a gate worker claims a pending gate step, and for each cascade
-// verdict (keep/drop/defer) the handler appends a gate_decisions row with the decision + score +
-// decided_by + reason and marks the step DONE — but does NOT touch item status (the reconciler routes
-// from the decision).
-func TestGateWorkerRecordsDecision(t *testing.T) {
-	for _, tc := range []struct {
-		decision  string
-		decidedBy string
-	}{
-		{decisionKeep, decidedByProfile},
-		{decisionDrop, decidedByRules},
-		{decisionDefer, decidedByLLM},
-	} {
-		t.Run(tc.decision, func(t *testing.T) {
-			ctx := context.Background()
-			db := newMockDatabase()
-			itemID := seedAndIngestOne(t, db, "vid1")
-			// A pending gate_barato step at the metadata gate's seq (2), as the reconciler would
-			// assign it (provider set so the provider-aware claim matches).
-			mustStep(t, db, ItemStep{ItemID: itemID, Seq: 2, Capability: capGateBarato, Status: stepPending, AssignedProvider: provGateBarato})
-
-			verdict := &GateVerdict{
-				Decision: tc.decision, Score: gateScore(0.71),
-				DecidedBy: tc.decidedBy, Reason: "unit-test verdict",
-			}
-			runner := &fakeRunner{result: RunResult{Gate: verdict}}
-			if err := drainWork(ctx, db, capGateBarato, provGateBarato, runner); err != nil {
-				t.Fatalf("drainWork: %v", err)
-			}
-
-			// gate_decisions row appended with the full verdict.
-			if len(db.gateDecisions) != 1 {
-				t.Fatalf("expected 1 gate_decision, got %d", len(db.gateDecisions))
-			}
-			d := db.gateDecisions[0]
-			if d.ItemID != itemID || d.Gate != gateBarato || d.Decision != tc.decision ||
-				d.DecidedBy != tc.decidedBy || d.Reason != "unit-test verdict" {
-				t.Errorf("gate_decision = %+v, want item=%d gate_barato %s by %s", d, itemID, tc.decision, tc.decidedBy)
-			}
-			if d.Score == nil || *d.Score != 0.71 {
-				t.Errorf("score not recorded: %v", d.Score)
-			}
-			// Step done; item status untouched (reconciler routes, not the worker).
-			if s := db.itemSteps[itemStepKey{itemID, 2}]; s.Status != stepDone {
-				t.Errorf("gate step = %+v, want done", s)
-			}
-			if got := db.itemByID[itemID].Status; got != itemDiscovered {
-				t.Errorf("worker must not route the item: status = %q, want still discovered", got)
-			}
-		})
 	}
 }
 
