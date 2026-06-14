@@ -51,8 +51,8 @@ fmt:
 
 build:
 	@echo "Building for current OS..."
-	go build -ldflags="-w -s" -o podcast-job .
-	@echo "Built: podcast-job"
+	go build -ldflags="-w -s" -o dial-job .
+	@echo "Built: dial-job"
 
 docker-build:
 	@echo "Building Docker image..."
@@ -61,7 +61,7 @@ docker-build:
 
 clean:
 	@echo "Cleaning build artifacts..."
-	rm -f podcast-job coverage.out
+	rm -f dial-job coverage.out
 	@echo "Clean complete"
 
 deps:

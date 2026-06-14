@@ -51,8 +51,8 @@ fmt:
 
 build:
 	@echo "Building for current OS..."
-	go build -ldflags="-w -s" -o mail-job .
-	@echo "Built: mail-job"
+	go build -ldflags="-w -s" -o courier-job .
+	@echo "Built: courier-job"
 
 docker-build:
 	@echo "Building Docker image..."
@@ -61,7 +61,7 @@ docker-build:
 
 clean:
 	@echo "Cleaning build artifacts..."
-	rm -f mail-job coverage.out
+	rm -f courier-job coverage.out
 	@echo "Clean complete"
 
 deps:
