@@ -11,7 +11,7 @@ reconciler.
 `workflow_dispatch`):
 
 1. Builds the amd64 image with Cloud Build and pushes it to Artifact Registry.
-2. `gcloud run jobs deploy/replace` the `rara-dial` job (`--set-secrets DATABASE_URL=database-url:latest`).
+2. Updates (or creates, on first deploy) the `rara-dial` job (`--set-secrets DATABASE_URL=database-url:latest`).
 3. Executes the job once after deploy (push, or `run_after_deploy=true`).
 
 Nothing below is done by CI — it's the one-time GCP setup the operator does by hand.
@@ -48,6 +48,7 @@ Nothing below is done by CI — it's the one-time GCP setup the operator does by
      --location="$GCP_REGION" --schedule="0 */6 * * *" \
      --uri="https://${GCP_REGION}-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/${GCP_PROJECT_ID}/jobs/rara-dial:run" \
      --http-method=POST \
+     --message-body='{}' \
      --oauth-service-account-email="<scheduler-sa>@${GCP_PROJECT_ID}.iam.gserviceaccount.com"
    ```
    The scheduler SA needs `roles/run.invoker` on the job.
