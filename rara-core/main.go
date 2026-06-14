@@ -452,8 +452,10 @@ type Database interface {
 
 	// ListGateRules returns the enabled allow/deny rules for the cascade's rules layer.
 	ListGateRules(ctx context.Context) ([]GateRule, error)
-	// GetLatestInterestProfile returns the highest-version interest_profile row (the live
-	// preferences document), found=false when none has been seeded yet.
+	// GetLatestInterestProfile returns the highest-version interest_profile row regardless of
+	// status, found=false when none has been seeded yet. Used for the seed's existence check and
+	// the reviser's next-version numbering — NOT the gate path, which reads the ACTIVE version
+	// (GetActiveInterestProfile) since Phase 6.
 	GetLatestInterestProfile(ctx context.Context) (InterestProfile, bool, error)
 	// LatestGateDecision returns the most recent gate_decisions row for (item, gate),
 	// found=false if the gate has not run for the item. The reconciler reads it to route
