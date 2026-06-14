@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -214,5 +215,65 @@ func TestPostHasContent(t *testing.T) {
 		if got := postHasContent(c.raw); got != c.want {
 			t.Errorf("postHasContent(%q) = %v, want %v", c.raw, got, c.want)
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// newBrightDataLinkedInSource — env wiring (defaults, overrides, URL splitting).
+// ---------------------------------------------------------------------------
+
+// With the env unset, the constructor falls back to the `bdata` binary and the default
+// linkedin-posts pipeline args, and parses the URL list (comma/newline separated, trimmed).
+func TestNewBrightDataLinkedInSourceDefaults(t *testing.T) {
+	t.Setenv("BDATA_BIN", "")
+	t.Setenv("BRIGHTDATA_LINKEDIN_ARGS", "")
+	t.Setenv("BRIGHTDATA_LINKEDIN_URLS", "https://lnkd.in/a , \n  https://lnkd.in/b  ")
+
+	s := newBrightDataLinkedInSource()
+	if s.bin != "bdata" {
+		t.Errorf("default bin = %q, want bdata", s.bin)
+	}
+	if got := strings.Join(s.args, " "); got != "pipelines linkedin-posts --json" {
+		t.Errorf("default args = %q, want the linkedin-posts pipeline", got)
+	}
+	if len(s.urls) != 2 || s.urls[0] != "https://lnkd.in/a" || s.urls[1] != "https://lnkd.in/b" {
+		t.Errorf("urls = %v, want the two trimmed entries", s.urls)
+	}
+}
+
+// A populated env overrides every default (the binary path and the pipeline args).
+func TestNewBrightDataLinkedInSourceOverrides(t *testing.T) {
+	t.Setenv("BDATA_BIN", "/opt/bin/bdata")
+	t.Setenv("BRIGHTDATA_LINKEDIN_ARGS", "collect --raw")
+	t.Setenv("BRIGHTDATA_LINKEDIN_URLS", "https://lnkd.in/only")
+
+	s := newBrightDataLinkedInSource()
+	if s.bin != "/opt/bin/bdata" {
+		t.Errorf("override bin = %q", s.bin)
+	}
+	if got := strings.Join(s.args, " "); got != "collect --raw" {
+		t.Errorf("override args = %q", got)
+	}
+	if len(s.urls) != 1 {
+		t.Errorf("urls = %v, want one", s.urls)
+	}
+}
+
+// FetchPosts refuses to shell out when no input URLs are configured (nothing to collect).
+func TestFetchPostsNoURLs(t *testing.T) {
+	t.Setenv("BRIGHTDATA_LINKEDIN_URLS", "")
+	if _, err := newBrightDataLinkedInSource().FetchPosts(context.Background()); err == nil {
+		t.Error("FetchPosts with no URLs should error rather than run the CLI")
+	}
+}
+
+// splitList drops empty/whitespace entries across both comma and newline separators.
+func TestSplitList(t *testing.T) {
+	got := splitList("a,, b \n\n c ,")
+	if len(got) != 3 || got[0] != "a" || got[1] != "b" || got[2] != "c" {
+		t.Errorf("splitList = %v, want [a b c]", got)
+	}
+	if len(splitList("  \n , ")) != 0 {
+		t.Error("splitList of only separators/whitespace should be empty")
 	}
 }
