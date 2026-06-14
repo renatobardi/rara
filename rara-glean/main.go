@@ -94,21 +94,15 @@ var (
 	reAttribution = regexp.MustCompile(`(?i)^(on\b.*\bwrote:|.*\bescreveu:|-{2,}\s*original message\s*-{2,}|from:\s.+)$`)
 )
 
-// cleanForLane selects the lane's deterministic cleaner: email needs signature/quoted-reply
-// stripping; every other text lane (linkedin) is the lighter normalize-only path.
-func cleanForLane(lane, raw string) string {
+// cleanerForLane resolves the lane's deterministic cleaner AND its transcripts.engine label in one
+// place, so the two can never drift (a new lane is added to both at once). email needs
+// signature/quoted-reply stripping; linkedin — the only other lane extrair serves — is the lighter
+// normalize-only path. An unsupported lane never reaches here: appDB.ReadSource rejects it first.
+func cleanerForLane(lane string) (clean func(string) string, engine string) {
 	if lane == laneEmail {
-		return cleanEmailText(raw)
+		return cleanEmailText, emailEngine
 	}
-	return cleanPostText(raw)
-}
-
-// engineForLane labels the to-text row by its source lane (the transcripts.engine audit value).
-func engineForLane(lane string) string {
-	if lane == laneEmail {
-		return emailEngine
-	}
-	return linkedinEngine
+	return cleanPostText, linkedinEngine
 }
 
 // cleanEmailText returns the human-written body of an email: HTML stripped (if any), the
@@ -210,13 +204,14 @@ func gleanHandler(store GleanStore) addon.Handler {
 			return addon.Result{}, fmt.Errorf("extrair %s: source not ready: %w", item.SourceRef, addon.ErrRetryable)
 		}
 
-		clean := cleanForLane(item.Lane, raw)
-		id, err := store.WriteText(ctx, item.Lane, item.SourceRef, clean, engineForLane(item.Lane))
+		clean, engine := cleanerForLane(item.Lane)
+		text := clean(raw)
+		id, err := store.WriteText(ctx, item.Lane, item.SourceRef, text, engine)
 		if err != nil {
 			return addon.Result{}, fmt.Errorf("extrair %s: write to-text: %w", item.SourceRef, err)
 		}
 
-		filtered := strings.TrimSpace(clean) == ""
+		filtered := strings.TrimSpace(text) == ""
 		log.Printf("extrair %s (%s) -> transcript %d (filtered=%v)", item.SourceRef, item.Lane, id, filtered)
 		return addon.Result{OutputRef: strconv.Itoa(id), Filtered: filtered}, nil
 	}
