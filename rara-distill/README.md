@@ -18,24 +18,39 @@ isolation: rara-distill never calls Kura.
   (Markdown) **plus** queryable `structured` (concepts/insights/entities/claims) and
   a `doc_context` for Contextual Retrieval, all produced in a single LLM pass
   ("compile once").
-- **Tables**: `distillations` (own); reads `transcripts`, `channel_videos`,
-  `playlist_videos`
-- **Runtime**: GCP Cloud Run Job (daily, after scribe)
+- **Contract**: a **bridge-total claim-worker** — it attaches to `rara-core` only through the
+  Neon contract (a `providers` row + the `item_steps` protocol) via the [rara-addon](../rara-addon)
+  SDK. The SDK owns claim/heartbeat/result/requeue/poke; this app supplies only the `destilar`
+  domain (`distillHandler`). The orchestrator (`rara-core`) routes and activates it; it never runs
+  the distillation itself.
+- **Tables**: `distillations` (own, domain); reads `transcripts`, `channel_videos`,
+  `playlist_videos`, and `flow_steps` (the per-item recipe config). The CONTRACT tables
+  (`item_steps`/`providers`/`items`) are handled by the SDK's `PgxStore`.
+- **Runtime**: one provider per deploy (`DISTILL_PROVIDER`, e.g. `distill` on Cloud Run /
+  `distill-local` on the VPC). on_demand by default (drain once and exit, the woken Cloud Run Job);
+  resident + symmetric activation via `WORK_POLL_INTERVAL` / `POKE_ADDR`.
 
 ## How it works
 
 ```
-transcripts (scribe)  ──read──▶  rara-distill  ──write──▶  distillations  ──read──▶  Kura
-(raw text + metadata)           apply pattern(s)          (curated, RAG-ready)      (chunk+embed
-                                via LLM (Fabric-style)                               in SurrealDB)
+                 ┌─ rara-core reconciler: routes destilar step + activates provider ─┐
+transcripts  ──read──▶  rara-distill (claims item_steps via SDK)  ──write──▶  distillations  ──▶ Kura
+(to-text store)        resolve recipe (flow_steps.options) → distillDoc → save
 ```
 
-The work queue is every `transcripts` row with `status='done'` and a non-empty
-transcript that does not yet have a **fresh** distillation for the current recipe.
-"Fresh" means: a `done` row exists with the same `source_sha256` (transcript
-unchanged) **and** the same `recipe_sha256` (recipe unchanged). Editing a pattern,
-swapping the engine/model, or changing the context/strategy changes `recipe_sha256`
-and triggers reprocessing — there is no silent skip.
+The worker claims one `destilar` `item_steps` row at a time (the reconciler already decided *what*
+to distill and *which* provider runs it), reads the item's to-text artifact from `transcripts` by
+`source_ref`, runs the curation, writes the `distillations` row, and reports its id as the step's
+`output_ref`. A missing input is treated as transient (the SDK requeues up to the cap); a curation
+failure is terminal (the failed row is recorded for observability and the step fails).
+
+**Recipe is config, per item.** The recipe (pattern chain + context + strategy) is normally carried
+by the flow's `destilar` step in `flow_steps.options.recipe`, read per item — so e.g. the old
+`news` lane is just a flow whose `destilar` step sets
+`{"recipe":{"patterns":["summarize_news"],"context":"software-ai"}}`. `DISTILL_PATTERNS` /
+`DISTILL_CONTEXT` / `DISTILL_STRATEGY` are only the **fallback default** when a step carries no
+recipe. The `distillations` UPSERT still keys on `(source_key, COALESCE(session_patterns, pattern))`,
+and `recipe_sha256`/`source_sha256` remain on the row for staleness/provenance.
 
 ## The curation library (Fabric-style)
 
@@ -49,10 +64,11 @@ Add or edit a Markdown file to change the curation — that is the whole point. 
 patterns: `extract_wisdom` (SUMMARY / CONCEPTS / INSIGHTS / REFERENCES / CONNECTIONS)
 and `summary`. Shipped context: `software-ai`. Shipped strategies: `cot`, `tot`.
 
-**Sessions**: set `DISTILL_PATTERNS` to a CSV chain (e.g. `summary,extract_wisdom`).
-Each stage receives the original transcript plus the previous stage's output; the
-final stage's output is stored. The unique key uses `COALESCE(session_patterns,
-pattern)`, so a session never collides with a standalone pattern.
+**Sessions**: a recipe's `patterns` can be a chain (e.g. `["summary","extract_wisdom"]` in
+`flow_steps.options.recipe`, or the CSV `summary,extract_wisdom` for the `DISTILL_PATTERNS`
+fallback). Each stage receives the original transcript plus the previous stage's output; the final
+stage's output is stored. The unique key uses `COALESCE(session_patterns, pattern)`, so a session
+never collides with a standalone pattern.
 
 ## Output contract (for Kura)
 
@@ -136,25 +152,31 @@ side by side, run them against a Neon branch / locally, not the production table
 ## Local development
 
 ```bash
-cp .env.example .env          # fill DATABASE_URL + the engine's API key
+cp .env.example .env          # fill DATABASE_URL + DISTILL_PROVIDER + the engine's API key
 make test                     # run the TDD suite
 make lint                     # go vet + staticcheck
 set -a && source .env && set +a
-go run .                      # distill DISTILL_BATCH_SIZE transcripts
+go run .                      # claim & drain the destilar queue for DISTILL_PROVIDER, then exit
 ```
+
+> Module wiring: `rara-distill` couples to the SDK via `replace rara-addon => ../rara-addon` in
+> `go.mod` (no committed `go.work` — see the repo-root `.gitignore`), so `go test` here builds the
+> module standalone. The Docker/Cloud Run build (multi-module) is wired in P2.
 
 ## Configuration
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `DATABASE_URL` | — (required) | Neon connection string (shared) |
+| `DISTILL_PROVIDER` | — (required) | the provider this worker serves (e.g. `distill` \| `distill-local`); the SDK claims its steps by `(destilar, this provider)` |
+| `WORK_POLL_INTERVAL` | (unset → on_demand) | resident safety-net poll cadence (Go duration or bare seconds) |
+| `POKE_ADDR` / `POKE_TOKEN` | (unset) | tailnet poke listener (`POST /poke`, Bearer) for symmetric activation |
 | `CURATE_ENGINE` | `gemini` | `gemini` \| `claude` \| `groq` \| `litellm` |
 | `GEMINI_API_KEY` / `ANTHROPIC_API_KEY` / `GROQ_API_KEY` | — | per engine |
 | `GEMINI_MODEL` / `CLAUDE_MODEL` / `GROQ_MODEL` | sane defaults | model override |
 | `LITELLM_BASE_URL` / `LITELLM_API_KEY` / `LITELLM_MODEL` | — / — / `claude-sonnet-4-6` | self-hosted gateway (OpenAI-compatible); key optional. See [litellm/](./litellm/) |
-| `DISTILL_PATTERNS` | `extract_wisdom` | CSV; many = session chain |
-| `DISTILL_CONTEXT` | (none) | context file in `contexts/<name>.md` |
-| `DISTILL_STRATEGY` | (none) | strategy file in `strategies/<name>.md` |
-| `DISTILL_BATCH_SIZE` | `1` | transcripts per run (code default `1`; the deployed Cloud Run Job uses `25` — balanced for ~13 min runs with Gemini Pro) |
+| `DISTILL_PATTERNS` | `extract_wisdom` | **fallback** default recipe (CSV; many = session chain). Per-item recipe normally comes from `flow_steps.options.recipe` |
+| `DISTILL_CONTEXT` | (none) | fallback default context file in `contexts/<name>.md` |
+| `DISTILL_STRATEGY` | (none) | fallback default strategy file in `strategies/<name>.md` |
 
 See [DEPLOY.md](./DEPLOY.md) for the Cloud Run Job deployment.

@@ -1,14 +1,15 @@
 // runners.go — the I/O edge of the worker shims (Phase 1 deliverable #5).
 //
 // These concrete StepRunners are the thin adapters that actually invoke the existing
-// scribe/distill binaries and read back the domain row they wrote. They are deliberately
-// minimal glue: exec + one SELECT. Like the pgx writes in main.go, they are exercised by
+// scribe/extract workers and read back the domain row they wrote. They are deliberately
+// minimal glue: exec/clean + one SELECT. Like the pgx writes in main.go, they are exercised by
 // real deploys/integration, not unit tests — the claim/advance orchestration now lives in the
 // rara-addon SDK (proven by addon_work.go's handler, which these runners back).
 //
 // Binary paths and engines are environment-configured so a deploy points the shim at the
-// right artifact (SCRIBE_BIN on the Mac, DISTILL_BIN in the Cloud Run image) without code
-// changes. None of this touches scribe/distill domain logic.
+// right artifact (SCRIBE_BIN on the Mac, ASR_DIRECT_BIN in the Cloud Run image) without code
+// changes. None of this touches the workers' domain logic. (destilar is no longer here — it is
+// its own app, rara-distill, on the SDK.)
 package main
 
 import (
@@ -29,9 +30,9 @@ import (
 )
 
 // errNoOutputRow is a HARD failure: the worker ran but produced no usable domain row
-// (e.g. scribe could not transcribe at all). errRetryable is a TRANSIENT miss: the row is
-// expected to appear on a later attempt (e.g. distill's batch hasn't reached it yet), so
-// the worker re-queues the step instead of failing the item. worker.go branches on these.
+// (e.g. scribe could not transcribe at all). errRetryable is a TRANSIENT miss: the outcome is
+// expected to succeed on a later attempt (e.g. a gate cascade hit a transient provider error), so
+// the worker re-queues the step instead of failing the item. The addon handler branches on these.
 var (
 	errNoOutputRow = errors.New("worker produced no output row")
 	errRetryable   = errors.New("retryable: output not yet available")
@@ -53,7 +54,7 @@ type RunResult struct {
 }
 
 // StepRunner executes one claimed step against its domain worker. A returned error means the step
-// did not succeed; if it wraps errRetryable (e.g. distill's batch hasn't reached this row yet) the
+// did not succeed; if it wraps errRetryable (e.g. a gate cascade hit a transient provider error) the
 // addon SDK re-queues the step until its attempt ceiling, otherwise it marks it failed for the
 // reconciler to act on next pass.
 type StepRunner interface {
@@ -104,46 +105,9 @@ func (r *scribeRunner) Run(ctx context.Context, item Item, _ ItemStep) (RunResul
 	return RunResult{OutputRef: strconv.Itoa(id), Filtered: status == "empty"}, nil
 }
 
-// ---------------------------------------------------------------------------
-// distill shim (destilar) — no per-item entry; trigger an idempotent batch drain.
-// ---------------------------------------------------------------------------
-
-type distillRunner struct {
-	conn      *pgx.Conn
-	bin       string // DISTILL_BIN
-	batchSize string // forced high so one run drains the pending queue incl. this item
-}
-
-func newDistillRunner(conn *pgx.Conn) *distillRunner {
-	return &distillRunner{
-		conn:      conn,
-		bin:       envOr("DISTILL_BIN", "etl-job"),
-		batchSize: envOr("DISTILL_DRAIN_BATCH", "100"),
-	}
-}
-
-func (r *distillRunner) Run(ctx context.Context, item Item, _ ItemStep) (RunResult, error) {
-	// distill batch-pulls its own queue; force a large batch so this transcript is
-	// included in the single run. Idempotent — re-distilling already-done rows is a no-op.
-	cmd := exec.CommandContext(ctx, r.bin)
-	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
-	cmd.Env = append(os.Environ(), "DISTILL_BATCH_SIZE="+r.batchSize)
-	if err := cmd.Run(); err != nil {
-		return RunResult{}, fmt.Errorf("distill: %w", err)
-	}
-	// For a YouTube source, distillations.source_key is the youtube_video_id. A missing
-	// row is TRANSIENT, not fatal: with a large backlog one drain may not have reached
-	// this transcript yet, so re-queue (capped) rather than failing the item.
-	const q = `SELECT id FROM distillations WHERE source_key = $1 AND status = 'done'`
-	var id int
-	switch err := r.conn.QueryRow(ctx, q, item.SourceRef).Scan(&id); {
-	case errors.Is(err, pgx.ErrNoRows):
-		return RunResult{}, fmt.Errorf("destilar %s: %w", item.SourceRef, errRetryable)
-	case err != nil:
-		return RunResult{}, err
-	}
-	return RunResult{OutputRef: strconv.Itoa(id)}, nil
-}
+// destilar has NO runner here: it is its own independent app (rara-distill) that claims its steps
+// through the rara-addon SDK (bridge-total, P1c). The orchestrator still ROUTES destilar (assigns
+// a provider) and ACTIVATES it (Cloud Run `run` / poke), but never runs the distillation itself.
 
 // ---------------------------------------------------------------------------
 // asr-direct-audio shim (transcrever, podcast) — transcribe a direct enclosure URL.

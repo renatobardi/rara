@@ -13,6 +13,9 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	addon "rara-addon"
 )
 
 // ---------------------------------------------------------------------------
@@ -442,86 +445,8 @@ func TestCurateDoesNotRetryOn4xx(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Mocks
+// Test doubles: the LLM (Curator) and the domain store (DistillStore)
 // ---------------------------------------------------------------------------
-
-// mockTranscript mirrors a row of the upstream transcripts table.
-type mockTranscript struct {
-	doc    SourceDoc
-	status string // done | failed | empty
-}
-
-// MockDatabase encodes the *intended* PendingDocs behaviour: filter to done/non-empty
-// transcripts, skip a doc only when a fresh distillation exists for the recipe (done,
-// same source hash, same recipe hash), and skip failures past the retry cap;
-// SaveDistillation upserts on (source_key, COALESCE(session_patterns, pattern)).
-//
-// It cannot reproduce SQL three-valued (NULL) logic, so it is not a substitute for
-// exercising the real query — see TestPendingDocsIntegration, which runs the actual
-// SQL against Postgres and guards the never-distilled / failed-cap NULL edge cases.
-type MockDatabase struct {
-	transcripts   []mockTranscript
-	distillations map[string]Distillation // keyed by source_key|keyPattern
-	attempts      map[string]int
-	saveErr       error
-	pendingErr    error
-}
-
-func newMockDatabase() *MockDatabase {
-	return &MockDatabase{
-		distillations: make(map[string]Distillation),
-		attempts:      make(map[string]int),
-	}
-}
-
-func distKey(sourceKey, keyPattern string) string { return sourceKey + "|" + keyPattern }
-
-func (m *MockDatabase) PendingDocs(ctx context.Context, limit int, keyPattern, recipeSHA string) ([]SourceDoc, error) {
-	if m.pendingErr != nil {
-		return nil, m.pendingErr
-	}
-	var fresh, retry []SourceDoc
-	for _, mt := range m.transcripts {
-		if mt.status != statusDone || strings.TrimSpace(mt.doc.Transcript) == "" {
-			continue // mirror: only done, non-empty transcripts are eligible
-		}
-		key := distKey(mt.doc.SourceKey, keyPattern)
-		d, ok := m.distillations[key]
-		switch {
-		case ok && d.Status == statusDone && d.SourceSHA256 == mt.doc.SourceSHA256 && d.RecipeSHA256 == recipeSHA:
-			continue // fresh: nothing changed
-		case ok && d.Status == statusFailed && m.attempts[key] >= maxFailedAttempts:
-			continue // exhausted retries
-		case ok && d.Status == statusFailed:
-			retry = append(retry, mt.doc)
-		default:
-			fresh = append(fresh, mt.doc) // never distilled, or stale source/recipe
-		}
-	}
-	out := append(fresh, retry...)
-	if limit > 0 && len(out) > limit {
-		out = out[:limit]
-	}
-	return out, nil
-}
-
-func (m *MockDatabase) SaveDistillation(ctx context.Context, d Distillation) error {
-	if m.saveErr != nil {
-		return m.saveErr
-	}
-	keyPattern := d.Pattern
-	if d.SessionPatterns != "" {
-		keyPattern = d.SessionPatterns
-	}
-	key := distKey(d.SourceKey, keyPattern)
-	m.distillations[key] = d
-	if d.Status == statusFailed {
-		m.attempts[key]++
-	} else {
-		m.attempts[key] = 0
-	}
-	return nil
-}
 
 // curateCall records one invocation of the mock curator.
 type curateCall struct {
@@ -563,125 +488,70 @@ func curationJSON(markdown, docContext string) string {
 	return string(b)
 }
 
-// ---------------------------------------------------------------------------
-// Fluent harness
-// ---------------------------------------------------------------------------
-
-type DistillHarness struct {
-	t          *testing.T
-	db         *MockDatabase
-	cur        *MockCurator
-	recipe     Recipe
-	engineName string
+// MockDistillStore is the in-memory DistillStore for handler tests: a recipe-options blob, a set
+// of source docs keyed by SourceRef, and a record of every saved Distillation (with a synthetic
+// returned id). Error fields force each seam to fail.
+type MockDistillStore struct {
+	recipeOptions json.RawMessage
+	recipeErr     error
+	docs          map[string]SourceDoc // by SourceRef
+	loadErr       error
+	saved         []Distillation
+	saveErr       error
 }
 
-func NewDistillHarness(t *testing.T) *DistillHarness {
+func newMockStore() *MockDistillStore { return &MockDistillStore{docs: map[string]SourceDoc{}} }
+
+func (m *MockDistillStore) RecipeOptions(ctx context.Context, flowID, seq int) (json.RawMessage, error) {
+	return m.recipeOptions, m.recipeErr
+}
+
+func (m *MockDistillStore) LoadSourceDoc(ctx context.Context, sourceRef string) (SourceDoc, bool, error) {
+	if m.loadErr != nil {
+		return SourceDoc{}, false, m.loadErr
+	}
+	d, ok := m.docs[sourceRef]
+	return d, ok, nil
+}
+
+func (m *MockDistillStore) SaveDistillation(ctx context.Context, d Distillation) (int, error) {
+	if m.saveErr != nil {
+		return 0, m.saveErr
+	}
+	m.saved = append(m.saved, d)
+	return 1000 + len(m.saved), nil // first save -> 1001 (deterministic OutputRef)
+}
+
+// videoRef is a tiny helper mirroring the canonical watch URL for test readability.
+func videoRef(id string) string { return "https://www.youtube.com/watch?v=" + id }
+
+// ---------------------------------------------------------------------------
+// distillDoc — the engine/db-agnostic curation core (driven directly)
+// ---------------------------------------------------------------------------
+
+func mustRecipe(t *testing.T, cfg Config) Recipe {
 	t.Helper()
-	r, err := NewRecipe(Config{Patterns: "extract_wisdom"})
+	r, err := NewRecipe(cfg)
 	if err != nil {
 		t.Fatalf("recipe: %v", err)
 	}
-	return &DistillHarness{
-		t:          t,
-		db:         newMockDatabase(),
-		cur:        &MockCurator{},
-		recipe:     r,
-		engineName: "mock/engine",
+	return r
+}
+
+// TestDistillDocHappyPath: a transcript is curated into a done distillation with the structured
+// payload, doc_context and engine carried through.
+func TestDistillDocHappyPath(t *testing.T) {
+	r := mustRecipe(t, Config{Patterns: "extract_wisdom"})
+	cur := &MockCurator{results: []string{curationJSON("# Curated note", "A talk about hello.")}}
+	d := distillDoc(context.Background(), cur, "mock/engine", r,
+		SourceDoc{YoutubeVideoID: "vid1", SourceType: "youtube", SourceRef: videoRef("vid1"), SourceKey: "vid1", Title: "Talk", Transcript: "hello world", SourceSHA256: "h1"})
+
+	if d.Status != statusDone {
+		t.Errorf("status = %q, want done", d.Status)
 	}
-}
-
-// WithRecipe overrides the recipe (e.g. to test context/strategy/sessions).
-func (h *DistillHarness) WithRecipe(cfg Config) *DistillHarness {
-	r, err := NewRecipe(cfg)
-	if err != nil {
-		h.t.Fatalf("recipe: %v", err)
+	if d.StructuredStatus != structOK {
+		t.Errorf("structured_status = %q, want ok", d.StructuredStatus)
 	}
-	h.recipe = r
-	return h
-}
-
-// WithTranscript registers an upstream transcript (done, non-empty by default).
-func (h *DistillHarness) WithTranscript(doc SourceDoc) *DistillHarness {
-	h.db.transcripts = append(h.db.transcripts, mockTranscript{doc: doc, status: statusDone})
-	return h
-}
-
-// WithRawTranscript registers an upstream transcript with an explicit status.
-func (h *DistillHarness) WithRawTranscript(doc SourceDoc, status string) *DistillHarness {
-	h.db.transcripts = append(h.db.transcripts, mockTranscript{doc: doc, status: status})
-	return h
-}
-
-// WithResponses sets the curator responses returned in call order.
-func (h *DistillHarness) WithResponses(responses ...string) *DistillHarness {
-	h.cur.results = append(h.cur.results, responses...)
-	return h
-}
-
-func (h *DistillHarness) WithCurateError(err error) *DistillHarness {
-	h.cur.err = err
-	return h
-}
-
-func (h *DistillHarness) Execute(ctx context.Context, limit int) error {
-	return runBatch(ctx, h.db, h.cur, h.engineName, h.recipe, limit)
-}
-
-func (h *DistillHarness) get(sourceKey string) (Distillation, bool) {
-	d, ok := h.db.distillations[distKey(sourceKey, h.recipe.keyPattern())]
-	return d, ok
-}
-
-func (h *DistillHarness) AssertCount(expected int) {
-	h.t.Helper()
-	if len(h.db.distillations) != expected {
-		h.t.Errorf("distillation count = %d, want %d", len(h.db.distillations), expected)
-	}
-}
-
-func (h *DistillHarness) AssertStatus(sourceKey, status string) {
-	h.t.Helper()
-	d, ok := h.get(sourceKey)
-	if !ok {
-		h.t.Errorf("distillation %q not found", sourceKey)
-		return
-	}
-	if d.Status != status {
-		h.t.Errorf("distillation %q status = %q, want %q", sourceKey, d.Status, status)
-	}
-}
-
-func (h *DistillHarness) AssertStructuredStatus(sourceKey, status string) {
-	h.t.Helper()
-	d, ok := h.get(sourceKey)
-	if !ok {
-		h.t.Errorf("distillation %q not found", sourceKey)
-		return
-	}
-	if d.StructuredStatus != status {
-		h.t.Errorf("distillation %q structured_status = %q, want %q", sourceKey, d.StructuredStatus, status)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Harness tests
-// ---------------------------------------------------------------------------
-
-// TestHappyPath: a single transcript is curated into one distillation with the
-// structured payload and doc_context persisted.
-func TestHappyPath(t *testing.T) {
-	h := NewDistillHarness(t).
-		WithTranscript(SourceDoc{YoutubeVideoID: "vid1", SourceType: "youtube", SourceRef: videoRef("vid1"), SourceKey: "vid1", Title: "Talk", Transcript: "hello world", SourceSHA256: "h1"}).
-		WithResponses(curationJSON("# Curated note", "A talk about hello."))
-
-	if err := h.Execute(context.Background(), 25); err != nil {
-		t.Fatalf("execute: %v", err)
-	}
-	h.AssertCount(1)
-	h.AssertStatus("vid1", statusDone)
-	h.AssertStructuredStatus("vid1", structOK)
-
-	d, _ := h.get("vid1")
 	if d.Content != "# Curated note" {
 		t.Errorf("content = %q", d.Content)
 	}
@@ -695,37 +565,24 @@ func TestHappyPath(t *testing.T) {
 	if d.Engine != "mock/engine" {
 		t.Errorf("engine = %q", d.Engine)
 	}
+	if d.Pattern != "extract_wisdom" {
+		t.Errorf("pattern = %q", d.Pattern)
+	}
 }
 
-// TestOnlyDoneNonEmptyAreQueued: failed/empty transcripts are excluded from the
-// work queue.
-func TestOnlyDoneNonEmptyAreQueued(t *testing.T) {
-	h := NewDistillHarness(t).
-		WithRawTranscript(SourceDoc{SourceKey: "failed1", SourceType: "youtube", SourceRef: "r", Transcript: "x", SourceSHA256: "h"}, statusFailed).
-		WithRawTranscript(SourceDoc{SourceKey: "empty1", SourceType: "youtube", SourceRef: "r", Transcript: "", SourceSHA256: "h"}, statusDone).
-		WithTranscript(SourceDoc{SourceKey: "good1", SourceType: "youtube", SourceRef: "r", Transcript: "real", SourceSHA256: "h"}).
-		WithResponses(curationJSON("# ok", "d"))
+// TestDistillDocMalformedOutputIsVisibleNotFatal: a non-JSON response keeps the row (done) but
+// flags structured_status=parse_failed, keeps structured='{}' and preserves the raw text.
+func TestDistillDocMalformedOutputIsVisibleNotFatal(t *testing.T) {
+	r := mustRecipe(t, Config{Patterns: "extract_wisdom"})
+	cur := &MockCurator{results: []string{"oops, not json"}}
+	d := distillDoc(context.Background(), cur, "mock/engine", r, SourceDoc{SourceKey: "vid1", Transcript: "x"})
 
-	if err := h.Execute(context.Background(), 25); err != nil {
-		t.Fatalf("execute: %v", err)
+	if d.Status != statusDone {
+		t.Errorf("status = %q, want done", d.Status)
 	}
-	h.AssertCount(1) // only good1
-	h.AssertStatus("good1", statusDone)
-}
-
-// TestMalformedOutputIsVisibleNotFatal: a non-JSON model response keeps the row
-// (status done) but flags structured_status=parse_failed and keeps content='{}'.
-func TestMalformedOutputIsVisibleNotFatal(t *testing.T) {
-	h := NewDistillHarness(t).
-		WithTranscript(SourceDoc{SourceKey: "vid1", SourceType: "youtube", SourceRef: "r", Transcript: "x", SourceSHA256: "h"}).
-		WithResponses("oops, not json")
-
-	if err := h.Execute(context.Background(), 25); err != nil {
-		t.Fatalf("execute: %v", err)
+	if d.StructuredStatus != structParseFailed {
+		t.Errorf("structured_status = %q, want parse_failed", d.StructuredStatus)
 	}
-	h.AssertStatus("vid1", statusDone)
-	h.AssertStructuredStatus("vid1", structParseFailed)
-	d, _ := h.get("vid1")
 	if string(d.Structured) != "{}" {
 		t.Errorf("structured = %s, want {}", d.Structured)
 	}
@@ -734,79 +591,63 @@ func TestMalformedOutputIsVisibleNotFatal(t *testing.T) {
 	}
 }
 
-// TestCurateErrorMarksFailed: a curator error is captured and the row is failed.
-func TestCurateErrorMarksFailed(t *testing.T) {
-	h := NewDistillHarness(t).
-		WithTranscript(SourceDoc{SourceKey: "vid1", SourceType: "youtube", SourceRef: "r", Transcript: "x", SourceSHA256: "h"}).
-		WithCurateError(errors.New("gemini 500"))
+// TestDistillDocCurateErrorMarksFailed: a curator error is captured as a failed distillation
+// carrying the error (the handler then fails the step).
+func TestDistillDocCurateErrorMarksFailed(t *testing.T) {
+	r := mustRecipe(t, Config{Patterns: "extract_wisdom"})
+	cur := &MockCurator{err: errors.New("gemini 500")}
+	d := distillDoc(context.Background(), cur, "mock/engine", r, SourceDoc{SourceKey: "vid1", Transcript: "x"})
 
-	if err := h.Execute(context.Background(), 25); err != nil {
-		t.Fatalf("execute: %v", err)
+	if d.Status != statusFailed {
+		t.Errorf("status = %q, want failed", d.Status)
 	}
-	h.AssertStatus("vid1", statusFailed)
-	d, _ := h.get("vid1")
 	if d.Error == "" {
 		t.Error("expected failed distillation to carry an error")
 	}
 }
 
-// TestContextInjectedIntoPrompt: the configured context appears in the system prompt.
-func TestContextInjectedIntoPrompt(t *testing.T) {
-	h := NewDistillHarness(t).
-		WithRecipe(Config{Patterns: "extract_wisdom", ContextName: "software-ai"}).
-		WithTranscript(SourceDoc{SourceKey: "vid1", SourceType: "youtube", SourceRef: "r", Transcript: "x", SourceSHA256: "h"}).
-		WithResponses(curationJSON("# ok", "d"))
+// TestDistillDocContextInjectedIntoPrompt: the configured context appears in the system prompt.
+func TestDistillDocContextInjectedIntoPrompt(t *testing.T) {
+	r := mustRecipe(t, Config{Patterns: "extract_wisdom", ContextName: "software-ai"})
+	cur := &MockCurator{results: []string{curationJSON("# ok", "d")}}
+	distillDoc(context.Background(), cur, "mock/engine", r, SourceDoc{SourceKey: "vid1", Transcript: "x"})
 
-	if err := h.Execute(context.Background(), 25); err != nil {
-		t.Fatalf("execute: %v", err)
+	if len(cur.calls) != 1 {
+		t.Fatalf("expected 1 curate call, got %d", len(cur.calls))
 	}
-	if len(h.cur.calls) != 1 {
-		t.Fatalf("expected 1 curate call, got %d", len(h.cur.calls))
-	}
-	if !strings.Contains(h.cur.calls[0].system, "Platform Engineering") {
+	if !strings.Contains(cur.calls[0].system, "Platform Engineering") {
 		t.Error("context not injected into system prompt")
 	}
 }
 
-// TestStrategyWrapsPattern: the configured strategy appears in the system prompt.
-func TestStrategyWrapsPattern(t *testing.T) {
-	h := NewDistillHarness(t).
-		WithRecipe(Config{Patterns: "extract_wisdom", StrategyName: "cot"}).
-		WithTranscript(SourceDoc{SourceKey: "vid1", SourceType: "youtube", SourceRef: "r", Transcript: "x", SourceSHA256: "h"}).
-		WithResponses(curationJSON("# ok", "d"))
+// TestDistillDocStrategyWrapsPattern: the configured strategy appears in the system prompt.
+func TestDistillDocStrategyWrapsPattern(t *testing.T) {
+	r := mustRecipe(t, Config{Patterns: "extract_wisdom", StrategyName: "cot"})
+	cur := &MockCurator{results: []string{curationJSON("# ok", "d")}}
+	distillDoc(context.Background(), cur, "mock/engine", r, SourceDoc{SourceKey: "vid1", Transcript: "x"})
 
-	if err := h.Execute(context.Background(), 25); err != nil {
-		t.Fatalf("execute: %v", err)
-	}
-	if !strings.Contains(h.cur.calls[0].system, "Chain of Thought") {
+	if !strings.Contains(cur.calls[0].system, "Chain of Thought") {
 		t.Error("strategy not applied to system prompt")
 	}
 }
 
-// TestSessionChainsOutput: a two-pattern session runs twice and the second stage's
-// input contains the first stage's output.
-func TestSessionChainsOutput(t *testing.T) {
-	h := NewDistillHarness(t).
-		WithRecipe(Config{Patterns: "summary,extract_wisdom"}).
-		WithTranscript(SourceDoc{SourceKey: "vid1", SourceType: "youtube", SourceRef: "r", Transcript: "original transcript", SourceSHA256: "h"}).
-		WithResponses(
-			curationJSON("STAGE-ONE-SUMMARY", "d1"),
-			curationJSON("# Final note", "d2"),
-		)
+// TestDistillDocSessionChainsOutput: a two-pattern session runs twice; stage 2's input contains
+// the original transcript AND stage 1's output, and the final row uses stage 2's output.
+func TestDistillDocSessionChainsOutput(t *testing.T) {
+	r := mustRecipe(t, Config{Patterns: "summary,extract_wisdom"})
+	cur := &MockCurator{results: []string{
+		curationJSON("STAGE-ONE-SUMMARY", "d1"),
+		curationJSON("# Final note", "d2"),
+	}}
+	d := distillDoc(context.Background(), cur, "mock/engine", r, SourceDoc{SourceKey: "vid1", Transcript: "original transcript"})
 
-	if err := h.Execute(context.Background(), 25); err != nil {
-		t.Fatalf("execute: %v", err)
+	if len(cur.calls) != 2 {
+		t.Fatalf("expected 2 curate calls (session), got %d", len(cur.calls))
 	}
-	if len(h.cur.calls) != 2 {
-		t.Fatalf("expected 2 curate calls (session), got %d", len(h.cur.calls))
+	if !strings.Contains(cur.calls[1].input, "original transcript") ||
+		!strings.Contains(cur.calls[1].input, "STAGE-ONE-SUMMARY") {
+		t.Errorf("stage 2 input missing prior output: %q", cur.calls[1].input)
 	}
-	// Stage 2 sees the original transcript AND stage 1's output.
-	if !strings.Contains(h.cur.calls[1].input, "original transcript") ||
-		!strings.Contains(h.cur.calls[1].input, "STAGE-ONE-SUMMARY") {
-		t.Errorf("stage 2 input missing prior output: %q", h.cur.calls[1].input)
-	}
-	// The final distillation uses stage 2's output.
-	d, _ := h.get("vid1")
 	if d.Content != "# Final note" {
 		t.Errorf("final content = %q, want stage-2 output", d.Content)
 	}
@@ -815,21 +656,16 @@ func TestSessionChainsOutput(t *testing.T) {
 	}
 }
 
-// TestFirstStageUsesTimestampedTranscript: when timestamped segments are available, the
-// model is fed the [seconds]-prefixed transcript so it can populate claims[].ts_start.
-func TestFirstStageUsesTimestampedTranscript(t *testing.T) {
-	h := NewDistillHarness(t).
-		WithTranscript(SourceDoc{
-			SourceKey: "vid1", SourceType: "youtube", SourceRef: "r",
-			Transcript:            "flat text",
-			TranscriptTimestamped: "[0] hello\n[12] world",
-			SourceSHA256:          "h",
-		}).
-		WithResponses(curationJSON("# n", "d"))
-	if err := h.Execute(context.Background(), 25); err != nil {
-		t.Fatalf("execute: %v", err)
-	}
-	in := h.cur.calls[0].input
+// TestDistillDocUsesTimestampedTranscript: when timestamped segments are available, the model is
+// fed the [seconds]-prefixed transcript so it can populate claims[].ts_start.
+func TestDistillDocUsesTimestampedTranscript(t *testing.T) {
+	r := mustRecipe(t, Config{Patterns: "extract_wisdom"})
+	cur := &MockCurator{results: []string{curationJSON("# n", "d")}}
+	distillDoc(context.Background(), cur, "mock/engine", r, SourceDoc{
+		SourceKey: "vid1", Transcript: "flat text", TranscriptTimestamped: "[0] hello\n[12] world",
+	})
+
+	in := cur.calls[0].input
 	if !strings.Contains(in, "[12] world") {
 		t.Errorf("first-stage input should use the timestamped transcript, got %q", in)
 	}
@@ -838,227 +674,239 @@ func TestFirstStageUsesTimestampedTranscript(t *testing.T) {
 	}
 }
 
-// TestFirstStageFallsBackToFlatTranscript: with no segments, the flat transcript is used.
-func TestFirstStageFallsBackToFlatTranscript(t *testing.T) {
-	h := NewDistillHarness(t).
-		WithTranscript(SourceDoc{
-			SourceKey: "vid1", SourceType: "youtube", SourceRef: "r",
-			Transcript: "flat only", SourceSHA256: "h",
-		}).
-		WithResponses(curationJSON("# n", "d"))
-	if err := h.Execute(context.Background(), 25); err != nil {
-		t.Fatalf("execute: %v", err)
-	}
-	if !strings.Contains(h.cur.calls[0].input, "flat only") {
-		t.Errorf("expected flat transcript fallback, got %q", h.cur.calls[0].input)
+// TestDistillDocFallsBackToFlatTranscript: with no segments, the flat transcript is used.
+func TestDistillDocFallsBackToFlatTranscript(t *testing.T) {
+	r := mustRecipe(t, Config{Patterns: "extract_wisdom"})
+	cur := &MockCurator{results: []string{curationJSON("# n", "d")}}
+	distillDoc(context.Background(), cur, "mock/engine", r, SourceDoc{SourceKey: "vid1", Transcript: "flat only"})
+
+	if !strings.Contains(cur.calls[0].input, "flat only") {
+		t.Errorf("expected flat transcript fallback, got %q", cur.calls[0].input)
 	}
 }
 
-// TestSessionDoesNotCollideWithStandalone: a standalone extract_wisdom and a session
-// ending in extract_wisdom over the same source are two distinct rows.
-func TestSessionDoesNotCollideWithStandalone(t *testing.T) {
-	doc := SourceDoc{SourceKey: "vid1", SourceType: "youtube", SourceRef: "r", Transcript: "x", SourceSHA256: "h"}
-	db := newMockDatabase()
+// ---------------------------------------------------------------------------
+// recipeResolver — recipe as per-item config (flow_steps.options.recipe)
+// ---------------------------------------------------------------------------
 
-	// Standalone first.
-	hStandalone := &DistillHarness{t: t, db: db, cur: &MockCurator{results: []string{curationJSON("# a", "d")}}, engineName: "mock/engine"}
-	hStandalone.recipe, _ = NewRecipe(Config{Patterns: "extract_wisdom"})
-	hStandalone.db.transcripts = []mockTranscript{{doc: doc, status: statusDone}}
-	if err := hStandalone.Execute(context.Background(), 25); err != nil {
-		t.Fatalf("standalone execute: %v", err)
-	}
-
-	// Session over the same source, sharing the DB.
-	hSession := &DistillHarness{t: t, db: db, cur: &MockCurator{results: []string{curationJSON("# s1", "d"), curationJSON("# s2", "d")}}, engineName: "mock/engine"}
-	hSession.recipe, _ = NewRecipe(Config{Patterns: "summary,extract_wisdom"})
-	if err := hSession.Execute(context.Background(), 25); err != nil {
-		t.Fatalf("session execute: %v", err)
-	}
-
-	if len(db.distillations) != 2 {
-		t.Errorf("want 2 distinct rows (standalone + session), got %d", len(db.distillations))
-	}
-}
-
-// TestUrlSourceNoDuplicate: a url source (NULL youtube id) dedups by source_key — a
-// re-run replaces the row rather than creating a second one.
-func TestUrlSourceNoDuplicate(t *testing.T) {
-	doc := SourceDoc{YoutubeVideoID: "", SourceType: "url", SourceRef: "https://x/y", SourceKey: "https://x/y", Transcript: "x", SourceSHA256: "h"}
-	h := NewDistillHarness(t).
-		WithTranscript(doc).
-		WithResponses(curationJSON("# a", "d"), curationJSON("# b", "d"))
-
-	if err := h.Execute(context.Background(), 25); err != nil {
-		t.Fatalf("first execute: %v", err)
-	}
-	// Force a re-run by clearing the recipe match (simulate stale): bump the saved
-	// row's recipe so it is pending again, then re-run.
-	key := distKey(doc.SourceKey, h.recipe.keyPattern())
-	saved := h.db.distillations[key]
-	saved.RecipeSHA256 = "old"
-	h.db.distillations[key] = saved
-
-	if err := h.Execute(context.Background(), 25); err != nil {
-		t.Fatalf("second execute: %v", err)
-	}
-	if len(h.db.distillations) != 1 {
-		t.Errorf("url source duplicated: want 1 row, got %d", len(h.db.distillations))
-	}
-}
-
-// TestIdempotentReRun: re-running with the same recipe and unchanged source does not
-// re-curate (PendingDocs excludes the fresh row).
-func TestIdempotentReRun(t *testing.T) {
-	h := NewDistillHarness(t).
-		WithTranscript(SourceDoc{SourceKey: "vid1", SourceType: "youtube", SourceRef: "r", Transcript: "x", SourceSHA256: "h1"}).
-		WithResponses(curationJSON("# ok", "d"))
-
-	ctx := context.Background()
-	if err := h.Execute(ctx, 25); err != nil {
-		t.Fatalf("first run: %v", err)
-	}
-	h.AssertCount(1)
-	callsAfterFirst := len(h.cur.calls)
-
-	if err := h.Execute(ctx, 25); err != nil {
-		t.Fatalf("second run: %v", err)
-	}
-	h.AssertCount(1)
-	if len(h.cur.calls) != callsAfterFirst {
-		t.Errorf("idempotent re-run should not re-curate: calls %d -> %d", callsAfterFirst, len(h.cur.calls))
-	}
-}
-
-// TestRecipeChangeReprocesses: changing the recipe (e.g. editing a pattern, swapping
-// engine) re-curates the same unchanged transcript.
-func TestRecipeChangeReprocesses(t *testing.T) {
-	doc := SourceDoc{SourceKey: "vid1", SourceType: "youtube", SourceRef: "r", Transcript: "x", SourceSHA256: "h1"}
-	h := NewDistillHarness(t).
-		WithTranscript(doc).
-		WithResponses(curationJSON("# v1", "d"))
-
-	ctx := context.Background()
-	if err := h.Execute(ctx, 25); err != nil {
-		t.Fatalf("first run: %v", err)
-	}
-	callsAfterFirst := len(h.cur.calls)
-
-	// Simulate a recipe edit: a different recipe hash for the same patterns.
-	h.recipe.RecipeSHA = "different-recipe-hash"
-	h.cur.results = append(h.cur.results, curationJSON("# v2", "d"))
-
-	pending, err := h.db.PendingDocs(ctx, 25, h.recipe.keyPattern(), h.recipe.RecipeSHA)
+// TestRecipeResolverFromConfig: a step's options.recipe selects the pattern/context, overriding
+// the worker's env default. This is the old `news` lane expressed as config.
+func TestRecipeResolverFromConfig(t *testing.T) {
+	rr := newRecipeResolver([]string{"extract_wisdom"}, "", "") // default differs from the configured recipe
+	opts := json.RawMessage(`{"recipe":{"patterns":["summarize_news"],"context":"software-ai"}}`)
+	r, err := rr.resolve(opts)
 	if err != nil {
-		t.Fatalf("pending: %v", err)
+		t.Fatalf("resolve: %v", err)
 	}
-	if len(pending) != 1 {
-		t.Fatalf("recipe change should make the doc pending again, got %d", len(pending))
+	if r.keyPattern() != "summarize_news" {
+		t.Errorf("pattern = %q, want summarize_news", r.keyPattern())
 	}
-	if err := h.Execute(ctx, 25); err != nil {
-		t.Fatalf("second run: %v", err)
+	prompt := r.buildSystemPrompt("summarize_news")
+	if !strings.Contains(prompt, "news editor") {
+		t.Error("expected the summarize_news pattern body")
 	}
-	if len(h.cur.calls) <= callsAfterFirst {
-		t.Error("recipe change must re-curate")
-	}
-	h.AssertCount(1) // still one row, updated in place
-}
-
-// TestSourceChangeReprocesses: an updated transcript (new source hash) re-curates.
-func TestSourceChangeReprocesses(t *testing.T) {
-	h := NewDistillHarness(t).
-		WithTranscript(SourceDoc{SourceKey: "vid1", SourceType: "youtube", SourceRef: "r", Transcript: "old", SourceSHA256: "h1"}).
-		WithResponses(curationJSON("# ok", "d"), curationJSON("# ok2", "d"))
-
-	ctx := context.Background()
-	if err := h.Execute(ctx, 25); err != nil {
-		t.Fatalf("first run: %v", err)
-	}
-	callsAfterFirst := len(h.cur.calls)
-
-	// The transcript changed upstream.
-	h.db.transcripts[0].doc.Transcript = "new content"
-	h.db.transcripts[0].doc.SourceSHA256 = "h2"
-
-	if err := h.Execute(ctx, 25); err != nil {
-		t.Fatalf("second run: %v", err)
-	}
-	if len(h.cur.calls) <= callsAfterFirst {
-		t.Error("source change must re-curate")
+	if !strings.Contains(prompt, "REFERENCE CONTEXT") {
+		t.Error("expected the software-ai context injected")
 	}
 }
 
-// TestExhaustedFailureLeavesBacklog: a doc that fails every run is retried up to the
-// cap and then drops out of the pending set.
-func TestExhaustedFailureLeavesBacklog(t *testing.T) {
-	h := NewDistillHarness(t).
-		WithTranscript(SourceDoc{SourceKey: "perma", SourceType: "youtube", SourceRef: "r", Transcript: "x", SourceSHA256: "h"}).
-		WithCurateError(errors.New("permanent boom"))
-
-	ctx := context.Background()
-	for i := 0; i < maxFailedAttempts; i++ {
-		if err := h.Execute(ctx, 25); err != nil {
-			t.Fatalf("run %d: %v", i, err)
+// TestRecipeResolverFallsBackToDefault: no recipe in options (nil, empty, or a non-recipe key like
+// {"gate":"skip"}) → the worker's env default recipe.
+func TestRecipeResolverFallsBackToDefault(t *testing.T) {
+	rr := newRecipeResolver(nil, "", "") // empty default -> extract_wisdom
+	for _, opts := range []json.RawMessage{nil, json.RawMessage(`{}`), json.RawMessage(`{"gate":"skip"}`)} {
+		r, err := rr.resolve(opts)
+		if err != nil {
+			t.Fatalf("resolve(%s): %v", opts, err)
+		}
+		if r.keyPattern() != "extract_wisdom" {
+			t.Errorf("opts %s -> pattern %q, want extract_wisdom", opts, r.keyPattern())
 		}
 	}
-	h.AssertStatus("perma", statusFailed)
+}
 
-	pending, err := h.db.PendingDocs(ctx, 25, h.recipe.keyPattern(), h.recipe.RecipeSHA)
+// TestRecipeResolverBadOptions: malformed options JSON is an error (not a silent default).
+func TestRecipeResolverBadOptions(t *testing.T) {
+	rr := newRecipeResolver(nil, "", "")
+	if _, err := rr.resolve(json.RawMessage(`{not json`)); err == nil {
+		t.Error("expected error for malformed options JSON")
+	}
+}
+
+// TestRecipeResolverRecipeWithoutPatternsErrors: a recipe block present but missing patterns
+// (e.g. {"recipe":{"context":"software-ai"}}) is a config error, surfaced loudly rather than
+// silently falling back to the default and dropping the context it did set.
+func TestRecipeResolverRecipeWithoutPatternsErrors(t *testing.T) {
+	rr := newRecipeResolver([]string{"extract_wisdom"}, "", "")
+	if _, err := rr.resolve(json.RawMessage(`{"recipe":{"context":"software-ai"}}`)); err == nil {
+		t.Error("expected error for a recipe with no patterns")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// distillHandler — the bridge-total claim-worker domain (mock Store + fake LLM)
+// ---------------------------------------------------------------------------
+
+// TestHandlerHappyPath: claim an item -> distill -> save -> OutputRef is the new distillation id.
+func TestHandlerHappyPath(t *testing.T) {
+	store := newMockStore()
+	store.docs["vid1"] = SourceDoc{YoutubeVideoID: "vid1", SourceType: "youtube", SourceRef: videoRef("vid1"), SourceKey: "vid1", Title: "Talk", Transcript: "hello world", SourceSHA256: "h1"}
+	cur := &MockCurator{results: []string{curationJSON("# Curated", "A talk.")}}
+	h := distillHandler(store, cur, "mock/engine", newRecipeResolver(nil, "", ""))
+
+	res, err := h(context.Background(), addon.Item{ID: 1, SourceRef: "vid1", FlowID: 7}, addon.Step{ItemID: 1, Seq: 5, Capability: capDestilar})
 	if err != nil {
-		t.Fatalf("pending: %v", err)
+		t.Fatalf("handler: %v", err)
 	}
-	if len(pending) != 0 {
-		t.Errorf("exhausted doc still pending: %+v", pending)
+	if res.OutputRef != "1001" {
+		t.Errorf("OutputRef = %q, want 1001 (the saved distillation id)", res.OutputRef)
+	}
+	if len(store.saved) != 1 {
+		t.Fatalf("saved %d distillations, want 1", len(store.saved))
+	}
+	if d := store.saved[0]; d.Status != statusDone || d.Content != "# Curated" || d.Pattern != "extract_wisdom" {
+		t.Errorf("saved row = %+v", d)
 	}
 }
 
-// TestBatchSizeLimit: only `limit` docs are processed per run.
-func TestBatchSizeLimit(t *testing.T) {
-	h := NewDistillHarness(t)
-	for _, id := range []string{"a", "b", "c"} {
-		h.WithTranscript(SourceDoc{SourceKey: id, SourceType: "youtube", SourceRef: "r", Transcript: "x", SourceSHA256: "h"})
-	}
-	h.WithResponses(curationJSON("# ok", "d"))
+// TestHandlerInputNotReadyIsRetryable: the to-text artifact isn't there yet -> ErrRetryable so the
+// SDK requeues (the upstream step may lag), and nothing is saved.
+func TestHandlerInputNotReadyIsRetryable(t *testing.T) {
+	store := newMockStore() // no docs
+	h := distillHandler(store, &MockCurator{}, "mock/engine", newRecipeResolver(nil, "", ""))
 
-	if err := h.Execute(context.Background(), 2); err != nil {
-		t.Fatalf("execute: %v", err)
+	_, err := h(context.Background(), addon.Item{SourceRef: "missing", FlowID: 1}, addon.Step{Seq: 1})
+	if !errors.Is(err, addon.ErrRetryable) {
+		t.Errorf("err = %v, want wrapping addon.ErrRetryable", err)
 	}
-	h.AssertCount(2) // limited to 2 of 3
+	if len(store.saved) != 0 {
+		t.Errorf("nothing should be saved on a transient miss, saved %d", len(store.saved))
+	}
 }
 
-// videoRef is a tiny helper mirroring the canonical watch URL for test readability.
-func videoRef(id string) string { return "https://www.youtube.com/watch?v=" + id }
+// TestHandlerDistillFailedPersistsAndRetries: a curation failure persists the failed row (for
+// observability) AND surfaces as retryable, so the SDK requeues up to MaxAttempts (the 1.0
+// retry-to-cap) instead of terminally failing the item on the first blip.
+func TestHandlerDistillFailedPersistsAndRetries(t *testing.T) {
+	store := newMockStore()
+	store.docs["vid1"] = SourceDoc{SourceKey: "vid1", SourceRef: "vid1", Transcript: "x"}
+	cur := &MockCurator{err: errors.New("llm 500")}
+	h := distillHandler(store, cur, "mock/engine", newRecipeResolver(nil, "", ""))
+
+	_, err := h(context.Background(), addon.Item{SourceRef: "vid1", FlowID: 1}, addon.Step{Seq: 1})
+	if !errors.Is(err, addon.ErrRetryable) {
+		t.Errorf("err = %v, want wrapping addon.ErrRetryable (requeue up to the cap)", err)
+	}
+	if len(store.saved) != 1 || store.saved[0].Status != statusFailed {
+		t.Errorf("expected one persisted failed row, got %+v", store.saved)
+	}
+}
+
+// TestHandlerSaveErrorPropagates: a store write failure propagates (the step is not silently
+// marked done) and is not mistaken for a transient input miss.
+func TestHandlerSaveErrorPropagates(t *testing.T) {
+	store := newMockStore()
+	store.docs["vid1"] = SourceDoc{SourceKey: "vid1", SourceRef: "vid1", Transcript: "x"}
+	store.saveErr = errors.New("neon write timeout")
+	cur := &MockCurator{results: []string{curationJSON("# ok", "d")}}
+	h := distillHandler(store, cur, "mock/engine", newRecipeResolver(nil, "", ""))
+
+	_, err := h(context.Background(), addon.Item{SourceRef: "vid1", FlowID: 1}, addon.Step{Seq: 1})
+	if err == nil || !strings.Contains(err.Error(), "neon write timeout") {
+		t.Errorf("err = %v, want the save error propagated", err)
+	}
+}
+
+// TestHandlerRecipeOptionsErrorPropagates: a failure reading the per-step recipe config propagates
+// (the handler does not fall back to the default on a real DB error).
+func TestHandlerRecipeOptionsErrorPropagates(t *testing.T) {
+	store := newMockStore()
+	store.recipeErr = errors.New("flow_steps read failed")
+	store.docs["vid1"] = SourceDoc{SourceKey: "vid1", SourceRef: "vid1", Transcript: "x"}
+	h := distillHandler(store, &MockCurator{}, "mock/engine", newRecipeResolver(nil, "", ""))
+
+	_, err := h(context.Background(), addon.Item{SourceRef: "vid1", FlowID: 1}, addon.Step{Seq: 1})
+	if err == nil || !strings.Contains(err.Error(), "flow_steps read failed") {
+		t.Errorf("err = %v, want the recipe-options error propagated", err)
+	}
+	if len(store.saved) != 0 {
+		t.Errorf("nothing should be saved when the recipe could not be resolved, saved %d", len(store.saved))
+	}
+}
+
+// TestHandlerRecipeFromConfig: the handler reads the recipe from the step's options (the news
+// recipe) and the curator receives that pattern's prompt; the saved row records the pattern.
+func TestHandlerRecipeFromConfig(t *testing.T) {
+	store := newMockStore()
+	store.recipeOptions = json.RawMessage(`{"recipe":{"patterns":["summarize_news"],"context":"software-ai"}}`)
+	store.docs["u"] = SourceDoc{SourceType: "news", SourceRef: "u", SourceKey: "u", Title: "GPT-5", Transcript: "OpenAI shipped GPT-5."}
+	cur := &MockCurator{results: []string{curationJSON("## TL;DR", "OpenAI news.")}}
+	// Default recipe is extract_wisdom; the config must override it.
+	h := distillHandler(store, cur, "mock/engine", newRecipeResolver([]string{"extract_wisdom"}, "", ""))
+
+	if _, err := h(context.Background(), addon.Item{SourceRef: "u", FlowID: 9}, addon.Step{Seq: 5}); err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	if len(cur.calls) == 0 {
+		t.Fatal("curator was not called")
+	}
+	if !strings.Contains(cur.calls[0].system, "news editor") {
+		t.Error("expected the summarize_news system prompt (recipe from config)")
+	}
+	if !strings.Contains(cur.calls[0].system, "REFERENCE CONTEXT") {
+		t.Error("expected the software-ai context injected")
+	}
+	if d := store.saved[0]; d.Pattern != "summarize_news" || d.SourceType != "news" {
+		t.Errorf("saved row recipe wrong: pattern=%q source_type=%q", d.Pattern, d.SourceType)
+	}
+}
+
+// TestHandlerRecipeDefaultWhenNoConfig: with no options recipe, the worker's env default applies.
+func TestHandlerRecipeDefaultWhenNoConfig(t *testing.T) {
+	store := newMockStore() // recipeOptions nil
+	store.docs["v"] = SourceDoc{SourceKey: "v", SourceRef: "v", Transcript: "x"}
+	cur := &MockCurator{results: []string{curationJSON("# ok", "d")}}
+	h := distillHandler(store, cur, "mock/engine", newRecipeResolver(nil, "", "")) // default -> extract_wisdom
+
+	if _, err := h(context.Background(), addon.Item{SourceRef: "v", FlowID: 1}, addon.Step{Seq: 1}); err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	if store.saved[0].Pattern != "extract_wisdom" {
+		t.Errorf("pattern = %q, want extract_wisdom (default)", store.saved[0].Pattern)
+	}
+}
 
 // ---------------------------------------------------------------------------
 // Integration test (real SQL) — opt-in via DISTILL_TEST_DATABASE_URL.
 //
-// The unit tests above use MockDatabase, which cannot reproduce SQL three-valued
-// (NULL) logic. This test runs the actual PendingDocs query against Postgres to guard
-// the NULL edge cases that a mock will always miss: a never-distilled transcript MUST
-// be returned (the case a naive NOT (... ) clause silently drops), a fresh one MUST be
-// skipped, a failure under the cap MUST be retried, and one past the cap MUST be
-// excluded. Skipped unless DISTILL_TEST_DATABASE_URL points at a throwaway Postgres.
+// LoadSourceDoc reads ONE to-text artifact by source_key (the spine's source_ref), with the title
+// joined from the collector tables and the timestamped transcript built from transcript_segments.
+// This runs the actual query against Postgres to guard the COALESCE source_key match, the
+// done/non-empty filter, the not-found path, and the [seconds] build. Skipped unless
+// DISTILL_TEST_DATABASE_URL points at a throwaway Postgres.
 // ---------------------------------------------------------------------------
 
-func TestPendingDocsIntegration(t *testing.T) {
+func TestLoadSourceDocIntegration(t *testing.T) {
 	dsn := os.Getenv("DISTILL_TEST_DATABASE_URL")
 	if dsn == "" {
 		t.Skip("set DISTILL_TEST_DATABASE_URL to a throwaway Postgres to run the integration test")
 	}
 	ctx := context.Background()
+
+	const schema = "distill_it_test"
+	// Bootstrap connection: create the throwaway schema + tables + fixtures on a single conn.
 	conn, err := pgx.Connect(ctx, dsn)
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
 	defer conn.Close(ctx)
 
-	const schema = "distill_it_test"
 	exec := func(sql string, args ...any) {
 		t.Helper()
 		if _, err := conn.Exec(ctx, sql, args...); err != nil {
 			t.Fatalf("exec %.60q: %v", sql, err)
 		}
 	}
-
 	exec("DROP SCHEMA IF EXISTS " + schema + " CASCADE")
 	exec("CREATE SCHEMA " + schema)
 	t.Cleanup(func() { _, _ = conn.Exec(ctx, "DROP SCHEMA IF EXISTS "+schema+" CASCADE") })
@@ -1073,136 +921,67 @@ func TestPendingDocsIntegration(t *testing.T) {
 		text TEXT NOT NULL)`)
 	exec(`CREATE TABLE channel_videos (youtube_video_id TEXT, title TEXT)`)
 	exec(`CREATE TABLE playlist_videos (youtube_video_id TEXT, title TEXT)`)
-	exec(`CREATE TABLE distillations (
-		id SERIAL PRIMARY KEY,
-		youtube_video_id TEXT, source_type TEXT NOT NULL, source_ref TEXT NOT NULL,
-		source_key TEXT NOT NULL, pattern TEXT NOT NULL, context TEXT, strategy TEXT,
-		session_patterns TEXT, engine TEXT NOT NULL, title TEXT, content TEXT,
-		structured JSONB NOT NULL DEFAULT '{}', structured_status TEXT NOT NULL DEFAULT 'ok',
-		doc_context TEXT, source_sha256 TEXT NOT NULL, recipe_sha256 TEXT NOT NULL,
-		status TEXT NOT NULL DEFAULT 'done', error TEXT, attempt_count INT NOT NULL DEFAULT 0)`)
-	exec("CREATE UNIQUE INDEX uq ON distillations (source_key, COALESCE(session_patterns, pattern))")
 
-	all := []string{"never", "fresh_done", "failed_under", "failed_over"}
-	for _, v := range all {
-		var tid int
-		if err := conn.QueryRow(ctx,
-			`INSERT INTO transcripts (youtube_video_id, source_type, source_ref, transcript, status)
-			 VALUES ($1, 'youtube', $2, $3, 'done') RETURNING id`,
-			v, "https://y/"+v, "body of "+v).Scan(&tid); err != nil {
-			t.Fatalf("insert transcript: %v", err)
-		}
-		exec("INSERT INTO channel_videos (youtube_video_id, title) VALUES ($1, $2)", v, "Title "+v)
-		// Give "never" two timestamped segments so we can assert the [seconds] build.
-		if v == "never" {
-			exec(`INSERT INTO transcript_segments (transcript_id, seq, start_seconds, end_seconds, text)
-				VALUES ($1, 0, 0, 5, 'hello'), ($1, 1, 12, 18, 'world')`, tid)
-		}
+	// A youtube transcript (source_key = youtube_video_id) WITH segments, plus an email-style
+	// transcript (source_key = source_ref, no youtube id) WITHOUT segments, plus an empty one.
+	var ytTID int
+	if err := conn.QueryRow(ctx,
+		`INSERT INTO transcripts (youtube_video_id, source_type, source_ref, transcript, status)
+		 VALUES ('vid1', 'youtube', $1, 'hello world body', 'done') RETURNING id`,
+		videoRef("vid1")).Scan(&ytTID); err != nil {
+		t.Fatalf("insert yt transcript: %v", err)
 	}
+	exec("INSERT INTO channel_videos (youtube_video_id, title) VALUES ('vid1', 'A Talk')")
+	exec(`INSERT INTO transcript_segments (transcript_id, seq, start_seconds, end_seconds, text)
+		VALUES ($1, 0, 0, 5, 'hello'), ($1, 1, 12, 18, 'world')`, ytTID)
 
-	const recipe = "recipe-hash-v1"
-	const keyPattern = "extract_wisdom"
+	exec(`INSERT INTO transcripts (youtube_video_id, source_type, source_ref, transcript, status)
+		VALUES (NULL, 'email', 'msg-42', 'cleaned email body', 'done')`)
+	exec(`INSERT INTO transcripts (youtube_video_id, source_type, source_ref, transcript, status)
+		VALUES (NULL, 'email', 'msg-empty', '', 'done')`)
 
-	srcHash := func(v string) string {
-		var h string
-		if err := conn.QueryRow(ctx,
-			"SELECT encode(sha256(convert_to($1, 'UTF8')), 'hex')", "body of "+v).Scan(&h); err != nil {
-			t.Fatalf("hash: %v", err)
-		}
-		return h
-	}
-	insDist := func(v, status string, attempts int) {
-		exec(`INSERT INTO distillations
-			(youtube_video_id, source_type, source_ref, source_key, pattern, engine,
-			 source_sha256, recipe_sha256, status, attempt_count)
-			VALUES ($1, 'youtube', $2, $1, $3, 'gemini/x', $4, $5, $6, $7)`,
-			v, "https://y/"+v, keyPattern, srcHash(v), recipe, status, attempts)
-	}
-	// "never" gets no distillation row — the NULL edge that bug-class #1 dropped.
-	insDist("fresh_done", statusDone, 0)                       // up to date -> excluded
-	insDist("failed_under", statusFailed, maxFailedAttempts-1) // retryable -> included
-	insDist("failed_over", statusFailed, maxFailedAttempts)    // cap reached -> excluded
-
-	db := &pgxDatabase{conn: conn}
-	docs, err := db.PendingDocs(ctx, 100, keyPattern, recipe)
+	// The appDB reads via a pool; pin search_path on every pooled connection to the test schema.
+	poolCfg, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
-		t.Fatalf("PendingDocs: %v", err)
+		t.Fatalf("pool config: %v", err)
 	}
-	got := map[string]bool{}
-	byID := map[string]SourceDoc{}
-	for _, d := range docs {
-		got[d.YoutubeVideoID] = true
-		byID[d.YoutubeVideoID] = d
+	poolCfg.ConnConfig.RuntimeParams["search_path"] = schema
+	pool, err := pgxpool.NewWithConfig(ctx, poolCfg)
+	if err != nil {
+		t.Fatalf("pool: %v", err)
 	}
-	want := map[string]bool{"never": true, "failed_under": true}
-	for _, v := range all {
-		if got[v] != want[v] {
-			t.Errorf("PendingDocs include[%q] = %v, want %v", v, got[v], want[v])
-		}
+	defer pool.Close()
+	db := &appDB{pool: pool}
+
+	// YouTube source: matched by source_key = youtube_video_id, with the [seconds] build.
+	doc, found, err := db.LoadSourceDoc(ctx, "vid1")
+	if err != nil || !found {
+		t.Fatalf("load vid1: found=%v err=%v", found, err)
+	}
+	if doc.SourceKey != "vid1" || doc.Title != "A Talk" || doc.YoutubeVideoID != "vid1" {
+		t.Errorf("vid1 doc = %+v", doc)
+	}
+	if doc.TranscriptTimestamped != "[0] hello\n[12] world" {
+		t.Errorf("vid1 timestamped = %q, want the [seconds] build", doc.TranscriptTimestamped)
 	}
 
-	// "never" has segments -> the timestamped transcript is built with [seconds] markers.
-	if ts := byID["never"].TranscriptTimestamped; ts != "[0] hello\n[12] world" {
-		t.Errorf("never.TranscriptTimestamped = %q, want the [seconds]-prefixed build", ts)
+	// Email source: matched by source_key = source_ref (NULL youtube id), flat transcript fallback.
+	doc, found, err = db.LoadSourceDoc(ctx, "msg-42")
+	if err != nil || !found {
+		t.Fatalf("load msg-42: found=%v err=%v", found, err)
 	}
-	// "failed_under" has no segments -> falls back to the flat transcript.
-	if ts := byID["failed_under"].TranscriptTimestamped; ts != "body of failed_under" {
-		t.Errorf("failed_under.TranscriptTimestamped = %q, want flat-transcript fallback", ts)
+	if doc.SourceKey != "msg-42" || doc.YoutubeVideoID != "" || doc.SourceType != "email" {
+		t.Errorf("msg-42 doc = %+v", doc)
 	}
-}
-
-// ---------------------------------------------------------------------------
-// News lane (DISTILL_SOURCE=news)
-// ---------------------------------------------------------------------------
-
-// TestNewsLaneRecipe: the news source mode resolves to the summarize_news pattern
-// with the software-ai context (no strategy), and a news item is curated under that
-// recipe with its source_type carried through to the distillation.
-func TestNewsLaneRecipe(t *testing.T) {
-	newsCfg := recipeConfig(Config{Source: sourceModeNews})
-	if newsCfg.Patterns != newsPattern {
-		t.Fatalf("news recipe patterns = %q, want %q", newsCfg.Patterns, newsPattern)
-	}
-	if newsCfg.ContextName != newsContext {
-		t.Errorf("news recipe context = %q, want %q", newsCfg.ContextName, newsContext)
-	}
-	if newsCfg.StrategyName != "" {
-		t.Errorf("news recipe strategy = %q, want empty", newsCfg.StrategyName)
+	if doc.TranscriptTimestamped != "cleaned email body" {
+		t.Errorf("msg-42 timestamped = %q, want flat fallback", doc.TranscriptTimestamped)
 	}
 
-	const key = "https://openai.com/blog/x"
-	h := NewDistillHarness(t).WithRecipe(newsCfg).
-		WithTranscript(SourceDoc{
-			SourceType: "news", SourceRef: key, SourceKey: key, Title: "GPT-5",
-			Transcript: "OpenAI shipped GPT-5.", SourceSHA256: "h1",
-		}).
-		WithResponses(curationJSON("## TL;DR\nGPT-5 shipped.", "OpenAI news."))
-
-	if err := h.Execute(context.Background(), 25); err != nil {
-		t.Fatalf("execute: %v", err)
+	// Empty and unknown sources are not ready to distill.
+	if _, found, _ := db.LoadSourceDoc(ctx, "msg-empty"); found {
+		t.Error("an empty transcript must not be returned (nothing to distill)")
 	}
-	h.AssertCount(1)
-	h.AssertStatus(key, statusDone)
-
-	d, ok := h.get(key)
-	if !ok {
-		t.Fatal("news distillation not found")
-	}
-	if d.SourceType != "news" {
-		t.Errorf("source_type = %q, want news", d.SourceType)
-	}
-	if d.Pattern != newsPattern {
-		t.Errorf("pattern = %q, want %q", d.Pattern, newsPattern)
-	}
-
-	// The summarize_news system prompt must reach the curator, with the AI/ML context.
-	if len(h.cur.calls) == 0 {
-		t.Fatal("curator was not called")
-	}
-	if !strings.Contains(h.cur.calls[0].system, "news editor") {
-		t.Error("expected the summarize_news system prompt to be used")
-	}
-	if !strings.Contains(h.cur.calls[0].system, "REFERENCE CONTEXT") {
-		t.Error("expected the software-ai context to be injected")
+	if _, found, _ := db.LoadSourceDoc(ctx, "nope"); found {
+		t.Error("an unknown source_ref must not be found")
 	}
 }

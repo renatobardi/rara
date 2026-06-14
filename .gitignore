@@ -1,0 +1,6 @@
+# Go workspace file — local-dev ergonomics only (open rara-core + rara-addon + an app together).
+# NEVER committed: each module couples to rara-addon via a `replace` directive in its own go.mod,
+# so it builds standalone in CI (cd rara-X && go test) and in the P2 Docker build. A committed
+# go.work would force every sibling module into the workspace and break `cd rara-X && go test`.
+go.work
+go.work.sum

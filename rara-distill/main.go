@@ -6,17 +6,22 @@ import (
 	"embed"
 	"encoding/hex"
 	"encoding/json"
-	"flag"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	addon "rara-addon"
 )
 
 // library holds the Fabric-style curation assets, embedded into the binary so the
@@ -53,32 +58,19 @@ const (
 	structParseFailed = "parse_failed" // the model output was not the expected JSON
 )
 
-// Source modes (DISTILL_SOURCE): which upstream the work-queue reads. Each mode runs
-// as its own lane (its own recipe), so the transcripts hot path stays untouched.
-const (
-	sourceModeTranscripts = "transcripts" // default: rara-scribe transcripts
-	sourceModeNews        = "news"        // rara-feed news_items
-
-	// newsPattern/newsContext are the fixed recipe for the news lane: a short news
-	// brief, reusing the AI/ML reference context, with no reasoning strategy.
-	newsPattern = "summarize_news"
-	newsContext = "software-ai"
-)
+// capDestilar is the logical task this app serves (the capability name in the schema; never
+// renamed — only the app name "distill" is evocative). The reconciler routes destilar steps to
+// this worker's provider; addon.Run claims them by (capability, assigned_provider).
+const capDestilar = "destilar"
 
 const (
-	defaultBatchSize = 1
-
-	// curateTimeout bounds the LLM work on a single transcript (a long transcript
-	// plus a multi-stage session can take a while), so a hung provider call cannot
-	// block the whole batch.
+	// curateTimeout bounds the LLM work on a single item (a long transcript plus a
+	// multi-stage session can take a while), so a hung provider call cannot block the
+	// claim loop indefinitely.
 	curateTimeout = 5 * time.Minute
 
-	// saveTimeout bounds the per-doc database write.
+	// saveTimeout bounds the per-item database write.
 	saveTimeout = 30 * time.Second
-
-	// maxFailedAttempts caps how many times a failing transcript is retried before
-	// PendingDocs skips it, so a permanently-broken input stops burning LLM calls.
-	maxFailedAttempts = 5
 
 	// maxCurateRetries bounds transient-error (429/5xx) retries within a single LLM
 	// call before giving up.
@@ -200,25 +192,31 @@ type Config struct {
 	LiteLLMBaseURL  string // LITELLM_BASE_URL: the self-hosted gateway's OpenAI-compatible base
 	LiteLLMAPIKey   string // LITELLM_API_KEY: optional gateway master key (omitted if empty)
 	LiteLLMModel    string // LITELLM_MODEL: the gateway model alias
-	Patterns        string // CSV
-	ContextName     string
-	StrategyName    string
-	BatchSize       int
-	Source          string // DISTILL_SOURCE: 'transcripts' (default) | 'news'
+	// Patterns/ContextName/StrategyName are the DEFAULT recipe (the fallback used when a
+	// flow's destilar step carries no `recipe` in its flow_steps.options). The per-item
+	// recipe normally comes from config — see recipeResolver.
+	Patterns     string // CSV
+	ContextName  string
+	StrategyName string
 }
 
 // ---------------------------------------------------------------------------
 // Interfaces (the seams that make the pipeline unit-testable with zero I/O)
 // ---------------------------------------------------------------------------
 
-// Database is the persistence seam. The real implementation talks to Neon; the
-// tests use an in-memory mock that mirrors the SQL uniqueness/staleness contract.
-type Database interface {
-	// PendingDocs returns transcripts that need (re)distilling for the current
-	// recipe: never distilled, source changed, or recipe changed. keyPattern is the
-	// COALESCE(session_patterns, pattern) value identifying this recipe's rows.
-	PendingDocs(ctx context.Context, limit int, keyPattern, recipeSHA string) ([]SourceDoc, error)
-	SaveDistillation(ctx context.Context, d Distillation) error
+// DistillStore is the DOMAIN persistence seam the handler needs (distinct from the CONTRACT
+// store, which is the SDK's addon.NewPgxStore over item_steps/providers/items). The real
+// implementation (appDB) talks to Neon; tests use an in-memory mock.
+//
+//   - RecipeOptions reads the per-step config (flow_steps.options) so the recipe is data, not a
+//     hardcoded mode — the old `news` lane (summarize_news+software-ai) is now just a flow whose
+//     destilar step carries that recipe.
+//   - LoadSourceDoc reads the to-text artifact for an item (the upstream transcripts row).
+//   - SaveDistillation upserts the domain row and returns its id (the OutputRef recorded on the step).
+type DistillStore interface {
+	RecipeOptions(ctx context.Context, flowID, seq int) (json.RawMessage, error)
+	LoadSourceDoc(ctx context.Context, sourceRef string) (SourceDoc, bool, error)
+	SaveDistillation(ctx context.Context, d Distillation) (int, error)
 }
 
 // Curator is the LLM seam — the single point where Gemini, Claude or Groq are
@@ -281,19 +279,32 @@ func (r Recipe) buildSystemPrompt(pattern string) string {
 	return b.String()
 }
 
-// NewRecipe resolves the recipe from config: parses the pattern chain, loads every
-// embedded asset (failing fast if one is missing), and computes the recipe hash from
-// the asset bytes (pattern chain + context + strategy). The engine is not part of it.
+// NewRecipe resolves the recipe from config (the default-recipe env fields). It delegates to
+// newRecipeFromSpec; kept as the env-shaped entry point so the curation library's tests are
+// unchanged.
 func NewRecipe(cfg Config) (Recipe, error) {
-	chain := splitCSV(cfg.Patterns)
+	return newRecipeFromSpec(splitCSV(cfg.Patterns), cfg.ContextName, cfg.StrategyName)
+}
+
+// newRecipeFromSpec resolves a recipe from an explicit pattern chain + optional context/strategy:
+// it loads every embedded asset (failing fast if one is missing) and computes the recipe hash from
+// the asset bytes (pattern chain + context + strategy). The engine is not part of it. This is the
+// shared core of both the env default (NewRecipe) and the per-item config recipe (recipeResolver).
+func newRecipeFromSpec(patterns []string, contextName, strategyName string) (Recipe, error) {
+	chain := make([]string, 0, len(patterns))
+	for _, p := range patterns {
+		if v := strings.TrimSpace(p); v != "" {
+			chain = append(chain, v)
+		}
+	}
 	if len(chain) == 0 {
 		chain = []string{"extract_wisdom"}
 	}
 
 	r := Recipe{
 		Patterns:     chain,
-		ContextName:  cfg.ContextName,
-		StrategyName: cfg.StrategyName,
+		ContextName:  contextName,
+		StrategyName: strategyName,
 		patternSrc:   make(map[string]string, len(chain)),
 	}
 
@@ -308,18 +319,18 @@ func NewRecipe(cfg Config) (Recipe, error) {
 	}
 
 	var contextBytes, strategyBytes []byte
-	if cfg.ContextName != "" {
-		b, err := library.ReadFile("contexts/" + cfg.ContextName + ".md")
+	if contextName != "" {
+		b, err := library.ReadFile("contexts/" + contextName + ".md")
 		if err != nil {
-			return Recipe{}, fmt.Errorf("unknown context %q (no contexts/%s.md)", cfg.ContextName, cfg.ContextName)
+			return Recipe{}, fmt.Errorf("unknown context %q (no contexts/%s.md)", contextName, contextName)
 		}
 		r.contextSrc = string(b)
 		contextBytes = b
 	}
-	if cfg.StrategyName != "" {
-		b, err := library.ReadFile("strategies/" + cfg.StrategyName + ".md")
+	if strategyName != "" {
+		b, err := library.ReadFile("strategies/" + strategyName + ".md")
 		if err != nil {
-			return Recipe{}, fmt.Errorf("unknown strategy %q (no strategies/%s.md)", cfg.StrategyName, cfg.StrategyName)
+			return Recipe{}, fmt.Errorf("unknown strategy %q (no strategies/%s.md)", strategyName, strategyName)
 		}
 		r.strategySrc = string(b)
 		strategyBytes = b
@@ -327,6 +338,60 @@ func NewRecipe(cfg Config) (Recipe, error) {
 
 	r.RecipeSHA = hashRecipe(patternBytes, contextBytes, strategyBytes)
 	return r, nil
+}
+
+// ---------------------------------------------------------------------------
+// recipeResolver — the recipe as per-item CONFIG (flow_steps.options.recipe)
+// ---------------------------------------------------------------------------
+
+// recipeSpec is the recipe carried in a flow's destilar step config
+// (flow_steps.options -> {"recipe": {...}}). Absent/empty patterns fall back to the worker's
+// env default. This is how the old `news` lane is expressed without a hardcoded mode.
+type recipeSpec struct {
+	Patterns []string `json:"patterns"`
+	Context  string   `json:"context"`
+	Strategy string   `json:"strategy"`
+}
+
+// stepOptions is the (partial) shape of flow_steps.options the worker reads; other keys
+// (e.g. {"gate":"skip"}) are ignored here.
+type stepOptions struct {
+	Recipe *recipeSpec `json:"recipe"`
+}
+
+// recipeResolver turns a flow step's options into a Recipe, falling back to the env default when
+// the step carries none.
+type recipeResolver struct {
+	defPatterns []string
+	defContext  string
+	defStrategy string
+}
+
+func newRecipeResolver(defPatterns []string, defContext, defStrategy string) *recipeResolver {
+	return &recipeResolver{defPatterns: defPatterns, defContext: defContext, defStrategy: defStrategy}
+}
+
+// resolve picks the recipe for an item: the step's options.recipe when present (non-empty
+// patterns), else the env default. Building a recipe is a few embedded-asset reads + a hash —
+// cheap next to the per-item LLM call — so it's rebuilt each time rather than cached.
+func (rr *recipeResolver) resolve(optsRaw json.RawMessage) (Recipe, error) {
+	patterns, contextName, strategy := rr.defPatterns, rr.defContext, rr.defStrategy
+	if len(optsRaw) > 0 {
+		var o stepOptions
+		if err := json.Unmarshal(optsRaw, &o); err != nil {
+			return Recipe{}, fmt.Errorf("parse flow_step options: %w", err)
+		}
+		if o.Recipe != nil {
+			// A recipe override must name its patterns; a recipe block with none (e.g.
+			// {"recipe":{"context":"software-ai"}}) is a config error — surfaced loudly rather
+			// than silently falling back to the default and ignoring whatever it did set.
+			if len(o.Recipe.Patterns) == 0 {
+				return Recipe{}, fmt.Errorf("flow_step recipe has no patterns (set recipe.patterns or omit the recipe key)")
+			}
+			patterns, contextName, strategy = o.Recipe.Patterns, o.Recipe.Context, o.Recipe.Strategy
+		}
+	}
+	return newRecipeFromSpec(patterns, contextName, strategy)
 }
 
 // hashRecipe is a pure function over the inputs that define WHAT a distillation must
@@ -547,43 +612,59 @@ func distillDoc(ctx context.Context, cur Curator, engineName string, r Recipe, d
 	return d
 }
 
-// runBatch distills the next batch of pending transcripts. A failure on one doc is
-// recorded and the batch continues.
-func runBatch(ctx context.Context, db Database, cur Curator, engineName string, r Recipe, limit int) error {
-	docs, err := db.PendingDocs(ctx, limit, r.keyPattern(), r.RecipeSHA)
-	if err != nil {
-		return fmt.Errorf("failed to load pending docs: %w", err)
-	}
-	if len(docs) == 0 {
-		log.Println("No pending transcripts to distill")
-		return nil
-	}
-	log.Printf("Distilling %d transcript(s) with %s [recipe %s]\n", len(docs), engineName, r.keyPattern())
+// distillHandler is the domain logic behind addon.Run: distill ONE claimed item. The SDK owns the
+// claim/heartbeat/result/requeue/poke around it; this only does the work.
+//
+//  1. resolve the recipe for the item's destilar step (flow_steps.options.recipe, else the default);
+//  2. load the item's to-text artifact (the upstream transcripts row) by SourceRef;
+//  3. run the curation (distillDoc, unchanged);
+//  4. persist the distillation (also when it failed — for observability) and report the OutputRef.
+//
+// A missing input is transient (addon.ErrRetryable): the upstream to-text step may not have landed
+// yet, so the SDK requeues up to the cap rather than failing the item for good. A curation failure
+// is terminal: the failed row is recorded, and the step is failed.
+func distillHandler(store DistillStore, cur Curator, engineName string, rr *recipeResolver) addon.Handler {
+	return func(ctx context.Context, item addon.Item, step addon.Step) (addon.Result, error) {
+		optsRaw, err := store.RecipeOptions(ctx, item.FlowID, step.Seq)
+		if err != nil {
+			return addon.Result{}, fmt.Errorf("destilar %s: recipe options: %w", item.SourceRef, err)
+		}
+		recipe, err := rr.resolve(optsRaw)
+		if err != nil {
+			return addon.Result{}, fmt.Errorf("destilar %s: recipe: %w", item.SourceRef, err)
+		}
 
-	done, failed := 0, 0
-	for _, doc := range docs {
+		doc, found, err := store.LoadSourceDoc(ctx, item.SourceRef)
+		if err != nil {
+			return addon.Result{}, fmt.Errorf("destilar %s: load input: %w", item.SourceRef, err)
+		}
+		if !found {
+			return addon.Result{}, fmt.Errorf("destilar %s: input transcript not ready: %w", item.SourceRef, addon.ErrRetryable)
+		}
+
 		dctx, cancel := context.WithTimeout(ctx, curateTimeout)
-		d := distillDoc(dctx, cur, engineName, r, doc)
+		d := distillDoc(dctx, cur, engineName, recipe, doc)
 		cancel()
 
 		sctx, cancelSave := context.WithTimeout(ctx, saveTimeout)
-		err := db.SaveDistillation(sctx, d)
+		id, saveErr := store.SaveDistillation(sctx, d)
 		cancelSave()
-		if err != nil {
-			log.Printf("Warning: failed to save distillation for %s: %v\n", doc.SourceKey, err)
-			continue
+		if saveErr != nil {
+			return addon.Result{}, fmt.Errorf("destilar %s: save: %w", doc.SourceKey, saveErr)
 		}
-		if d.Status == statusFailed {
-			failed++
-			log.Printf("Failed: %s — %s\n", doc.SourceKey, d.Error)
-		} else {
-			done++
-			log.Printf("Distilled: %s (%s, structured=%s)\n", doc.SourceKey, d.Title, d.StructuredStatus)
-		}
-	}
 
-	log.Printf("Batch complete: %d done, %d failed\n", done, failed)
-	return nil
+		if d.Status == statusFailed {
+			// Row persisted for observability. Surface as retryable so the SDK requeues up to
+			// MaxAttempts (matching the 1.0 retry-to-cap, where a failed distillation was
+			// re-selected until attempt_count hit the ceiling). postWithRetry already absorbs
+			// transient 429/5xx within a call; this covers a timeout or a sustained outage so a
+			// blip does not terminally fail the item on the first miss. A persistent failure still
+			// terminates — just after the bounded retries.
+			return addon.Result{}, fmt.Errorf("destilar %s: %w: %s", doc.SourceKey, addon.ErrRetryable, d.Error)
+		}
+		log.Printf("distilled %s (%s, structured=%s) -> distillation %d", doc.SourceKey, doc.Title, d.StructuredStatus, id)
+		return addon.Result{OutputRef: strconv.Itoa(id)}, nil
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -954,27 +1035,39 @@ func curationResponseSchema() map[string]any {
 }
 
 // ---------------------------------------------------------------------------
-// Real database: Neon PostgreSQL via pgx
+// Real domain database: Neon PostgreSQL via pgxpool
+//
+// appDB is the DOMAIN store (distillations write + the upstream transcripts/flow_steps reads).
+// The CONTRACT store (item_steps/providers/items) is the SDK's addon.NewPgxStore over the same
+// pool. A pool (not a single conn) backs both because the SDK heartbeats from a background
+// goroutine while the drain loop claims — and *pgxpool.Pool is safe for concurrent use.
 // ---------------------------------------------------------------------------
 
-type pgxDatabase struct {
-	conn   *pgx.Conn
-	source string // sourceModeTranscripts | sourceModeNews
+type appDB struct{ pool *pgxpool.Pool }
+
+var _ DistillStore = (*appDB)(nil)
+
+// RecipeOptions reads a flow step's options blob (flow_steps.options) so the recipe can be config
+// rather than a hardcoded mode. A missing step row yields (nil, nil) → the worker's env default.
+func (db *appDB) RecipeOptions(ctx context.Context, flowID, seq int) (json.RawMessage, error) {
+	const q = `SELECT options FROM flow_steps WHERE flow_id = $1 AND seq = $2`
+	var raw []byte
+	switch err := db.pool.QueryRow(ctx, q, flowID, seq).Scan(&raw); {
+	case errors.Is(err, pgx.ErrNoRows):
+		return nil, nil
+	case err != nil:
+		return nil, err
+	}
+	return json.RawMessage(raw), nil
 }
 
-// PendingDocs returns transcripts that need (re)distilling for the current recipe.
-// A transcript is pending when there is no distillation for this recipe key, or the
-// existing one is not 'done', or the source transcript changed (source_sha256), or
-// the recipe changed (recipe_sha256). Failed rows past the retry cap are excluded,
-// and never-distilled docs are ordered before previously-failed ones so failures
-// cannot starve the backlog.
-func (d *pgxDatabase) PendingDocs(ctx context.Context, limit int, keyPattern, recipeSHA string) ([]SourceDoc, error) {
-	// Two stages: pick the pending rows first (cheap), then build the timestamped
-	// transcript ONLY for the <= limit rows that survive. Building it inside src would
-	// run the per-segment string_agg for every done transcript (the whole backlog),
-	// because the ORDER BY ... LIMIT forces all matching rows to be projected before
-	// the cut — wasteful when the batch is small.
-	const transcriptsQuery = `
+// LoadSourceDoc reads the to-text artifact to distill for one item, keyed by the spine's
+// source_ref (= the row's source_key, COALESCE(youtube_video_id, source_ref) — universal across
+// lanes, since the extrair workers also write transcripts keyed on source_ref). The title comes
+// from the collector tables and the timestamped transcript from transcript_segments (falling back
+// to the flat text). Returns found=false when no done, non-empty transcript exists yet.
+func (db *appDB) LoadSourceDoc(ctx context.Context, sourceRef string) (SourceDoc, bool, error) {
+	const q = `
 		WITH src AS (
 			SELECT
 				t.id AS transcript_id,
@@ -997,112 +1090,41 @@ func (d *pgxDatabase) PendingDocs(ctx context.Context, limit int, keyPattern, re
 			WHERE t.status = 'done'
 			  AND t.transcript IS NOT NULL
 			  AND length(btrim(t.transcript)) > 0
-		),
-		pending AS (
-			SELECT src.transcript_id, src.youtube_video_id, src.source_type, src.source_ref,
-			       src.source_key, src.title, src.transcript, src.source_sha256
-			FROM src
-			LEFT JOIN distillations d
-			       ON d.source_key = src.source_key
-			      AND COALESCE(d.session_patterns, d.pattern) = $2
-			WHERE (
-			        d.id IS NULL
-			        OR d.status <> 'done'
-			        OR d.source_sha256 <> src.source_sha256
-			        OR d.recipe_sha256 <> $3
-			      )
-			  -- NULL-safe: a never-distilled doc has d.status = NULL, so a plain
-			  -- NOT (d.status = 'failed' AND ...) would evaluate to NULL and drop the row.
-			  -- IS DISTINCT FROM keeps never-distilled rows (and under-cap failures) in.
-			  AND (d.status IS DISTINCT FROM 'failed' OR d.attempt_count < $4)
-			ORDER BY (CASE WHEN d.status = 'failed' THEN 1 ELSE 0 END) ASC, src.youtube_video_id
-			LIMIT $1
+			  AND COALESCE(t.youtube_video_id, t.source_ref) = $1
+			ORDER BY t.id DESC
+			LIMIT 1
 		)
-		SELECT p.youtube_video_id, p.source_type, p.source_ref, p.source_key,
-		       p.title, p.transcript,
+		SELECT src.youtube_video_id, src.source_type, src.source_ref, src.source_key,
+		       src.title, src.transcript,
 		       -- Per-segment "[seconds] text", so the model can anchor claims to a
 		       -- timestamp. Falls back to the flat transcript when there are no segments.
 		       COALESCE(
 		           (SELECT string_agg('[' || floor(s.start_seconds)::int || '] ' || s.text, E'\n' ORDER BY s.seq)
-		            FROM transcript_segments s WHERE s.transcript_id = p.transcript_id),
-		           p.transcript
+		            FROM transcript_segments s WHERE s.transcript_id = src.transcript_id),
+		           src.transcript
 		       ) AS transcript_ts,
-		       p.source_sha256
-		FROM pending p
-		ORDER BY p.youtube_video_id`
+		       src.source_sha256
+		FROM src`
 
-	// News lane: read rara-feed's news_items instead of transcripts. Same column
-	// shape and staleness logic; source_type='news', no segments (transcript_ts is
-	// the flat text), and source_sha256 is recomputed here over COALESCE(body,excerpt)
-	// — the feed's own content_sha256 is its internal staleness key, not used here.
-	const newsQuery = `
-		WITH src AS (
-			SELECT
-				NULL::text AS youtube_video_id,
-				'news'     AS source_type,
-				n.url      AS source_ref,
-				n.url      AS source_key,
-				COALESCE(n.title, '')           AS title,
-				COALESCE(n.body, n.excerpt, '') AS transcript,
-				encode(sha256(convert_to(COALESCE(n.body, n.excerpt, ''), 'UTF8')), 'hex') AS source_sha256
-			FROM news_items n
-			WHERE n.status = 'ready'
-			  AND length(btrim(COALESCE(n.body, n.excerpt, ''))) > 0
-		),
-		pending AS (
-			SELECT src.youtube_video_id, src.source_type, src.source_ref, src.source_key,
-			       src.title, src.transcript, src.source_sha256
-			FROM src
-			LEFT JOIN distillations d
-			       ON d.source_key = src.source_key
-			      AND COALESCE(d.session_patterns, d.pattern) = $2
-			WHERE (
-			        d.id IS NULL
-			        OR d.status <> 'done'
-			        OR d.source_sha256 <> src.source_sha256
-			        OR d.recipe_sha256 <> $3
-			      )
-			  AND (d.status IS DISTINCT FROM 'failed' OR d.attempt_count < $4)
-			ORDER BY (CASE WHEN d.status = 'failed' THEN 1 ELSE 0 END) ASC, src.source_key
-			LIMIT $1
-		)
-		SELECT p.youtube_video_id, p.source_type, p.source_ref, p.source_key,
-		       p.title, p.transcript,
-		       p.transcript AS transcript_ts,
-		       p.source_sha256
-		FROM pending p
-		ORDER BY p.source_key`
-
-	query := transcriptsQuery
-	if d.source == sourceModeNews {
-		query = newsQuery
+	var doc SourceDoc
+	var ytID *string
+	switch err := db.pool.QueryRow(ctx, q, sourceRef).Scan(&ytID, &doc.SourceType, &doc.SourceRef,
+		&doc.SourceKey, &doc.Title, &doc.Transcript, &doc.TranscriptTimestamped, &doc.SourceSHA256); {
+	case errors.Is(err, pgx.ErrNoRows):
+		return SourceDoc{}, false, nil
+	case err != nil:
+		return SourceDoc{}, false, err
 	}
-	rows, err := d.conn.Query(ctx, query, limit, keyPattern, recipeSHA, maxFailedAttempts)
-	if err != nil {
-		return nil, err
+	if ytID != nil {
+		doc.YoutubeVideoID = *ytID
 	}
-	defer rows.Close()
-
-	var docs []SourceDoc
-	for rows.Next() {
-		var doc SourceDoc
-		var ytID *string
-		if err := rows.Scan(&ytID, &doc.SourceType, &doc.SourceRef, &doc.SourceKey,
-			&doc.Title, &doc.Transcript, &doc.TranscriptTimestamped, &doc.SourceSHA256); err != nil {
-			return nil, err
-		}
-		if ytID != nil {
-			doc.YoutubeVideoID = *ytID
-		}
-		docs = append(docs, doc)
-	}
-	return docs, rows.Err()
+	return doc, true, nil
 }
 
-// SaveDistillation upserts the distillation. Idempotent on
-// (source_key, COALESCE(session_patterns, pattern)): a re-run replaces the row,
-// incrementing attempt_count on consecutive failures and resetting it on success.
-func (d *pgxDatabase) SaveDistillation(ctx context.Context, dist Distillation) error {
+// SaveDistillation upserts the distillation and returns its id (the OutputRef recorded on the
+// step). Idempotent on (source_key, COALESCE(session_patterns, pattern)): a re-run replaces the
+// row, incrementing attempt_count on consecutive failures and resetting it on success.
+func (db *appDB) SaveDistillation(ctx context.Context, dist Distillation) (int, error) {
 	initialAttempt := 0
 	if dist.Status == statusFailed {
 		initialAttempt = 1
@@ -1139,8 +1161,10 @@ func (d *pgxDatabase) SaveDistillation(ctx context.Context, dist Distillation) e
 			attempt_count     = CASE WHEN EXCLUDED.status = 'failed'
 			                         THEN distillations.attempt_count + 1
 			                         ELSE 0 END,
-			updated_at        = CURRENT_TIMESTAMP`
-	_, err := d.conn.Exec(ctx, upsert,
+			updated_at        = CURRENT_TIMESTAMP
+		RETURNING id`
+	var id int
+	err := db.pool.QueryRow(ctx, upsert,
 		nullStr(dist.YoutubeVideoID),
 		dist.SourceType,
 		dist.SourceRef,
@@ -1160,8 +1184,8 @@ func (d *pgxDatabase) SaveDistillation(ctx context.Context, dist Distillation) e
 		dist.Status,
 		nullStr(dist.Error),
 		initialAttempt,
-	)
-	return err
+	).Scan(&id)
+	return id, err
 }
 
 func nullStr(s string) *string {
@@ -1176,12 +1200,6 @@ func nullStr(s string) *string {
 // ---------------------------------------------------------------------------
 
 func loadConfig() Config {
-	batch := defaultBatchSize
-	if v := os.Getenv("DISTILL_BATCH_SIZE"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			batch = n
-		}
-	}
 	return Config{
 		DatabaseURL:     os.Getenv("DATABASE_URL"),
 		Engine:          os.Getenv("CURATE_ENGINE"),
@@ -1197,34 +1215,41 @@ func loadConfig() Config {
 		Patterns:        os.Getenv("DISTILL_PATTERNS"),
 		ContextName:     os.Getenv("DISTILL_CONTEXT"),
 		StrategyName:    os.Getenv("DISTILL_STRATEGY"),
-		BatchSize:       batch,
-		Source:          orDefault(os.Getenv("DISTILL_SOURCE"), sourceModeTranscripts),
 	}
 }
 
-// recipeConfig returns the recipe configuration for the active source mode. The news
-// lane uses a fixed pattern + the AI/ML context (no strategy); the transcripts lane
-// uses the operator-configured recipe unchanged.
-func recipeConfig(cfg Config) Config {
-	if cfg.Source == sourceModeNews {
-		nc := cfg
-		nc.Patterns = newsPattern
-		nc.ContextName = newsContext
-		nc.StrategyName = ""
-		return nc
+// envDuration reads a Go duration (e.g. "30s", "2m") or a bare integer (seconds) from env, or
+// returns def when unset/invalid. Mirrors rara-core's work loop so a resident deploy tunes the
+// same way.
+func envDuration(key string, def time.Duration) time.Duration {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
 	}
-	return cfg
+	if d, err := time.ParseDuration(v); err == nil && d > 0 {
+		return d
+	}
+	if n, err := strconv.Atoi(v); err == nil && n > 0 {
+		return time.Duration(n) * time.Second
+	}
+	log.Printf("distill: ignoring invalid %s=%q", key, v)
+	return def
 }
 
+// main wires the bridge-total claim-worker: the SDK (addon.Run) owns the queue protocol; this
+// process only supplies the destilar domain (distillHandler). It serves ONE provider
+// (DISTILL_PROVIDER, e.g. distill | distill-local) so it claims only the steps the reconciler
+// routed to it. Default is on_demand (drain once and exit, the woken Cloud Run job); a resident
+// deploy opts into the long-running loop + symmetric activation via WORK_POLL_INTERVAL and/or
+// POKE_ADDR + POKE_TOKEN.
 func main() {
-	flag.Parse()
-
 	cfg := loadConfig()
 	if cfg.DatabaseURL == "" {
 		log.Fatalf("DATABASE_URL environment variable is required")
 	}
-	if cfg.Source != sourceModeTranscripts && cfg.Source != sourceModeNews {
-		log.Fatalf("unknown DISTILL_SOURCE %q (use %q or %q)", cfg.Source, sourceModeTranscripts, sourceModeNews)
+	provider := os.Getenv("DISTILL_PROVIDER")
+	if provider == "" {
+		log.Fatalf("DISTILL_PROVIDER is required (the provider this worker serves, e.g. distill | distill-local)")
 	}
 
 	cur, engineName, err := NewCurator(cfg)
@@ -1232,24 +1257,33 @@ func main() {
 		log.Fatalf("Curator init failed: %v", err)
 	}
 
-	recipe, err := NewRecipe(recipeConfig(cfg))
-	if err != nil {
-		log.Fatalf("Recipe init failed: %v", err)
+	// The recipe normally comes from the flow step config; these are the fallback default.
+	rr := newRecipeResolver(splitCSV(cfg.Patterns), cfg.ContextName, cfg.StrategyName)
+	if _, err := rr.resolve(nil); err != nil {
+		log.Fatalf("default recipe init failed: %v", err)
 	}
-	log.Printf("Source mode: %s [recipe %s]\n", cfg.Source, recipe.keyPattern())
 
-	connectCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	conn, err := pgx.Connect(connectCtx, cfg.DatabaseURL)
-	cancel()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	pool, err := pgxpool.New(ctx, cfg.DatabaseURL)
 	if err != nil {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
-	defer conn.Close(context.Background())
-	log.Println("Connected to database successfully")
+	defer pool.Close()
+	log.Printf("rara-distill worker %s/%s ready [engine %s]", capDestilar, provider, engineName)
 
-	db := &pgxDatabase{conn: conn, source: cfg.Source}
-	if err := runBatch(context.Background(), db, cur, engineName, recipe, cfg.BatchSize); err != nil {
-		log.Fatalf("Batch failed: %v", err)
+	ac := addon.Config{
+		Capability:   capDestilar,
+		Provider:     provider,
+		Store:        addon.NewPgxStore(pool),
+		MaxAttempts:  addon.DefaultMaxAttempts,
+		PollInterval: envDuration("WORK_POLL_INTERVAL", 0),
+		PokeAddr:     os.Getenv("POKE_ADDR"),
+		PokeToken:    os.Getenv("POKE_TOKEN"),
 	}
-	log.Println("Distill job completed successfully")
+	if err := addon.Run(ctx, ac, distillHandler(&appDB{pool: pool}, cur, engineName, rr)); err != nil {
+		log.Fatalf("distill worker %s/%s: %v", capDestilar, provider, err)
+	}
+	log.Printf("rara-distill worker %s/%s: queue drained", capDestilar, provider)
 }
