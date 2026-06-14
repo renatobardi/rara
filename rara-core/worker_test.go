@@ -265,18 +265,18 @@ func TestEndToEndYouTubeFlow(t *testing.T) {
 	if len(db.gateDecisions) != 2 {
 		t.Errorf("expected 2 keep decisions, got %d", len(db.gateDecisions))
 	}
-	// on_demand providers (gate-barato, gate-rico, distill) were woken; the resident scribe was not.
+	// Symmetric activation (P1b): the reconciler activates EVERY assigned provider — on_demand
+	// (gate-barato, gate-rico, distill, woken via Cloud Run `run`) AND the resident scribe
+	// (asr-youtube, poked over the tailnet). The Activator dispatches by provider shape; the
+	// reconciler no longer special-cases on_demand.
 	woken := map[string]bool{}
 	for _, n := range act.woken {
 		woken[n] = true
 	}
-	for _, n := range []string{provGateBarato, provGateRico, provDistill} {
+	for _, n := range []string{provGateBarato, provGateRico, provDistill, provASRYouTube} {
 		if !woken[n] {
-			t.Errorf("expected %s to be woken, got %v", n, act.woken)
+			t.Errorf("expected %s to be activated, got %v", n, act.woken)
 		}
-	}
-	if woken[provASRYouTube] {
-		t.Errorf("resident scribe must not be woken via activation, got %v", act.woken)
 	}
 }
 

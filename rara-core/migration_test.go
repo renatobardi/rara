@@ -292,6 +292,38 @@ func TestMigration007ClaimProviderIndex(t *testing.T) {
 	}
 }
 
+// readMigration008 loads the P1b provider poke_url migration.
+func readMigration008(t *testing.T) string {
+	t.Helper()
+	b, err := os.ReadFile("migrations/008_provider_poke_url.sql")
+	if err != nil {
+		t.Fatalf("read migration 008: %v", err)
+	}
+	return string(b)
+}
+
+// TestMigration008ProviderPokeURL asserts the P1b activation-address column: a nullable poke_url
+// added to providers, additive/idempotent, touching no foreign tables.
+func TestMigration008ProviderPokeURL(t *testing.T) {
+	sql := readMigration008(t)
+	if !strings.Contains(sql, "ALTER TABLE providers") {
+		t.Error("migration 008 must alter the providers table")
+	}
+	if !strings.Contains(sql, "ADD COLUMN IF NOT EXISTS poke_url") {
+		t.Error("migration 008 must add poke_url idempotently (ADD COLUMN IF NOT EXISTS)")
+	}
+	// Nullable by default — existing providers must be unaffected (no NOT NULL / no DEFAULT clause
+	// that would force a value on residents that rely on the poll alone).
+	colIdx := strings.Index(sql, "ADD COLUMN IF NOT EXISTS poke_url")
+	stmt := sql[colIdx:min(colIdx+120, len(sql))]
+	if strings.Contains(stmt, "NOT NULL") {
+		t.Errorf("poke_url must be nullable, got: %q", stmt)
+	}
+	if strings.Contains(sql, "CREATE TABLE") {
+		t.Error("migration 008 should only alter providers, not create tables")
+	}
+}
+
 // TestMigrationNoCrossAgentTables guards isolation: rara-core's migration must not
 // touch another agent's domain tables.
 func TestMigrationNoCrossAgentTables(t *testing.T) {

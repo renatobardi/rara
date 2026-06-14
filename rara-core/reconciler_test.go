@@ -6,7 +6,9 @@ import (
 	"time"
 )
 
-// fakeActivator records which on_demand providers the reconciler tried to wake.
+// fakeActivator records every provider the reconciler tried to activate. Under symmetric
+// activation the reconciler calls Activate for ALL assignments (on_demand and resident); the
+// real Activator dispatches by provider shape (Cloud Run `run` vs tailnet poke).
 type fakeActivator struct{ woken []string }
 
 func (f *fakeActivator) Activate(_ context.Context, p Provider) error {
@@ -134,6 +136,38 @@ func TestReconcileGateKeepAdvances(t *testing.T) {
 	}
 	if got := db.itemByID[itemID].Status; got != itemDiscovered {
 		t.Errorf("item status = %q, want still discovered (transcription pending)", got)
+	}
+}
+
+// TestReconcileActivatesResidentOnAssign: symmetric activation (P1b). When the reconciler assigns a
+// step to a RESIDENT provider (the Mac scribe), it calls Activate for it too — no longer special-
+// casing on_demand. The real Activator turns that into a tailnet poke; here the fake just records it.
+func TestReconcileActivatesResidentOnAssign(t *testing.T) {
+	ctx := context.Background()
+	db := newMockDatabase()
+	itemID := seedAndIngestOne(t, db, "vid1")
+	act := &fakeActivator{}
+	r := NewReconciler(db, act)
+
+	if err := r.ReconcileOnce(ctx); err != nil { // assign gate_barato (on_demand)
+		t.Fatal(err)
+	}
+	runGate(t, db, itemID, 2, gateBarato, decisionKeep)
+	if err := r.ReconcileOnce(ctx); err != nil { // route keep -> assign transcrever (resident)
+		t.Fatal(err)
+	}
+
+	if s, ok := stepBySeq(db, itemID, 3); !ok || s.AssignedProvider != provASRYouTube {
+		t.Fatalf("transcrever step = %+v, want assigned to asr-youtube", s)
+	}
+	var residentWoken bool
+	for _, n := range act.woken {
+		if n == provASRYouTube {
+			residentWoken = true
+		}
+	}
+	if !residentWoken {
+		t.Errorf("resident scribe must be activated on assign (symmetric activation), got %v", act.woken)
 	}
 }
 
