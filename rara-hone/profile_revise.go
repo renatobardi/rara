@@ -1,9 +1,8 @@
-// profile_revise.go — Phase 6 PIECE 2: the learning loop (the interest_profile reviser).
+// profile_revise.go — the learning loop (the interest_profile reviser), the heart of rara-hone.
 //
-// A single closed loop through a HUMAN-READABLE artifact, no training infra (ARCHITECTURE-2.0,
-// "The learning loop"): accumulated feedback -> (periodic) revise interest_profile -> next gate
-// decisions. The revision is HYBRID — a deterministic engine and an LLM with strictly separated
-// jobs:
+// A single closed loop through a HUMAN-READABLE artifact, no training infra: accumulated
+// feedback -> (periodic) revise interest_profile -> next gate decisions. The revision is HYBRID —
+// a deterministic engine and an LLM with strictly separated jobs:
 //
 //   - The DETERMINISTIC engine owns the STRUCTURED change. It aggregates feedback (thumbs +
 //     quarantine review) attributing each signal to the concepts/entities/author of the
@@ -15,13 +14,13 @@
 //   - The LLM (via LiteLLM) owns ONLY the natural-language NARRATIVE — the prose the gate's
 //     LLM-judge reads as context. It cannot touch a single structured field.
 //
-// A revision is appended as a NEW version with status `proposed`; it does NOT take effect until
-// a human APPROVES it (ActivateInterestProfile / the surface's approve action). The gate cascade
-// reads the ACTIVE version, never the latest — so a proposal is inert until approved.
+// A revision is appended as a NEW version with status `proposed`; it does NOT take effect until a
+// human APPROVES it (rara-core's surface). The gate cascade reads the ACTIVE version, never the
+// latest — so a proposal is inert until approved. hone PROPOSES; the surface APPROVES.
 //
 // Everything here is PURE over the Database seam + two narrow seams (a distillation `structured`
-// resolver and the narrator), so the whole reviser is unit-tested with the MockDatabase and
-// fakes — zero I/O. The pgx resolver and the LiteLLM narrator live at the I/O edge (runners.go).
+// resolver and the narrator), so the whole reviser is unit-tested with the mock and fakes — zero
+// I/O. The pgx resolver and the LiteLLM narrator live at the I/O edge (runners.go).
 package main
 
 import (
@@ -41,7 +40,7 @@ import (
 
 // reviseConfig tunes both the trigger (cadence/threshold/debounce) and the deterministic engine
 // (the Wilson thresholds + the per-revision ceiling). defaultReviseConfig holds conservative
-// values; the trigger knobs are env-overridable in runRevise.
+// values; the trigger knobs are env-overridable in main.
 type reviseConfig struct {
 	// Trigger.
 	Cadence           time.Duration // revise at least this often (if there is new feedback)

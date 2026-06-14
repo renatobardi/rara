@@ -224,10 +224,11 @@ func TestDispatchUnconfiguredBranchIsNoop(t *testing.T) {
 }
 
 func TestDispatchDefaultBranchIsNoop(t *testing.T) {
-	// An on_demand VPC provider (the reviser) fits no branch — never routed per item, so a no-op.
+	// An on_demand VPC provider fits no activation branch (VPC providers are normally resident,
+	// woken by nothing) — so the dispatcher's default arm is a best-effort no-op.
 	cr, poke := &recordActivator{}, &recordActivator{}
 	d := dispatchActivator{cloudRun: cr, poke: poke}
-	if err := d.Activate(context.Background(), Provider{Name: "profile-reviser", Runtime: runtimeVPC, Activation: activationOnDemand}); err != nil {
+	if err := d.Activate(context.Background(), Provider{Name: "vpc-ondemand-example", Runtime: runtimeVPC, Activation: activationOnDemand}); err != nil {
 		t.Errorf("default branch must be a no-op, got %v", err)
 	}
 	if len(cr.woken)+len(poke.woken) != 0 {

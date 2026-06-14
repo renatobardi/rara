@@ -62,7 +62,9 @@ exactly like `transcrever`/`destilar`, and they actually **select**:
   the drop. The review is captured as `feedback` (source=`quarantine_review`).
 - **Explicit thumbs**: `feedback --distillation <id> --signal up|down` records explicit
   signal (target=`distillation`, source=`user_explicit`). Revising the profile *from* this
-  feedback is the Phase 6 learning loop (a deliberate stub here).
+  feedback is the learning loop, which lives in its own periodic job — **[rara-hone](../rara-hone)**
+  — that PROPOSES a new `interest_profile` version. The core keeps only the human **approval**
+  of a proposal (the surface's `approve` action / `rara_approve_profile`).
 
 The LLM-judge is the only paid layer and runs only on what rules + the profile could not
 decide. See [.env.example](.env.example) for the `LITELLM_*` gateway config.
@@ -110,7 +112,6 @@ honour SIGINT/SIGTERM for graceful shutdown.
 ```bash
 core-job seed                      # seed the lane config (idempotent)
 core-job ingest                    # items spine <- channel_videos ∪ playlist_videos
-core-job collect --lane linkedin   # run an automated collector (Bright Data) for a lane
 core-job reconcile [--loop]        # one pass, or always-on (VPC) on RECONCILE_INTERVAL_SECONDS
 core-job feedback --distillation <id> --signal up|down   # explicit thumbs
 core-job quarantine list                 # the cold-start review sample (deferred items)

@@ -417,16 +417,6 @@ func (m *MockDatabase) ListInterestProfiles(_ context.Context) ([]InterestProfil
 	return out, nil
 }
 
-func (m *MockDatabase) ListFeedbackSince(_ context.Context, since time.Time) ([]Feedback, error) {
-	var out []Feedback
-	for _, f := range m.feedback { // append-only slice preserves insertion (id) order
-		if f.CreatedAt.After(since) {
-			out = append(out, f)
-		}
-	}
-	return out, nil
-}
-
 // ActivateInterestProfile mirrors the pgx atomic swap: demote the current active, promote the
 // target proposed version. A target that is absent or not proposed is rejected (and, since the
 // mock applies the demote only after the check, nothing is mutated on rejection).
@@ -952,5 +942,52 @@ func TestInterestProfileVersionImmutable(t *testing.T) {
 	}
 	if len(db.profiles) != 2 {
 		t.Fatalf("each version is a distinct immutable row: %d rows", len(db.profiles))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// proposed-vs-active invariants at the seam — the half of the interest_profile lifecycle the
+// CONTROL plane owns: the at-most-one-active partial index and the human APPROVAL swap
+// (ActivateInterestProfile). The reviser that PROPOSES versions now lives in rara-hone; approval
+// stays here, behind the surface.
+// ---------------------------------------------------------------------------
+
+func TestInterestProfileOneActiveInvariant(t *testing.T) {
+	ctx := context.Background()
+	db := newMockDatabase()
+	if err := db.InsertInterestProfile(ctx, InterestProfile{Version: 1, Status: profileActive}); err != nil {
+		t.Fatal(err)
+	}
+	// A second active row is rejected (mirrors the partial unique index).
+	if err := db.InsertInterestProfile(ctx, InterestProfile{Version: 2, Status: profileActive}); err == nil {
+		t.Error("a second active interest_profile should be rejected")
+	}
+	// A proposed row is fine.
+	if err := db.InsertInterestProfile(ctx, InterestProfile{Version: 2, Status: profileProposed}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestActivateInterestProfileSwap(t *testing.T) {
+	ctx := context.Background()
+	db := newMockDatabase()
+	_ = db.InsertInterestProfile(ctx, InterestProfile{Version: 1, Status: profileActive})
+	_ = db.InsertInterestProfile(ctx, InterestProfile{Version: 2, Status: profileProposed})
+
+	if err := db.ActivateInterestProfile(ctx, 2); err != nil {
+		t.Fatalf("activate v2: %v", err)
+	}
+	if db.profiles[1].Status != profileSuperseded {
+		t.Errorf("v1 should be superseded, got %q", db.profiles[1].Status)
+	}
+	if db.profiles[2].Status != profileActive {
+		t.Errorf("v2 should be active, got %q", db.profiles[2].Status)
+	}
+	// Activating a non-proposed version is rejected, and nothing changes.
+	if err := db.ActivateInterestProfile(ctx, 1); err == nil {
+		t.Error("activating a superseded version should error")
+	}
+	if db.profiles[2].Status != profileActive {
+		t.Error("a rejected activation must not mutate the current active")
 	}
 }
