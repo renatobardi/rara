@@ -1,0 +1,55 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Option B tokens — Clean is the default; Dark is opt-in via data-theme="dark". */
+:root {
+	--bg: #ffffff;
+	--sidebar: #f9f9f9;
+	--surface: #ffffff;
+	--surface-2: #f7f7f8;
+	--border: #e5e5e5;
+	--hover: #ececec;
+	--text: #0d0d0d;
+	--muted: #6e6e80;
+	--primary: #0d0d0d;
+	--primary-fg: #ffffff;
+	--green: #19c37d;
+	--blue: #2563eb;
+	--violet: #7c5cff;
+	--amber: #e0a23b;
+	--red: #ef4444;
+	--font: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Helvetica, sans-serif;
+}
+
+[data-theme='dark'] {
+	--bg: #212121;
+	--sidebar: #171717;
+	--surface: #2a2a2a;
+	--surface-2: #262626;
+	--border: #3a3a3a;
+	--hover: #2e2e2e;
+	--text: #ececec;
+	--muted: #9b9b9b;
+	--primary: #ffffff;
+	--primary-fg: #0d0d0d;
+	--blue: #6ba4f8;
+	--violet: #a99bff;
+	--amber: #e7b85a;
+	--red: #ff7777;
+}
+
+html,
+body {
+	height: 100%;
+}
+
+body {
+	margin: 0;
+	background: var(--bg);
+	color: var(--text);
+	font-family: var(--font);
+	font-size: 14px;
+	line-height: 1.55;
+	-webkit-font-smoothing: antialiased;
+}

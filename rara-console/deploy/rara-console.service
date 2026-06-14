@@ -1,0 +1,16 @@
+[Unit]
+Description=rara-console (operator UI; SPA + BFF over the rara-core surface)
+After=network.target
+
+[Service]
+Type=exec
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/rara-console
+ExecStart=/opt/rara-console/bin/console
+Restart=on-failure
+RestartSec=5s
+EnvironmentFile=/etc/rara-console/env
+
+[Install]
+WantedBy=multi-user.target
