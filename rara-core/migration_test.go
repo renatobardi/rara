@@ -257,6 +257,41 @@ func TestMigration006InterestProfileStatus(t *testing.T) {
 	}
 }
 
+// readMigration007 loads the P1a claim-frontier-index migration.
+func readMigration007(t *testing.T) string {
+	t.Helper()
+	b, err := os.ReadFile("migrations/007_claim_provider_index.sql")
+	if err != nil {
+		t.Fatalf("read migration 007: %v", err)
+	}
+	return string(b)
+}
+
+// TestMigration007ClaimProviderIndex asserts the P1a frontier index matches the provider-isolated
+// claim query: a partial index on (capability, assigned_provider, id) for pending steps, retiring
+// the now-redundant capability-only index. Additive/idempotent, no foreign tables.
+func TestMigration007ClaimProviderIndex(t *testing.T) {
+	sql := readMigration007(t)
+	if !strings.Contains(sql, "CREATE INDEX IF NOT EXISTS idx_item_steps_claim_provider") {
+		t.Fatal("missing new claim index idx_item_steps_claim_provider")
+	}
+	idx := strings.Index(sql, "idx_item_steps_claim_provider")
+	block := sql[idx:min(idx+260, len(sql))]
+	if !strings.Contains(block, "(capability, assigned_provider, id)") {
+		t.Errorf("claim index must key on (capability, assigned_provider, id), got: %q", block)
+	}
+	if !strings.Contains(block, "WHERE status = 'pending'") {
+		t.Errorf("claim index must be partial on status = 'pending', got: %q", block)
+	}
+	// The capability-only frontier index is now redundant and must be retired (idempotently).
+	if !strings.Contains(sql, "DROP INDEX IF EXISTS idx_item_steps_claim") {
+		t.Error("migration 007 should drop the redundant idx_item_steps_claim")
+	}
+	if strings.Contains(sql, "CREATE TABLE") {
+		t.Error("migration 007 should only adjust indexes, not create tables")
+	}
+}
+
 // TestMigrationNoCrossAgentTables guards isolation: rara-core's migration must not
 // touch another agent's domain tables.
 func TestMigrationNoCrossAgentTables(t *testing.T) {
