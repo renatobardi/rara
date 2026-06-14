@@ -16,12 +16,14 @@ on:
         required: false
         default: '25'
         type: string
-  push:
-    branches:
-      - main
-    paths:
-      - 'rara-distill/**'
-      - '.github/workflows/deploy-distill.yml'
+  # GATED to manual (workflow_dispatch) — no push trigger. Since P1c, rara-distill is a 2.0
+  # bridge-total claim-worker: it only does work when the reconciler (VPC, a future phase) routes
+  # `destilar` item_steps to its provider. Auto-deploying on merge would (a) fail the build — the
+  # Dockerfile/source tar is still single-module and the app now imports rara-addon via
+  # `replace ../rara-addon` — and (b) replace the live 1.0 batch job with a worker that drains an
+  # empty queue, pausing live distillation. Before re-enabling the push trigger, the deploy needs
+  # the P2 rework: a MULTI-MODULE Docker build (rara-addon + rara-distill in the context) and a
+  # claim-worker job env (DISTILL_PROVIDER, drop DISTILL_SOURCE/news-lane/DISTILL_BATCH_SIZE).
 
 # Required for Workload Identity Federation (keyless auth to GCP).
 permissions:
