@@ -102,9 +102,16 @@ func (c *Core) RoutingPolicies(ctx context.Context) ([]RoutingPolicy, error) {
 }
 func (c *Core) GateRules(ctx context.Context) ([]GateRule, error) { return c.db.ListAllGateRules(ctx) }
 
-// InterestProfile returns the live (highest-version) preferences document.
+// InterestProfile returns the ACTIVE preferences document (the version in force the gate reads),
+// not merely the latest — a `proposed` revision is invisible here until approved.
 func (c *Core) InterestProfile(ctx context.Context) (InterestProfile, bool, error) {
-	return c.db.GetLatestInterestProfile(ctx)
+	return c.db.GetActiveInterestProfile(ctx)
+}
+
+// InterestProfiles returns every version (active + proposed + superseded), so an operator can see
+// a pending proposal and decide whether to approve it.
+func (c *Core) InterestProfiles(ctx context.Context) ([]InterestProfile, error) {
+	return c.db.ListInterestProfiles(ctx)
 }
 
 // --- Config edits (idempotent upserts; a new profile version is append-only) ----
@@ -154,7 +161,25 @@ func (c *Core) AddInterestProfile(ctx context.Context, p InterestProfile) error 
 	if p.Version <= 0 {
 		return badInput("interest_profile version must be positive, got %d", p.Version)
 	}
+	// A manually added version is a PROPOSAL — it never takes effect until approved, exactly like
+	// a reviser-generated one. (The bootstrap v1 active row is seeded directly, not via here.)
+	p.Status = profileProposed
 	return c.db.InsertInterestProfile(ctx, p)
+}
+
+// ApproveProfile activates a proposed interest_profile version (human approval), demoting the
+// prior active. A non-positive or non-proposed version is a caller error (400).
+func (c *Core) ApproveProfile(ctx context.Context, version int) error {
+	if version <= 0 {
+		return badInput("interest_profile version must be positive, got %d", version)
+	}
+	if err := c.db.ActivateInterestProfile(ctx, version); err != nil {
+		if errors.Is(err, errProfileNotProposed) {
+			return badInput("interest_profile v%d is not a proposed version (already active, superseded, or absent)", version)
+		}
+		return err
+	}
+	return nil
 }
 
 // --- Human-in-the-loop (reuse the Phase 3 functions verbatim) --------------
@@ -219,6 +244,7 @@ func NewSurfaceMux(core *Core, token string) http.Handler {
 	mux.HandleFunc("GET /v1/routing-policies", h.listRoutingPolicies)
 	mux.HandleFunc("GET /v1/gate-rules", h.listGateRules)
 	mux.HandleFunc("GET /v1/interest-profile", h.getInterestProfile)
+	mux.HandleFunc("GET /v1/interest-profile/versions", h.listInterestProfiles)
 
 	// Config edits (idempotent upserts; a new profile version is append-only).
 	mux.HandleFunc("PUT /v1/flows", h.upsertFlow)
@@ -227,6 +253,7 @@ func NewSurfaceMux(core *Core, token string) http.Handler {
 	mux.HandleFunc("PUT /v1/routing-policies", h.upsertRoutingPolicy)
 	mux.HandleFunc("PUT /v1/gate-rules", h.upsertGateRule)
 	mux.HandleFunc("POST /v1/interest-profile", h.addInterestProfile)
+	mux.HandleFunc("POST /v1/interest-profile/approve", h.approveInterestProfile)
 
 	// Human-in-the-loop.
 	mux.HandleFunc("POST /v1/feedback/distillation", h.feedbackDistillation)
@@ -333,10 +360,25 @@ func (h *httpSurface) getInterestProfile(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if !found {
-		http.Error(w, `{"error":"no interest_profile seeded"}`, http.StatusNotFound)
+		http.Error(w, `{"error":"no active interest_profile"}`, http.StatusNotFound)
 		return
 	}
 	writeJSON(w, http.StatusOK, prof)
+}
+
+func (h *httpSurface) listInterestProfiles(w http.ResponseWriter, r *http.Request) {
+	profs, err := h.core.InterestProfiles(r.Context())
+	writeResult(w, profs, err)
+}
+
+func (h *httpSurface) approveInterestProfile(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Version int `json:"version"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	writeResult(w, okResult{OK: true}, h.core.ApproveProfile(r.Context(), req.Version))
 }
 
 // --- edit handlers --------------------------------------------------------

@@ -46,6 +46,10 @@ const (
 	provDistillLocal    = "distill-local"
 	provGateBaratoLocal = "gate-barato-local"
 	provGateRicoLocal   = "gate-rico-local"
+	// provReviser runs the Phase 6 learning loop (revise_profile): an on_demand, non-item task
+	// fired by cadence/threshold (the `revise` CLI on a cron), self-host on the VPC so private
+	// feedback context never leaves the box. Never routed per item — seeded as config-as-data.
+	provReviser = "profile-reviser"
 )
 
 // seedCapabilities upserts the fixed logical-task catalog. Also seeded by migration 001
@@ -59,6 +63,7 @@ func seedCapabilities(ctx context.Context, db Database) error {
 		{Name: capGateBarato, Description: "Cheap curation gate on metadata, before paying for to-text"},
 		{Name: capGateRico, Description: "Rich curation gate on full text, before paying for distillation"},
 		{Name: capDestilar, Description: "Curate text into a RAG-ready knowledge document"},
+		{Name: capReviseProfile, Description: "Revise the interest_profile from accumulated feedback (learning loop)"},
 	}
 	for _, c := range caps {
 		if err := db.UpsertCapability(ctx, c); err != nil {
@@ -101,6 +106,10 @@ func seedSharedProviders(ctx context.Context, db Database) error {
 			Cost: 0.60, Quality: 0.90, LatencyMs: 8000, Constraints: thirdParty, Enabled: true},
 		{Name: provGateRicoLocal, Capability: capGateRico, Runtime: runtimeVPC, Activation: activationResident,
 			Cost: 1.00, Quality: 0.82, LatencyMs: 14000, Enabled: true},
+		// revise_profile: the learning-loop reviser. Self-host on the VPC (private feedback
+		// context stays on-box) and on_demand (the `revise` cron fires it). Never routed per item.
+		{Name: provReviser, Capability: capReviseProfile, Runtime: runtimeVPC, Activation: activationOnDemand,
+			Cost: 0.50, Quality: 0.85, LatencyMs: 20000, Enabled: true},
 	}
 	for _, p := range providers {
 		if err := db.UpsertProvider(ctx, p); err != nil {
@@ -121,12 +130,16 @@ func seedSharedConfig(ctx context.Context, db Database) error {
 	if _, found, err := db.GetLatestInterestProfile(ctx); err != nil {
 		return err
 	} else if !found {
+		// v1 is the bootstrap profile: seeded ACTIVE so the gate has a live document from day
+		// one. Every later version (the Phase 6 reviser, or a manual surface add) is `proposed`
+		// and needs explicit approval to take effect.
 		return db.InsertInterestProfile(ctx, InterestProfile{
 			Version:    1,
 			Topics:     []byte(`["software architecture","platform engineering","devops","ai","llm","data engineering","distributed systems","kubernetes"]`),
 			Authors:    []byte(`[]`),
 			AntiTopics: []byte(`[]`),
 			Weights:    []byte(`{"keep_threshold":0.6}`),
+			Status:     profileActive,
 		})
 	}
 	return nil

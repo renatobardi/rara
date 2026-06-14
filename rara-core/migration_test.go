@@ -221,6 +221,42 @@ func TestMigration005FeedbackSourceCheck(t *testing.T) {
 	}
 }
 
+// readMigration006 loads the Phase-6 interest_profile status/narrative migration.
+func readMigration006(t *testing.T) string {
+	t.Helper()
+	b, err := os.ReadFile("migrations/006_interest_profile_status.sql")
+	if err != nil {
+		t.Fatalf("read migration 006: %v", err)
+	}
+	return string(b)
+}
+
+// TestMigration006InterestProfileStatus asserts the Phase-6 learning-loop schema: the status +
+// narrative columns, the status CHECK, the at-most-one-active partial unique index, and the
+// defensive demote — all additive/idempotent, no foreign tables.
+func TestMigration006InterestProfileStatus(t *testing.T) {
+	sql := readMigration006(t)
+	for _, want := range []string{
+		"ADD COLUMN IF NOT EXISTS status",
+		"ADD COLUMN IF NOT EXISTS narrative",
+		"CHECK (status IN ('proposed', 'active', 'superseded'))",
+		"conname = 'interest_profile_status_check'", // guarded ADD CONSTRAINT
+		"CREATE UNIQUE INDEX IF NOT EXISTS idx_interest_profile_active",
+		"WHERE status = 'active'", // partial: at most one active
+	} {
+		if !strings.Contains(sql, want) {
+			t.Errorf("migration 006 missing %q", want)
+		}
+	}
+	// The defensive demote keeps only the highest version active before the unique index.
+	if !strings.Contains(sql, "SET status = 'superseded'") {
+		t.Error("migration 006 should demote all-but-max active before creating the unique index")
+	}
+	if strings.Contains(sql, "CREATE TABLE") {
+		t.Error("migration 006 should only alter interest_profile, not create tables")
+	}
+}
+
 // TestMigrationNoCrossAgentTables guards isolation: rara-core's migration must not
 // touch another agent's domain tables.
 func TestMigrationNoCrossAgentTables(t *testing.T) {
