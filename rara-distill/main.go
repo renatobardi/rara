@@ -15,7 +15,6 @@ import (
 	"os/signal"
 	"strconv"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
@@ -361,28 +360,20 @@ type stepOptions struct {
 }
 
 // recipeResolver turns a flow step's options into a Recipe, falling back to the env default when
-// the step carries none. Built recipes are memoized by their (patterns|context|strategy) key so
-// the embedded assets are read and hashed once per distinct recipe, not once per item. Safe for
-// concurrent use (resident mode drains and pokes can overlap).
+// the step carries none.
 type recipeResolver struct {
-	mu          sync.Mutex
-	cache       map[string]Recipe
 	defPatterns []string
 	defContext  string
 	defStrategy string
 }
 
 func newRecipeResolver(defPatterns []string, defContext, defStrategy string) *recipeResolver {
-	return &recipeResolver{
-		cache:       make(map[string]Recipe),
-		defPatterns: defPatterns,
-		defContext:  defContext,
-		defStrategy: defStrategy,
-	}
+	return &recipeResolver{defPatterns: defPatterns, defContext: defContext, defStrategy: defStrategy}
 }
 
 // resolve picks the recipe for an item: the step's options.recipe when present (non-empty
-// patterns), else the env default.
+// patterns), else the env default. Building a recipe is a few embedded-asset reads + a hash —
+// cheap next to the per-item LLM call — so it's rebuilt each time rather than cached.
 func (rr *recipeResolver) resolve(optsRaw json.RawMessage) (Recipe, error) {
 	patterns, contextName, strategy := rr.defPatterns, rr.defContext, rr.defStrategy
 	if len(optsRaw) > 0 {
@@ -394,19 +385,7 @@ func (rr *recipeResolver) resolve(optsRaw json.RawMessage) (Recipe, error) {
 			patterns, contextName, strategy = o.Recipe.Patterns, o.Recipe.Context, o.Recipe.Strategy
 		}
 	}
-
-	key := strings.Join(patterns, ",") + "|" + contextName + "|" + strategy
-	rr.mu.Lock()
-	defer rr.mu.Unlock()
-	if r, ok := rr.cache[key]; ok {
-		return r, nil
-	}
-	r, err := newRecipeFromSpec(patterns, contextName, strategy)
-	if err != nil {
-		return Recipe{}, err
-	}
-	rr.cache[key] = r
-	return r, nil
+	return newRecipeFromSpec(patterns, contextName, strategy)
 }
 
 // hashRecipe is a pure function over the inputs that define WHAT a distillation must

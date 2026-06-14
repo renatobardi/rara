@@ -725,17 +725,6 @@ func TestRecipeResolverFallsBackToDefault(t *testing.T) {
 	}
 }
 
-// TestRecipeResolverMemoizes: resolving the same recipe twice returns the same built Recipe
-// (assets read and hashed once).
-func TestRecipeResolverMemoizes(t *testing.T) {
-	rr := newRecipeResolver([]string{"extract_wisdom"}, "", "")
-	a, _ := rr.resolve(nil)
-	b, _ := rr.resolve(nil)
-	if a.RecipeSHA != b.RecipeSHA || len(rr.cache) != 1 {
-		t.Errorf("expected memoized single recipe, sha %q/%q cache=%d", a.RecipeSHA, b.RecipeSHA, len(rr.cache))
-	}
-}
-
 // TestRecipeResolverBadOptions: malformed options JSON is an error (not a silent default).
 func TestRecipeResolverBadOptions(t *testing.T) {
 	rr := newRecipeResolver(nil, "", "")
