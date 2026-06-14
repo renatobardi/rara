@@ -1,5 +1,6 @@
 hone-job
 hone-job-linux-amd64
+rara-hone
 coverage.out
 *.out
 .env
