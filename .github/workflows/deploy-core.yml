@@ -89,7 +89,7 @@ jobs:
             --memory 512Mi \
             --cpu 1 \
             --port 8080 \
-            --no-allow-unauthenticated \
+            --allow-unauthenticated \
             --args "reconcile,--loop"
 
       - name: Print service URL

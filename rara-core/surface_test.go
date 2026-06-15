@@ -220,9 +220,9 @@ func TestHealthzNeedsNoAuth(t *testing.T) {
 	core, _, _ := newTestCore(t)
 	h := NewSurfaceMux(core, testToken)
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/live", nil))
 	if rec.Code != http.StatusOK {
-		t.Errorf("healthz should be open, got %d", rec.Code)
+		t.Errorf("/live should be open, got %d", rec.Code)
 	}
 }
 

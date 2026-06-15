@@ -29,6 +29,7 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 
 	addon "rara-addon"
@@ -166,7 +167,7 @@ func newActivatorFromEnv() Activator {
 			region:    region,
 			jobPrefix: os.Getenv("CLOUD_RUN_JOB_PREFIX"),
 			http:      client,
-			token:     cloudRunTokenSource(),
+			token:     cloudRunTokenSource(nil),
 		}
 	}
 	if tok := os.Getenv("POKE_AUTH_TOKEN"); tok != "" {
@@ -180,37 +181,32 @@ func newActivatorFromEnv() Activator {
 	return d
 }
 
-// cloudRunTokenSource returns a tokenSource for the Cloud Run Jobs API. Prefers the static
-// CLOUD_RUN_OAUTH_TOKEN env var (dev/test); falls back to Application Default Credentials
-// (GOOGLE_APPLICATION_CREDENTIALS=<sa-key.json> for production on the Oracle VM).
-func cloudRunTokenSource() tokenSource {
+// cloudRunTokenSource returns a tokenSource for the Cloud Run Jobs API.
+//
+// Prefers CLOUD_RUN_OAUTH_TOKEN (static override for dev/manual testing). Otherwise uses adc: when
+// nil, google.DefaultTokenSource resolves Application Default Credentials — on Cloud Run this is the
+// metadata server of the attached SA (rara-core-activator). The returned oauth2.TokenSource caches
+// and auto-renews so every Activate call does not hit the metadata server. Tests inject a fake
+// oauth2.TokenSource via adc to avoid I/O.
+func cloudRunTokenSource(adc oauth2.TokenSource) tokenSource {
 	if tok := os.Getenv("CLOUD_RUN_OAUTH_TOKEN"); tok != "" {
 		return func(_ context.Context) (string, error) { return tok, nil }
 	}
-	creds, err := google.FindDefaultCredentials(context.Background(),
-		"https://www.googleapis.com/auth/cloud-platform")
-	if err != nil {
-		return func(_ context.Context) (string, error) {
-			return "", fmt.Errorf("cloud run token: set CLOUD_RUN_OAUTH_TOKEN or GOOGLE_APPLICATION_CREDENTIALS: %w", err)
+	if adc == nil {
+		var err error
+		adc, err = google.DefaultTokenSource(context.Background(),
+			"https://www.googleapis.com/auth/cloud-platform")
+		if err != nil {
+			return func(_ context.Context) (string, error) {
+				return "", fmt.Errorf("cloud run token: no credential (set CLOUD_RUN_OAUTH_TOKEN or attach a SA): %w", err)
+			}
 		}
 	}
-	return func(ctx context.Context) (string, error) {
-		tok, err := creds.TokenSource.Token()
+	return func(_ context.Context) (string, error) {
+		tok, err := adc.Token()
 		if err != nil {
 			return "", fmt.Errorf("cloud run ADC token: %w", err)
 		}
 		return tok.AccessToken, nil
-	}
-}
-
-// envTokenSource reads a token from env on each call. Kept for tests that need to inject a
-// predictable value without going through ADC.
-func envTokenSource(key string) tokenSource {
-	return func(_ context.Context) (string, error) {
-		tok := os.Getenv(key)
-		if tok == "" {
-			return "", fmt.Errorf("%s is empty (need an OAuth2 access token with run.jobs.run)", key)
-		}
-		return tok, nil
 	}
 }
