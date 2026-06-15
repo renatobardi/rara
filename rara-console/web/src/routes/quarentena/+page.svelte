@@ -64,7 +64,13 @@
 				{#if reviewState[item.id] === 'pending'}
 					<span class="text-[12px] text-muted">{t.quarantine.reviewing}</span>
 				{:else if reviewState[item.id] === 'err'}
-					<span class="text-[12px] text-red">{t.quarantine.reviewError}</span>
+					<div class="flex items-center gap-2">
+						<span class="text-[12px] text-red">{t.quarantine.reviewError}</span>
+						<button
+							class="cursor-pointer rounded-token border border-border bg-transparent px-2 py-0.5 text-[11px] hover:bg-hover"
+							onclick={() => { reviewState = { ...reviewState, [item.id]: undefined as unknown as 'err' }; }}
+						>{t.quarantine.retry}</button>
+					</div>
 				{:else}
 					<div class="flex gap-2">
 						<button

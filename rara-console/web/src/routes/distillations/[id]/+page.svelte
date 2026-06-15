@@ -126,7 +126,13 @@
 			{#if feedbackState === 'done'}
 				<span class="text-[12px] text-muted">{t.distillations.feedbackSent}</span>
 			{:else if feedbackState === 'err'}
-				<span class="text-[12px] text-red">{t.distillations.feedbackError}</span>
+				<div class="flex items-center gap-2">
+					<span class="text-[12px] text-red">{t.distillations.feedbackError}</span>
+					<button
+						class="cursor-pointer rounded-token border border-border bg-transparent px-2 py-0.5 text-[11px] hover:bg-hover"
+						onclick={() => (feedbackState = 'idle')}
+					>{t.distillations.retry}</button>
+				</div>
 			{:else}
 				<button
 					class="cursor-pointer rounded-token border border-border bg-transparent px-3 py-1.5 text-[16px] hover:bg-hover disabled:opacity-50"
