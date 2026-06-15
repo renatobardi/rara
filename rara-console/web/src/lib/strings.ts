@@ -54,5 +54,30 @@ export const t = {
 			quarantine: 'Quarentena',
 			failed: 'Falhou'
 		}
+	},
+	quarantine: {
+		title: 'Quarentena',
+		loading: 'Carregando quarentena…',
+		error: 'Não foi possível ler a quarentena.',
+		empty: 'Nenhum item em quarentena.',
+		rescue: 'Resgatar',
+		confirmDrop: 'Confirmar drop',
+		reviewing: 'Processando…',
+		reviewError: 'Erro ao processar decisão.',
+		retry: 'Tentar novamente'
+	},
+	distillations: {
+		title: 'Distillations',
+		loading: 'Carregando distillations…',
+		error: 'Não foi possível ler as distillations.',
+		empty: 'Nenhuma distillation ainda.',
+		detailLoading: 'Carregando…',
+		detailError: 'Não foi possível carregar a distillation.',
+		thumbUp: '👍',
+		thumbDown: '👎',
+		feedbackSent: 'Feedback registrado.',
+		feedbackError: 'Erro ao registrar feedback.',
+		retry: 'Tentar novamente',
+		back: '← Voltar'
 	}
 };
