@@ -7,6 +7,7 @@ on:
       - develop
     paths:
       - 'rara-scribe/**'
+      - 'rara-addon/**'        # multi-module Dockerfile depends on the SDK — rebuild if it changes
       - '.github/workflows/ci-scribe.yml'
   pull_request:
     branches:
@@ -14,6 +15,7 @@ on:
       - develop
     paths:
       - 'rara-scribe/**'
+      - 'rara-addon/**'        # multi-module Dockerfile depends on the SDK — rebuild if it changes
       - '.github/workflows/ci-scribe.yml'
 
 jobs:

@@ -7,7 +7,7 @@ on:
       - develop
     paths:
       - 'rara-sift/**'
-      - 'rara-addon/**'
+      - 'rara-addon/**'        # multi-module Dockerfile depends on the SDK — rebuild if it changes
       - '.github/workflows/ci-sift.yml'
   pull_request:
     branches:
@@ -15,7 +15,7 @@ on:
       - develop
     paths:
       - 'rara-sift/**'
-      - 'rara-addon/**'
+      - 'rara-addon/**'        # multi-module Dockerfile depends on the SDK — rebuild if it changes
       - '.github/workflows/ci-sift.yml'
 
 jobs:
