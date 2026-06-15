@@ -195,3 +195,16 @@ Both are **best-effort**: a failed activation is logged, never fatal — a poke 
 sleeping Mac, and the Cloud Run call may hit a transient error. The worker's own slow poll is the
 safety net, so the queue always drains regardless. With no activation env configured the reconciler
 is pull-only (a logged no-op), which is the correct posture on a box without activation credentials.
+
+#### Self-healing re-activation (anti-stampede)
+
+A resident has its own poll as a safety net; an **on_demand cloudrun** provider (scale-to-zero)
+does **not** — if its assignment-time wake fails or times out on a cold start (the default
+`ACTIVATE_TIMEOUT_SECONDS` is **30s** for that reason), the step would sit `pending` forever, with
+no `gcloud run jobs execute` short of a human. So each pass the reconciler **re-fires** the wake for
+any on_demand cloudrun provider that still holds pending work. The catch is not spawning a **swarm**
+of concurrent executions running the wrong model: a single woken worker claims until its queue drains
+(one execution pulling via `SKIP LOCKED`). So a **successful** wake anchors a per-provider timestamp
+and the reconciler stays quiet for `REACTIVATE_BACKOFF_SECONDS` (default **180s**); a **failed** wake
+anchors nothing and is retried next pass (no execution started → nothing to swarm). Residents are
+excluded — they already have poll + poke.
