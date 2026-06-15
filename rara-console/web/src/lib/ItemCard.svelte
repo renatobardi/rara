@@ -24,7 +24,7 @@
 	} = $props();
 
 	const pubDate = $derived(
-		published_at ? new Date(published_at).toLocaleDateString('pt-BR') : ''
+		published_at ? new Date(published_at).toLocaleDateString('pt-BR', { timeZone: 'UTC' }) : ''
 	);
 
 	function isURL(s: string): boolean {
