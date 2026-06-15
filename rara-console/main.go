@@ -19,6 +19,7 @@ import (
 	"io/fs"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"time"
 )
@@ -166,6 +167,102 @@ func isNumericID(s string) bool {
 	return true
 }
 
+// postCore does an authenticated POST against the surface, forwarding the client body verbatim.
+// It returns the HTTP status and raw body from core — 4xx responses propagate to the caller so
+// the SPA can surface core validation errors (e.g. "item not in quarantine"). Only transport
+// failures are returned as errors (caller maps those to 502).
+func (s *server) postCore(ctx context.Context, path string, reqBody io.Reader) (status int, body []byte, err error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.coreURL+path,
+		io.LimitReader(reqBody, maxCoreBytes+1))
+	if err != nil {
+		return 0, nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+s.token)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer resp.Body.Close()
+	b, err := io.ReadAll(io.LimitReader(resp.Body, maxCoreBytes+1))
+	if err != nil {
+		return 0, nil, err
+	}
+	if int64(len(b)) > maxCoreBytes {
+		return 0, nil, fmt.Errorf("core surface response exceeds %d-byte limit", maxCoreBytes)
+	}
+	return resp.StatusCode, b, nil
+}
+
+// handleQuarantine proxies GET /v1/quarantine — the cold-start quarantine review queue.
+func (s *server) handleQuarantine(w http.ResponseWriter, r *http.Request) {
+	body, err := s.fetchCore(r.Context(), "/v1/quarantine")
+	if err != nil {
+		badGateway(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, json.RawMessage(body))
+}
+
+// handleDistillationList proxies GET /v1/distillations, forwarding the optional ?limit= param.
+// The limit value is re-encoded via url.Values to prevent query-parameter injection.
+func (s *server) handleDistillationList(w http.ResponseWriter, r *http.Request) {
+	path := "/v1/distillations"
+	if limit := r.URL.Query().Get("limit"); limit != "" {
+		q := url.Values{}
+		q.Set("limit", limit)
+		path += "?" + q.Encode()
+	}
+	body, err := s.fetchCore(r.Context(), path)
+	if err != nil {
+		badGateway(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, json.RawMessage(body))
+}
+
+// handleDistillationDetail proxies GET /v1/distillations/{id}. Rejects non-numeric ids before
+// touching the core so a path-traversal payload never reaches the upstream.
+func (s *server) handleDistillationDetail(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !isNumericID(id) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid distillation id"})
+		return
+	}
+	body, err := s.fetchCore(r.Context(), "/v1/distillations/"+id)
+	if err != nil {
+		badGateway(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, json.RawMessage(body))
+}
+
+// handleQuarantineReview proxies POST /v1/quarantine/review with the bearer injected server-side.
+// Core 4xx (e.g. item not in quarantine) propagates; only transport errors become 502.
+func (s *server) handleQuarantineReview(w http.ResponseWriter, r *http.Request) {
+	status, body, err := s.postCore(r.Context(), "/v1/quarantine/review", r.Body)
+	if err != nil {
+		badGateway(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_, _ = w.Write(body)
+}
+
+// handleFeedbackDistillation proxies POST /v1/feedback/distillation with bearer injected.
+// Core 4xx propagates; transport errors become 502.
+func (s *server) handleFeedbackDistillation(w http.ResponseWriter, r *http.Request) {
+	status, body, err := s.postCore(r.Context(), "/v1/feedback/distillation", r.Body)
+	if err != nil {
+		badGateway(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_, _ = w.Write(body)
+}
+
 // handleHealthz is the console's own liveness probe; it also reports whether the core surface is
 // reachable so a deploy can confirm the BFF link is live. It is always 200 (the console is up).
 func (s *server) handleHealthz(w http.ResponseWriter, r *http.Request) {
@@ -208,6 +305,11 @@ func main() {
 	mux.HandleFunc("GET /api/overview", s.handleOverview)
 	mux.HandleFunc("GET /api/pipeline", s.handlePipeline)
 	mux.HandleFunc("GET /api/items/{id}/steps", s.handleItemSteps)
+	mux.HandleFunc("GET /api/quarantine", s.handleQuarantine)
+	mux.HandleFunc("GET /api/distillations", s.handleDistillationList)
+	mux.HandleFunc("GET /api/distillations/{id}", s.handleDistillationDetail)
+	mux.HandleFunc("POST /api/quarantine/review", s.handleQuarantineReview)
+	mux.HandleFunc("POST /api/feedback/distillation", s.handleFeedbackDistillation)
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
 	mux.Handle("GET /", spaHandler(dist))
 

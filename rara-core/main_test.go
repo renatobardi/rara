@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"sort"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -82,9 +84,10 @@ type MockDatabase struct {
 
 	gateRules map[gateRuleKey]GateRule // UNIQUE(action, match_type, value)
 
-	gateDecisions []GateDecision          // append-only
-	feedback      []Feedback              // append-only
-	profiles      map[int]InterestProfile // UNIQUE(version)
+	gateDecisions  []GateDecision          // append-only
+	feedback       []Feedback              // append-only
+	profiles       map[int]InterestProfile // UNIQUE(version)
+	distillations  []Distillation          // cross-agent read-only seam (rara-distill owns the table)
 
 	nextFlowID int
 	nextItemID int
@@ -558,8 +561,48 @@ func (m *MockDatabase) ClaimPendingStep(_ context.Context, capability, provider 
 	return &s, nil
 }
 
+func (m *MockDatabase) ListRecentDistillations(_ context.Context, limit int) ([]DistillationSummary, error) {
+	out := make([]DistillationSummary, 0)
+	for i := len(m.distillations) - 1; i >= 0 && len(out) < limit; i-- {
+		d := m.distillations[i]
+		out = append(out, DistillationSummary{
+			ID: d.ID, SourceType: d.SourceType, SourceRef: d.SourceRef,
+			Title: d.Title, DocContext: d.DocContext,
+			Engine: d.Engine, Status: d.Status, CreatedAt: d.CreatedAt,
+		})
+	}
+	return out, nil
+}
+
+func (m *MockDatabase) GetDistillation(_ context.Context, id int) (Distillation, bool, error) {
+	for _, d := range m.distillations {
+		if d.ID == id {
+			return d, true, nil
+		}
+	}
+	return Distillation{}, false, nil
+}
+
 // compile-time guarantee the mock satisfies the seam the pgx impl does.
 var _ Database = (*MockDatabase)(nil)
+
+// seedDistillation appends a distillation with the given id and content to the mock.
+// CreatedAt is set to Unix(id, 0) so higher ids are always newer (deterministic ordering).
+func seedDistillation(t *testing.T, db *MockDatabase, id int, content string) {
+	t.Helper()
+	src := "https://youtu.be/v" + strconv.Itoa(id)
+	db.distillations = append(db.distillations, Distillation{
+		DistillationSummary: DistillationSummary{
+			ID: id, SourceType: "youtube", SourceRef: src,
+			Engine: "gemini/gemini-2.5-flash", Status: "done",
+			CreatedAt: time.Unix(int64(id), 0),
+		},
+		SourceKey: src, Pattern: "extract_wisdom",
+		Content:          &content,
+		Structured:       json.RawMessage(`{}`),
+		StructuredStatus: "ok",
+	})
+}
 
 // seedFlow inserts a flow and returns its id, for tests that need a valid FK target
 // for flow_steps.flow_id / items.flow_id.

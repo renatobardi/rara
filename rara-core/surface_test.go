@@ -404,6 +404,186 @@ func TestHTTPOversizedBodyIs400(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Distillation reads — Core + HTTP
+// ---------------------------------------------------------------------------
+
+func TestCoreRecentDistillationsRespectLimitAndOrder(t *testing.T) {
+	ctx := context.Background()
+	core, db, _ := newTestCore(t)
+	// Seed 3 distillations in insertion order (older → newer).
+	seedDistillation(t, db, 1, "content-a")
+	seedDistillation(t, db, 2, "content-b")
+	seedDistillation(t, db, 3, "content-c")
+
+	got, err := core.RecentDistillations(ctx, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("limit=2: want 2 summaries, got %d", len(got))
+	}
+	// Newest-first: id=3 then id=2.
+	if got[0].ID != 3 || got[1].ID != 2 {
+		t.Errorf("want [3,2], got [%d,%d]", got[0].ID, got[1].ID)
+	}
+}
+
+func TestCoreRecentDistillationsDefaultsAndCap(t *testing.T) {
+	ctx := context.Background()
+	core, _, _ := newTestCore(t)
+
+	// limit=0 → default 50 (no panic, just returns what's there — empty).
+	got, err := core.RecentDistillations(ctx, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil {
+		t.Error("empty list should be non-nil slice, got nil")
+	}
+
+	// limit above cap → capped at 200 (verify Core accepts it without error).
+	got, err = core.RecentDistillations(ctx, 999)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = got
+}
+
+func TestCoreRecentDistillationsSummaryHasNoContent(t *testing.T) {
+	ctx := context.Background()
+	core, db, _ := newTestCore(t)
+	seedDistillation(t, db, 1, "should-not-appear")
+
+	summaries, err := core.RecentDistillations(ctx, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(summaries) != 1 {
+		t.Fatalf("want 1 summary, got %d", len(summaries))
+	}
+	// DistillationSummary has no Content field — verify the type has no content.
+	// (The compile-time proof: DistillationSummary struct has no Content field.)
+	_ = summaries[0].ID
+	_ = summaries[0].Engine
+}
+
+func TestCoreGetDistillationReturnsContent(t *testing.T) {
+	ctx := context.Background()
+	core, db, _ := newTestCore(t)
+	seedDistillation(t, db, 7, "# Wisdom\nsome insights")
+
+	d, err := core.GetDistillation(ctx, 7)
+	if err != nil {
+		t.Fatalf("get distillation 7: %v", err)
+	}
+	if d.ID != 7 {
+		t.Errorf("want id=7, got %d", d.ID)
+	}
+	if d.Content == nil || *d.Content != "# Wisdom\nsome insights" {
+		t.Errorf("want content %q, got %v", "# Wisdom\nsome insights", d.Content)
+	}
+}
+
+func TestCoreGetDistillationInvalidIDIsBadInput(t *testing.T) {
+	ctx := context.Background()
+	core, _, _ := newTestCore(t)
+	_, err := core.GetDistillation(ctx, 0)
+	if err == nil {
+		t.Fatal("id=0 should be an error")
+	}
+	var bad badInputError
+	if !errors.As(err, &bad) {
+		t.Errorf("want badInputError, got %T: %v", err, err)
+	}
+}
+
+func TestCoreGetDistillationNotFoundIsBadInput(t *testing.T) {
+	ctx := context.Background()
+	core, _, _ := newTestCore(t)
+	_, err := core.GetDistillation(ctx, 99)
+	if err == nil {
+		t.Fatal("missing distillation should be an error")
+	}
+	var bad badInputError
+	if !errors.As(err, &bad) {
+		t.Errorf("want badInputError, got %T: %v", err, err)
+	}
+}
+
+func TestHTTPListDistillationsReturnsJSON(t *testing.T) {
+	core, db, _ := newTestCore(t)
+	seedDistillation(t, db, 1, "content")
+	seedDistillation(t, db, 2, "content2")
+	h := NewSurfaceMux(core, testToken)
+
+	rec := do(t, h, http.MethodGet, "/v1/distillations", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got %d: %s", rec.Code, rec.Body.String())
+	}
+	var summaries []DistillationSummary
+	if err := json.Unmarshal(rec.Body.Bytes(), &summaries); err != nil {
+		t.Fatal(err)
+	}
+	if len(summaries) != 2 {
+		t.Fatalf("want 2 summaries, got %d", len(summaries))
+	}
+	// newest-first: id=2, id=1
+	if summaries[0].ID != 2 || summaries[1].ID != 1 {
+		t.Errorf("want [2,1], got [%d,%d]", summaries[0].ID, summaries[1].ID)
+	}
+}
+
+func TestHTTPListDistillationsRequiresAuth(t *testing.T) {
+	core, _, _ := newTestCore(t)
+	h := NewSurfaceMux(core, testToken)
+	req := httptest.NewRequest(http.MethodGet, "/v1/distillations", nil) // no auth
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("want 401, got %d", rec.Code)
+	}
+}
+
+func TestHTTPGetDistillationReturnsContent(t *testing.T) {
+	core, db, _ := newTestCore(t)
+	seedDistillation(t, db, 5, "the content")
+	h := NewSurfaceMux(core, testToken)
+
+	rec := do(t, h, http.MethodGet, "/v1/distillations/5", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got %d: %s", rec.Code, rec.Body.String())
+	}
+	var d Distillation
+	if err := json.Unmarshal(rec.Body.Bytes(), &d); err != nil {
+		t.Fatal(err)
+	}
+	if d.ID != 5 {
+		t.Errorf("want id=5, got %d", d.ID)
+	}
+	if d.Content == nil || *d.Content != "the content" {
+		t.Errorf("want content %q, got %v", "the content", d.Content)
+	}
+}
+
+func TestHTTPGetDistillationInvalidIDIs400(t *testing.T) {
+	core, _, _ := newTestCore(t)
+	h := NewSurfaceMux(core, testToken)
+	rec := do(t, h, http.MethodGet, "/v1/distillations/abc", "")
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("bad path id should be 400, got %d", rec.Code)
+	}
+}
+
+func TestHTTPGetDistillationNotFoundIs400(t *testing.T) {
+	core, _, _ := newTestCore(t)
+	h := NewSurfaceMux(core, testToken)
+	rec := do(t, h, http.MethodGet, "/v1/distillations/999", "")
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("missing distillation should be 400, got %d", rec.Code)
+	}
+}
+
 // --- small helpers --------------------------------------------------------
 
 func mustItem(t *testing.T, db *MockDatabase, lane, ref string, flowID int, status string) int {

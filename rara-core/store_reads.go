@@ -451,6 +451,55 @@ func (d *pgxDatabase) ListAllGateRules(ctx context.Context) ([]GateRule, error) 
 	return out, rows.Err()
 }
 
+// ListRecentDistillations returns up to limit distillations (light projection, no content)
+// from rara-distill's table, ordered newest-first. Cross-agent read: this SELECT is safe
+// because rara-core never writes to distillations.
+func (d *pgxDatabase) ListRecentDistillations(ctx context.Context, limit int) ([]DistillationSummary, error) {
+	const q = `
+		SELECT id, source_type, source_ref, title, doc_context, engine, status, created_at
+		FROM distillations
+		ORDER BY created_at DESC, id DESC
+		LIMIT $1`
+	rows, err := d.conn.Query(ctx, q, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]DistillationSummary, 0)
+	for rows.Next() {
+		var s DistillationSummary
+		if err := rows.Scan(&s.ID, &s.SourceType, &s.SourceRef, &s.Title, &s.DocContext, &s.Engine, &s.Status, &s.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
+// GetDistillation returns the full distillation (with content + structured data) by id.
+func (d *pgxDatabase) GetDistillation(ctx context.Context, id int) (Distillation, bool, error) {
+	const q = `
+		SELECT id, source_type, source_ref, title, doc_context, engine, status, created_at,
+		       source_key, pattern, context, strategy, session_patterns,
+		       content, structured, structured_status, updated_at
+		FROM distillations
+		WHERE id = $1`
+	var dist Distillation
+	err := d.conn.QueryRow(ctx, q, id).Scan(
+		&dist.ID, &dist.SourceType, &dist.SourceRef, &dist.Title, &dist.DocContext,
+		&dist.Engine, &dist.Status, &dist.CreatedAt,
+		&dist.SourceKey, &dist.Pattern, &dist.Context, &dist.Strategy, &dist.SessionPatterns,
+		&dist.Content, &dist.Structured, &dist.StructuredStatus, &dist.UpdatedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Distillation{}, false, nil
+	}
+	if err != nil {
+		return Distillation{}, false, err
+	}
+	return dist, true, nil
+}
+
 // TouchProviderHeartbeat stamps heartbeat_at = now for a live provider. An unknown name
 // updates zero rows (no error) — liveness is best-effort. It deliberately touches only
 // heartbeat_at, never the config columns (unlike the full-record UpsertProvider).
