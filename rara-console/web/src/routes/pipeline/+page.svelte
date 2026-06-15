@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { t } from '$lib/strings';
 	import ItemCard from '$lib/ItemCard.svelte';
+	import Paginator from '$lib/Paginator.svelte';
 
 	const STATUSES = [
 		'discovered',
@@ -106,57 +107,61 @@
 					{t.pipeline.statusLabels[st]}
 					<span class="ml-auto text-[11px] font-normal text-muted">{items.length}</span>
 				</h2>
-				{#each items as item}
-					<div class="border-b border-border last:border-b-0">
-						<ItemCard
-							id={item.id}
-							title={item.title}
-							channel={item.channel}
-							summary={item.summary}
-							source_ref={item.source_ref}
-							ontoggle={() => toggleItem(item.id)}
-							expanded={openItemId === item.id}
-						/>
+				<Paginator {items}>
+					{#snippet children(page)}
+						{#each page as item}
+							<div class="border-b border-border last:border-b-0">
+								<ItemCard
+									id={item.id}
+									title={item.title}
+									channel={item.channel}
+									summary={item.summary}
+									source_ref={item.source_ref}
+									ontoggle={() => toggleItem(item.id)}
+									expanded={openItemId === item.id}
+								/>
 
-						{#if openItemId === item.id}
-							<div class="border-t border-border bg-bg px-4 py-3">
-								{#if stepsLoading}
-									<p class="text-[12px] text-muted">{t.pipeline.stepsLoading}</p>
-								{:else if stepsError}
-									<p class="text-[12px] text-red">{t.pipeline.stepsError}</p>
-								{:else if steps.length === 0}
-									<p class="text-[12px] text-muted">{t.pipeline.stepsEmpty}</p>
-								{:else}
-									<table class="w-full text-[12px]">
-										<thead>
-											<tr class="text-left text-[11px] text-muted">
-												<th class="pb-2 font-medium">{t.pipeline.colCapability}</th>
-												<th class="pb-2 font-medium">{t.pipeline.colProvider}</th>
-												<th class="pb-2 font-medium">{t.pipeline.colStatus}</th>
-												<th class="pb-2 text-right font-medium">{t.pipeline.colAttempts}</th>
-											</tr>
-										</thead>
-										<tbody>
-											{#each steps as step}
-												<tr class="border-t border-border">
-													<td class="py-1.5">{step.capability}</td>
-													<td class="py-1.5 text-muted">{step.provider}</td>
-													<td class="py-1.5">
-														<span class="flex items-center gap-1.5">
-															<span class="h-[6px] w-[6px] rounded-full {STEP_COLOR[step.status] ?? 'bg-amber'} flex-none"></span>
-															{step.status}
-														</span>
-													</td>
-													<td class="py-1.5 text-right text-muted">{step.attempts}</td>
-												</tr>
-											{/each}
-										</tbody>
-									</table>
+								{#if openItemId === item.id}
+									<div class="border-t border-border bg-bg px-4 py-3">
+										{#if stepsLoading}
+											<p class="text-[12px] text-muted">{t.pipeline.stepsLoading}</p>
+										{:else if stepsError}
+											<p class="text-[12px] text-red">{t.pipeline.stepsError}</p>
+										{:else if steps.length === 0}
+											<p class="text-[12px] text-muted">{t.pipeline.stepsEmpty}</p>
+										{:else}
+											<table class="w-full text-[12px]">
+												<thead>
+													<tr class="text-left text-[11px] text-muted">
+														<th class="pb-2 font-medium">{t.pipeline.colCapability}</th>
+														<th class="pb-2 font-medium">{t.pipeline.colProvider}</th>
+														<th class="pb-2 font-medium">{t.pipeline.colStatus}</th>
+														<th class="pb-2 text-right font-medium">{t.pipeline.colAttempts}</th>
+													</tr>
+												</thead>
+												<tbody>
+													{#each steps as step}
+														<tr class="border-t border-border">
+															<td class="py-1.5">{step.capability}</td>
+															<td class="py-1.5 text-muted">{step.provider}</td>
+															<td class="py-1.5">
+																<span class="flex items-center gap-1.5">
+																	<span class="h-[6px] w-[6px] rounded-full {STEP_COLOR[step.status] ?? 'bg-amber'} flex-none"></span>
+																	{step.status}
+																</span>
+															</td>
+															<td class="py-1.5 text-right text-muted">{step.attempts}</td>
+														</tr>
+													{/each}
+												</tbody>
+											</table>
+										{/if}
+									</div>
 								{/if}
 							</div>
-						{/if}
-					</div>
-				{/each}
+						{/each}
+					{/snippet}
+				</Paginator>
 			</div>
 		{/if}
 	{/each}

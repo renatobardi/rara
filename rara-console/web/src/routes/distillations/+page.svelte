@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { t } from '$lib/strings';
+	import Paginator from '$lib/Paginator.svelte';
 
 	type Distillation = {
 		id: number;
@@ -37,30 +38,34 @@
 {:else if items.length === 0}
 	<p class="text-[13px] text-muted">{t.distillations.empty}</p>
 {:else}
-	<div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-		{#each items as d}
-			<a
-				href="/distillations/{d.id}"
-				class="flex flex-col gap-2 rounded-card border border-border bg-surface p-4 no-underline hover:bg-hover"
-			>
-				<div class="flex items-start justify-between gap-2">
-					<span class="line-clamp-2 text-[13.5px] font-medium text-text">
-						{d.title ?? `${d.source_type} · ${d.source_ref}`}
-					</span>
-					<span
-						class="mt-0.5 h-[7px] w-[7px] flex-none rounded-full {STATUS_COLOR[d.status] ??
-							'bg-amber'}"
-					></span>
-				</div>
-				{#if d.doc_context}
-					<p class="m-0 line-clamp-2 text-[12px] text-muted">{d.doc_context}</p>
-				{/if}
-				<div class="mt-auto flex items-center gap-2 text-[11px] text-muted">
-					<span>{d.engine}</span>
-					<span>·</span>
-					<span>{d.source_type}</span>
-				</div>
-			</a>
-		{/each}
-	</div>
+	<Paginator {items}>
+		{#snippet children(page)}
+			<div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+				{#each page as d}
+					<a
+						href="/distillations/{d.id}"
+						class="flex flex-col gap-2 rounded-card border border-border bg-surface p-4 no-underline hover:bg-hover"
+					>
+						<div class="flex items-start justify-between gap-2">
+							<span class="line-clamp-2 text-[13.5px] font-medium text-text">
+								{d.title ?? `${d.source_type} · ${d.source_ref}`}
+							</span>
+							<span
+								class="mt-0.5 h-[7px] w-[7px] flex-none rounded-full {STATUS_COLOR[d.status] ??
+									'bg-amber'}"
+							></span>
+						</div>
+						{#if d.doc_context}
+							<p class="m-0 line-clamp-2 text-[12px] text-muted">{d.doc_context}</p>
+						{/if}
+						<div class="mt-auto flex items-center gap-2 text-[11px] text-muted">
+							<span>{d.engine}</span>
+							<span>·</span>
+							<span>{d.source_type}</span>
+						</div>
+					</a>
+				{/each}
+			</div>
+		{/snippet}
+	</Paginator>
 {/if}

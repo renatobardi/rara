@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { t } from '$lib/strings';
 	import ItemCard from '$lib/ItemCard.svelte';
+	import Paginator from '$lib/Paginator.svelte';
 
 	type QuarantineItem = {
 		id: number;
@@ -56,45 +57,49 @@
 	<p class="text-[13px] text-muted">{t.quarantine.empty}</p>
 {:else}
 	<div class="overflow-hidden rounded-card border border-border bg-surface">
-		{#each items as item}
-			<div class="border-b border-border last:border-b-0">
-				<ItemCard
-					id={item.id}
-					title={item.title}
-					channel={item.channel}
-					summary={item.summary}
-					source_ref={item.source_ref}
-				>
-					{#snippet actions()}
-						{#if reviewState[item.id] === 'pending'}
-							<span class="text-[12px] text-muted">{t.quarantine.reviewing}</span>
-						{:else if reviewState[item.id] === 'err'}
-							<div class="flex items-center gap-2">
-								<span class="text-[12px] text-red">{t.quarantine.reviewError}</span>
-								<button
-									class="cursor-pointer rounded-token border border-border bg-transparent px-2 py-0.5 text-[11px] hover:bg-hover"
-									onclick={() => { reviewState = { ...reviewState, [item.id]: undefined }; }}
-								>{t.quarantine.retry}</button>
-							</div>
-						{:else}
-							<div class="flex gap-2">
-								<button
-									class="cursor-pointer rounded-token border border-border bg-transparent px-3 py-1 text-[12px] font-medium hover:bg-hover"
-									onclick={() => review(item.id, 'up')}
-								>
-									{t.quarantine.rescue}
-								</button>
-								<button
-									class="cursor-pointer rounded-token border border-red/30 bg-transparent px-3 py-1 text-[12px] font-medium text-red hover:bg-red/10"
-									onclick={() => review(item.id, 'down')}
-								>
-									{t.quarantine.confirmDrop}
-								</button>
-							</div>
-						{/if}
-					{/snippet}
-				</ItemCard>
-			</div>
-		{/each}
+		<Paginator {items}>
+			{#snippet children(page)}
+				{#each page as item}
+					<div class="border-b border-border last:border-b-0">
+						<ItemCard
+							id={item.id}
+							title={item.title}
+							channel={item.channel}
+							summary={item.summary}
+							source_ref={item.source_ref}
+						>
+							{#snippet actions()}
+								{#if reviewState[item.id] === 'pending'}
+									<span class="text-[12px] text-muted">{t.quarantine.reviewing}</span>
+								{:else if reviewState[item.id] === 'err'}
+									<div class="flex items-center gap-2">
+										<span class="text-[12px] text-red">{t.quarantine.reviewError}</span>
+										<button
+											class="cursor-pointer rounded-token border border-border bg-transparent px-2 py-0.5 text-[11px] hover:bg-hover"
+											onclick={() => { reviewState = { ...reviewState, [item.id]: undefined }; }}
+										>{t.quarantine.retry}</button>
+									</div>
+								{:else}
+									<div class="flex gap-2">
+										<button
+											class="cursor-pointer rounded-token border border-border bg-transparent px-3 py-1 text-[12px] font-medium hover:bg-hover"
+											onclick={() => review(item.id, 'up')}
+										>
+											{t.quarantine.rescue}
+										</button>
+										<button
+											class="cursor-pointer rounded-token border border-red/30 bg-transparent px-3 py-1 text-[12px] font-medium text-red hover:bg-red/10"
+											onclick={() => review(item.id, 'down')}
+										>
+											{t.quarantine.confirmDrop}
+										</button>
+									</div>
+								{/if}
+							{/snippet}
+						</ItemCard>
+					</div>
+				{/each}
+			{/snippet}
+		</Paginator>
 	</div>
 {/if}
