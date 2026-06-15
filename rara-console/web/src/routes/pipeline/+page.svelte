@@ -26,6 +26,13 @@
 		failed: 'bg-red'
 	};
 
+	// ponytail: covers the step-level statuses returned by item_steps; amber = in-progress catch-all
+	const STEP_COLOR: Record<string, string> = {
+		done: 'bg-green',
+		failed: 'bg-red',
+		filtered: 'bg-muted'
+	};
+
 	let data = $state<PipelineData | null>(null);
 	let loading = $state(true);
 	let error = $state(false);
@@ -50,15 +57,18 @@
 			return;
 		}
 		openItemId = id;
+		steps = [];
 		stepsLoading = true;
 		stepsError = false;
 		try {
 			const r = await fetch(`/api/items/${id}/steps`);
-			steps = r.ok ? await r.json() : [];
-			if (!r.ok) stepsError = true;
+			if (r.ok) {
+				steps = await r.json();
+			} else {
+				stepsError = true;
+			}
 		} catch {
 			stepsError = true;
-			steps = [];
 		} finally {
 			stepsLoading = false;
 		}
@@ -133,7 +143,7 @@
 													<td class="py-1.5 text-muted">{step.provider}</td>
 													<td class="py-1.5">
 														<span class="flex items-center gap-1.5">
-															<span class="h-[6px] w-[6px] rounded-full {step.status === 'done' ? 'bg-green' : step.status === 'failed' ? 'bg-red' : 'bg-amber'} flex-none"></span>
+															<span class="h-[6px] w-[6px] rounded-full {STEP_COLOR[step.status] ?? 'bg-amber'} flex-none"></span>
 															{step.status}
 														</span>
 													</td>
@@ -153,6 +163,6 @@
 
 	<!-- Empty state quando todos os status estão zerados -->
 	{#if STATUSES.every((st) => (data?.counts[st] ?? 0) === 0)}
-		<p class="text-[13px] text-muted">{t.overview.empty}</p>
+		<p class="text-[13px] text-muted">{t.pipeline.empty}</p>
 	{/if}
 {/if}

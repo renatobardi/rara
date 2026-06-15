@@ -36,6 +36,7 @@ export const t = {
 		title: 'Pipeline',
 		loading: 'Carregando pipeline do core ao vivo…',
 		error: 'Não foi possível ler o pipeline do core.',
+		empty: 'Nenhum item no pipeline ainda.',
 		emptyStatus: 'Nenhum item nesta fila.',
 		stepsLoading: 'Carregando etapas…',
 		stepsEmpty: 'Sem etapas registradas.',

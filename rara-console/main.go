@@ -145,9 +145,7 @@ func (s *server) handleItemSteps(w http.ResponseWriter, r *http.Request) {
 		badGateway(w, err)
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(body)
+	writeJSON(w, http.StatusOK, json.RawMessage(body))
 }
 
 func isNumericID(s string) bool {

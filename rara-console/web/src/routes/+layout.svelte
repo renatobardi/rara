@@ -87,7 +87,7 @@
 			class="sticky top-0 z-10 flex items-center gap-4 border-b border-border px-6 py-3 backdrop-blur-md"
 			style="background:color-mix(in srgb, var(--bg) 82%, transparent)"
 		>
-			<h1 class="m-0 text-[17px] font-semibold">{pageTitles[$page.url.pathname] ?? ''}</h1>
+			<h1 class="m-0 text-[17px] font-semibold">{pageTitles[$page.url.pathname] ?? $page.url.pathname.slice(1)}</h1>
 			<div class="flex rounded-pill border border-border bg-surface-2 p-[3px]">
 				<button
 					class="cursor-pointer rounded-pill border-0 px-3.5 py-1 text-xs font-semibold {theme ===
