@@ -21,6 +21,11 @@ on:
         required: false
         default: false
         type: boolean
+    secrets:
+      GCP_WORKLOAD_IDENTITY_PROVIDER:
+        required: true
+      GCP_SERVICE_ACCOUNT:
+        required: true
 
 # Required for Workload Identity Federation (keyless auth to GCP). The caller must also grant
 # id-token: write — a reusable workflow cannot exceed the caller token's permissions.
