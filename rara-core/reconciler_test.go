@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -539,6 +540,196 @@ func TestReconcileTimeoutFallsBackToNextProvider(t *testing.T) {
 	}
 	if got.AssignedProvider != "asr-backup" {
 		t.Errorf("failover assigned %q, want asr-backup (the next provider, not the dead one)", got.AssignedProvider)
+	}
+}
+
+// countingActivator records per-provider Activate calls and can be scripted to fail the first
+// `failFirst` calls (a cold-start timeout / a SA still missing run.invoker) before succeeding. It
+// is the fake for the A2 self-healing tests: the call counter proves a re-activation fired (or did
+// NOT, under the anti-stampede backoff) without any real Cloud Run `run`.
+type countingActivator struct {
+	calls     map[string]int
+	total     int
+	failFirst int
+}
+
+func (c *countingActivator) Activate(_ context.Context, p Provider) error {
+	if c.calls == nil {
+		c.calls = map[string]int{}
+	}
+	c.total++
+	c.calls[p.Name]++
+	if c.total <= c.failFirst {
+		return fmt.Errorf("simulated activation failure for %s", p.Name)
+	}
+	return nil
+}
+
+// TestReactivateRecoversAfterFailedActivation (#4): an on_demand cloudrun assignment whose
+// activation FAILS on the first pass (cold-start timeout) is left pending with no poll safety net.
+// The next pass's self-healing re-fires the activation — no manual `gcloud run jobs execute`. Once
+// that wake lands the worker can claim and finish the step; we simulate that to show it advances.
+func TestReactivateRecoversAfterFailedActivation(t *testing.T) {
+	ctx := context.Background()
+	base := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	db := newMockDatabase()
+	itemID := seedAndIngestOne(t, db, "vid1")
+	act := &countingActivator{failFirst: 1} // the first activation (gate_barato assign) fails
+	r := NewReconciler(db, act)
+	r.now = func() time.Time { return base }
+
+	// Pass 1: assigns gate_barato (on_demand cloudrun) and tries to wake it — that wake fails.
+	if err := r.ReconcileOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if s, ok := stepBySeq(db, itemID, 2); !ok || s.Status != stepPending || s.AssignedProvider != provGateBarato {
+		t.Fatalf("gate_barato step = %+v, want pending+gate-barato", s)
+	}
+	if got := act.calls[provGateBarato]; got != 1 {
+		t.Fatalf("after the failed first pass, gate-barato activations = %d, want 1", got)
+	}
+
+	// Pass 2: the step is still pending with no worker — self-healing re-fires the wake (success).
+	if err := r.ReconcileOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := act.calls[provGateBarato]; got != 2 {
+		t.Fatalf("self-healing did not re-activate: gate-barato activations = %d, want 2", got)
+	}
+
+	// With the worker now awake it claims and finishes the gate; the item advances without any
+	// manual intervention.
+	runGate(t, db, itemID, 2, gateBarato, decisionKeep)
+	if err := r.ReconcileOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if s, ok := stepBySeq(db, itemID, 3); !ok || s.AssignedProvider != provASRYouTube {
+		t.Errorf("transcrever step = %+v, want assigned after the recovered gate", s)
+	}
+}
+
+// TestReactivateRespectsBackoffAfterSuccess (#4, the anti-stampede proof): once an on_demand
+// provider has been activated SUCCESSFULLY, the woken worker drains the queue, so while the
+// pending step persists WITHIN reactivateBackoff the reconciler must NOT re-fire — re-firing would
+// spawn concurrent executions (the swarm bug). Several passes inside the window keep the count at 1.
+func TestReactivateRespectsBackoffAfterSuccess(t *testing.T) {
+	ctx := context.Background()
+	base := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	db := newMockDatabase()
+	itemID := seedAndIngestOne(t, db, "vid1")
+	act := &countingActivator{} // every activation succeeds
+	r := NewReconciler(db, act)
+	r.reactivateBackoff = 3 * time.Minute
+	now := base
+	r.now = func() time.Time { return now }
+
+	// Pass 1: assign gate_barato and wake it (success) — anchors the backoff.
+	if err := r.ReconcileOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := act.calls[provGateBarato]; got != 1 {
+		t.Fatalf("first pass activations = %d, want 1", got)
+	}
+
+	// Several more passes, all still WITHIN the backoff, with the step deliberately left pending
+	// (the worker is "draining"). None may re-fire.
+	for _, dt := range []time.Duration{30 * time.Second, 90 * time.Second, 150 * time.Second} {
+		now = base.Add(dt)
+		if err := r.ReconcileOnce(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := act.calls[provGateBarato]; got != 1 {
+		t.Errorf("re-activated within backoff: gate-barato activations = %d, want 1 (anti-stampede)", got)
+	}
+	if s, ok := stepBySeq(db, itemID, 2); !ok || s.Status != stepPending {
+		t.Errorf("gate_barato step = %+v, want still pending for this scenario", s)
+	}
+
+	// Step once PAST the backoff with the same still-pending step: now it MUST re-fire. This pins
+	// the guard to the window itself — a reactivateStalled that simply never fired would also have
+	// held the count at 1 above, so without this the test could not tell "blocked by backoff" from
+	// "does nothing".
+	now = base.Add(4 * time.Minute)
+	if err := r.ReconcileOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := act.calls[provGateBarato]; got != 2 {
+		t.Errorf("did not re-activate once past backoff: gate-barato activations = %d, want 2", got)
+	}
+}
+
+// TestReactivateAfterBackoffElapses (#4): a step still pending BEYOND reactivateBackoff means the
+// woken worker likely died without claiming — so the reconciler re-fires the activation. This is
+// the recovery half of the backoff: quiet while draining, then a fresh wake once the window passes.
+func TestReactivateAfterBackoffElapses(t *testing.T) {
+	ctx := context.Background()
+	base := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	db := newMockDatabase()
+	_ = seedAndIngestOne(t, db, "vid1")
+	act := &countingActivator{}
+	r := NewReconciler(db, act)
+	r.reactivateBackoff = 3 * time.Minute
+	now := base
+	r.now = func() time.Time { return now }
+
+	if err := r.ReconcileOnce(ctx); err != nil { // assign + wake gate_barato (anchors at base)
+		t.Fatal(err)
+	}
+	if got := act.calls[provGateBarato]; got != 1 {
+		t.Fatalf("first pass activations = %d, want 1", got)
+	}
+
+	now = base.Add(5 * time.Minute) // past the 3m backoff, step still pending
+	if err := r.ReconcileOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := act.calls[provGateBarato]; got != 2 {
+		t.Errorf("did not re-activate past backoff: gate-barato activations = %d, want 2", got)
+	}
+}
+
+// TestReactivateSkipsResidentProvider (#4): the self-healing re-activation is ONLY for on_demand
+// cloudrun providers with no poll safety net. A resident (the Mac scribe) already has poll + poke,
+// so a persistently pending resident step — even well beyond the backoff — must NOT be re-fired
+// (turning a resident into a swarm is exactly what we avoid). It keeps its single assignment-time
+// poke and nothing more.
+func TestReactivateSkipsResidentProvider(t *testing.T) {
+	ctx := context.Background()
+	base := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	db := newMockDatabase()
+	itemID := seedAndIngestOne(t, db, "vid1")
+	setProviderHeartbeat(db, provASRYouTube, base) // resident known-alive at base
+	act := &countingActivator{}
+	r := NewReconciler(db, act)
+	r.reactivateBackoff = 3 * time.Minute
+	r.healthTTL = time.Hour // keep the resident eligible regardless of clock drift below
+	now := base
+	r.now = func() time.Time { return now }
+
+	if err := r.ReconcileOnce(ctx); err != nil { // assign gate_barato (on_demand)
+		t.Fatal(err)
+	}
+	runGate(t, db, itemID, 2, gateBarato, decisionKeep)
+	if err := r.ReconcileOnce(ctx); err != nil { // assign transcrever -> resident asr-youtube
+		t.Fatal(err)
+	}
+	if s, ok := stepBySeq(db, itemID, 3); !ok || s.Status != stepPending || s.AssignedProvider != provASRYouTube {
+		t.Fatalf("transcrever step = %+v, want pending+asr-youtube", s)
+	}
+	wokenAfterAssign := act.calls[provASRYouTube]
+	if wokenAfterAssign != 1 {
+		t.Fatalf("resident assignment-time pokes = %d, want 1", wokenAfterAssign)
+	}
+
+	// Well beyond the backoff, with transcrever still pending: the resident must NOT be re-fired
+	// through the on_demand self-healing path.
+	now = base.Add(30 * time.Minute)
+	if err := r.ReconcileOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := act.calls[provASRYouTube]; got != 1 {
+		t.Errorf("resident was re-activated by on_demand self-healing: pokes = %d, want 1", got)
 	}
 }
 

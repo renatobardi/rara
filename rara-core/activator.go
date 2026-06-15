@@ -158,7 +158,11 @@ func (a *pokeActivator) Activate(ctx context.Context, p Provider) error {
 // Poke activation needs POKE_AUTH_TOKEN. With NOTHING configured it returns logActivator so the
 // reconciler still runs (worker poll drains the queue).
 func newActivatorFromEnv() Activator {
-	client := &http.Client{Timeout: addon.EnvDuration("ACTIVATE_TIMEOUT_SECONDS", 10*time.Second)}
+	// 30s default (was 10s): a Cloud Run Job `run` on a scale-to-zero service routinely passes 10s
+	// on a cold start, and there is no poll safety net for an on_demand job — a timed-out activation
+	// would leave the step pending until the reconciler's self-healing re-activation (reconciler.go)
+	// retries. A longer client timeout absorbs the cold start so the first attempt usually lands.
+	client := &http.Client{Timeout: addon.EnvDuration("ACTIVATE_TIMEOUT_SECONDS", 30*time.Second)}
 	d := dispatchActivator{}
 
 	if project, region := os.Getenv("CLOUD_RUN_PROJECT"), os.Getenv("CLOUD_RUN_REGION"); project != "" && region != "" {

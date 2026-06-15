@@ -976,6 +976,11 @@ func runReconcile(ctx context.Context, db Database, dbURL string, argv []string)
 			r.healthTTL = time.Duration(n) * time.Second
 		}
 	}
+	if v := os.Getenv("REACTIVATE_BACKOFF_SECONDS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			r.reactivateBackoff = time.Duration(n) * time.Second
+		}
+	}
 	if !*loop {
 		if err := r.ReconcileOnce(ctx); err != nil {
 			log.Fatalf("reconcile: %v", err)

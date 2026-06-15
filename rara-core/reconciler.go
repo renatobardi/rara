@@ -40,6 +40,13 @@ import (
 // handleStaleStep). A conservative default; tunable via RECONCILE_STALE_SECONDS.
 const defaultStaleAfter = 10 * time.Minute
 
+// defaultReactivateBackoff is the anti-stampede window for self-healing re-activation
+// (reactivateStalled). After a SUCCESSFUL activation, a single woken on_demand worker claims
+// until its queue drains (one Cloud Run execution pulling via SKIP LOCKED), so the reconciler
+// must NOT re-fire activation while pending work remains within this window — doing so would
+// spawn concurrent executions (the "swarm" bug). Tunable via REACTIVATE_BACKOFF_SECONDS.
+const defaultReactivateBackoff = 3 * time.Minute
+
 // Activator wakes a provider so it starts pulling its assignment NOW instead of waiting for its
 // next poll tick (symmetric activation, architecture §4). The reconciler calls it for EVERY
 // assignment; the concrete Activator dispatches by provider shape — runtime=cloudrun via Cloud Run
@@ -50,15 +57,17 @@ type Activator interface {
 	Activate(ctx context.Context, p Provider) error
 }
 
-// Reconciler is the control loop. now, staleAfter and healthTTL are injectable so the
-// heartbeat-liveness backstop and the router's health gate are deterministic in tests.
+// Reconciler is the control loop. now, staleAfter, healthTTL and reactivateBackoff are
+// injectable so the heartbeat-liveness backstop, the router's health gate and the
+// anti-stampede re-activation window are deterministic in tests.
 type Reconciler struct {
-	db         Database
-	activator  Activator
-	router     *Router
-	now        func() time.Time
-	staleAfter time.Duration
-	healthTTL  time.Duration
+	db                Database
+	activator         Activator
+	router            *Router
+	now               func() time.Time
+	staleAfter        time.Duration
+	healthTTL         time.Duration
+	reactivateBackoff time.Duration
 
 	// activatedThisPass coalesces wakes WITHIN a single ReconcileOnce: a provider is activated at
 	// most once per pass, however many items were assigned to it this pass. One wake drains the
@@ -67,6 +76,19 @@ type Reconciler struct {
 	// executions / N pokes to a sleeping Mac. It is reset at the start of every pass — no state is
 	// carried BETWEEN passes (ReconcileOnce is never called concurrently on one Reconciler).
 	activatedThisPass map[string]bool
+
+	// pendingThisPass is the set of providers that still hold a pending (assigned-but-unclaimed)
+	// step at the frontier this pass. It feeds the self-healing re-activation (reactivateStalled):
+	// an on_demand cloudrun provider with pending work that did not wake (its activation failed or
+	// timed out) has no poll safety net, so the reconciler re-fires its activation. Reset every pass.
+	pendingThisPass map[string]bool
+
+	// lastActivatedAt records the wall time of each provider's last SUCCESSFUL activation and,
+	// unlike activatedThisPass, PERSISTS BETWEEN passes. It anchors the anti-stampede backoff: a
+	// recently-woken on_demand worker is still draining, so reactivateStalled must not re-fire
+	// within reactivateBackoff of the recorded success. A FAILED activation never writes here, so
+	// the next pass retries it (no execution was started -> no swarm, just a legitimate retry).
+	lastActivatedAt map[string]time.Time
 }
 
 // NewReconciler wires a reconciler. A nil activator falls back to a logging no-op. now,
@@ -79,6 +101,8 @@ func NewReconciler(db Database, activator Activator) *Reconciler {
 	return &Reconciler{
 		db: db, activator: activator, router: NewRouter(db),
 		now: time.Now, staleAfter: defaultStaleAfter, healthTTL: defaultHealthTTL,
+		reactivateBackoff: defaultReactivateBackoff,
+		lastActivatedAt:   make(map[string]time.Time),
 	}
 }
 
@@ -88,6 +112,7 @@ func NewReconciler(db Database, activator Activator) *Reconciler {
 // retries it).
 func (r *Reconciler) ReconcileOnce(ctx context.Context) error {
 	r.activatedThisPass = make(map[string]bool) // coalesce wakes within this pass (see activate)
+	r.pendingThisPass = make(map[string]bool)   // providers with pending work this pass (see reactivateStalled)
 	items, err := r.db.ListActiveItems(ctx)
 	if err != nil {
 		return err
@@ -97,6 +122,9 @@ func (r *Reconciler) ReconcileOnce(ctx context.Context) error {
 			log.Printf("reconcile item %d (%s/%s): %v", it.ID, it.Lane, it.SourceRef, err)
 		}
 	}
+	// Self-healing backstop: re-fire activation for on_demand cloudrun providers whose pending
+	// work never woke (assignment-time activation failed/timed out). Best-effort, anti-stampede.
+	r.reactivateStalled(ctx)
 	return nil
 }
 
@@ -151,10 +179,17 @@ func (r *Reconciler) reconcileItem(ctx context.Context, item Item) error {
 			// A work step is pending/assigned/running — the worker owns it now. If it is
 			// running but its heartbeat has gone stale, the worker likely died: re-route it
 			// (timeout->fallback), then continue.
-			if st := bySeq[fs.Seq]; st.Status == stepRunning && r.isStale(st) {
+			st := bySeq[fs.Seq]
+			switch {
+			case st.Status == stepRunning && r.isStale(st):
 				if err := r.handleStaleStep(ctx, item, st); err != nil {
 					return err
 				}
+			case st.Status == stepPending && st.AssignedProvider != "":
+				// Pending-but-unclaimed: the assignment is on the frontier but no worker has
+				// picked it up. Note the provider so reactivateStalled can re-fire its wake if
+				// it is an on_demand cloudrun job with no poll safety net (self-healing, A2).
+				r.pendingThisPass[st.AssignedProvider] = true
 			}
 			// Keep the item's status in sync with what has completed and return.
 			return r.syncItemStatus(ctx, item, flowSteps, bySeq)
@@ -293,6 +328,55 @@ func (r *Reconciler) activate(ctx context.Context, item Item, prov Provider) {
 	r.activatedThisPass[prov.Name] = true
 	if err := r.activator.Activate(ctx, prov); err != nil {
 		log.Printf("activate %s for item %d: %v", prov.Name, item.ID, err)
+		return // a failed wake does NOT anchor the backoff — self-healing retries next pass
+	}
+	// A successful wake anchors the anti-stampede window: the woken worker now drains the queue,
+	// so reactivateStalled must not re-fire within reactivateBackoff (see reactivateStalled).
+	r.lastActivatedAt[prov.Name] = r.now()
+}
+
+// reactivateStalled is the self-healing backstop for on_demand cloudrun providers (A2). After the
+// per-item pass, it re-fires activation for every provider that still holds pending work but did
+// NOT wake — the typical cause being an assignment-time activation that failed or timed out on a
+// cold start. A scale-to-zero Cloud Run Job has no poll safety net, so without this a stuck step
+// stays pending forever until someone runs `gcloud run jobs execute` by hand.
+//
+// The anti-stampede invariant is the whole point:
+//   - A SUCCESSFUL activation anchors lastActivatedAt; while now-lastActivatedAt < reactivateBackoff
+//     we do NOT re-fire. One woken on_demand worker claims until its queue drains (one execution
+//     pulling via SKIP LOCKED), so re-firing would spawn CONCURRENT executions — the swarm bug.
+//   - A FAILED activation leaves lastActivatedAt untouched, so the next pass retries it. No
+//     execution was started on a failure, so a retry cannot swarm; it is legitimate recovery.
+//   - First-ever activation (no recorded timestamp) fires immediately.
+//
+// Scope: only on_demand cloudrun providers. Residents (Mac/VPC) already have a poll + poke safety
+// net and must NOT be turned into a swarm, so they are skipped. Best-effort throughout: a failure
+// is logged, never fatal, and never stalls the reconciler.
+func (r *Reconciler) reactivateStalled(ctx context.Context) {
+	for name := range r.pendingThisPass {
+		if r.activatedThisPass[name] {
+			continue // already woken this pass (assignment-time) — one wake drains the queue
+		}
+		p, found, err := r.db.GetProvider(ctx, name)
+		if err != nil {
+			log.Printf("reactivate %s: get provider: %v", name, err)
+			continue
+		}
+		// Only on_demand cloudrun has no poll safety net. Residents (and a provider since removed
+		// from config) are out of scope — re-firing them risks the very swarm we are avoiding.
+		if !found || p.Runtime != runtimeCloudRun || p.Activation != activationOnDemand {
+			continue
+		}
+		if last, seen := r.lastActivatedAt[name]; seen && r.now().Sub(last) < r.reactivateBackoff {
+			continue // a recent success is still draining — re-firing now would swarm
+		}
+		r.activatedThisPass[name] = true
+		if err := r.activator.Activate(ctx, p); err != nil {
+			log.Printf("reactivate %s: %v", name, err) // failure: do not anchor; retry next pass
+			continue
+		}
+		log.Printf("reactivate %s: re-fired activation for stuck pending work (self-healing)", name)
+		r.lastActivatedAt[name] = r.now() // success anchors the anti-stampede backoff
 	}
 }
 
