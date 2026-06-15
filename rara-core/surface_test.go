@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 const testToken = "s3cr3t-service-token"
@@ -684,6 +685,80 @@ func TestHTTPItemsResponseIncludesDisplayFields(t *testing.T) {
 	}
 	if len(items) != 1 || items[0].Title != "HTTP Episode" || items[0].Channel != "HTTP Cast" {
 		t.Errorf("items = %+v", items)
+	}
+	_ = ctx
+}
+
+// TestPublishedAtPassesThroughByLane: PublishedAt on an item is returned via ListItems (set) and
+// omitted for lanes with no date (nil pointer → omitempty in JSON).
+func TestPublishedAtPassesThroughByLane(t *testing.T) {
+	ctx := context.Background()
+	core, db, _ := newTestCore(t)
+	fid := seedFlow(t, db)
+
+	ts := time.Date(2024, 3, 15, 10, 0, 0, 0, time.UTC)
+	_, err := db.UpsertItem(ctx, Item{
+		Lane: "podcast", SourceRef: "ep-date", FlowID: fid, FlowVersion: 1,
+		Status: itemDiscovered, Title: "Dated Episode", PublishedAt: &ts,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.UpsertItem(ctx, Item{
+		Lane: "linkedin", SourceRef: "https://li/post1", FlowID: fid, FlowVersion: 1,
+		Status: itemDiscovered, Title: "LinkedIn post",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	items, err := core.ListItems(ctx, itemDiscovered)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, it := range items {
+		switch it.Lane {
+		case "podcast":
+			if it.PublishedAt == nil || !it.PublishedAt.Equal(ts) {
+				t.Errorf("podcast PublishedAt = %v, want %v", it.PublishedAt, ts)
+			}
+		case "linkedin":
+			if it.PublishedAt != nil {
+				t.Errorf("linkedin PublishedAt = %v, want nil", it.PublishedAt)
+			}
+		}
+	}
+}
+
+// TestHTTPPublishedAtInJSON: GET /v1/items returns published_at in JSON when set, omits when nil.
+func TestHTTPPublishedAtInJSON(t *testing.T) {
+	ctx := context.Background()
+	core, db, _ := newTestCore(t)
+	fid := seedFlow(t, db)
+
+	ts := time.Date(2024, 6, 1, 0, 0, 0, 0, time.UTC)
+	_, err := db.UpsertItem(ctx, Item{
+		Lane: "youtube", SourceRef: "yt-abc", FlowID: fid, FlowVersion: 1,
+		Status: itemDiscovered, Title: "Video", PublishedAt: &ts,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	h := NewSurfaceMux(core, testToken)
+	rec := do(t, h, http.MethodGet, "/v1/items?status=discovered", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got %d: %s", rec.Code, rec.Body.String())
+	}
+	var items []Item
+	if err := json.Unmarshal(rec.Body.Bytes(), &items); err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("want 1 item, got %d", len(items))
+	}
+	if items[0].PublishedAt == nil || !items[0].PublishedAt.Equal(ts) {
+		t.Errorf("PublishedAt = %v, want %v", items[0].PublishedAt, ts)
 	}
 	_ = ctx
 }

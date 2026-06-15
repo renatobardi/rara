@@ -308,9 +308,10 @@ type Item struct {
 	// Display fields populated by the surface reads (ListItemsByStatus / ListQuarantinedItems)
 	// via a per-lane LEFT JOIN. Empty when the source row is absent or the lane has no match.
 	// Summary is truncated to 280 chars server-side to keep list payloads small.
-	Title   string `json:"title,omitempty"`
-	Channel string `json:"channel,omitempty"`
-	Summary string `json:"summary,omitempty"`
+	Title       string     `json:"title,omitempty"`
+	Channel     string     `json:"channel,omitempty"`
+	Summary     string     `json:"summary,omitempty"`
+	PublishedAt *time.Time `json:"published_at,omitempty"`
 }
 
 // ItemStep is one mutable runtime state-row.
