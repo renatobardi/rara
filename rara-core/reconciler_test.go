@@ -645,6 +645,18 @@ func TestReactivateRespectsBackoffAfterSuccess(t *testing.T) {
 	if s, ok := stepBySeq(db, itemID, 2); !ok || s.Status != stepPending {
 		t.Errorf("gate_barato step = %+v, want still pending for this scenario", s)
 	}
+
+	// Step once PAST the backoff with the same still-pending step: now it MUST re-fire. This pins
+	// the guard to the window itself — a reactivateStalled that simply never fired would also have
+	// held the count at 1 above, so without this the test could not tell "blocked by backoff" from
+	// "does nothing".
+	now = base.Add(4 * time.Minute)
+	if err := r.ReconcileOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := act.calls[provGateBarato]; got != 2 {
+		t.Errorf("did not re-activate once past backoff: gate-barato activations = %d, want 2", got)
+	}
 }
 
 // TestReactivateAfterBackoffElapses (#4): a step still pending BEYOND reactivateBackoff means the
