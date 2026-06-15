@@ -1,6 +1,7 @@
 <script lang="ts">
 	import '../app.css';
 	import { t } from '$lib/strings';
+	import { page } from '$app/stores';
 
 	let { children } = $props();
 
@@ -18,8 +19,8 @@
 	}
 
 	const nav = [
-		{ icon: '◍', label: t.nav.overview, active: true },
-		{ icon: '▤', label: t.nav.pipeline },
+		{ icon: '◍', label: t.nav.overview, href: '/' },
+		{ icon: '▤', label: t.nav.pipeline, href: '/pipeline' },
 		{ icon: '⚑', label: t.nav.quarantine },
 		{ icon: '✦', label: t.nav.distillations },
 		{ section: t.nav.secTrain },
@@ -30,6 +31,11 @@
 		{ icon: '≣', label: t.nav.audit },
 		{ icon: '⚙', label: t.nav.settings }
 	];
+
+	const pageTitles: Record<string, string> = {
+		'/': t.nav.overview,
+		'/pipeline': t.nav.pipeline
+	};
 </script>
 
 <div class="grid h-screen grid-cols-app overflow-hidden">
@@ -45,18 +51,20 @@
 			{#each nav as it}
 				{#if it.section}
 					<div class="px-3 pb-1 pt-3 text-[11px] font-medium text-muted">{it.section}</div>
-				{:else if it.active}
+				{:else if it.href}
 					<a
-						href="/"
-						aria-current="page"
-						class="flex items-center gap-3 rounded-token bg-hover px-3 py-2 text-[13.5px] font-semibold text-text no-underline"
+						href={it.href}
+						aria-current={$page.url.pathname === it.href ? 'page' : undefined}
+						class="flex items-center gap-3 rounded-token px-3 py-2 text-[13.5px] no-underline
+						       {$page.url.pathname === it.href
+						         ? 'bg-hover font-semibold text-text'
+						         : 'text-text opacity-60 hover:bg-hover hover:opacity-90'}"
 					>
 						<span class="w-4 flex-none text-center opacity-70">{it.icon}</span>
 						{it.label}
 					</a>
 				{:else}
-					<!-- Shell placeholder: the screen lands in C1+. Rendered as a non-interactive item, not
-					     a dead link, so it isn't announced/focusable as navigable. -->
+					<!-- Shell placeholder: screen lands in C2+. Non-interactive, not announced as navigable. -->
 					<span
 						aria-disabled="true"
 						title="Em breve"
@@ -79,7 +87,7 @@
 			class="sticky top-0 z-10 flex items-center gap-4 border-b border-border px-6 py-3 backdrop-blur-md"
 			style="background:color-mix(in srgb, var(--bg) 82%, transparent)"
 		>
-			<h1 class="m-0 text-[17px] font-semibold">{t.nav.overview}</h1>
+			<h1 class="m-0 text-[17px] font-semibold">{pageTitles[$page.url.pathname] ?? ''}</h1>
 			<div class="flex rounded-pill border border-border bg-surface-2 p-[3px]">
 				<button
 					class="cursor-pointer rounded-pill border-0 px-3.5 py-1 text-xs font-semibold {theme ===

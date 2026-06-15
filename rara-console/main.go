@@ -90,6 +90,78 @@ func (s *server) handleOverview(w http.ResponseWriter, r *http.Request) {
 	}{flows, providers})
 }
 
+// pipelineStatuses is the exhaustive ordered set of item lifecycle statuses. Must match
+// isValidItemStatus in rara-core; do not invent values outside this list.
+var pipelineStatuses = [7]string{"discovered", "to_text", "distilled", "done", "filtered", "quarantine", "failed"}
+
+// handlePipeline fetches all 7 lifecycle statuses in parallel and returns counts + items so the
+// SPA can render the full pipeline view in a single round-trip. Any per-status failure is a 502.
+func (s *server) handlePipeline(w http.ResponseWriter, r *http.Request) {
+	type result struct {
+		status string
+		body   json.RawMessage
+		err    error
+	}
+	ch := make(chan result, len(pipelineStatuses))
+	for _, st := range pipelineStatuses {
+		go func(st string) {
+			body, err := s.fetchCore(r.Context(), "/v1/items?status="+st)
+			ch <- result{st, body, err}
+		}(st)
+	}
+
+	counts := make(map[string]int, len(pipelineStatuses))
+	items := make(map[string]json.RawMessage, len(pipelineStatuses))
+	for range pipelineStatuses {
+		res := <-ch
+		if res.err != nil {
+			badGateway(w, res.err)
+			return
+		}
+		var arr []json.RawMessage
+		if err := json.Unmarshal(res.body, &arr); err != nil {
+			badGateway(w, err)
+			return
+		}
+		counts[res.status] = len(arr)
+		items[res.status] = res.body
+	}
+	writeJSON(w, http.StatusOK, struct {
+		Counts map[string]int             `json:"counts"`
+		Items  map[string]json.RawMessage `json:"items"`
+	}{counts, items})
+}
+
+// handleItemSteps proxies /v1/items/{id}/steps from the core surface. Rejects non-numeric ids
+// before touching the core so a path-traversal payload never reaches the upstream.
+func (s *server) handleItemSteps(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !isNumericID(id) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid item id"})
+		return
+	}
+	body, err := s.fetchCore(r.Context(), "/v1/items/"+id+"/steps")
+	if err != nil {
+		badGateway(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(body)
+}
+
+func isNumericID(s string) bool {
+	if s == "" || len(s) > 19 {
+		return false
+	}
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 // handleHealthz is the console's own liveness probe; it also reports whether the core surface is
 // reachable so a deploy can confirm the BFF link is live. It is always 200 (the console is up).
 func (s *server) handleHealthz(w http.ResponseWriter, r *http.Request) {
@@ -130,6 +202,8 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/overview", s.handleOverview)
+	mux.HandleFunc("GET /api/pipeline", s.handlePipeline)
+	mux.HandleFunc("GET /api/items/{id}/steps", s.handleItemSteps)
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
 	mux.Handle("GET /", spaHandler(dist))
 
