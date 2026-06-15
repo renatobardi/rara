@@ -243,6 +243,6 @@ type errRows struct {
 	err error
 }
 
-func (r *errRows) Next() bool   { return false }
-func (r *errRows) Close()       {}
-func (r *errRows) Err() error   { return r.err }
+func (r *errRows) Next() bool { return false }
+func (r *errRows) Close()     {}
+func (r *errRows) Err() error { return r.err }
