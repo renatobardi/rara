@@ -2,8 +2,10 @@ package main
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -310,4 +312,341 @@ func contains(s, sub string) bool {
 		}
 	}
 	return false
+}
+
+// --- C2: quarantine + distillations + writes ----------------------------------
+
+// fakeC2Core serves the 5 endpoints added in C2 (quarantine reads, distillation
+// reads, and the two write endpoints). Every read requires the bearer token.
+func fakeC2Core(t *testing.T, token string) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	requireBearer := func(w http.ResponseWriter, r *http.Request) bool {
+		if r.Header.Get("Authorization") != "Bearer "+token {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return false
+		}
+		return true
+	}
+	mux.HandleFunc("GET /v1/quarantine", func(w http.ResponseWriter, r *http.Request) {
+		if !requireBearer(w, r) {
+			return
+		}
+		_, _ = w.Write([]byte(`[{"id":7,"status":"quarantine","source_ref":"yt123","lane":"youtube"}]`))
+	})
+	mux.HandleFunc("GET /v1/distillations", func(w http.ResponseWriter, r *http.Request) {
+		if !requireBearer(w, r) {
+			return
+		}
+		_, _ = w.Write([]byte(`[{"id":1,"source_type":"youtube","source_ref":"yt123","engine":"claude","status":"done"}]`))
+	})
+	mux.HandleFunc("GET /v1/distillations/{id}", func(w http.ResponseWriter, r *http.Request) {
+		if !requireBearer(w, r) {
+			return
+		}
+		_, _ = w.Write([]byte(`{"id":1,"source_type":"youtube","source_ref":"yt123","engine":"claude","status":"done","content":"# Hello"}`))
+	})
+	mux.HandleFunc("POST /v1/quarantine/review", func(w http.ResponseWriter, r *http.Request) {
+		if !requireBearer(w, r) {
+			return
+		}
+		body, _ := io.ReadAll(r.Body)
+		// echo body back so tests can verify forwarding
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(body)
+	})
+	mux.HandleFunc("POST /v1/feedback/distillation", func(w http.ResponseWriter, r *http.Request) {
+		if !requireBearer(w, r) {
+			return
+		}
+		body, _ := io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(body)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// fakeC2CoreReturns4xx is a minimal fake that always returns 400 for write endpoints,
+// so tests can verify that 4xx from core propagates rather than becoming 502.
+func fakeC2CoreReturns4xx(t *testing.T) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /v1/quarantine/review", func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, `{"error":"item not in quarantine"}`, http.StatusBadRequest)
+	})
+	mux.HandleFunc("POST /v1/feedback/distillation", func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, `{"error":"distillation not found"}`, http.StatusBadRequest)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// --- quarantine reads ---
+
+func TestQuarantineProxiesItemsWithBearer(t *testing.T) {
+	core := fakeC2Core(t, "secret")
+	s := &server{coreURL: core.URL, token: "secret", client: core.Client()}
+
+	rec := httptest.NewRecorder()
+	s.handleQuarantine(rec, httptest.NewRequest("GET", "/api/quarantine", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var got []map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got) != 1 || got[0]["id"] != float64(7) {
+		t.Errorf("quarantine = %+v, want one item id=7", got)
+	}
+}
+
+func TestQuarantineNeverLeaksToken(t *testing.T) {
+	core := fakeC2Core(t, "supersecret")
+	s := &server{coreURL: core.URL, token: "supersecret", client: core.Client()}
+
+	rec := httptest.NewRecorder()
+	s.handleQuarantine(rec, httptest.NewRequest("GET", "/api/quarantine", nil))
+
+	if body := rec.Body.String(); contains(body, "supersecret") {
+		t.Errorf("response leaked the surface token: %s", body)
+	}
+}
+
+func TestQuarantineReturns502WhenCoreUnreachable(t *testing.T) {
+	s := &server{coreURL: "http://127.0.0.1:1", token: "secret", client: http.DefaultClient}
+
+	rec := httptest.NewRecorder()
+	s.handleQuarantine(rec, httptest.NewRequest("GET", "/api/quarantine", nil))
+
+	if rec.Code != http.StatusBadGateway {
+		t.Errorf("status = %d, want 502", rec.Code)
+	}
+}
+
+// --- distillation list ---
+
+func TestDistillationListProxiesWithBearer(t *testing.T) {
+	core := fakeC2Core(t, "secret")
+	s := &server{coreURL: core.URL, token: "secret", client: core.Client()}
+
+	rec := httptest.NewRecorder()
+	s.handleDistillationList(rec, httptest.NewRequest("GET", "/api/distillations?limit=10", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var got []map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got) != 1 || got[0]["source_ref"] != "yt123" {
+		t.Errorf("distillations = %+v, want one yt123 item", got)
+	}
+}
+
+func TestDistillationListNeverLeaksToken(t *testing.T) {
+	core := fakeC2Core(t, "supersecret")
+	s := &server{coreURL: core.URL, token: "supersecret", client: core.Client()}
+
+	rec := httptest.NewRecorder()
+	s.handleDistillationList(rec, httptest.NewRequest("GET", "/api/distillations", nil))
+
+	if body := rec.Body.String(); contains(body, "supersecret") {
+		t.Errorf("response leaked the surface token: %s", body)
+	}
+}
+
+func TestDistillationListReturns502WhenCoreUnreachable(t *testing.T) {
+	s := &server{coreURL: "http://127.0.0.1:1", token: "secret", client: http.DefaultClient}
+
+	rec := httptest.NewRecorder()
+	s.handleDistillationList(rec, httptest.NewRequest("GET", "/api/distillations", nil))
+
+	if rec.Code != http.StatusBadGateway {
+		t.Errorf("status = %d, want 502", rec.Code)
+	}
+}
+
+// --- distillation detail ---
+
+func TestDistillationDetailProxiesWithBearer(t *testing.T) {
+	core := fakeC2Core(t, "secret")
+	s := &server{coreURL: core.URL, token: "secret", client: core.Client()}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/api/distillations/1", nil)
+	req.SetPathValue("id", "1")
+	s.handleDistillationDetail(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got["content"] != "# Hello" {
+		t.Errorf("content = %v, want '# Hello'", got["content"])
+	}
+}
+
+func TestDistillationDetailNeverLeaksToken(t *testing.T) {
+	core := fakeC2Core(t, "supersecret")
+	s := &server{coreURL: core.URL, token: "supersecret", client: core.Client()}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/api/distillations/1", nil)
+	req.SetPathValue("id", "1")
+	s.handleDistillationDetail(rec, req)
+
+	if body := rec.Body.String(); contains(body, "supersecret") {
+		t.Errorf("response leaked the surface token: %s", body)
+	}
+}
+
+func TestDistillationDetailReturns502WhenCoreUnreachable(t *testing.T) {
+	s := &server{coreURL: "http://127.0.0.1:1", token: "secret", client: http.DefaultClient}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/api/distillations/1", nil)
+	req.SetPathValue("id", "1")
+	s.handleDistillationDetail(rec, req)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Errorf("status = %d, want 502", rec.Code)
+	}
+}
+
+func TestDistillationDetailRejectsBadID(t *testing.T) {
+	s := &server{coreURL: "http://127.0.0.1:1", token: "secret", client: http.DefaultClient}
+
+	for _, bad := range []string{"abc", "", "12x", "../etc", "9999999999999999999999"} {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("GET", "/api/distillations/"+bad, nil)
+		req.SetPathValue("id", bad)
+		s.handleDistillationDetail(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("id=%q: status = %d, want 400", bad, rec.Code)
+		}
+	}
+}
+
+// --- quarantine review (write) ---
+
+func TestQuarantineReviewForwardsBodyAndBearer(t *testing.T) {
+	core := fakeC2Core(t, "secret")
+	s := &server{coreURL: core.URL, token: "secret", client: core.Client()}
+
+	payload := `{"item_id":7,"signal":"up"}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/api/quarantine/review", strings.NewReader(payload))
+	s.handleQuarantineReview(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	// fakeC2Core echoes the body back; confirm the payload made it to core
+	if body := rec.Body.String(); !contains(body, "item_id") {
+		t.Errorf("body = %q; forwarded payload not reflected", body)
+	}
+}
+
+func TestQuarantineReviewNeverLeaksToken(t *testing.T) {
+	core := fakeC2Core(t, "supersecret")
+	s := &server{coreURL: core.URL, token: "supersecret", client: core.Client()}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/api/quarantine/review", strings.NewReader(`{"item_id":7,"signal":"up"}`))
+	s.handleQuarantineReview(rec, req)
+
+	if body := rec.Body.String(); contains(body, "supersecret") {
+		t.Errorf("response leaked the surface token: %s", body)
+	}
+}
+
+func TestQuarantineReviewReturns502WhenCoreUnreachable(t *testing.T) {
+	s := &server{coreURL: "http://127.0.0.1:1", token: "secret", client: http.DefaultClient}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/api/quarantine/review", strings.NewReader(`{}`))
+	s.handleQuarantineReview(rec, req)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Errorf("status = %d, want 502", rec.Code)
+	}
+}
+
+func TestQuarantineReviewPropagatesCoreError(t *testing.T) {
+	core := fakeC2CoreReturns4xx(t)
+	s := &server{coreURL: core.URL, token: "secret", client: core.Client()}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/api/quarantine/review", strings.NewReader(`{"item_id":9,"signal":"up"}`))
+	s.handleQuarantineReview(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400 (core error must propagate, not become 502)", rec.Code)
+	}
+}
+
+// --- feedback distillation (write) ---
+
+func TestFeedbackDistillationForwardsBodyAndBearer(t *testing.T) {
+	core := fakeC2Core(t, "secret")
+	s := &server{coreURL: core.URL, token: "secret", client: core.Client()}
+
+	payload := `{"distillation_id":"1","signal":"up"}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/api/feedback/distillation", strings.NewReader(payload))
+	s.handleFeedbackDistillation(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if body := rec.Body.String(); !contains(body, "distillation_id") {
+		t.Errorf("body = %q; forwarded payload not reflected", body)
+	}
+}
+
+func TestFeedbackDistillationNeverLeaksToken(t *testing.T) {
+	core := fakeC2Core(t, "supersecret")
+	s := &server{coreURL: core.URL, token: "supersecret", client: core.Client()}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/api/feedback/distillation", strings.NewReader(`{"distillation_id":"1","signal":"up"}`))
+	s.handleFeedbackDistillation(rec, req)
+
+	if body := rec.Body.String(); contains(body, "supersecret") {
+		t.Errorf("response leaked the surface token: %s", body)
+	}
+}
+
+func TestFeedbackDistillationReturns502WhenCoreUnreachable(t *testing.T) {
+	s := &server{coreURL: "http://127.0.0.1:1", token: "secret", client: http.DefaultClient}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/api/feedback/distillation", strings.NewReader(`{}`))
+	s.handleFeedbackDistillation(rec, req)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Errorf("status = %d, want 502", rec.Code)
+	}
+}
+
+func TestFeedbackDistillationPropagatesCoreError(t *testing.T) {
+	core := fakeC2CoreReturns4xx(t)
+	s := &server{coreURL: core.URL, token: "secret", client: core.Client()}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/api/feedback/distillation", strings.NewReader(`{"distillation_id":"99","signal":"up"}`))
+	s.handleFeedbackDistillation(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400 (core error must propagate, not become 502)", rec.Code)
+	}
 }
