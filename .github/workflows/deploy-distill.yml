@@ -3,9 +3,9 @@ name: Deploy rara-distill
 # GATED — manual dispatch only (NO push:main). Thin caller of the reusable multi-module deploy
 # (_reusable-deploy-worker.yml). rara-distill is a 2.0 bridge-total claim-worker: it only does
 # work once the reconciler (VPC, a future phase) routes `destilar` item_steps to its provider.
-# Re-enabling auto-deploy (push:main) + the per-provider env config is the lane-activation wave
-# (W1). App-specific secret to wire then: the LiteLLM model key for the distiller
-# (e.g. LITELLM_API_KEY=litellm-api-key:latest) alongside DATABASE_URL.
+# Job name = CLOUD_RUN_JOB_PREFIX(rara-) + provider(distill) = rara-distill (what the Activator
+# wakes). LITELLM_BASE_URL is the LiteLLM Cloud Run URL — set the repo var vars.LITELLM_BASE_URL
+# after A2 (deploy LiteLLM); LITELLM_API_KEY reads the litellm-api-key secret.
 on:
   workflow_dispatch:
     inputs:
@@ -24,6 +24,9 @@ jobs:
     uses: ./.github/workflows/_reusable-deploy-worker.yml
     with:
       app: rara-distill
+      job_name: rara-distill
+      env_vars: DISTILL_PROVIDER=distill,LITELLM_BASE_URL=${{ vars.LITELLM_BASE_URL }},LITELLM_MODEL=${{ vars.LITELLM_MODEL }}
+      extra_secrets: LITELLM_API_KEY=litellm-api-key:latest
       run_after_deploy: ${{ inputs.run_after_deploy }}
     secrets:
       GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}

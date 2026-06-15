@@ -3,9 +3,12 @@ name: Deploy rara-sift
 # GATED — manual dispatch only (NO push:main). Thin caller of the reusable multi-module deploy
 # (_reusable-deploy-worker.yml). rara-sift is a 2.0 claim-worker (the curation cascade): it only
 # runs once the reconciler (VPC, a future phase) routes `gate_*` item_steps to its provider.
-# Re-enabling auto-deploy (push:main) + the per-provider env config (SIFT_GATE, SIFT_PROVIDER) is
-# the lane-activation wave (W1). App-specific secret to wire then: the LiteLLM model key for the
-# gate-rico judge (e.g. LITELLM_API_KEY=litellm-api-key:latest) alongside DATABASE_URL.
+# ONE image, TWO providers → TWO Cloud Run Jobs (rara-gate-barato + rara-gate-rico), one per matrix
+# entry, each with its own SIFT_GATE/SIFT_PROVIDER. Job name = CLOUD_RUN_JOB_PREFIX(rara-) +
+# provider (what the Activator wakes). Both wire LITELLM_* (rico's judge needs it; barato reads but
+# never calls — uniform is simpler). Set vars.LITELLM_BASE_URL after A2 (deploy LiteLLM).
+# ponytail: the multi-module image builds once per matrix entry (2× for the same rara-sift image) —
+# minor wasted Cloud Build; not worth a build-once/deploy-twice split.
 on:
   workflow_dispatch:
     inputs:
@@ -21,9 +24,17 @@ permissions:
 
 jobs:
   deploy:
+    strategy:
+      matrix:
+        include:
+          - { provider: gate-barato, gate: gate_barato }
+          - { provider: gate-rico,   gate: gate_rico }
     uses: ./.github/workflows/_reusable-deploy-worker.yml
     with:
       app: rara-sift
+      job_name: rara-${{ matrix.provider }}
+      env_vars: SIFT_GATE=${{ matrix.gate }},SIFT_PROVIDER=${{ matrix.provider }},LITELLM_BASE_URL=${{ vars.LITELLM_BASE_URL }},LITELLM_MODEL=${{ vars.LITELLM_MODEL }}
+      extra_secrets: LITELLM_API_KEY=litellm-api-key:latest
       run_after_deploy: ${{ inputs.run_after_deploy }}
     secrets:
       GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
