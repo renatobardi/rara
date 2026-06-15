@@ -9,7 +9,6 @@
 		doc_context?: string;
 		engine: string;
 		status: string;
-		created_at: string;
 	};
 
 	const STATUS_COLOR: Record<string, string> = {

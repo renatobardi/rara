@@ -64,9 +64,7 @@ export const t = {
 		confirmDrop: 'Confirmar drop',
 		reviewing: 'Processando…',
 		reviewError: 'Erro ao processar decisão.',
-		colItem: 'Item',
-		colLane: 'Lane',
-		colRef: 'Referência'
+		retry: 'Tentar novamente'
 	},
 	distillations: {
 		title: 'Distillations',
@@ -75,14 +73,11 @@ export const t = {
 		empty: 'Nenhuma distillation ainda.',
 		detailLoading: 'Carregando…',
 		detailError: 'Não foi possível carregar a distillation.',
-		colTitle: 'Título',
-		colSource: 'Fonte',
-		colEngine: 'Engine',
-		colStatus: 'Status',
 		thumbUp: '👍',
 		thumbDown: '👎',
 		feedbackSent: 'Feedback registrado.',
 		feedbackError: 'Erro ao registrar feedback.',
+		retry: 'Tentar novamente',
 		back: '← Voltar'
 	}
 };

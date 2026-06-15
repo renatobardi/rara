@@ -19,6 +19,7 @@ import (
 	"io/fs"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"time"
 )
@@ -187,6 +188,9 @@ func (s *server) postCore(ctx context.Context, path string, reqBody io.Reader) (
 	if err != nil {
 		return 0, nil, err
 	}
+	if int64(len(b)) > maxCoreBytes {
+		return 0, nil, fmt.Errorf("core surface response exceeds %d-byte limit", maxCoreBytes)
+	}
 	return resp.StatusCode, b, nil
 }
 
@@ -201,10 +205,13 @@ func (s *server) handleQuarantine(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleDistillationList proxies GET /v1/distillations, forwarding the optional ?limit= param.
+// The limit value is re-encoded via url.Values to prevent query-parameter injection.
 func (s *server) handleDistillationList(w http.ResponseWriter, r *http.Request) {
 	path := "/v1/distillations"
 	if limit := r.URL.Query().Get("limit"); limit != "" {
-		path += "?limit=" + limit
+		q := url.Values{}
+		q.Set("limit", limit)
+		path += "?" + q.Encode()
 	}
 	body, err := s.fetchCore(r.Context(), path)
 	if err != nil {

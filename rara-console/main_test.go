@@ -449,6 +449,26 @@ func TestDistillationListProxiesWithBearer(t *testing.T) {
 	}
 }
 
+func TestDistillationListForwardsLimitParam(t *testing.T) {
+	var gotLimit string
+	core := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotLimit = r.URL.Query().Get("limit")
+		_, _ = w.Write([]byte(`[]`))
+	}))
+	t.Cleanup(core.Close)
+	s := &server{coreURL: core.URL, token: "secret", client: core.Client()}
+
+	rec := httptest.NewRecorder()
+	s.handleDistillationList(rec, httptest.NewRequest("GET", "/api/distillations?limit=25", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if gotLimit != "25" {
+		t.Errorf("core received limit=%q, want 25", gotLimit)
+	}
+}
+
 func TestDistillationListNeverLeaksToken(t *testing.T) {
 	core := fakeC2Core(t, "supersecret")
 	s := &server{coreURL: core.URL, token: "supersecret", client: core.Client()}
