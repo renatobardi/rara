@@ -29,8 +29,9 @@ import (
 	"strings"
 	"time"
 
-	addon "rara-addon"
 	"golang.org/x/oauth2/google"
+
+	addon "rara-addon"
 )
 
 // httpDoer is the subset of *http.Client the activators use, injected so tests substitute a fake
