@@ -28,7 +28,7 @@
 
 	// ponytail: reset to p.1 on size change; not tracking items (safePage clamps instead)
 	$effect(() => {
-		void pageSize;
+		pageSize;
 		currentPage = 1;
 	});
 
@@ -49,7 +49,7 @@
 
 {#if show}
 	<div class="flex items-center justify-between px-4 py-2 text-[11px] text-muted">
-		<span class="tabular-nums">{items.length ? from + 1 : 0}–{to} de {items.length}</span>
+		<span class="tabular-nums">{from + 1}–{to} de {items.length}</span>
 		<div class="flex items-center gap-3">
 			<span class="flex gap-0.5">
 				{#each PAGE_SIZES as s}
@@ -57,6 +57,7 @@
 						class="cursor-pointer rounded border-0 bg-transparent px-1.5 py-0.5 {pageSize === s
 							? 'font-medium text-fg'
 							: 'text-muted hover:bg-hover'}"
+						aria-pressed={pageSize === s}
 						onclick={() => setSize(s)}
 					>{s}</button>
 				{/each}
@@ -65,12 +66,14 @@
 				<button
 					class="cursor-pointer rounded border-0 bg-transparent px-1 py-0.5 hover:bg-hover disabled:cursor-default disabled:opacity-30"
 					disabled={safePage <= 1}
+					aria-label="Página anterior"
 					onclick={() => (currentPage = safePage - 1)}
 				>‹</button>
 				<span>{safePage}/{totalPages}</span>
 				<button
 					class="cursor-pointer rounded border-0 bg-transparent px-1 py-0.5 hover:bg-hover disabled:cursor-default disabled:opacity-30"
 					disabled={safePage >= totalPages}
+					aria-label="Próxima página"
 					onclick={() => (currentPage = safePage + 1)}
 				>›</button>
 			</span>
