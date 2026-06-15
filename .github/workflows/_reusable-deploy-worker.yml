@@ -6,9 +6,9 @@ name: Reusable — Deploy Cloud Run Worker (multi-module)
 # DOCKER-MULTIMODULE.md. Callers (deploy-<app>.yml) are workflow_dispatch-only and gated —
 # there is NO push:main trigger anywhere.
 #
-# Secrets: every worker gets the shared DATABASE_URL. App-specific secrets (LiteLLM key,
-# brightdata/gmail, ASR engine key) are NOT wired here — they are added at lane activation
-# (W1); each caller documents which one its app needs.
+# Secrets: DATABASE_URL is always wired. App-specific secrets (LiteLLM key, ASR engine key, etc.)
+# are passed via the extra_secrets input by each caller — see each caller's header for what it
+# wires and why.
 on:
   workflow_call:
     inputs:
