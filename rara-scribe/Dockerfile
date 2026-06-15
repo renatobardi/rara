@@ -27,7 +27,10 @@ RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o /scribe-job .
 
 FROM alpine:3.21
 
-RUN apk add --no-cache ca-certificates
+# ffmpeg: used by asr-direct-audio to chunk audio before sending to Groq/Gemini.
+# yt-dlp is intentionally absent — it is only used by the asr-youtube provider,
+# which runs on the Mac (residential IP) and never inside this container.
+RUN apk add --no-cache ca-certificates ffmpeg
 
 WORKDIR /app
 

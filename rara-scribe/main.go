@@ -175,6 +175,8 @@ type Config struct {
 	WhisperCppBeam     int    // beam-search width (1=greedy/fast, 5=quality)
 	WhisperCppThreads  int    // CPU threads for pre/post-processing
 	Cookies            string
+	FfmpegBin          string // path to ffmpeg; defaults to "ffmpeg" (PATH)
+	YtDlpBin           string // path to yt-dlp; defaults to "yt-dlp" (PATH)
 }
 
 // ---------------------------------------------------------------------------
@@ -614,8 +616,8 @@ func cleanupChunks(chunks []AudioChunk) {
 // ---------------------------------------------------------------------------
 
 type ytDlpAcquirer struct {
-	ytDlp        string // absolute path to the yt-dlp binary
-	ffmpeg       string // absolute path to the ffmpeg binary
+	ytDlp        string // path or bare name for yt-dlp (resolved via $PATH if bare)
+	ffmpeg       string // path or bare name for ffmpeg (resolved via $PATH if bare)
 	cookieFile   string // optional path to a cookies.txt file
 	chunkSeconds int    // ffmpeg segment length and global offset step
 }
@@ -1288,9 +1290,11 @@ func nullInt(n int) *int {
 // Config & entrypoint
 // ---------------------------------------------------------------------------
 
-// resolveBin returns an absolute path to an external binary: the env override if
-// set, otherwise the fixed container default. It deliberately avoids resolving
-// the command name through $PATH.
+// resolveBin returns the path to an external binary: the env override if set,
+// otherwise defaultPath. defaultPath may be a bare name (e.g. "ffmpeg") that the
+// OS resolves via $PATH — appropriate for container environments where $PATH is
+// controlled by the Dockerfile. Set the env var to an absolute path (e.g.
+// /opt/homebrew/bin/ffmpeg) when PATH lookup is unreliable (Mac launchd).
 func resolveBin(envVar, defaultPath string) string {
 	if p := os.Getenv(envVar); p != "" {
 		return p
@@ -1316,12 +1320,14 @@ func loadConfig() Config {
 		Engine:             os.Getenv("TRANSCRIBE_ENGINE"),
 		GroqAPIKey:         os.Getenv("GROQ_API_KEY"),
 		GeminiAPIKey:       os.Getenv("GEMINI_API_KEY"),
-		WhisperCppBin:      resolveBin("WHISPER_CPP_BIN", "/opt/homebrew/bin/whisper-cli"),
+		WhisperCppBin:      resolveBin("WHISPER_CPP_BIN", "whisper-cli"),
 		WhisperCppModel:    os.Getenv("WHISPER_CPP_MODEL"),
 		WhisperCppVADModel: os.Getenv("WHISPER_CPP_VAD_MODEL"),
 		WhisperCppBeam:     beam,
 		WhisperCppThreads:  threads,
 		Cookies:            resolveCookies(),
+		FfmpegBin:          resolveBin("FFMPEG_BIN", "ffmpeg"),
+		YtDlpBin:           resolveBin("YT_DLP_BIN", "yt-dlp"),
 	}
 }
 
@@ -1385,12 +1391,13 @@ func main() {
 	defer pool.Close()
 	log.Printf("rara-scribe worker %s/%s ready [engine %s]", capTranscrever, provider, engineName)
 
-	// Resolve the external binaries to absolute paths (no $PATH lookup, which could be hijacked).
 	// One acquirer serves both providers: yt-dlp downloads a YouTube watch URL (with cookies, on the
 	// residential-IP Mac) or a plain enclosure URL (no cookies needed) the same way.
+	// Binary paths come from FFMPEG_BIN/YT_DLP_BIN env vars; default to bare names (PATH-resolved),
+	// which works in Cloud Run where the Dockerfile installs them system-wide.
 	acq := newYtDlpAcquirer(
-		resolveBin("YT_DLP_BIN", "/opt/homebrew/bin/yt-dlp"),
-		resolveBin("FFMPEG_BIN", "/opt/homebrew/bin/ffmpeg"),
+		cfg.YtDlpBin,
+		cfg.FfmpegBin,
 		cookieFile,
 		chunkSecondsFor(cfg.Engine),
 	)

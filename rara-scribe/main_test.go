@@ -19,6 +19,38 @@ import (
 )
 
 // ---------------------------------------------------------------------------
+// Config / binary path resolution
+// ---------------------------------------------------------------------------
+
+func TestLoadConfigBinDefaults(t *testing.T) {
+	t.Setenv("FFMPEG_BIN", "")
+	t.Setenv("YT_DLP_BIN", "")
+	t.Setenv("WHISPER_CPP_BIN", "")
+	cfg := loadConfig()
+	if cfg.FfmpegBin != "ffmpeg" {
+		t.Errorf("FfmpegBin default = %q, want \"ffmpeg\"", cfg.FfmpegBin)
+	}
+	if cfg.YtDlpBin != "yt-dlp" {
+		t.Errorf("YtDlpBin default = %q, want \"yt-dlp\"", cfg.YtDlpBin)
+	}
+	if cfg.WhisperCppBin != "whisper-cli" {
+		t.Errorf("WhisperCppBin default = %q, want \"whisper-cli\"", cfg.WhisperCppBin)
+	}
+}
+
+func TestLoadConfigBinOverride(t *testing.T) {
+	t.Setenv("FFMPEG_BIN", "/custom/ffmpeg")
+	t.Setenv("YT_DLP_BIN", "/custom/yt-dlp")
+	cfg := loadConfig()
+	if cfg.FfmpegBin != "/custom/ffmpeg" {
+		t.Errorf("FfmpegBin override = %q, want \"/custom/ffmpeg\"", cfg.FfmpegBin)
+	}
+	if cfg.YtDlpBin != "/custom/yt-dlp" {
+		t.Errorf("YtDlpBin override = %q, want \"/custom/yt-dlp\"", cfg.YtDlpBin)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Pure helpers
 // ---------------------------------------------------------------------------
 
