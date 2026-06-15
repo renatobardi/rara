@@ -202,7 +202,11 @@ func cloudRunTokenSource(adc oauth2.TokenSource) tokenSource {
 			}
 		}
 	}
-	return func(_ context.Context) (string, error) {
+	return func(ctx context.Context) (string, error) {
+		// oauth2.TokenSource.Token() takes no context, so honor caller cancellation/deadline here.
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
 		tok, err := adc.Token()
 		if err != nil {
 			return "", fmt.Errorf("cloud run ADC token: %w", err)

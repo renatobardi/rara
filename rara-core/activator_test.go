@@ -93,6 +93,16 @@ func TestCloudRunTokenSourceFallsToADCWhenEnvEmpty(t *testing.T) {
 	}
 }
 
+func TestCloudRunTokenSourceHonorsCancelledContext(t *testing.T) {
+	t.Setenv("CLOUD_RUN_OAUTH_TOKEN", "")
+	ts := cloudRunTokenSource(&fakeOAuth2Source{token: "should-not-be-reached"})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := ts(ctx); err == nil {
+		t.Error("want error for a cancelled context, got nil")
+	}
+}
+
 // --- cloudRunActivator --------------------------------------------------------
 
 func TestCloudRunActivatorFiresJobsRun(t *testing.T) {

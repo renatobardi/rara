@@ -97,7 +97,7 @@ func (s *server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	_, err := s.fetchCore(ctx, "/live")
 	if err != nil {
-		log.Printf("console: healthz — core unreachable: %v", err)
+		log.Printf("console: core /live unreachable: %v", err)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"console": true, "core": err == nil})
 }
