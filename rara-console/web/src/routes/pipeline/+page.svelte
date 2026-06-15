@@ -14,7 +14,7 @@
 	] as const;
 	type Status = (typeof STATUSES)[number];
 
-	type Item = { id: number; lane: string; source_ref: string; status: string; title?: string; channel?: string; summary?: string };
+	type Item = { id: number; lane: string; source_ref: string; status: string; title?: string; channel?: string; summary?: string; published_at?: string };
 	type Step = { id: number; capability: string; provider: string; status: string; attempts: number };
 	type PipelineData = { counts: Record<Status, number>; items: Record<Status, Item[]> };
 
@@ -117,6 +117,7 @@
 									channel={item.channel}
 									summary={item.summary}
 									source_ref={item.source_ref}
+									published_at={item.published_at}
 									ontoggle={() => toggleItem(item.id)}
 									expanded={openItemId === item.id}
 								/>

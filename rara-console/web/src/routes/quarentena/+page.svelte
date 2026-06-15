@@ -11,6 +11,7 @@
 		title?: string;
 		channel?: string;
 		summary?: string;
+		published_at?: string;
 	};
 
 	let items = $state<QuarantineItem[]>([]);
@@ -67,6 +68,7 @@
 							channel={item.channel}
 							summary={item.summary}
 							source_ref={item.source_ref}
+							published_at={item.published_at}
 						>
 							{#snippet actions()}
 								{#if reviewState[item.id] === 'pending'}

@@ -7,6 +7,7 @@
 		channel,
 		summary,
 		source_ref,
+		published_at,
 		ontoggle,
 		expanded = false,
 		actions
@@ -16,10 +17,15 @@
 		channel?: string;
 		summary?: string;
 		source_ref?: string;
+		published_at?: string;
 		ontoggle?: () => void;
 		expanded?: boolean;
 		actions?: Snippet;
 	} = $props();
+
+	const pubDate = $derived(
+		published_at ? new Date(published_at).toLocaleDateString('pt-BR', { timeZone: 'UTC' }) : ''
+	);
 
 	function isURL(s: string): boolean {
 		return s.startsWith('http://') || s.startsWith('https://');
@@ -48,7 +54,7 @@
 				<span class="block truncate text-[13.5px] font-medium">{displayTitle}</span>
 			{/if}
 			<span class="mt-0.5 block text-[11px] text-muted">
-				{channel ? `${channel} ` : ''}#{id}
+				{channel ? `${channel} · ` : ''}{pubDate ? `${pubDate} · ` : ''}#{id}
 			</span>
 		</span>
 		{#if ontoggle}

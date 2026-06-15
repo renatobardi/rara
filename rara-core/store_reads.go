@@ -325,7 +325,12 @@ const itemDisplaySelect = `
 	    WHEN 'podcast'  THEN LEFT(pe.description, 280)
 	    WHEN 'email'    THEN LEFT(em.body, 280)
 	    WHEN 'linkedin' THEN LEFT(lp.body, 280)
-	    ELSE '' END, '') AS display_summary
+	    ELSE '' END, '') AS display_summary,
+	  CASE i.lane
+	    WHEN 'podcast' THEN pe.published_at
+	    WHEN 'youtube' THEN cv.published_at
+	    WHEN 'email'   THEN em.received_at
+	    ELSE NULL END AS published_at
 	FROM items i
 	LEFT JOIN podcast_episodes pe ON i.lane = 'podcast' AND pe.guid           = i.source_ref
 	LEFT JOIN podcast_feeds    pf ON i.lane = 'podcast' AND pf.id             = pe.feed_id
@@ -341,7 +346,7 @@ func scanItemWithDisplay(rows interface {
 	var it Item
 	err := rows.Scan(
 		&it.ID, &it.Lane, &it.SourceRef, &it.FlowID, &it.FlowVersion, &it.Status, &it.Sensitivity,
-		&it.Title, &it.Channel, &it.Summary,
+		&it.Title, &it.Channel, &it.Summary, &it.PublishedAt,
 	)
 	return it, err
 }

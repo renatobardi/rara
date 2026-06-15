@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 const testToken = "s3cr3t-service-token"
@@ -604,16 +605,25 @@ func TestHTTPGetDistillationNotFoundIs400(t *testing.T) {
 	}
 }
 
-// TestCoreListItemsPassesThroughDisplayFields: Title/Channel/Summary stored on an item are
-// returned by ListItems so the surface can serve them without additional lookups.
+// TestCoreListItemsPassesThroughDisplayFields: Title/Channel/Summary/PublishedAt stored on an
+// item are returned by ListItems. Also verifies that lanes without a date (linkedin) return nil.
 func TestCoreListItemsPassesThroughDisplayFields(t *testing.T) {
 	ctx := context.Background()
 	core, db, _ := newTestCore(t)
 	fid := seedFlow(t, db)
+	ts := time.Date(2024, 3, 15, 10, 0, 0, 0, time.UTC)
 	_, err := db.UpsertItem(ctx, Item{
 		Lane: "podcast", SourceRef: "ep-01", FlowID: fid, FlowVersion: 1,
 		Status: itemDiscovered,
 		Title:  "My Episode", Channel: "My Channel", Summary: "Short summary",
+		PublishedAt: &ts,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.UpsertItem(ctx, Item{
+		Lane: "linkedin", SourceRef: "https://li/p1", FlowID: fid, FlowVersion: 1,
+		Status: itemDiscovered, Title: "Post",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -622,18 +632,26 @@ func TestCoreListItemsPassesThroughDisplayFields(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(items) != 1 {
-		t.Fatalf("want 1 item, got %d", len(items))
-	}
-	it := items[0]
-	if it.Title != "My Episode" {
-		t.Errorf("Title = %q, want My Episode", it.Title)
-	}
-	if it.Channel != "My Channel" {
-		t.Errorf("Channel = %q, want My Channel", it.Channel)
-	}
-	if it.Summary != "Short summary" {
-		t.Errorf("Summary = %q, want Short summary", it.Summary)
+	for _, it := range items {
+		switch it.Lane {
+		case "podcast":
+			if it.Title != "My Episode" {
+				t.Errorf("Title = %q, want My Episode", it.Title)
+			}
+			if it.Channel != "My Channel" {
+				t.Errorf("Channel = %q, want My Channel", it.Channel)
+			}
+			if it.Summary != "Short summary" {
+				t.Errorf("Summary = %q, want Short summary", it.Summary)
+			}
+			if it.PublishedAt == nil || !it.PublishedAt.Equal(ts) {
+				t.Errorf("podcast PublishedAt = %v, want %v", it.PublishedAt, ts)
+			}
+		case "linkedin":
+			if it.PublishedAt != nil {
+				t.Errorf("linkedin PublishedAt = %v, want nil", it.PublishedAt)
+			}
+		}
 	}
 }
 
@@ -660,15 +678,17 @@ func TestCoreQuarantinePassesThroughDisplayFields(t *testing.T) {
 }
 
 // TestHTTPItemsResponseIncludesDisplayFields: the JSON response from GET /v1/items includes
-// title/channel/summary when available.
+// title/channel/summary/published_at when available.
 func TestHTTPItemsResponseIncludesDisplayFields(t *testing.T) {
 	ctx := context.Background()
 	core, db, _ := newTestCore(t)
 	fid := seedFlow(t, db)
+	ts := time.Date(2024, 6, 1, 0, 0, 0, 0, time.UTC)
 	_, err := db.UpsertItem(ctx, Item{
 		Lane: "podcast", SourceRef: "ep-http", FlowID: fid, FlowVersion: 1,
 		Status: itemDiscovered,
 		Title:  "HTTP Episode", Channel: "HTTP Cast", Summary: "A summary",
+		PublishedAt: &ts,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -684,6 +704,9 @@ func TestHTTPItemsResponseIncludesDisplayFields(t *testing.T) {
 	}
 	if len(items) != 1 || items[0].Title != "HTTP Episode" || items[0].Channel != "HTTP Cast" {
 		t.Errorf("items = %+v", items)
+	}
+	if items[0].PublishedAt == nil || !items[0].PublishedAt.Equal(ts) {
+		t.Errorf("PublishedAt = %v, want %v", items[0].PublishedAt, ts)
 	}
 	_ = ctx
 }
