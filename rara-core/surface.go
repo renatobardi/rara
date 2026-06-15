@@ -184,6 +184,41 @@ func (c *Core) ApproveProfile(ctx context.Context, version int) error {
 
 // --- Human-in-the-loop (reuse the Phase 3 functions verbatim) --------------
 
+// --- Distillation reads (cross-agent) ---------------------------------------
+
+const (
+	distillationListDefault = 50
+	distillationListMax     = 200
+)
+
+// RecentDistillations returns the most recently created distillations (light projection,
+// no content). limit=0 → 50; above 200 → capped at 200.
+func (c *Core) RecentDistillations(ctx context.Context, limit int) ([]DistillationSummary, error) {
+	if limit <= 0 {
+		limit = distillationListDefault
+	}
+	if limit > distillationListMax {
+		limit = distillationListMax
+	}
+	return c.db.ListRecentDistillations(ctx, limit)
+}
+
+// GetDistillation returns the full distillation (with content) for the given id.
+// id <= 0 or not found → badInput (surfaces as 400).
+func (c *Core) GetDistillation(ctx context.Context, id int) (Distillation, error) {
+	if id <= 0 {
+		return Distillation{}, badInput("distillation id must be positive, got %d", id)
+	}
+	d, found, err := c.db.GetDistillation(ctx, id)
+	if err != nil {
+		return Distillation{}, err
+	}
+	if !found {
+		return Distillation{}, badInput("distillation %d not found", id)
+	}
+	return d, nil
+}
+
 // CaptureFeedback records explicit thumbs on a distillation (deliverable #4 of Phase 3).
 func (c *Core) CaptureFeedback(ctx context.Context, distillationID, signal string) error {
 	if err := CaptureDistillationFeedback(ctx, c.db, distillationID, signal); err != nil {
@@ -236,6 +271,8 @@ func NewSurfaceMux(core *Core, token string) http.Handler {
 	mux.HandleFunc("GET /v1/items/{id}/steps", h.itemSteps)
 	mux.HandleFunc("GET /v1/items/{id}/decisions", h.itemDecisions)
 	mux.HandleFunc("GET /v1/quarantine", h.quarantine)
+	mux.HandleFunc("GET /v1/distillations", h.listDistillations)
+	mux.HandleFunc("GET /v1/distillations/{id}", h.getDistillation)
 
 	// Config reads.
 	mux.HandleFunc("GET /v1/flows", h.listFlows)
@@ -322,6 +359,21 @@ func (h *httpSurface) itemDecisions(w http.ResponseWriter, r *http.Request) {
 func (h *httpSurface) quarantine(w http.ResponseWriter, r *http.Request) {
 	items, err := h.core.Quarantine(r.Context())
 	writeResult(w, items, err)
+}
+
+func (h *httpSurface) listDistillations(w http.ResponseWriter, r *http.Request) {
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	items, err := h.core.RecentDistillations(r.Context(), limit)
+	writeResult(w, items, err)
+}
+
+func (h *httpSurface) getDistillation(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	d, err := h.core.GetDistillation(r.Context(), id)
+	writeResult(w, d, err)
 }
 
 func (h *httpSurface) listFlows(w http.ResponseWriter, r *http.Request) {
