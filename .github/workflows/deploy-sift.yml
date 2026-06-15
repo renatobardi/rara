@@ -33,7 +33,9 @@ jobs:
     with:
       app: rara-sift
       job_name: rara-${{ matrix.provider }}
-      env_vars: SIFT_GATE=${{ matrix.gate }},SIFT_PROVIDER=${{ matrix.provider }},LITELLM_BASE_URL=${{ vars.LITELLM_BASE_URL }},LITELLM_MODEL=${{ vars.LITELLM_MODEL }}
+      # ponytail: groq-llama hardcoded here because vars.LITELLM_MODEL=gemini-flash (spend-capped);
+      # gates must stay on Groq or every deploy reverts the model and breaks them.
+      env_vars: SIFT_GATE=${{ matrix.gate }},SIFT_PROVIDER=${{ matrix.provider }},LITELLM_BASE_URL=${{ vars.LITELLM_BASE_URL }},LITELLM_MODEL=groq-llama
       extra_secrets: LITELLM_API_KEY=litellm-api-key:latest
       run_after_deploy: ${{ inputs.run_after_deploy }}
     secrets:
