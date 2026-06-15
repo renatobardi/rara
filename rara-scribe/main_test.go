@@ -25,12 +25,16 @@ import (
 func TestLoadConfigBinDefaults(t *testing.T) {
 	t.Setenv("FFMPEG_BIN", "")
 	t.Setenv("YT_DLP_BIN", "")
+	t.Setenv("WHISPER_CPP_BIN", "")
 	cfg := loadConfig()
 	if cfg.FfmpegBin != "ffmpeg" {
 		t.Errorf("FfmpegBin default = %q, want \"ffmpeg\"", cfg.FfmpegBin)
 	}
 	if cfg.YtDlpBin != "yt-dlp" {
 		t.Errorf("YtDlpBin default = %q, want \"yt-dlp\"", cfg.YtDlpBin)
+	}
+	if cfg.WhisperCppBin != "whisper-cli" {
+		t.Errorf("WhisperCppBin default = %q, want \"whisper-cli\"", cfg.WhisperCppBin)
 	}
 }
 

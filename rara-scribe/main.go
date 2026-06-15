@@ -616,8 +616,8 @@ func cleanupChunks(chunks []AudioChunk) {
 // ---------------------------------------------------------------------------
 
 type ytDlpAcquirer struct {
-	ytDlp        string // absolute path to the yt-dlp binary
-	ffmpeg       string // absolute path to the ffmpeg binary
+	ytDlp        string // path or bare name for yt-dlp (resolved via $PATH if bare)
+	ffmpeg       string // path or bare name for ffmpeg (resolved via $PATH if bare)
 	cookieFile   string // optional path to a cookies.txt file
 	chunkSeconds int    // ffmpeg segment length and global offset step
 }
@@ -1290,9 +1290,11 @@ func nullInt(n int) *int {
 // Config & entrypoint
 // ---------------------------------------------------------------------------
 
-// resolveBin returns an absolute path to an external binary: the env override if
-// set, otherwise the fixed container default. It deliberately avoids resolving
-// the command name through $PATH.
+// resolveBin returns the path to an external binary: the env override if set,
+// otherwise defaultPath. defaultPath may be a bare name (e.g. "ffmpeg") that the
+// OS resolves via $PATH — appropriate for container environments where $PATH is
+// controlled by the Dockerfile. Set the env var to an absolute path (e.g.
+// /opt/homebrew/bin/ffmpeg) when PATH lookup is unreliable (Mac launchd).
 func resolveBin(envVar, defaultPath string) string {
 	if p := os.Getenv(envVar); p != "" {
 		return p
@@ -1318,7 +1320,7 @@ func loadConfig() Config {
 		Engine:             os.Getenv("TRANSCRIBE_ENGINE"),
 		GroqAPIKey:         os.Getenv("GROQ_API_KEY"),
 		GeminiAPIKey:       os.Getenv("GEMINI_API_KEY"),
-		WhisperCppBin:      resolveBin("WHISPER_CPP_BIN", "/opt/homebrew/bin/whisper-cli"),
+		WhisperCppBin:      resolveBin("WHISPER_CPP_BIN", "whisper-cli"),
 		WhisperCppModel:    os.Getenv("WHISPER_CPP_MODEL"),
 		WhisperCppVADModel: os.Getenv("WHISPER_CPP_VAD_MODEL"),
 		WhisperCppBeam:     beam,

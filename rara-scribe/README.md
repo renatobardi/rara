@@ -97,7 +97,7 @@ name is `whispercpp/whisper-large-v3` even when a chunk fell back to Groq).
 | `TRANSCRIBE_ENGINE` | no | `groq` | `groq`, `gemini` or `local` |
 | `GROQ_API_KEY` | if engine=groq | — | https://console.groq.com (also enables the Groq fallback under `local`) |
 | `GEMINI_API_KEY` | if engine=gemini | — | https://aistudio.google.com |
-| `WHISPER_CPP_BIN` | if engine=local | `/opt/homebrew/bin/whisper-cli` | whisper.cpp CLI binary |
+| `WHISPER_CPP_BIN` | if engine=local | `whisper-cli` (PATH) | whisper.cpp CLI binary; set to absolute path on Mac/launchd |
 | `WHISPER_CPP_MODEL` | if engine=local | — | Absolute path to the ggml `large-v3` model |
 | `WHISPER_CPP_VAD_MODEL` | no | — | Optional silero VAD model (trims silence/music, cuts hallucinations) |
 | `SOURCE_TIMEOUT_MINUTES` | no | `20` (`60` for local) | Per-item timeout (download + transcribe); raise for very long local videos |
