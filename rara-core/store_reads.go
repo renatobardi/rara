@@ -297,14 +297,59 @@ func (d *pgxDatabase) LatestGateDecision(ctx context.Context, itemID int, gate s
 	return dec, true, nil
 }
 
+// itemDisplayJoins is the shared SELECT list + LEFT JOINs for the two surface reads that
+// return items with display metadata (ListItemsByStatus and ListQuarantinedItems). Each lane
+// joins its own source table; the CASE picks the right column per lane so a single pass
+// covers all lanes without N+1. Summary is truncated to 280 chars server-side.
+//
+// Cross-agent reads (read-only SELECTs, no FKs across agent boundaries):
+//
+//	podcast  → podcast_episodes (rara-dial), podcast_feeds (rara-dial)
+//	youtube  → channel_videos (rara-harvest), target_channels (rara-harvest)
+//	email    → emails (rara-courier)
+//	linkedin → linkedin_posts (rara-core)
+const itemDisplaySelect = `
+	SELECT i.id, i.lane, i.source_ref, i.flow_id, i.flow_version, i.status, i.sensitivity,
+	  COALESCE(CASE i.lane
+	    WHEN 'podcast'  THEN pe.title
+	    WHEN 'youtube'  THEN cv.title
+	    WHEN 'email'    THEN em.subject
+	    WHEN 'linkedin' THEN LEFT(lp.body, 100)
+	    ELSE '' END, '') AS display_title,
+	  COALESCE(CASE i.lane
+	    WHEN 'podcast'  THEN pf.title
+	    WHEN 'youtube'  THEN tc.channel_name
+	    WHEN 'email'    THEN em.sender
+	    ELSE '' END, '') AS display_channel,
+	  COALESCE(CASE i.lane
+	    WHEN 'podcast'  THEN LEFT(pe.description, 280)
+	    WHEN 'email'    THEN LEFT(em.body, 280)
+	    WHEN 'linkedin' THEN LEFT(lp.body, 280)
+	    ELSE '' END, '') AS display_summary
+	FROM items i
+	LEFT JOIN podcast_episodes pe ON i.lane = 'podcast' AND pe.guid           = i.source_ref
+	LEFT JOIN podcast_feeds    pf ON i.lane = 'podcast' AND pf.id             = pe.feed_id
+	LEFT JOIN channel_videos   cv ON i.lane = 'youtube' AND cv.youtube_video_id = i.source_ref
+	LEFT JOIN target_channels  tc ON i.lane = 'youtube' AND tc.id             = cv.channel_id
+	LEFT JOIN emails           em ON i.lane = 'email'   AND em.message_id     = i.source_ref
+	LEFT JOIN linkedin_posts   lp ON i.lane = 'linkedin' AND lp.url           = i.source_ref`
+
+// scanItemWithDisplay scans one row from a query that uses itemDisplaySelect.
+func scanItemWithDisplay(rows interface {
+	Scan(...any) error
+}) (Item, error) {
+	var it Item
+	err := rows.Scan(
+		&it.ID, &it.Lane, &it.SourceRef, &it.FlowID, &it.FlowVersion, &it.Status, &it.Sensitivity,
+		&it.Title, &it.Channel, &it.Summary,
+	)
+	return it, err
+}
+
 // ListQuarantinedItems returns the deferred (quarantine) items — the cold-start review
 // sample. idx_items_status backs the scan.
 func (d *pgxDatabase) ListQuarantinedItems(ctx context.Context) ([]Item, error) {
-	const q = `
-		SELECT id, lane, source_ref, flow_id, flow_version, status, sensitivity
-		FROM items
-		WHERE status = 'quarantine'
-		ORDER BY id`
+	q := itemDisplaySelect + ` WHERE i.status = 'quarantine' ORDER BY i.id`
 	rows, err := d.conn.Query(ctx, q)
 	if err != nil {
 		return nil, err
@@ -312,8 +357,8 @@ func (d *pgxDatabase) ListQuarantinedItems(ctx context.Context) ([]Item, error) 
 	defer rows.Close()
 	var out []Item
 	for rows.Next() {
-		var it Item
-		if err := rows.Scan(&it.ID, &it.Lane, &it.SourceRef, &it.FlowID, &it.FlowVersion, &it.Status, &it.Sensitivity); err != nil {
+		it, err := scanItemWithDisplay(rows)
+		if err != nil {
 			return nil, err
 		}
 		out = append(out, it)
@@ -327,9 +372,7 @@ func (d *pgxDatabase) ListQuarantinedItems(ctx context.Context) ([]Item, error) 
 // ListItemsByStatus returns the items in a given status, ordered by id. idx_items_status
 // backs the scan. The status is validated by the caller (the surface).
 func (d *pgxDatabase) ListItemsByStatus(ctx context.Context, status string) ([]Item, error) {
-	const q = `
-		SELECT id, lane, source_ref, flow_id, flow_version, status, sensitivity
-		FROM items WHERE status = $1 ORDER BY id`
+	q := itemDisplaySelect + ` WHERE i.status = $1 ORDER BY i.id`
 	rows, err := d.conn.Query(ctx, q, status)
 	if err != nil {
 		return nil, err
@@ -337,8 +380,8 @@ func (d *pgxDatabase) ListItemsByStatus(ctx context.Context, status string) ([]I
 	defer rows.Close()
 	var out []Item
 	for rows.Next() {
-		var it Item
-		if err := rows.Scan(&it.ID, &it.Lane, &it.SourceRef, &it.FlowID, &it.FlowVersion, &it.Status, &it.Sensitivity); err != nil {
+		it, err := scanItemWithDisplay(rows)
+		if err != nil {
 			return nil, err
 		}
 		out = append(out, it)

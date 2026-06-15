@@ -305,6 +305,12 @@ type Item struct {
 	// and frozen thereafter; the router reads it to exclude third-party providers for private
 	// content. The reconciler preserves it on every status write (it reads the full item).
 	Sensitivity string `json:"sensitivity"`
+	// Display fields populated by the surface reads (ListItemsByStatus / ListQuarantinedItems)
+	// via a per-lane LEFT JOIN. Empty when the source row is absent or the lane has no match.
+	// Summary is truncated to 280 chars server-side to keep list payloads small.
+	Title   string `json:"title,omitempty"`
+	Channel string `json:"channel,omitempty"`
+	Summary string `json:"summary,omitempty"`
 }
 
 // ItemStep is one mutable runtime state-row.
