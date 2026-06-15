@@ -95,7 +95,7 @@ func (s *server) handleOverview(w http.ResponseWriter, r *http.Request) {
 func (s *server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
-	_, err := s.fetchCore(ctx, "/healthz")
+	_, err := s.fetchCore(ctx, "/live")
 	if err != nil {
 		log.Printf("console: healthz — core unreachable: %v", err)
 	}
