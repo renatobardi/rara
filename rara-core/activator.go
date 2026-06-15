@@ -30,6 +30,7 @@ import (
 	"time"
 
 	addon "rara-addon"
+	"golang.org/x/oauth2/google"
 )
 
 // httpDoer is the subset of *http.Client the activators use, injected so tests substitute a fake
@@ -150,10 +151,10 @@ func (a *pokeActivator) Activate(ctx context.Context, p Provider) error {
 }
 
 // newActivatorFromEnv builds the production activator from env config. Cloud Run activation needs
-// CLOUD_RUN_PROJECT + CLOUD_RUN_REGION (and a token via CLOUD_RUN_OAUTH_TOKEN); poke activation needs
-// POKE_AUTH_TOKEN. Whatever is configured is wired; the rest stays a logged no-op. With NOTHING
-// configured it returns the pure logActivator, so the reconciler still runs (and the worker poll
-// drains the queue) on a box that has not been given activation credentials yet.
+// CLOUD_RUN_PROJECT + CLOUD_RUN_REGION and a token source: CLOUD_RUN_OAUTH_TOKEN (static, dev/test)
+// or Application Default Credentials via GOOGLE_APPLICATION_CREDENTIALS (SA key file, production).
+// Poke activation needs POKE_AUTH_TOKEN. With NOTHING configured it returns logActivator so the
+// reconciler still runs (worker poll drains the queue).
 func newActivatorFromEnv() Activator {
 	client := &http.Client{Timeout: addon.EnvDuration("ACTIVATE_TIMEOUT_SECONDS", 10*time.Second)}
 	d := dispatchActivator{}
@@ -164,7 +165,7 @@ func newActivatorFromEnv() Activator {
 			region:    region,
 			jobPrefix: os.Getenv("CLOUD_RUN_JOB_PREFIX"),
 			http:      client,
-			token:     envTokenSource("CLOUD_RUN_OAUTH_TOKEN"),
+			token:     cloudRunTokenSource(),
 		}
 	}
 	if tok := os.Getenv("POKE_AUTH_TOKEN"); tok != "" {
@@ -178,9 +179,31 @@ func newActivatorFromEnv() Activator {
 	return d
 }
 
-// envTokenSource is the default tokenSource: read an OAuth2 access token (with run.jobs.run) from
-// env. Suitable for a short-lived/manual token; a deploy wires a refreshing service-account source
-// in its place without touching cloudRunActivator.
+// cloudRunTokenSource returns a tokenSource for the Cloud Run Jobs API. Prefers the static
+// CLOUD_RUN_OAUTH_TOKEN env var (dev/test); falls back to Application Default Credentials
+// (GOOGLE_APPLICATION_CREDENTIALS=<sa-key.json> for production on the Oracle VM).
+func cloudRunTokenSource() tokenSource {
+	if tok := os.Getenv("CLOUD_RUN_OAUTH_TOKEN"); tok != "" {
+		return func(_ context.Context) (string, error) { return tok, nil }
+	}
+	creds, err := google.FindDefaultCredentials(context.Background(),
+		"https://www.googleapis.com/auth/cloud-platform")
+	if err != nil {
+		return func(_ context.Context) (string, error) {
+			return "", fmt.Errorf("cloud run token: set CLOUD_RUN_OAUTH_TOKEN or GOOGLE_APPLICATION_CREDENTIALS: %w", err)
+		}
+	}
+	return func(ctx context.Context) (string, error) {
+		tok, err := creds.TokenSource.Token()
+		if err != nil {
+			return "", fmt.Errorf("cloud run ADC token: %w", err)
+		}
+		return tok.AccessToken, nil
+	}
+}
+
+// envTokenSource reads a token from env on each call. Kept for tests that need to inject a
+// predictable value without going through ADC.
 func envTokenSource(key string) tokenSource {
 	return func(_ context.Context) (string, error) {
 		tok := os.Getenv(key)
