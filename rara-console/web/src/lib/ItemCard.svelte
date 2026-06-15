@@ -41,7 +41,7 @@
 	onclick={ontoggle}
 	role={ontoggle ? 'button' : undefined}
 	tabindex={ontoggle ? 0 : undefined}
-	onkeydown={ontoggle ? (e) => e.key === 'Enter' && ontoggle() : undefined}
+	onkeydown={ontoggle ? (e) => (e.key === 'Enter' || e.key === ' ') && ontoggle() : undefined}
 >
 	<div class="flex items-start gap-2">
 		<span class="min-w-0 flex-1">
