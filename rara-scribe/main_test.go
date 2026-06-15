@@ -629,7 +629,7 @@ func geminiResponse(t *testing.T, language string, segs []Segment) []byte {
 		Segments []seg  `json:"segments"`
 	}{Language: language}
 	for _, s := range segs {
-		inner.Segments = append(inner.Segments, seg{Start: s.Start, End: s.End, Text: s.Text})
+		inner.Segments = append(inner.Segments, seg(s))
 	}
 	innerJSON, err := json.Marshal(inner)
 	if err != nil {

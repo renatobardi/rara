@@ -1,11 +1,11 @@
-name: Deploy rara-distill
+name: Deploy rara-sift
 
 # GATED — manual dispatch only (NO push:main). Thin caller of the reusable multi-module deploy
-# (_reusable-deploy-worker.yml). rara-distill is a 2.0 bridge-total claim-worker: it only does
-# work once the reconciler (VPC, a future phase) routes `destilar` item_steps to its provider.
-# Re-enabling auto-deploy (push:main) + the per-provider env config is the lane-activation wave
-# (W1). App-specific secret to wire then: the LiteLLM model key for the distiller
-# (e.g. LITELLM_API_KEY=litellm-api-key:latest) alongside DATABASE_URL.
+# (_reusable-deploy-worker.yml). rara-sift is a 2.0 claim-worker (the curation cascade): it only
+# runs once the reconciler (VPC, a future phase) routes `gate_*` item_steps to its provider.
+# Re-enabling auto-deploy (push:main) + the per-provider env config (SIFT_GATE, SIFT_PROVIDER) is
+# the lane-activation wave (W1). App-specific secret to wire then: the LiteLLM model key for the
+# gate-rico judge (e.g. LITELLM_API_KEY=litellm-api-key:latest) alongside DATABASE_URL.
 on:
   workflow_dispatch:
     inputs:
@@ -23,7 +23,7 @@ jobs:
   deploy:
     uses: ./.github/workflows/_reusable-deploy-worker.yml
     with:
-      app: rara-distill
+      app: rara-sift
       run_after_deploy: ${{ inputs.run_after_deploy }}
     secrets:
       GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}

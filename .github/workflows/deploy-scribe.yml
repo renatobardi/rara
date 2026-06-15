@@ -1,0 +1,33 @@
+name: Deploy rara-scribe (asr-direct, cloud)
+
+# GATED — manual dispatch only (NO push:main). Thin caller of the reusable multi-module deploy
+# (_reusable-deploy-worker.yml). This deploys the CLOUD provider of rara-scribe:
+# SCRIBE_PROVIDER=asr-direct (fetch enclosure over HTTP + transcribe via an API engine). The
+# asr-youtube provider runs natively on the Mac (residential IP, launchd) and is NOT deployed
+# here. rara-scribe is a 2.0 claim-worker (`transcrever`): it only runs once the reconciler (VPC,
+# a future phase) routes transcription steps to this provider. Re-enabling auto-deploy (push:main)
+# + the per-provider env config (SCRIBE_PROVIDER=asr-direct, TRANSCRIBE_ENGINE) is the
+# lane-activation wave (W1). App-specific secret to wire then: the ASR engine API key (Groq/Gemini,
+# e.g. GROQ_API_KEY=groq-api-key:latest) alongside DATABASE_URL.
+on:
+  workflow_dispatch:
+    inputs:
+      run_after_deploy:
+        description: 'Execute the job once right after deploying (off by default — the worker needs its provider env set first)'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  deploy:
+    uses: ./.github/workflows/_reusable-deploy-worker.yml
+    with:
+      app: rara-scribe
+      run_after_deploy: ${{ inputs.run_after_deploy }}
+    secrets:
+      GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+      GCP_SERVICE_ACCOUNT: ${{ secrets.GCP_SERVICE_ACCOUNT }}
