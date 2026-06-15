@@ -13,8 +13,23 @@ on:
   workflow_call:
     inputs:
       app:
-        description: 'App dir = job name = image name, e.g. rara-distill'
+        description: 'App dir = image name (build source), e.g. rara-distill'
         required: true
+        type: string
+      job_name:
+        description: 'Cloud Run Job name = CLOUD_RUN_JOB_PREFIX + provider name the Activator wakes (e.g. rara-gate-rico). Defaults to app.'
+        required: false
+        default: ''
+        type: string
+      env_vars:
+        description: 'Comma-separated KEY=VALUE for --set-env-vars (e.g. SIFT_GATE=gate_rico,SIFT_PROVIDER=gate-rico). Values must not contain commas.'
+        required: false
+        default: ''
+        type: string
+      extra_secrets:
+        description: 'Comma-separated KEY=secret:ver appended to --set-secrets (e.g. LITELLM_API_KEY=litellm-api-key:latest). DATABASE_URL is always wired.'
+        required: false
+        default: ''
         type: string
       run_after_deploy:
         description: 'Execute the job once right after deploying'
@@ -39,8 +54,10 @@ jobs:
     runs-on: ubuntu-latest
     env:
       REGION: ${{ vars.GCP_REGION }}
-      JOB_NAME: ${{ inputs.app }}
+      JOB_NAME: ${{ inputs.job_name || inputs.app }}
       APP_DIR: ${{ inputs.app }}
+      ENV_VARS: ${{ inputs.env_vars }}
+      EXTRA_SECRETS: ${{ inputs.extra_secrets }}
       IMAGE: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/rara/${{ inputs.app }}:${{ github.sha }}
 
     steps:
@@ -106,13 +123,19 @@ jobs:
       - name: Deploy Cloud Run Job
         run: |
           # Update first, create if absent (avoids a describe→create/update TOCTOU race).
-          # DATABASE_URL is the shared contract DB; app-specific secrets are wired at lane
-          # activation (W1) — see the caller's header for which one this app needs.
+          # DATABASE_URL is the shared contract DB; per-provider env (env_vars) and app-specific
+          # secrets (extra_secrets) come from the caller — see its header for which this app needs.
+          SECRETS="DATABASE_URL=database-url:latest"
+          [ -n "$EXTRA_SECRETS" ] && SECRETS="$SECRETS,$EXTRA_SECRETS"
+          ENV_FLAG=()
+          [ -n "$ENV_VARS" ] && ENV_FLAG=(--set-env-vars "$ENV_VARS")
+
           if ! gcloud run jobs update "$JOB_NAME" \
                --image "$IMAGE" \
                --region "$REGION" \
                --project "${{ vars.GCP_PROJECT_ID }}" \
-               --set-secrets "DATABASE_URL=database-url:latest" \
+               --set-secrets "$SECRETS" \
+               "${ENV_FLAG[@]}" \
                --max-retries 0 \
                --task-timeout 3600s \
                --memory 512Mi \
@@ -122,7 +145,8 @@ jobs:
               --image "$IMAGE" \
               --region "$REGION" \
               --project "${{ vars.GCP_PROJECT_ID }}" \
-              --set-secrets "DATABASE_URL=database-url:latest" \
+              --set-secrets "$SECRETS" \
+              "${ENV_FLAG[@]}" \
               --max-retries 0 \
               --task-timeout 3600s \
               --memory 512Mi \
