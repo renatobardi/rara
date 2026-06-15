@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { t } from '$lib/strings';
+	import ItemCard from '$lib/ItemCard.svelte';
 
 	const STATUSES = [
 		'discovered',
@@ -107,16 +108,15 @@
 				</h2>
 				{#each items as item}
 					<div class="border-b border-border last:border-b-0">
-						<button
-							class="flex w-full cursor-pointer items-center gap-3 border-0 bg-transparent px-4 py-3 text-left hover:bg-hover"
-							onclick={() => toggleItem(item.id)}
-						>
-							<span class="flex-1 min-w-0">
-								<span class="block truncate text-[13.5px]">{item.title || item.source_ref || `#${item.id}`}</span>
-								<span class="block text-[11px] text-muted">#{item.id}{item.channel ? ` · ${item.channel}` : ''}</span>
-							</span>
-							<span class="text-[11px] text-muted opacity-50 flex-none">{openItemId === item.id ? '▲' : '▼'}</span>
-						</button>
+						<ItemCard
+							id={item.id}
+							title={item.title}
+							channel={item.channel}
+							summary={item.summary}
+							source_ref={item.source_ref}
+							ontoggle={() => toggleItem(item.id)}
+							expanded={openItemId === item.id}
+						/>
 
 						{#if openItemId === item.id}
 							<div class="border-t border-border bg-bg px-4 py-3">
