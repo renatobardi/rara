@@ -360,6 +360,34 @@ type InterestProfile struct {
 // exist or is not in `proposed` status — a caller error the surface maps to a 400.
 var errProfileNotProposed = errors.New("interest_profile version is not a proposed version")
 
+// DistillationSummary is the light projection returned by the list endpoint — no content
+// (skipping the potentially large markdown field keeps list payloads small).
+type DistillationSummary struct {
+	ID         int       `json:"id"`
+	SourceType string    `json:"source_type"`
+	SourceRef  string    `json:"source_ref"`
+	Title      *string   `json:"title,omitempty"`
+	DocContext *string   `json:"doc_context,omitempty"`
+	Engine     string    `json:"engine"`
+	Status     string    `json:"status"`
+	CreatedAt  time.Time `json:"created_at"`
+}
+
+// Distillation is the full distillation record (with content + structured data), returned by
+// the detail endpoint. Cross-agent read: rara-distill owns the table; rara-core reads it only.
+type Distillation struct {
+	DistillationSummary
+	SourceKey        string          `json:"source_key"`
+	Pattern          string          `json:"pattern"`
+	Context          *string         `json:"context,omitempty"`
+	Strategy         *string         `json:"strategy,omitempty"`
+	SessionPatterns  *string         `json:"session_patterns,omitempty"`
+	Content          *string         `json:"content,omitempty"`
+	Structured       json.RawMessage `json:"structured"`
+	StructuredStatus string          `json:"structured_status"`
+	UpdatedAt        time.Time       `json:"updated_at"`
+}
+
 // GateRule is one deterministic allow/deny rule — the cheapest layer of the gate cascade.
 // A deny match drops the item (deny precedence); an allow match keeps it; no match
 // escalates to the profile/LLM layers.
@@ -503,6 +531,14 @@ type Database interface {
 	// ListAllGateRules returns every gate rule, enabled or not (config-as-data), ordered
 	// (action, match_type, value). (ListGateRules is the cascade's enabled-only view.)
 	ListAllGateRules(ctx context.Context) ([]GateRule, error)
+
+	// --- Distillation reads (cross-agent, rara-distill table) ----------------
+	// ListRecentDistillations returns up to limit distillations (light projection, no content),
+	// ordered by created_at DESC, id DESC. limit is already clamped by the caller.
+	ListRecentDistillations(ctx context.Context, limit int) ([]DistillationSummary, error)
+	// GetDistillation returns the full distillation (with content + structured) for the given id,
+	// found=false if absent.
+	GetDistillation(ctx context.Context, id int) (Distillation, bool, error)
 
 	// --- Health feed (Phase 2) -----------------------------------------------
 	// TouchProviderHeartbeat stamps providers.heartbeat_at = now for a live provider,
