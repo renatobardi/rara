@@ -166,8 +166,8 @@ func TestPipelineAggregatesAllStatuses(t *testing.T) {
 		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
 	}
 	var got struct {
-		Counts map[string]int               `json:"counts"`
-		Items  map[string][]map[string]any  `json:"items"`
+		Counts map[string]int              `json:"counts"`
+		Items  map[string][]map[string]any `json:"items"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatalf("decode: %v; body=%s", err, rec.Body.String())
