@@ -110,10 +110,16 @@ func (s *server) handlePipeline(w http.ResponseWriter, r *http.Request) {
 		}(st)
 	}
 
+	// Drain all goroutines before processing: guarantees every goroutine has
+	// finished (and stopped reading shared state) before this handler returns.
+	all := make([]result, len(pipelineStatuses))
+	for i := range all {
+		all[i] = <-ch
+	}
+
 	counts := make(map[string]int, len(pipelineStatuses))
 	items := make(map[string]json.RawMessage, len(pipelineStatuses))
-	for range pipelineStatuses {
-		res := <-ch
+	for _, res := range all {
 		if res.err != nil {
 			badGateway(w, res.err)
 			return
