@@ -31,5 +31,28 @@ export const t = {
 		loading: 'Carregando do core ao vivo…',
 		error: 'Não foi possível ler a superfície do core.',
 		empty: 'Nada seedado ainda.'
+	},
+	pipeline: {
+		title: 'Pipeline',
+		loading: 'Carregando pipeline do core ao vivo…',
+		error: 'Não foi possível ler o pipeline do core.',
+		empty: 'Nenhum item no pipeline ainda.',
+		emptyStatus: 'Nenhum item nesta fila.',
+		stepsLoading: 'Carregando etapas…',
+		stepsEmpty: 'Sem etapas registradas.',
+		stepsError: 'Erro ao carregar etapas.',
+		colCapability: 'Capability',
+		colProvider: 'Provider',
+		colStatus: 'Status',
+		colAttempts: 'Tentativas',
+		statusLabels: {
+			discovered: 'Descoberto',
+			to_text: 'Para texto',
+			distilled: 'Destilado',
+			done: 'Concluído',
+			filtered: 'Filtrado',
+			quarantine: 'Quarentena',
+			failed: 'Falhou'
+		}
 	}
 };
