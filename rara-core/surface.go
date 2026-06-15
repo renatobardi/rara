@@ -265,7 +265,7 @@ func NewSurfaceMux(core *Core, token string) http.Handler {
 	// MCP adapter (thin JSON-RPC front-end over the SAME Core).
 	mux.Handle("POST /mcp", newMCPServer(core))
 
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("GET /live", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
@@ -275,11 +275,11 @@ func NewSurfaceMux(core *Core, token string) http.Handler {
 
 // authMiddleware enforces a single service token via `Authorization: Bearer <token>`, in
 // constant time. It fails CLOSED — an empty configured token rejects everything — so the
-// surface is never accidentally open. /healthz is exempt (an unauthenticated liveness probe).
+// surface is never accidentally open. /live is exempt (an unauthenticated liveness probe).
 func authMiddleware(token string, next http.Handler) http.Handler {
 	want := []byte(token)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/healthz" {
+		if r.URL.Path == "/live" {
 			next.ServeHTTP(w, r)
 			return
 		}
