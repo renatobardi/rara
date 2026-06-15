@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+
+	"golang.org/x/oauth2"
 )
 
 // fakeDoer records the last request and returns a canned response/error, so the activator wire shape
@@ -55,6 +57,40 @@ func (r *recordActivator) Activate(_ context.Context, p Provider) error {
 
 func staticToken(tok string) tokenSource {
 	return func(_ context.Context) (string, error) { return tok, nil }
+}
+
+// fakeOAuth2Source is a fake oauth2.TokenSource injected into cloudRunTokenSource for tests.
+type fakeOAuth2Source struct{ token string }
+
+func (f *fakeOAuth2Source) Token() (*oauth2.Token, error) {
+	return &oauth2.Token{AccessToken: f.token}, nil
+}
+
+// --- cloudRunTokenSource selection --------------------------------------------
+
+func TestCloudRunTokenSourcePrefersEnvVar(t *testing.T) {
+	t.Setenv("CLOUD_RUN_OAUTH_TOKEN", "static-override-token")
+	ts := cloudRunTokenSource(&fakeOAuth2Source{token: "should-not-be-used"})
+	tok, err := ts(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if tok != "static-override-token" {
+		t.Errorf("got %q, want static-override-token (env override must win)", tok)
+	}
+}
+
+func TestCloudRunTokenSourceFallsToADCWhenEnvEmpty(t *testing.T) {
+	t.Setenv("CLOUD_RUN_OAUTH_TOKEN", "")
+	fake := &fakeOAuth2Source{token: "adc-refreshed-token"}
+	ts := cloudRunTokenSource(fake)
+	tok, err := ts(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if tok != "adc-refreshed-token" {
+		t.Errorf("got %q, want adc-refreshed-token (ADC source must be used when env is unset)", tok)
+	}
 }
 
 // --- cloudRunActivator --------------------------------------------------------
