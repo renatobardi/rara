@@ -101,8 +101,8 @@ name is `whispercpp/whisper-large-v3` even when a chunk fell back to Groq).
 | `WHISPER_CPP_MODEL` | if engine=local | — | Absolute path to the ggml `large-v3` model |
 | `WHISPER_CPP_VAD_MODEL` | no | — | Optional silero VAD model (trims silence/music, cuts hallucinations) |
 | `SOURCE_TIMEOUT_MINUTES` | no | `20` (`60` for local) | Per-item timeout (download + transcribe); raise for very long local videos |
-| `YT_DLP_BIN` | yes (local) | — | Absolute path to `yt-dlp` |
-| `FFMPEG_BIN` | yes (local) | — | Absolute path to `ffmpeg` |
+| `YT_DLP_BIN` | no | `yt-dlp` (PATH) | Path to `yt-dlp`; set to absolute path on Mac/launchd |
+| `FFMPEG_BIN` | no | `ffmpeg` (PATH) | Path to `ffmpeg`; set to absolute path on Mac/launchd |
 | `YT_DLP_COOKIES` | no | — | cookies.txt (rarely needed from a residential IP) |
 
 ## Development

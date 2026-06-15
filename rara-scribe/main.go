@@ -175,6 +175,8 @@ type Config struct {
 	WhisperCppBeam     int    // beam-search width (1=greedy/fast, 5=quality)
 	WhisperCppThreads  int    // CPU threads for pre/post-processing
 	Cookies            string
+	FfmpegBin          string // path to ffmpeg; defaults to "ffmpeg" (PATH)
+	YtDlpBin           string // path to yt-dlp; defaults to "yt-dlp" (PATH)
 }
 
 // ---------------------------------------------------------------------------
@@ -1322,6 +1324,8 @@ func loadConfig() Config {
 		WhisperCppBeam:     beam,
 		WhisperCppThreads:  threads,
 		Cookies:            resolveCookies(),
+		FfmpegBin:          resolveBin("FFMPEG_BIN", "ffmpeg"),
+		YtDlpBin:           resolveBin("YT_DLP_BIN", "yt-dlp"),
 	}
 }
 
@@ -1385,12 +1389,13 @@ func main() {
 	defer pool.Close()
 	log.Printf("rara-scribe worker %s/%s ready [engine %s]", capTranscrever, provider, engineName)
 
-	// Resolve the external binaries to absolute paths (no $PATH lookup, which could be hijacked).
 	// One acquirer serves both providers: yt-dlp downloads a YouTube watch URL (with cookies, on the
 	// residential-IP Mac) or a plain enclosure URL (no cookies needed) the same way.
+	// Binary paths come from FFMPEG_BIN/YT_DLP_BIN env vars; default to bare names (PATH-resolved),
+	// which works in Cloud Run where the Dockerfile installs them system-wide.
 	acq := newYtDlpAcquirer(
-		resolveBin("YT_DLP_BIN", "/opt/homebrew/bin/yt-dlp"),
-		resolveBin("FFMPEG_BIN", "/opt/homebrew/bin/ffmpeg"),
+		cfg.YtDlpBin,
+		cfg.FfmpegBin,
 		cookieFile,
 		chunkSecondsFor(cfg.Engine),
 	)
