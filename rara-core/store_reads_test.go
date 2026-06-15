@@ -144,8 +144,8 @@ func TestListQuarantinedItems_DegradesWhenLaneTableAbsent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected graceful degradation, got error: %v", err)
 	}
-	if conn.baseCalls != 1 {
-		t.Fatalf("expected the base fallback to run once, got %d", conn.baseCalls)
+	if conn.enrichedCalls != 1 || conn.baseCalls != 1 {
+		t.Fatalf("expected one enriched + one base query, got enriched=%d base=%d", conn.enrichedCalls, conn.baseCalls)
 	}
 	if len(items) != 1 || items[0].ID != 7 {
 		t.Fatalf("expected the quarantined item back, got %+v", items)
@@ -197,8 +197,8 @@ func TestListItemsByStatus_PropagatesNonMissingTableError(t *testing.T) {
 	if !errors.As(err, &pgErr) || pgErr.Code != "57014" {
 		t.Fatalf("expected the original 57014 error, got %v", err)
 	}
-	if conn.baseCalls != 0 {
-		t.Fatalf("expected no fallback for a real error, base ran %d times", conn.baseCalls)
+	if conn.enrichedCalls != 1 || conn.baseCalls != 0 {
+		t.Fatalf("expected the enriched query once and no fallback for a real error, got enriched=%d base=%d", conn.enrichedCalls, conn.baseCalls)
 	}
 }
 
@@ -216,8 +216,8 @@ func TestListItemsByStatus_DegradesWhenMissingTableSurfacesFromRowsErr(t *testin
 	if err != nil {
 		t.Fatalf("expected degradation on rows.Err() 42P01, got: %v", err)
 	}
-	if conn.baseCalls != 1 || len(items) != 1 || items[0].ID != 3 {
-		t.Fatalf("expected base fallback to return the item, got base=%d items=%+v", conn.baseCalls, items)
+	if conn.enrichedCalls != 1 || conn.baseCalls != 1 || len(items) != 1 || items[0].ID != 3 {
+		t.Fatalf("expected one enriched attempt then base fallback returning the item, got enriched=%d base=%d items=%+v", conn.enrichedCalls, conn.baseCalls, items)
 	}
 }
 
