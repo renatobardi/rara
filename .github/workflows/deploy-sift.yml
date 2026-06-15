@@ -1,10 +1,10 @@
-name: Deploy rara-distill
+name: Deploy rara-sift
 
-# GATED — manual dispatch only (NO push:main). rara-distill is a 2.0 bridge-total claim-worker:
-# it only does work once the reconciler (VPC, a future phase) routes `destilar` item_steps to its
-# provider. Re-enabling auto-deploy (adding push:main) and the per-provider env config belongs to
-# the lane-activation wave (W1), not this build/packaging slice. This workflow exists so the image
-# can be built+deployed on demand via the MULTI-MODULE context (rara-addon + rara-distill); see
+# GATED — manual dispatch only (NO push:main). rara-sift is a 2.0 claim-worker (the curation
+# cascade): it only runs once the reconciler (VPC, a future phase) routes `gate_*` item_steps to
+# its provider. Re-enabling auto-deploy (push:main) and the per-provider env config belongs to the
+# lane-activation wave (W1), not this build/packaging slice. This workflow exists so the image can
+# be built+deployed on demand via the MULTI-MODULE context (rara-addon + rara-sift); see
 # DOCKER-MULTIMODULE.md.
 on:
   workflow_dispatch:
@@ -25,9 +25,9 @@ permissions:
 
 env:
   REGION: ${{ vars.GCP_REGION }}
-  JOB_NAME: rara-distill
-  APP_DIR: rara-distill
-  IMAGE: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/rara/rara-distill:${{ github.sha }}
+  JOB_NAME: rara-sift
+  APP_DIR: rara-sift
+  IMAGE: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/rara/rara-sift:${{ github.sha }}
 
 jobs:
   deploy:
@@ -94,9 +94,9 @@ jobs:
         run: |
           # Update first, create if absent (avoids a describe→create/update TOCTOU race).
           # Secrets: DATABASE_URL is the shared contract DB. The model key for the LiteLLM
-          # judge is app-specific — add it here when the lane is lit, e.g.:
+          # gate-rico judge is app-specific — add it here when the lane is lit, e.g.:
           #   --set-secrets "DATABASE_URL=database-url:latest,LITELLM_API_KEY=litellm-api-key:latest"
-          # Provider/recipe env (DISTILL_PROVIDER, …) is also set at lane activation (W1).
+          # Gate/provider env (SIFT_GATE, SIFT_PROVIDER, …) is also set at lane activation (W1).
           if ! gcloud run jobs update "$JOB_NAME" \
                --image "$IMAGE" \
                --region "$REGION" \
