@@ -40,6 +40,7 @@ type Episode struct {
 	Title        string
 	EnclosureURL string
 	PublishedAt  *time.Time
+	Description  string // itunes:summary if present, else <description>; may be empty
 }
 
 // Fetcher retrieves the raw bytes of a feed URL. The HTTP implementation is httpFetch; tests
@@ -133,10 +134,12 @@ type rssDoc struct {
 }
 
 type rssItem struct {
-	GUID      string `xml:"guid"`
-	Title     string `xml:"title"`
-	PubDate   string `xml:"pubDate"`
-	Enclosure struct {
+	GUID          string `xml:"guid"`
+	Title         string `xml:"title"`
+	PubDate       string `xml:"pubDate"`
+	Description   string `xml:"description"`
+	ItunesSummary string `xml:"http://www.itunes.com/dtds/podcast-1.0.dtd summary"`
+	Enclosure     struct {
 		URL  string `xml:"url,attr"`
 		Type string `xml:"type,attr"`
 	} `xml:"enclosure"`
@@ -159,11 +162,16 @@ func parseRSS(data []byte) (title string, episodes []Episode, err error) {
 		if guid == "" {
 			guid = url // stable fallback so the episode still gets a source_ref
 		}
+		desc := strings.TrimSpace(it.ItunesSummary)
+		if desc == "" {
+			desc = strings.TrimSpace(it.Description)
+		}
 		episodes = append(episodes, Episode{
 			GUID:         guid,
 			Title:        strings.TrimSpace(it.Title),
 			EnclosureURL: url,
 			PublishedAt:  parsePubDate(it.PubDate),
+			Description:  desc,
 		})
 	}
 	return strings.TrimSpace(doc.Channel.Title), episodes, nil
@@ -245,16 +253,21 @@ func (d *pgxDatabase) ActiveFeeds(ctx context.Context) ([]Feed, error) {
 }
 
 // UpsertEpisode inserts an episode, idempotent on guid. On conflict it refreshes the metadata
-// (title/enclosure/published) so a feed edit propagates, but never the collected_at/status.
+// (title/enclosure/published/description) so a feed edit propagates, but never the collected_at/status.
 func (d *pgxDatabase) UpsertEpisode(ctx context.Context, feedID int, e Episode) error {
 	const q = `
-		INSERT INTO podcast_episodes (feed_id, guid, title, enclosure_url, published_at)
-		VALUES ($1, $2, $3, $4, $5)
+		INSERT INTO podcast_episodes (feed_id, guid, title, enclosure_url, published_at, description)
+		VALUES ($1, $2, $3, $4, $5, $6)
 		ON CONFLICT (guid) DO UPDATE
 		SET title         = EXCLUDED.title,
 		    enclosure_url = EXCLUDED.enclosure_url,
-		    published_at  = EXCLUDED.published_at`
-	_, err := d.conn.Exec(ctx, q, feedID, e.GUID, e.Title, e.EnclosureURL, e.PublishedAt)
+		    published_at  = EXCLUDED.published_at,
+		    description   = EXCLUDED.description`
+	var desc *string
+	if e.Description != "" {
+		desc = &e.Description
+	}
+	_, err := d.conn.Exec(ctx, q, feedID, e.GUID, e.Title, e.EnclosureURL, e.PublishedAt, desc)
 	return err
 }
 

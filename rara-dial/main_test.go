@@ -33,6 +33,32 @@ const sampleFeed = `<?xml version="1.0" encoding="UTF-8"?>
   </channel>
 </rss>`
 
+// sampleFeedWithDescription has <description> and itunes:summary; tests that itunes:summary wins.
+const sampleFeedWithDescription = `<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd">
+  <channel>
+    <title>Desc Cast</title>
+    <item>
+      <title>With itunes summary</title>
+      <guid>ep-a</guid>
+      <description>plain description</description>
+      <itunes:summary>itunes summary</itunes:summary>
+      <enclosure url="https://cdn.example.com/a.mp3" type="audio/mpeg"/>
+    </item>
+    <item>
+      <title>With description only</title>
+      <guid>ep-b</guid>
+      <description>only description</description>
+      <enclosure url="https://cdn.example.com/b.mp3" type="audio/mpeg"/>
+    </item>
+    <item>
+      <title>No description</title>
+      <guid>ep-c</guid>
+      <enclosure url="https://cdn.example.com/c.mp3" type="audio/mpeg"/>
+    </item>
+  </channel>
+</rss>`
+
 func TestParseRSS(t *testing.T) {
 	title, eps, err := parseRSS([]byte(sampleFeed))
 	if err != nil {
@@ -115,7 +141,7 @@ func (m *MockDatabase) UpsertEpisode(_ context.Context, feedID int, e Episode) e
 	if m.err != nil {
 		return m.err
 	}
-	m.episodes[e.GUID] = e // ON CONFLICT (guid) DO UPDATE
+	m.episodes[e.GUID] = e // ON CONFLICT (guid) DO UPDATE — stores Description too
 	m.feedOf[e.GUID] = feedID
 	return nil
 }
@@ -221,5 +247,44 @@ func TestRunSurfacesFeedListError(t *testing.T) {
 	db.err = errors.New("db down")
 	if _, err := run(context.Background(), db, staticFetcher(sampleFeed)); err == nil {
 		t.Error("a feed-list error should abort the run")
+	}
+}
+
+// TestParseRSSPrefersItunesSummary: itunes:summary wins over <description> when both present.
+func TestParseRSSPrefersItunesSummary(t *testing.T) {
+	_, eps, err := parseRSS([]byte(sampleFeedWithDescription))
+	if err != nil {
+		t.Fatalf("parseRSS: %v", err)
+	}
+	if len(eps) != 3 {
+		t.Fatalf("got %d episodes, want 3", len(eps))
+	}
+	if eps[0].Description != "itunes summary" {
+		t.Errorf("ep-a: Description = %q, want itunes:summary value", eps[0].Description)
+	}
+	if eps[1].Description != "only description" {
+		t.Errorf("ep-b: Description = %q, want <description> fallback", eps[1].Description)
+	}
+	if eps[2].Description != "" {
+		t.Errorf("ep-c: Description = %q, want empty", eps[2].Description)
+	}
+}
+
+// TestRunStoresEpisodeDescription: the collector loop passes description through to UpsertEpisode.
+func TestRunStoresEpisodeDescription(t *testing.T) {
+	ctx := context.Background()
+	db := newMockDatabase()
+	db.feeds = []Feed{{ID: 1, FeedURL: "https://example.com/feed.xml"}}
+
+	_, err := run(ctx, db, staticFetcher(sampleFeedWithDescription))
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	ep, ok := db.episodes["ep-a"]
+	if !ok {
+		t.Fatal("ep-a not stored")
+	}
+	if ep.Description != "itunes summary" {
+		t.Errorf("stored description = %q, want itunes summary", ep.Description)
 	}
 }

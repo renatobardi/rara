@@ -604,6 +604,90 @@ func TestHTTPGetDistillationNotFoundIs400(t *testing.T) {
 	}
 }
 
+// TestCoreListItemsPassesThroughDisplayFields: Title/Channel/Summary stored on an item are
+// returned by ListItems so the surface can serve them without additional lookups.
+func TestCoreListItemsPassesThroughDisplayFields(t *testing.T) {
+	ctx := context.Background()
+	core, db, _ := newTestCore(t)
+	fid := seedFlow(t, db)
+	_, err := db.UpsertItem(ctx, Item{
+		Lane: "podcast", SourceRef: "ep-01", FlowID: fid, FlowVersion: 1,
+		Status: itemDiscovered,
+		Title:  "My Episode", Channel: "My Channel", Summary: "Short summary",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	items, err := core.ListItems(ctx, itemDiscovered)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("want 1 item, got %d", len(items))
+	}
+	it := items[0]
+	if it.Title != "My Episode" {
+		t.Errorf("Title = %q, want My Episode", it.Title)
+	}
+	if it.Channel != "My Channel" {
+		t.Errorf("Channel = %q, want My Channel", it.Channel)
+	}
+	if it.Summary != "Short summary" {
+		t.Errorf("Summary = %q, want Short summary", it.Summary)
+	}
+}
+
+// TestCoreQuarantinePassesThroughDisplayFields: same contract for Quarantine().
+func TestCoreQuarantinePassesThroughDisplayFields(t *testing.T) {
+	ctx := context.Background()
+	core, db, _ := newTestCore(t)
+	fid := seedFlow(t, db)
+	_, err := db.UpsertItem(ctx, Item{
+		Lane: "podcast", SourceRef: "ep-q", FlowID: fid, FlowVersion: 1,
+		Status: itemQuarantine,
+		Title:  "Quarantine Episode", Channel: "Some Cast",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	items, err := core.Quarantine(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].Title != "Quarantine Episode" {
+		t.Errorf("quarantine item title = %q", items[0].Title)
+	}
+}
+
+// TestHTTPItemsResponseIncludesDisplayFields: the JSON response from GET /v1/items includes
+// title/channel/summary when available.
+func TestHTTPItemsResponseIncludesDisplayFields(t *testing.T) {
+	ctx := context.Background()
+	core, db, _ := newTestCore(t)
+	fid := seedFlow(t, db)
+	_, err := db.UpsertItem(ctx, Item{
+		Lane: "podcast", SourceRef: "ep-http", FlowID: fid, FlowVersion: 1,
+		Status: itemDiscovered,
+		Title:  "HTTP Episode", Channel: "HTTP Cast", Summary: "A summary",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := NewSurfaceMux(core, testToken)
+	rec := do(t, h, http.MethodGet, "/v1/items?status=discovered", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got %d: %s", rec.Code, rec.Body.String())
+	}
+	var items []Item
+	if err := json.Unmarshal(rec.Body.Bytes(), &items); err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].Title != "HTTP Episode" || items[0].Channel != "HTTP Cast" {
+		t.Errorf("items = %+v", items)
+	}
+	_ = ctx
+}
+
 // --- small helpers --------------------------------------------------------
 
 func mustItem(t *testing.T, db *MockDatabase, lane, ref string, flowID int, status string) int {

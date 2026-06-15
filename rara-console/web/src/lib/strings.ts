@@ -60,8 +60,8 @@ export const t = {
 		loading: 'Carregando quarentena…',
 		error: 'Não foi possível ler a quarentena.',
 		empty: 'Nenhum item em quarentena.',
-		rescue: 'Resgatar',
-		confirmDrop: 'Confirmar drop',
+		rescue: 'Me interesso',
+		confirmDrop: 'Não me interessa',
 		reviewing: 'Processando…',
 		reviewError: 'Erro ao processar decisão.',
 		retry: 'Tentar novamente'

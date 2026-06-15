@@ -12,7 +12,7 @@
 	] as const;
 	type Status = (typeof STATUSES)[number];
 
-	type Item = { id: number; title: string; status: string; source_type?: string };
+	type Item = { id: number; lane: string; source_ref: string; status: string; title?: string; channel?: string; summary?: string };
 	type Step = { id: number; capability: string; provider: string; status: string; attempts: number };
 	type PipelineData = { counts: Record<Status, number>; items: Record<Status, Item[]> };
 
@@ -111,11 +111,11 @@
 							class="flex w-full cursor-pointer items-center gap-3 border-0 bg-transparent px-4 py-3 text-left hover:bg-hover"
 							onclick={() => toggleItem(item.id)}
 						>
-							<span class="flex-1 text-[13.5px]">{item.title ?? `#${item.id}`}</span>
-							{#if item.source_type}
-								<span class="text-[11px] text-muted">{item.source_type}</span>
-							{/if}
-							<span class="text-[11px] text-muted opacity-50">{openItemId === item.id ? '▲' : '▼'}</span>
+							<span class="flex-1 min-w-0">
+								<span class="block truncate text-[13.5px]">{item.title || item.source_ref || `#${item.id}`}</span>
+								<span class="block text-[11px] text-muted">#{item.id}{item.channel ? ` · ${item.channel}` : ''}</span>
+							</span>
+							<span class="text-[11px] text-muted opacity-50 flex-none">{openItemId === item.id ? '▲' : '▼'}</span>
 						</button>
 
 						{#if openItemId === item.id}
