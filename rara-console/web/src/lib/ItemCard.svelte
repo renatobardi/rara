@@ -34,24 +34,30 @@
 	const hasLink = $derived(!!source_ref && isURL(source_ref));
 </script>
 
-<!-- ponytail: div+onclick avoids nested <a> inside <button>; stopPropagation on link handles overlap -->
-<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
-<div
-	class="px-4 py-3{ontoggle ? ' cursor-pointer hover:bg-hover' : ''}"
-	onclick={ontoggle}
-	role={ontoggle ? 'button' : undefined}
-	tabindex={ontoggle ? 0 : undefined}
-	onkeydown={ontoggle ? (e) => (e.key === 'Enter' || e.key === ' ') && ontoggle() : undefined}
->
+<div class="px-4 py-3">
 	<div class="flex items-start gap-2">
 		<span class="min-w-0 flex-1">
-			<span class="block truncate text-[13.5px] font-medium">{displayTitle}</span>
+			{#if hasLink}
+				<a
+					href={source_ref}
+					target="_blank"
+					rel="noopener noreferrer"
+					class="block truncate text-[13.5px] font-medium hover:underline"
+				>{displayTitle}</a>
+			{:else}
+				<span class="block truncate text-[13.5px] font-medium">{displayTitle}</span>
+			{/if}
 			<span class="mt-0.5 block text-[11px] text-muted">
 				{channel ? `${channel} ` : ''}#{id}
 			</span>
 		</span>
 		{#if ontoggle}
-			<span class="mt-0.5 flex-none text-[11px] text-muted opacity-50">{expanded ? '▲' : '▼'}</span>
+			<button
+				class="mt-0.5 flex-none cursor-pointer border-0 bg-transparent p-0 text-[11px] text-muted opacity-50 hover:opacity-100"
+				onclick={ontoggle}
+				aria-expanded={expanded}
+				aria-label={expanded ? 'Colapsar passos' : 'Expandir passos'}
+			>{expanded ? '▲' : '▼'}</button>
 		{/if}
 	</div>
 
@@ -59,22 +65,9 @@
 		<p class="mb-0 mt-1 line-clamp-2 text-[12px] text-muted">{stripped}</p>
 	{/if}
 
-	{#if hasLink || actions}
-		<div class="mt-2 flex items-center gap-4">
-			<span class="flex-1">
-				{#if hasLink}
-					<a
-						href={source_ref}
-						target="_blank"
-						rel="noopener noreferrer"
-						class="text-[11px] text-muted underline hover:text-fg"
-						onclick={(e) => e.stopPropagation()}
-					>abrir</a>
-				{/if}
-			</span>
-			{#if actions}
-				{@render actions()}
-			{/if}
+	{#if actions}
+		<div class="mt-2 flex items-center justify-end">
+			{@render actions()}
 		</div>
 	{/if}
 </div>
