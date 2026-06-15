@@ -1,78 +1,102 @@
 name: Deploy rara-core
 
+# Deploys rara-core as a Cloud Run Service (always-on reconciler + HTTP surface).
+# Uses the same multi-module Cloud Build pattern as the workers (rara-addon + rara-core packed
+# together so `replace ../rara-addon` resolves). Service account: rara-core-activator (has
+# run.developer on the 4 podcast-lane jobs) — ADC picks it up natively, no SA key needed.
+# Surface auth stays bearer (SURFACE_TOKEN secret); SURFACE_ADDR=0.0.0.0:8080 (Cloud Run port).
+# After deploy, update CORE_SURFACE_URL in the console's /etc/rara-console/env on the Oracle VM
+# to the new Cloud Run service URL.
 on:
   workflow_dispatch:
 
+permissions:
+  contents: read
+  id-token: write
+
 jobs:
   deploy:
-    name: Build & Deploy (ARM64, rsync+systemd)
+    name: Build & Deploy Cloud Run Service
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
+    env:
+      REGION: ${{ vars.GCP_REGION }}
+      SERVICE_NAME: rara-core
+      IMAGE: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/rara/rara-core:${{ github.sha }}
 
     steps:
       - name: Checkout code
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
 
-      - name: Setup Go
-        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
         with:
-          go-version-file: rara-core/go.mod
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+          token_format: access_token
 
-      - name: Cache Go modules
-        uses: actions/cache@6f8efc29b200d32929f49075959781ed54ec270c # v3
-        with:
-          path: ~/go/pkg/mod
-          key: ${{ runner.os }}-go-core-${{ hashFiles('rara-core/go.sum') }}
-          restore-keys: |
-            ${{ runner.os }}-go-core-
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
 
-      - name: Build ARM64 binary
-        # rara-core imports rara-addon via a replace directive (../rara-addon). The full
-        # repo checkout satisfies the sibling path; CGO_ENABLED=0 lets us cross-compile
-        # cleanly to linux/arm64 (the Oracle VM's arch).
+      - name: Build image with Cloud Build (multi-module)
         run: |
-          cd rara-core
-          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 \
-            go build -ldflags="-w -s" -o core-job .
+          tar -czf /tmp/source.tgz rara-addon rara-core
+          gcloud storage cp /tmp/source.tgz \
+            "gs://${{ vars.GCP_PROJECT_ID }}_cloudbuild/source/rara-core-${GITHUB_SHA}.tgz"
 
-      - name: Setup SSH
-        uses: webfactory/ssh-agent@dc588b651fe13675774614f8e6a936a468676387 # v0.9.0
-        with:
-          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+          cat > /tmp/cloudbuild.yaml << YAML
+          steps:
+          - name: 'gcr.io/cloud-builders/docker'
+            args: ['build', '-t', '${IMAGE}', '-f', 'rara-core/Dockerfile', '.']
+          source:
+            storageSource:
+              bucket: ${{ vars.GCP_PROJECT_ID }}_cloudbuild
+              object: source/rara-core-${GITHUB_SHA}.tgz
+          images: ['${IMAGE}']
+          YAML
 
-      - name: Add server to known_hosts
-        env:
-          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
-        run: ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+          BUILD_ID=$(gcloud builds submit \
+            --no-source \
+            --config=/tmp/cloudbuild.yaml \
+            --project "${{ vars.GCP_PROJECT_ID }}" \
+            --async \
+            --format='value(id)')
+          echo "Cloud Build ID: $BUILD_ID"
 
-      - name: Upload binary and service file
-        env:
-          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
-          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
-          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+          while true; do
+            STATUS=$(gcloud builds describe "$BUILD_ID" \
+              --project "${{ vars.GCP_PROJECT_ID }}" \
+              --format='value(status)')
+            echo "Build status: $STATUS"
+            case "$STATUS" in
+              SUCCESS) echo "Image built successfully"; break ;;
+              FAILURE|CANCELLED|TIMEOUT|INTERNAL_ERROR)
+                echo "Build failed: $STATUS"; exit 1 ;;
+              *) sleep 15 ;;
+            esac
+          done
+
+      - name: Deploy Cloud Run Service
         run: |
-          ssh "${DEPLOY_USER}@${DEPLOY_HOST}" "mkdir -p ${DEPLOY_PATH}/bin"
-          rsync -az rara-core/core-job \
-            "${DEPLOY_USER}@${DEPLOY_HOST}:${DEPLOY_PATH}/bin/core-job"
-          rsync -az rara-core/deploy/rara-core.service \
-            "${DEPLOY_USER}@${DEPLOY_HOST}:/tmp/rara-core.service"
+          gcloud run deploy "$SERVICE_NAME" \
+            --image "$IMAGE" \
+            --region "$REGION" \
+            --project "${{ vars.GCP_PROJECT_ID }}" \
+            --service-account "rara-core-activator@${{ vars.GCP_PROJECT_ID }}.iam.gserviceaccount.com" \
+            --set-secrets "DATABASE_URL=database-url:latest,SURFACE_TOKEN=core-surface-token:latest" \
+            --set-env-vars "SURFACE_ADDR=0.0.0.0:8080,CLOUD_RUN_PROJECT=${{ vars.GCP_PROJECT_ID }},CLOUD_RUN_REGION=${{ vars.GCP_REGION }},CLOUD_RUN_JOB_PREFIX=rara-,RECONCILE_INTERVAL_SECONDS=30" \
+            --min-instances 1 \
+            --max-instances 1 \
+            --memory 512Mi \
+            --cpu 1 \
+            --port 8080 \
+            --no-allow-unauthenticated \
+            --args "reconcile,--loop"
 
-      - name: Install service and restart
-        env:
-          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
-          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+      - name: Print service URL
         run: |
-          ssh "${DEPLOY_USER}@${DEPLOY_HOST}" bash <<'EOF'
-            set -euo pipefail
-            sudo cp /tmp/rara-core.service /etc/systemd/system/rara-core.service
-            sudo systemctl daemon-reload
-            sudo systemctl enable rara-core
-            if sudo systemctl is-active --quiet rara-core; then
-              sudo systemctl restart rara-core
-            else
-              sudo systemctl start rara-core
-            fi
-            sleep 3
-            sudo systemctl status rara-core --no-pager -l | head -20
-          EOF
+          URL=$(gcloud run services describe "$SERVICE_NAME" \
+            --region "$REGION" \
+            --project "${{ vars.GCP_PROJECT_ID }}" \
+            --format='value(status.url)')
+          echo "Core service URL: $URL"
+          echo "Update CORE_SURFACE_URL in /etc/rara-console/env on the Oracle VM to: $URL"
