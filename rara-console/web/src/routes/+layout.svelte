@@ -63,8 +63,7 @@
 		<div class="flex items-center gap-2 px-2 pb-4 pt-2 text-[15px] font-semibold">
 			<span
 				aria-label="rara"
-				class="grid h-[26px] w-[26px] place-items-center rounded-token bg-text text-bg"
-				style="padding:4px"
+				class="block h-[30px] w-[30px] flex-none text-text"
 			><BrandMark /></span
 			>
 			{t.brand}
