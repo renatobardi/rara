@@ -79,10 +79,8 @@ func TestOverviewNeverLeaksToken(t *testing.T) {
 // be invalid JSON served to the SPA as a 200).
 func TestOverviewRejectsOversizedCoreResponse(t *testing.T) {
 	core := fakeCore(t, "secret")
+	shrinkMaxBytes(t, 8) // tiny: the fake flows body is larger than this
 	s := &server{coreURL: core.URL, token: "secret", client: core.Client()}
-	old := maxCoreBytes
-	maxCoreBytes = 8 // tiny: the fake flows body is larger than this
-	defer func() { maxCoreBytes = old }()
 
 	rec := httptest.NewRecorder()
 	s.handleOverview(rec, httptest.NewRequest("GET", "/api/overview", nil))
@@ -202,10 +200,8 @@ func TestPipelineNeverLeaksToken(t *testing.T) {
 
 func TestPipelineRejectsOversizedCoreResponse(t *testing.T) {
 	core := fakePipelineCore(t, "secret")
+	shrinkMaxBytes(t, 1) // even "[]" (2 bytes) exceeds this
 	s := &server{coreURL: core.URL, token: "secret", client: core.Client()}
-	old := maxCoreBytes
-	maxCoreBytes = 1 // even "[]" (2 bytes) exceeds this
-	defer func() { maxCoreBytes = old }()
 
 	rec := httptest.NewRecorder()
 	s.handlePipeline(rec, httptest.NewRequest("GET", "/api/pipeline", nil))
@@ -263,10 +259,8 @@ func TestItemStepsNeverLeaksToken(t *testing.T) {
 
 func TestItemStepsRejectsOversizedCoreResponse(t *testing.T) {
 	core := fakePipelineCore(t, "secret")
+	shrinkMaxBytes(t, 1)
 	s := &server{coreURL: core.URL, token: "secret", client: core.Client()}
-	old := maxCoreBytes
-	maxCoreBytes = 1
-	defer func() { maxCoreBytes = old }()
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest("GET", "/api/items/42/steps", nil)
@@ -762,6 +756,24 @@ func fakeB1CoreNoProfile(t *testing.T) *httptest.Server {
 	return srv
 }
 
+// shrinkMaxBytes sets maxCoreBytes to n for the duration of the test.
+func shrinkMaxBytes(t *testing.T, n int64) {
+	t.Helper()
+	old := maxCoreBytes
+	maxCoreBytes = n
+	t.Cleanup(func() { maxCoreBytes = old })
+}
+
+// fatCoreServer returns a fake core that always writes 100 x-bytes, closed via t.Cleanup.
+func fatCoreServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(strings.Repeat("x", 100)))
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
 // --- interest-profile (active) ---
 
 func TestInterestProfileProxiesActiveWithBearer(t *testing.T) {
@@ -820,10 +832,8 @@ func TestInterestProfileReturns502WhenCoreUnreachable(t *testing.T) {
 
 func TestInterestProfileRejectsOversizedCoreResponse(t *testing.T) {
 	core := fakeB1Core(t, "secret")
+	shrinkMaxBytes(t, 1)
 	s := &server{coreURL: core.URL, token: "secret", client: core.Client()}
-	old := maxCoreBytes
-	maxCoreBytes = 1
-	defer func() { maxCoreBytes = old }()
 
 	rec := httptest.NewRecorder()
 	s.handleInterestProfile(rec, httptest.NewRequest("GET", "/api/interest-profile", nil))
@@ -909,10 +919,8 @@ func TestInterestProfileVersionsReturns502WhenCoreReturnsNon2xx(t *testing.T) {
 
 func TestInterestProfileVersionsRejectsOversizedCoreResponse(t *testing.T) {
 	core := fakeB1Core(t, "secret")
+	shrinkMaxBytes(t, 1)
 	s := &server{coreURL: core.URL, token: "secret", client: core.Client()}
-	old := maxCoreBytes
-	maxCoreBytes = 1
-	defer func() { maxCoreBytes = old }()
 
 	rec := httptest.NewRecorder()
 	s.handleInterestProfileVersions(rec, httptest.NewRequest("GET", "/api/interest-profile/versions", nil))
@@ -981,9 +989,7 @@ func TestProposeInterestProfilePropagatesCoreError(t *testing.T) {
 
 func TestProposeInterestProfileRejectsOversizedRequestBody(t *testing.T) {
 	s := &server{coreURL: "http://127.0.0.1:1", token: "secret", client: http.DefaultClient}
-	old := maxCoreBytes
-	maxCoreBytes = 1
-	defer func() { maxCoreBytes = old }()
+	shrinkMaxBytes(t, 1)
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest("POST", "/api/interest-profile", strings.NewReader("{}")) // 2 bytes > maxCoreBytes=1
@@ -995,14 +1001,9 @@ func TestProposeInterestProfileRejectsOversizedRequestBody(t *testing.T) {
 }
 
 func TestProposeInterestProfileRejectsOversizedCoreResponse(t *testing.T) {
-	core := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(strings.Repeat("x", 100)))
-	}))
-	t.Cleanup(core.Close)
+	core := fatCoreServer(t)
+	shrinkMaxBytes(t, 2)
 	s := &server{coreURL: core.URL, token: "secret", client: core.Client()}
-	old := maxCoreBytes
-	maxCoreBytes = 2
-	defer func() { maxCoreBytes = old }()
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest("POST", "/api/interest-profile", strings.NewReader("{}")) // 2 bytes = ok
@@ -1072,9 +1073,7 @@ func TestApproveInterestProfilePropagatesCoreError(t *testing.T) {
 
 func TestApproveInterestProfileRejectsOversizedRequestBody(t *testing.T) {
 	s := &server{coreURL: "http://127.0.0.1:1", token: "secret", client: http.DefaultClient}
-	old := maxCoreBytes
-	maxCoreBytes = 1
-	defer func() { maxCoreBytes = old }()
+	shrinkMaxBytes(t, 1)
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest("POST", "/api/interest-profile/approve", strings.NewReader("{}"))
@@ -1086,14 +1085,9 @@ func TestApproveInterestProfileRejectsOversizedRequestBody(t *testing.T) {
 }
 
 func TestApproveInterestProfileRejectsOversizedCoreResponse(t *testing.T) {
-	core := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(strings.Repeat("x", 100)))
-	}))
-	t.Cleanup(core.Close)
+	core := fatCoreServer(t)
+	shrinkMaxBytes(t, 2)
 	s := &server{coreURL: core.URL, token: "secret", client: core.Client()}
-	old := maxCoreBytes
-	maxCoreBytes = 2
-	defer func() { maxCoreBytes = old }()
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest("POST", "/api/interest-profile/approve", strings.NewReader("{}"))
@@ -1150,10 +1144,8 @@ func TestGateRulesReturns502WhenCoreUnreachable(t *testing.T) {
 
 func TestGateRulesRejectsOversizedCoreResponse(t *testing.T) {
 	core := fakeB1Core(t, "secret")
+	shrinkMaxBytes(t, 1)
 	s := &server{coreURL: core.URL, token: "secret", client: core.Client()}
-	old := maxCoreBytes
-	maxCoreBytes = 1
-	defer func() { maxCoreBytes = old }()
 
 	rec := httptest.NewRecorder()
 	s.handleGateRules(rec, httptest.NewRequest("GET", "/api/gate-rules", nil))
@@ -1222,9 +1214,7 @@ func TestUpsertGateRulePropagatesCoreError(t *testing.T) {
 
 func TestUpsertGateRuleRejectsOversizedRequestBody(t *testing.T) {
 	s := &server{coreURL: "http://127.0.0.1:1", token: "secret", client: http.DefaultClient}
-	old := maxCoreBytes
-	maxCoreBytes = 1
-	defer func() { maxCoreBytes = old }()
+	shrinkMaxBytes(t, 1)
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest("PUT", "/api/gate-rules", strings.NewReader("{}"))
@@ -1236,14 +1226,9 @@ func TestUpsertGateRuleRejectsOversizedRequestBody(t *testing.T) {
 }
 
 func TestUpsertGateRuleRejectsOversizedCoreResponse(t *testing.T) {
-	core := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(strings.Repeat("x", 100)))
-	}))
-	t.Cleanup(core.Close)
+	core := fatCoreServer(t)
+	shrinkMaxBytes(t, 2)
 	s := &server{coreURL: core.URL, token: "secret", client: core.Client()}
-	old := maxCoreBytes
-	maxCoreBytes = 2
-	defer func() { maxCoreBytes = old }()
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest("PUT", "/api/gate-rules", strings.NewReader("{}"))

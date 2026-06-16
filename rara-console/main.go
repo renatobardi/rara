@@ -381,7 +381,7 @@ func (s *server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 }
 
 func badGateway(w http.ResponseWriter, err error) {
-	log.Printf("console: core surface unreachable: %v", err)
+	log.Printf("console: core surface unreachable: %v", err) // NOSONAR — err is from internal HTTP client, not user-supplied data
 	writeJSON(w, http.StatusBadGateway, map[string]string{"error": "core surface unreachable"})
 }
 
