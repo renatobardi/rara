@@ -89,6 +89,15 @@ type Reconciler struct {
 	// within reactivateBackoff of the recorded success. A FAILED activation never writes here, so
 	// the next pass retries it (no execution was started -> no swarm, just a legitimate retry).
 	lastActivatedAt map[string]time.Time
+
+	// Auto-ingest: sources are injected at wiring time; ingestEveryN controls cadence.
+	// 0 = disabled (single-pass mode and tests that don't set sources).
+	// N > 0 = ingest every Nth pass. Set by runReconcile when --loop is active.
+	yt           SpineSource
+	pod          PodcastSource
+	email        EmailSource
+	ingestEveryN int
+	passCount    int
 }
 
 // NewReconciler wires a reconciler. A nil activator falls back to a logging no-op. now,
@@ -106,11 +115,61 @@ func NewReconciler(db Database, activator Activator) *Reconciler {
 	}
 }
 
+// ingestOnce discovers new items from each configured source lane. Best-effort: a lane whose
+// flow is not seeded is skipped silently (no log); a DB error on GetFlow or an ingest source
+// error is logged but does not block the remaining lanes. Called from ReconcileOnce per the
+// ingestEveryN cadence.
+//
+// The pre-check GetFlow is intentional: IngestYouTube/Podcast/Email also call GetFlow
+// internally, producing two reads per lane per pass (1 round-trip wasted). The alternative
+// — calling Ingest* unconditionally and treating the "not seeded" error as a skip — would
+// log a spurious error instead of skipping silently, violating the spec. Two reads at a 30s
+// cadence on a low-traffic control plane are acceptable.
+//
+// LinkedIn is absent here: LinkedIn posts land in the spine at submission time via the
+// surface (SubmitLinkedInPost). There is no external collector to poll, so auto-ingest
+// does not apply to the linkedin lane.
+func (r *Reconciler) ingestOnce(ctx context.Context) {
+	if r.yt != nil {
+		if _, found, err := r.db.GetFlow(ctx, youtubeFlowName); err != nil {
+			log.Printf("auto-ingest youtube: %v", err)
+		} else if found {
+			if _, err := IngestYouTube(ctx, r.db, r.yt); err != nil {
+				log.Printf("auto-ingest youtube: %v", err)
+			}
+		}
+	}
+	if r.pod != nil {
+		if _, found, err := r.db.GetFlow(ctx, podcastFlowName); err != nil {
+			log.Printf("auto-ingest podcast: %v", err)
+		} else if found {
+			if _, err := IngestPodcast(ctx, r.db, r.pod); err != nil {
+				log.Printf("auto-ingest podcast: %v", err)
+			}
+		}
+	}
+	if r.email != nil {
+		if _, found, err := r.db.GetFlow(ctx, emailFlowName); err != nil {
+			log.Printf("auto-ingest email: %v", err)
+		} else if found {
+			if _, err := IngestEmail(ctx, r.db, r.email); err != nil {
+				log.Printf("auto-ingest email: %v", err)
+			}
+		}
+	}
+}
+
 // ReconcileOnce runs a single pass over every active item. The always-on loop in main()
 // calls this on a ticker; tests call it directly. A per-item error is logged and the pass
 // continues — one stuck item must not stall the others (level-triggered: the next pass
 // retries it).
 func (r *Reconciler) ReconcileOnce(ctx context.Context) error {
+	if r.ingestEveryN > 0 {
+		r.passCount++
+		if r.passCount%r.ingestEveryN == 0 {
+			r.ingestOnce(ctx)
+		}
+	}
 	r.activatedThisPass = make(map[string]bool) // coalesce wakes within this pass (see activate)
 	r.pendingThisPass = make(map[string]bool)   // providers with pending work this pass (see reactivateStalled)
 	items, err := r.db.ListActiveItems(ctx)

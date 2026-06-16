@@ -904,7 +904,7 @@ func main() {
 		runIngest(ctx, db, conn, os.Args[2:])
 
 	case "reconcile":
-		runReconcile(ctx, db, dbURL, os.Args[2:])
+		runReconcile(ctx, db, conn, dbURL, os.Args[2:])
 
 	case "surface":
 		runSurface(ctx, dbURL, os.Args[2:])
@@ -963,7 +963,7 @@ func runIngest(ctx context.Context, db Database, conn *pgx.Conn, argv []string) 
 // VPC deployment: it must stay awake while the Mac sleeps and Cloud Run scales to zero. When
 // looping, it also mounts the control surface in the SAME process (alongside the ticker) if
 // SURFACE_ADDR is set — the always-on HTTP/MCP core the architecture puts next to the reconciler.
-func runReconcile(ctx context.Context, db Database, dbURL string, argv []string) {
+func runReconcile(ctx context.Context, db Database, conn *pgx.Conn, dbURL string, argv []string) {
 	fs := flag.NewFlagSet("reconcile", flag.ExitOnError)
 	loop := fs.Bool("loop", false, "run continuously on RECONCILE_INTERVAL_SECONDS (default 30s)")
 	_ = fs.Parse(argv)
@@ -995,6 +995,19 @@ func runReconcile(ctx context.Context, db Database, dbURL string, argv []string)
 	if v := os.Getenv("REACTIVATE_BACKOFF_SECONDS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			r.reactivateBackoff = time.Duration(n) * time.Second
+		}
+	}
+	if *loop {
+		// Auto-ingest: wire real pgx sources so the loop discovers new items without a manual
+		// core-job ingest. Cadence defaults to every pass; INGEST_EVERY_N_PASSES overrides.
+		r.yt = &pgxSpineSource{conn: conn}
+		r.pod = &pgxPodcastSource{conn: conn}
+		r.email = &pgxEmailSource{conn: conn}
+		r.ingestEveryN = 1
+		if v := os.Getenv("INGEST_EVERY_N_PASSES"); v != "" {
+			if n, err := strconv.Atoi(v); err == nil && n > 0 {
+				r.ingestEveryN = n
+			}
 		}
 	}
 	if !*loop {
