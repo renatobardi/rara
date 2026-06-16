@@ -818,6 +818,36 @@ func TestInterestProfileReturns502WhenCoreUnreachable(t *testing.T) {
 	}
 }
 
+func TestInterestProfileRejectsOversizedCoreResponse(t *testing.T) {
+	core := fakeB1Core(t, "secret")
+	s := &server{coreURL: core.URL, token: "secret", client: core.Client()}
+	old := maxCoreBytes
+	maxCoreBytes = 1
+	defer func() { maxCoreBytes = old }()
+
+	rec := httptest.NewRecorder()
+	s.handleInterestProfile(rec, httptest.NewRequest("GET", "/api/interest-profile", nil))
+
+	if rec.Code != http.StatusBadGateway {
+		t.Errorf("status = %d, want 502 (oversized core response must not pass through)", rec.Code)
+	}
+}
+
+func TestInterestProfileReturns502WhenCoreReturns5xx(t *testing.T) {
+	core := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+	}))
+	t.Cleanup(core.Close)
+	s := &server{coreURL: core.URL, token: "secret", client: core.Client()}
+
+	rec := httptest.NewRecorder()
+	s.handleInterestProfile(rec, httptest.NewRequest("GET", "/api/interest-profile", nil))
+
+	if rec.Code != http.StatusBadGateway {
+		t.Errorf("status = %d, want 502 (5xx from core must not pass through as 200)", rec.Code)
+	}
+}
+
 // --- interest-profile/versions ---
 
 func TestInterestProfileVersionsProxiesAllWithBearer(t *testing.T) {
@@ -859,6 +889,36 @@ func TestInterestProfileVersionsReturns502WhenCoreUnreachable(t *testing.T) {
 
 	if rec.Code != http.StatusBadGateway {
 		t.Errorf("status = %d, want 502", rec.Code)
+	}
+}
+
+func TestInterestProfileVersionsReturns502WhenCoreReturnsNon2xx(t *testing.T) {
+	core := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+	}))
+	t.Cleanup(core.Close)
+	s := &server{coreURL: core.URL, token: "secret", client: core.Client()}
+
+	rec := httptest.NewRecorder()
+	s.handleInterestProfileVersions(rec, httptest.NewRequest("GET", "/api/interest-profile/versions", nil))
+
+	if rec.Code != http.StatusBadGateway {
+		t.Errorf("status = %d, want 502 (non-2xx from core must become 502)", rec.Code)
+	}
+}
+
+func TestInterestProfileVersionsRejectsOversizedCoreResponse(t *testing.T) {
+	core := fakeB1Core(t, "secret")
+	s := &server{coreURL: core.URL, token: "secret", client: core.Client()}
+	old := maxCoreBytes
+	maxCoreBytes = 1
+	defer func() { maxCoreBytes = old }()
+
+	rec := httptest.NewRecorder()
+	s.handleInterestProfileVersions(rec, httptest.NewRequest("GET", "/api/interest-profile/versions", nil))
+
+	if rec.Code != http.StatusBadGateway {
+		t.Errorf("status = %d, want 502 (oversized core response must not pass through)", rec.Code)
 	}
 }
 
@@ -919,6 +979,40 @@ func TestProposeInterestProfilePropagatesCoreError(t *testing.T) {
 	}
 }
 
+func TestProposeInterestProfileRejectsOversizedRequestBody(t *testing.T) {
+	s := &server{coreURL: "http://127.0.0.1:1", token: "secret", client: http.DefaultClient}
+	old := maxCoreBytes
+	maxCoreBytes = 1
+	defer func() { maxCoreBytes = old }()
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/api/interest-profile", strings.NewReader("{}")) // 2 bytes > maxCoreBytes=1
+	s.handleProposeInterestProfile(rec, req)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Errorf("status = %d, want 502 (oversized request body must be rejected before reaching core)", rec.Code)
+	}
+}
+
+func TestProposeInterestProfileRejectsOversizedCoreResponse(t *testing.T) {
+	core := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(strings.Repeat("x", 100)))
+	}))
+	t.Cleanup(core.Close)
+	s := &server{coreURL: core.URL, token: "secret", client: core.Client()}
+	old := maxCoreBytes
+	maxCoreBytes = 2
+	defer func() { maxCoreBytes = old }()
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/api/interest-profile", strings.NewReader("{}")) // 2 bytes = ok
+	s.handleProposeInterestProfile(rec, req)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Errorf("status = %d, want 502 (oversized core response must not pass through)", rec.Code)
+	}
+}
+
 // --- POST /api/interest-profile/approve ---
 
 func TestApproveInterestProfileForwardsBodyAndBearer(t *testing.T) {
@@ -976,6 +1070,40 @@ func TestApproveInterestProfilePropagatesCoreError(t *testing.T) {
 	}
 }
 
+func TestApproveInterestProfileRejectsOversizedRequestBody(t *testing.T) {
+	s := &server{coreURL: "http://127.0.0.1:1", token: "secret", client: http.DefaultClient}
+	old := maxCoreBytes
+	maxCoreBytes = 1
+	defer func() { maxCoreBytes = old }()
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/api/interest-profile/approve", strings.NewReader("{}"))
+	s.handleApproveInterestProfile(rec, req)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Errorf("status = %d, want 502 (oversized request body must be rejected before reaching core)", rec.Code)
+	}
+}
+
+func TestApproveInterestProfileRejectsOversizedCoreResponse(t *testing.T) {
+	core := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(strings.Repeat("x", 100)))
+	}))
+	t.Cleanup(core.Close)
+	s := &server{coreURL: core.URL, token: "secret", client: core.Client()}
+	old := maxCoreBytes
+	maxCoreBytes = 2
+	defer func() { maxCoreBytes = old }()
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/api/interest-profile/approve", strings.NewReader("{}"))
+	s.handleApproveInterestProfile(rec, req)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Errorf("status = %d, want 502 (oversized core response must not pass through)", rec.Code)
+	}
+}
+
 // --- GET /api/gate-rules ---
 
 func TestGateRulesProxiesWithBearer(t *testing.T) {
@@ -1017,6 +1145,21 @@ func TestGateRulesReturns502WhenCoreUnreachable(t *testing.T) {
 
 	if rec.Code != http.StatusBadGateway {
 		t.Errorf("status = %d, want 502", rec.Code)
+	}
+}
+
+func TestGateRulesRejectsOversizedCoreResponse(t *testing.T) {
+	core := fakeB1Core(t, "secret")
+	s := &server{coreURL: core.URL, token: "secret", client: core.Client()}
+	old := maxCoreBytes
+	maxCoreBytes = 1
+	defer func() { maxCoreBytes = old }()
+
+	rec := httptest.NewRecorder()
+	s.handleGateRules(rec, httptest.NewRequest("GET", "/api/gate-rules", nil))
+
+	if rec.Code != http.StatusBadGateway {
+		t.Errorf("status = %d, want 502 (oversized core response must not pass through)", rec.Code)
 	}
 }
 
@@ -1074,5 +1217,39 @@ func TestUpsertGateRulePropagatesCoreError(t *testing.T) {
 
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400 (core error must propagate, not become 502)", rec.Code)
+	}
+}
+
+func TestUpsertGateRuleRejectsOversizedRequestBody(t *testing.T) {
+	s := &server{coreURL: "http://127.0.0.1:1", token: "secret", client: http.DefaultClient}
+	old := maxCoreBytes
+	maxCoreBytes = 1
+	defer func() { maxCoreBytes = old }()
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("PUT", "/api/gate-rules", strings.NewReader("{}"))
+	s.handleUpsertGateRule(rec, req)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Errorf("status = %d, want 502 (oversized request body must be rejected before reaching core)", rec.Code)
+	}
+}
+
+func TestUpsertGateRuleRejectsOversizedCoreResponse(t *testing.T) {
+	core := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(strings.Repeat("x", 100)))
+	}))
+	t.Cleanup(core.Close)
+	s := &server{coreURL: core.URL, token: "secret", client: core.Client()}
+	old := maxCoreBytes
+	maxCoreBytes = 2
+	defer func() { maxCoreBytes = old }()
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("PUT", "/api/gate-rules", strings.NewReader("{}"))
+	s.handleUpsertGateRule(rec, req)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Errorf("status = %d, want 502 (oversized core response must not pass through)", rec.Code)
 	}
 }

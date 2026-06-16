@@ -11,6 +11,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"embed"
 	"encoding/json"
@@ -181,9 +182,17 @@ func isNumericID(s string) bool {
 // doCore sends an authenticated request with a body (POST, PUT, …) against the surface. It returns
 // the HTTP status and raw body from core — 4xx responses propagate to the caller so the SPA can
 // surface core validation errors. Only transport failures are returned as errors (caller → 502).
+// The request body is read into a buffer first so an oversized payload is rejected before it
+// reaches core, rather than silently truncated (which would cause a confusing 4xx from core).
 func (s *server) doCore(ctx context.Context, method, path string, reqBody io.Reader) (status int, body []byte, err error) {
-	req, err := http.NewRequestWithContext(ctx, method, s.coreURL+path,
-		io.LimitReader(reqBody, maxCoreBytes+1))
+	buf, err := io.ReadAll(io.LimitReader(reqBody, maxCoreBytes+1))
+	if err != nil {
+		return 0, nil, err
+	}
+	if int64(len(buf)) > maxCoreBytes {
+		return 0, nil, fmt.Errorf("request body exceeds %d-byte limit", maxCoreBytes)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, s.coreURL+path, bytes.NewReader(buf))
 	if err != nil {
 		return 0, nil, err
 	}

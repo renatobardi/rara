@@ -342,24 +342,30 @@
 					</div>
 				</div>
 				<div class="grid grid-cols-2 gap-3">
-					{#each [
-						{ id: 'prop-topics', label: t.curadoria.profileTopicsLabel, bind: proposeTopics, set: (v: string) => (proposeTopics = v) },
-						{ id: 'prop-authors', label: t.curadoria.profileAuthorsLabel, bind: proposeAuthors, set: (v: string) => (proposeAuthors = v) },
-						{ id: 'prop-anti', label: t.curadoria.profileAntiTopicsLabel, bind: proposeAntiTopics, set: (v: string) => (proposeAntiTopics = v) },
-						{ id: 'prop-weights', label: t.curadoria.profileWeightsLabel, bind: proposeWeights, set: (v: string) => (proposeWeights = v) }
-					] as field}
-						<div>
-							<label class="mb-1 block text-[11px] text-muted" for={field.id}>{field.label}</label>
-							<textarea
-								id={field.id}
-								rows="2"
-								placeholder={t.curadoria.profileJsonHint}
-								value={field.bind}
-								oninput={(e) => field.set((e.target as HTMLTextAreaElement).value)}
-								class="w-full rounded-token border border-border bg-surface-2 px-2 py-1 font-mono text-[12px] focus:outline-none focus:ring-1 focus:ring-primary/50"
-							></textarea>
-						</div>
-					{/each}
+					<div>
+						<label class="mb-1 block text-[11px] text-muted" for="prop-topics">{t.curadoria.profileTopicsLabel}</label>
+						<textarea id="prop-topics" rows="2" placeholder={t.curadoria.profileJsonHint} bind:value={proposeTopics}
+							class="w-full rounded-token border border-border bg-surface-2 px-2 py-1 font-mono text-[12px] focus:outline-none focus:ring-1 focus:ring-primary/50"
+						></textarea>
+					</div>
+					<div>
+						<label class="mb-1 block text-[11px] text-muted" for="prop-authors">{t.curadoria.profileAuthorsLabel}</label>
+						<textarea id="prop-authors" rows="2" placeholder={t.curadoria.profileJsonHint} bind:value={proposeAuthors}
+							class="w-full rounded-token border border-border bg-surface-2 px-2 py-1 font-mono text-[12px] focus:outline-none focus:ring-1 focus:ring-primary/50"
+						></textarea>
+					</div>
+					<div>
+						<label class="mb-1 block text-[11px] text-muted" for="prop-anti">{t.curadoria.profileAntiTopicsLabel}</label>
+						<textarea id="prop-anti" rows="2" placeholder={t.curadoria.profileJsonHint} bind:value={proposeAntiTopics}
+							class="w-full rounded-token border border-border bg-surface-2 px-2 py-1 font-mono text-[12px] focus:outline-none focus:ring-1 focus:ring-primary/50"
+						></textarea>
+					</div>
+					<div>
+						<label class="mb-1 block text-[11px] text-muted" for="prop-weights">{t.curadoria.profileWeightsLabel}</label>
+						<textarea id="prop-weights" rows="2" placeholder={t.curadoria.profileJsonHint} bind:value={proposeWeights}
+							class="w-full rounded-token border border-border bg-surface-2 px-2 py-1 font-mono text-[12px] focus:outline-none focus:ring-1 focus:ring-primary/50"
+						></textarea>
+					</div>
 				</div>
 				{#if proposeError}
 					<p class="text-[12px] text-red">{proposeError}</p>
@@ -412,7 +418,8 @@
 								<td class="px-4 py-2">
 									<button
 										title={t.curadoria.gateToggle}
-										class="h-5 w-9 cursor-pointer rounded-full border-0 transition-colors {rule.enabled ? 'bg-green' : 'bg-border'}"
+										disabled={savingRule}
+										class="h-5 w-9 cursor-pointer rounded-full border-0 transition-colors disabled:cursor-default disabled:opacity-50 {rule.enabled ? 'bg-green' : 'bg-border'}"
 										onclick={() => toggleRule(rule)}
 									>
 										<span class="sr-only">{t.curadoria.gateToggle}</span>
