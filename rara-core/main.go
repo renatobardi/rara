@@ -554,6 +554,13 @@ type Database interface {
 	// full-record upsert (it must not clobber the provider's config columns).
 	TouchProviderHeartbeat(ctx context.Context, name string) error
 
+	// --- Requeue (operational) -----------------------------------------------
+	// RequeueSteps resets item_steps matching (capability, fromStatus) back to pending
+	// (attempt=0, heartbeat_at=NULL, assigned_provider=NULL, error=NULL) and sets the
+	// parent item's status to itemStatus — all in one atomic unit. limit=0 means no limit;
+	// steps are ordered by id (FIFO). Returns the count of steps reset.
+	RequeueSteps(ctx context.Context, capability, fromStatus string, limit int, itemStatus string) (int, error)
+
 	// --- Claim (Phase 1) -----------------------------------------------------
 	// ClaimPendingStep is the worker's pull: it atomically claims the frontmost pending step
 	// of a capability ASSIGNED TO the given provider with
@@ -843,6 +850,12 @@ Commands:
   quarantine list            List items deferred to quarantine (the cold-start review sample)
   quarantine review --item <id> --signal <up|down>
                              Review a quarantined item: up rescues it, down confirms the drop
+  requeue --capability <cap> [--status failed] [--limit N] [--item-status <s>]
+                             Reset failed steps back to pending (and parent item status).
+                             --capability: required (gate_barato|transcrever|gate_rico|destilar)
+                             --status: step status to match (default: failed)
+                             --limit N: requeue at most N steps (default: no limit)
+                             --item-status: override item status (default: derived from capability)
   status                     Phase 0 health check: confirm the control tables are reachable
 `
 
@@ -901,6 +914,9 @@ func main() {
 
 	case "quarantine":
 		runQuarantine(ctx, db, os.Args[2:])
+
+	case "requeue":
+		runRequeue(ctx, db, os.Args[2:])
 
 	case "status":
 		var capCount int
