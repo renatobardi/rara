@@ -117,16 +117,16 @@ func TestCoreRecentDecisionsCapsAt200(t *testing.T) {
 	core, db, _ := newTestCore(t)
 	fid := seedFlow(t, db)
 	id, _ := db.UpsertItem(ctx, Item{Lane: "youtube", SourceRef: "x", FlowID: fid, FlowVersion: 1, Status: itemToText})
-	for i := 0; i < 10; i++ {
+	for i := 0; i < 210; i++ {
 		_ = db.InsertGateDecision(ctx, GateDecision{ItemID: id, Gate: gateBarato, Decision: decisionKeep, DecidedBy: "rules"})
 	}
 
-	decs, err := core.RecentDecisions(ctx, 999) // over cap → returns all 10
+	decs, err := core.RecentDecisions(ctx, 999) // over cap → clamped to 200
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(decs) != 10 {
-		t.Errorf("want 10 (only 10 exist), got %d", len(decs))
+	if len(decs) != 200 {
+		t.Errorf("want 200 (cap), got %d", len(decs))
 	}
 }
 
