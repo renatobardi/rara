@@ -583,6 +583,52 @@ func (m *MockDatabase) GetDistillation(_ context.Context, id int) (Distillation,
 	return Distillation{}, false, nil
 }
 
+func (m *MockDatabase) RequeueSteps(_ context.Context, capability, fromStatus string, limit int, itemStatus string) (int, error) {
+	if !isValidStepStatus(fromStatus) {
+		return 0, errCheckViolation
+	}
+	if !isValidItemStatus(itemStatus) {
+		return 0, errCheckViolation
+	}
+	// Collect matching steps in insertion order (mirrors ORDER BY id).
+	type candidate struct {
+		key   itemStepKey
+		order int
+	}
+	var cands []candidate
+	for k, s := range m.itemSteps {
+		if s.Capability == capability && s.Status == fromStatus {
+			cands = append(cands, candidate{k, m.stepOrder[k]})
+		}
+	}
+	sort.Slice(cands, func(i, j int) bool { return cands[i].order < cands[j].order })
+	if limit > 0 && len(cands) > limit {
+		cands = cands[:limit]
+	}
+	if len(cands) == 0 {
+		return 0, nil
+	}
+	// Reset steps and collect affected item IDs (mirrors the SQL atomic unit).
+	itemIDs := make(map[int]bool)
+	for _, c := range cands {
+		s := m.itemSteps[c.key]
+		s.Status = stepPending
+		s.Attempt = 0
+		s.HeartbeatAt = nil
+		s.AssignedProvider = ""
+		s.Error = ""
+		m.itemSteps[c.key] = s
+		itemIDs[c.key.itemID] = true
+	}
+	for id := range itemIDs {
+		it := m.itemByID[id]
+		it.Status = itemStatus
+		m.itemByID[id] = it
+		m.items[itemKey(it.Lane, it.SourceRef)] = it
+	}
+	return len(cands), nil
+}
+
 // compile-time guarantee the mock satisfies the seam the pgx impl does.
 var _ Database = (*MockDatabase)(nil)
 
