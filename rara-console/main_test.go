@@ -1238,3 +1238,325 @@ func TestUpsertGateRuleRejectsOversizedCoreResponse(t *testing.T) {
 		t.Errorf("status = %d, want 502 (oversized core response must not pass through)", rec.Code)
 	}
 }
+
+// --- C4: providers, routing-policies, decisions feed, item decisions ---
+
+func fakeC4Core(t *testing.T, token string) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	requireBearer := func(w http.ResponseWriter, r *http.Request) bool {
+		if r.Header.Get("Authorization") != "Bearer "+token {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return false
+		}
+		return true
+	}
+	mux.HandleFunc("GET /v1/providers", func(w http.ResponseWriter, r *http.Request) {
+		if !requireBearer(w, r) {
+			return
+		}
+		_, _ = w.Write([]byte(`[{"name":"distill-local","capability":"destilar","runtime":"vpc","activation":"resident","enabled":true}]`))
+	})
+	mux.HandleFunc("PUT /v1/providers", func(w http.ResponseWriter, r *http.Request) {
+		if !requireBearer(w, r) {
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	})
+	mux.HandleFunc("GET /v1/routing-policies", func(w http.ResponseWriter, r *http.Request) {
+		if !requireBearer(w, r) {
+			return
+		}
+		_, _ = w.Write([]byte(`[{"scope":"global","cost_weight":0.5,"quality_weight":0.5}]`))
+	})
+	mux.HandleFunc("PUT /v1/routing-policies", func(w http.ResponseWriter, r *http.Request) {
+		if !requireBearer(w, r) {
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	})
+	mux.HandleFunc("GET /v1/decisions", func(w http.ResponseWriter, r *http.Request) {
+		if !requireBearer(w, r) {
+			return
+		}
+		_, _ = w.Write([]byte(`[{"id":1,"item_id":7,"gate":"gate_barato","decision":"keep","when":"2026-01-01T00:00:00Z"}]`))
+	})
+	mux.HandleFunc("GET /v1/items/{id}/decisions", func(w http.ResponseWriter, r *http.Request) {
+		if !requireBearer(w, r) {
+			return
+		}
+		_, _ = w.Write([]byte(`[{"item_id":7,"gate":"gate_barato","decision":"keep","decided_by":"rules"}]`))
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func fakeC4CoreReturns4xx(t *testing.T) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("PUT /v1/providers", func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, `{"error":"invalid provider"}`, http.StatusBadRequest)
+	})
+	mux.HandleFunc("PUT /v1/routing-policies", func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, `{"error":"invalid policy"}`, http.StatusBadRequest)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func TestProvidersProxiesWithBearer(t *testing.T) {
+	core := fakeC4Core(t, "secret")
+	s := &server{coreURL: core.URL, token: "secret", client: core.Client()}
+
+	rec := httptest.NewRecorder()
+	s.handleProviders(rec, httptest.NewRequest("GET", "/api/providers", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d, body=%s", rec.Code, rec.Body)
+	}
+	var got []map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0]["name"] != "distill-local" {
+		t.Errorf("providers = %+v, want one distill-local", got)
+	}
+}
+
+func TestProvidersNeverLeaksToken(t *testing.T) {
+	core := fakeC4Core(t, "supersecret")
+	s := &server{coreURL: core.URL, token: "supersecret", client: core.Client()}
+
+	rec := httptest.NewRecorder()
+	s.handleProviders(rec, httptest.NewRequest("GET", "/api/providers", nil))
+
+	if body := rec.Body.String(); contains(body, "supersecret") {
+		t.Errorf("response leaked the surface token: %s", body)
+	}
+}
+
+func TestProvidersReturns502WhenCoreUnreachable(t *testing.T) {
+	s := &server{coreURL: "http://127.0.0.1:1", token: "secret", client: http.DefaultClient}
+
+	rec := httptest.NewRecorder()
+	s.handleProviders(rec, httptest.NewRequest("GET", "/api/providers", nil))
+
+	if rec.Code != http.StatusBadGateway {
+		t.Errorf("status=%d, want 502", rec.Code)
+	}
+}
+
+func TestUpsertProviderProxiesPut(t *testing.T) {
+	core := fakeC4Core(t, "secret")
+	s := &server{coreURL: core.URL, token: "secret", client: core.Client()}
+
+	body := strings.NewReader(`{"name":"test","capability":"destilar","runtime":"vpc","activation":"resident","cost":1,"quality":0.9,"latency_ms":200,"enabled":true}`)
+	rec := httptest.NewRecorder()
+	s.handleUpsertProvider(rec, httptest.NewRequest("PUT", "/api/providers", body))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d, body=%s", rec.Code, rec.Body)
+	}
+}
+
+func TestUpsertProviderPropagates4xx(t *testing.T) {
+	core := fakeC4CoreReturns4xx(t)
+	s := &server{coreURL: core.URL, token: "secret", client: core.Client()}
+
+	rec := httptest.NewRecorder()
+	s.handleUpsertProvider(rec, httptest.NewRequest("PUT", "/api/providers", strings.NewReader(`{"name":"bad"}`)))
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status=%d, want 400", rec.Code)
+	}
+}
+
+func TestRoutingPoliciesProxiesWithBearer(t *testing.T) {
+	core := fakeC4Core(t, "secret")
+	s := &server{coreURL: core.URL, token: "secret", client: core.Client()}
+
+	rec := httptest.NewRecorder()
+	s.handleRoutingPolicies(rec, httptest.NewRequest("GET", "/api/routing-policies", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d, body=%s", rec.Code, rec.Body)
+	}
+	var got []map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0]["scope"] != "global" {
+		t.Errorf("policies = %+v, want one global policy", got)
+	}
+}
+
+func TestRoutingPoliciesNeverLeaksToken(t *testing.T) {
+	core := fakeC4Core(t, "supersecret")
+	s := &server{coreURL: core.URL, token: "supersecret", client: core.Client()}
+
+	rec := httptest.NewRecorder()
+	s.handleRoutingPolicies(rec, httptest.NewRequest("GET", "/api/routing-policies", nil))
+
+	if body := rec.Body.String(); contains(body, "supersecret") {
+		t.Errorf("response leaked token: %s", body)
+	}
+}
+
+func TestRoutingPoliciesReturns502WhenCoreUnreachable(t *testing.T) {
+	s := &server{coreURL: "http://127.0.0.1:1", token: "secret", client: http.DefaultClient}
+
+	rec := httptest.NewRecorder()
+	s.handleRoutingPolicies(rec, httptest.NewRequest("GET", "/api/routing-policies", nil))
+
+	if rec.Code != http.StatusBadGateway {
+		t.Errorf("status=%d, want 502", rec.Code)
+	}
+}
+
+func TestUpsertRoutingPolicyProxiesPut(t *testing.T) {
+	core := fakeC4Core(t, "secret")
+	s := &server{coreURL: core.URL, token: "secret", client: core.Client()}
+
+	body := strings.NewReader(`{"scope":"global","cost_weight":0.5,"quality_weight":0.5}`)
+	rec := httptest.NewRecorder()
+	s.handleUpsertRoutingPolicy(rec, httptest.NewRequest("PUT", "/api/routing-policies", body))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d, body=%s", rec.Code, rec.Body)
+	}
+}
+
+func TestUpsertRoutingPolicyPropagates4xx(t *testing.T) {
+	core := fakeC4CoreReturns4xx(t)
+	s := &server{coreURL: core.URL, token: "secret", client: core.Client()}
+
+	rec := httptest.NewRecorder()
+	s.handleUpsertRoutingPolicy(rec, httptest.NewRequest("PUT", "/api/routing-policies", strings.NewReader(`{"scope":"bad"}`)))
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status=%d, want 400", rec.Code)
+	}
+}
+
+func TestDecisionsFeedProxiesWithBearer(t *testing.T) {
+	core := fakeC4Core(t, "secret")
+	s := &server{coreURL: core.URL, token: "secret", client: core.Client()}
+
+	rec := httptest.NewRecorder()
+	s.handleDecisionsFeed(rec, httptest.NewRequest("GET", "/api/decisions", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d, body=%s", rec.Code, rec.Body)
+	}
+	var got []map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0]["gate"] != "gate_barato" {
+		t.Errorf("decisions = %+v, want one gate_barato", got)
+	}
+}
+
+func TestDecisionsFeedForwardsLimitParam(t *testing.T) {
+	var capturedLimit string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedLimit = r.URL.Query().Get("limit")
+		_, _ = w.Write([]byte(`[]`))
+	}))
+	defer srv.Close()
+	s := &server{coreURL: srv.URL, token: "t", client: srv.Client()}
+
+	s.handleDecisionsFeed(httptest.NewRecorder(), httptest.NewRequest("GET", "/api/decisions?limit=10", nil))
+
+	if capturedLimit != "10" {
+		t.Errorf("limit forwarded = %q, want 10", capturedLimit)
+	}
+}
+
+func TestDecisionsFeedNeverLeaksToken(t *testing.T) {
+	core := fakeC4Core(t, "supersecret")
+	s := &server{coreURL: core.URL, token: "supersecret", client: core.Client()}
+
+	rec := httptest.NewRecorder()
+	s.handleDecisionsFeed(rec, httptest.NewRequest("GET", "/api/decisions", nil))
+
+	if body := rec.Body.String(); contains(body, "supersecret") {
+		t.Errorf("response leaked token: %s", body)
+	}
+}
+
+func TestDecisionsFeedReturns502WhenCoreUnreachable(t *testing.T) {
+	s := &server{coreURL: "http://127.0.0.1:1", token: "secret", client: http.DefaultClient}
+
+	rec := httptest.NewRecorder()
+	s.handleDecisionsFeed(rec, httptest.NewRequest("GET", "/api/decisions", nil))
+
+	if rec.Code != http.StatusBadGateway {
+		t.Errorf("status=%d, want 502", rec.Code)
+	}
+}
+
+func TestItemDecisionsProxiesWithBearer(t *testing.T) {
+	core := fakeC4Core(t, "secret")
+	s := &server{coreURL: core.URL, token: "secret", client: core.Client()}
+
+	req := httptest.NewRequest("GET", "/api/items/7/decisions", nil)
+	req.SetPathValue("id", "7")
+	rec := httptest.NewRecorder()
+	s.handleItemDecisions(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d, body=%s", rec.Code, rec.Body)
+	}
+	var got []map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Errorf("item decisions = %+v, want 1", got)
+	}
+}
+
+func TestItemDecisionsNeverLeaksToken(t *testing.T) {
+	core := fakeC4Core(t, "supersecret")
+	s := &server{coreURL: core.URL, token: "supersecret", client: core.Client()}
+
+	req := httptest.NewRequest("GET", "/api/items/7/decisions", nil)
+	req.SetPathValue("id", "7")
+	rec := httptest.NewRecorder()
+	s.handleItemDecisions(rec, req)
+
+	if body := rec.Body.String(); contains(body, "supersecret") {
+		t.Errorf("response leaked token: %s", body)
+	}
+}
+
+func TestItemDecisionsReturns502WhenCoreUnreachable(t *testing.T) {
+	s := &server{coreURL: "http://127.0.0.1:1", token: "secret", client: http.DefaultClient}
+
+	req := httptest.NewRequest("GET", "/api/items/7/decisions", nil)
+	req.SetPathValue("id", "7")
+	rec := httptest.NewRecorder()
+	s.handleItemDecisions(rec, req)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Errorf("status=%d, want 502", rec.Code)
+	}
+}
+
+func TestItemDecisionsRejectsBadID(t *testing.T) {
+	s := &server{coreURL: "http://127.0.0.1:1", token: "secret", client: http.DefaultClient}
+
+	req := httptest.NewRequest("GET", "/api/items/not-a-number/decisions", nil)
+	req.SetPathValue("id", "not-a-number")
+	rec := httptest.NewRecorder()
+	s.handleItemDecisions(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status=%d, want 400", rec.Code)
+	}
+}
