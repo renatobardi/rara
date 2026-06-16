@@ -11,6 +11,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"embed"
 	"encoding/json"
@@ -40,28 +41,39 @@ type server struct {
 	client  *http.Client
 }
 
-// fetchCore does an authenticated GET against the surface and returns the raw JSON body. A
-// transport failure or any non-2xx status is an error — the caller maps it to 502 (bad gateway).
-func (s *server) fetchCore(ctx context.Context, path string) (json.RawMessage, error) {
+// fetchCoreWithStatus does an authenticated GET and returns the raw status + body without a 2xx
+// check. Only transport failures are errors; a 4xx/5xx from core is a (status, body, nil) triple
+// so the caller can decide whether to pass it through or convert it to 502.
+func (s *server) fetchCoreWithStatus(ctx context.Context, path string) (int, json.RawMessage, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.coreURL+path, nil)
 	if err != nil {
-		return nil, err
+		return 0, nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+s.token)
 	resp, err := s.client.Do(req)
 	if err != nil {
-		return nil, err
+		return 0, nil, err
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxCoreBytes+1))
 	if err != nil {
-		return nil, err
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, &gatewayError{status: resp.StatusCode}
+		return 0, nil, err
 	}
 	if int64(len(body)) > maxCoreBytes {
-		return nil, fmt.Errorf("core surface response exceeds %d-byte limit", maxCoreBytes)
+		return 0, nil, fmt.Errorf("core surface response exceeds %d-byte limit", maxCoreBytes)
+	}
+	return resp.StatusCode, body, nil
+}
+
+// fetchCore does an authenticated GET against the surface and returns the raw JSON body. A
+// transport failure or any non-2xx status is an error — the caller maps it to 502 (bad gateway).
+func (s *server) fetchCore(ctx context.Context, path string) (json.RawMessage, error) {
+	status, body, err := s.fetchCoreWithStatus(ctx, path)
+	if err != nil {
+		return nil, err
+	}
+	if status < 200 || status >= 300 {
+		return nil, &gatewayError{status: status}
 	}
 	return body, nil
 }
@@ -167,13 +179,20 @@ func isNumericID(s string) bool {
 	return true
 }
 
-// postCore does an authenticated POST against the surface, forwarding the client body verbatim.
-// It returns the HTTP status and raw body from core — 4xx responses propagate to the caller so
-// the SPA can surface core validation errors (e.g. "item not in quarantine"). Only transport
-// failures are returned as errors (caller maps those to 502).
-func (s *server) postCore(ctx context.Context, path string, reqBody io.Reader) (status int, body []byte, err error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.coreURL+path,
-		io.LimitReader(reqBody, maxCoreBytes+1))
+// doCore sends an authenticated request with a body (POST, PUT, …) against the surface. It returns
+// the HTTP status and raw body from core — 4xx responses propagate to the caller so the SPA can
+// surface core validation errors. Only transport failures are returned as errors (caller → 502).
+// The request body is read into a buffer first so an oversized payload is rejected before it
+// reaches core, rather than silently truncated (which would cause a confusing 4xx from core).
+func (s *server) doCore(ctx context.Context, method, path string, reqBody io.Reader) (status int, body []byte, err error) {
+	buf, err := io.ReadAll(io.LimitReader(reqBody, maxCoreBytes+1))
+	if err != nil {
+		return 0, nil, err
+	}
+	if int64(len(buf)) > maxCoreBytes {
+		return 0, nil, fmt.Errorf("request body exceeds %d-byte limit", maxCoreBytes)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, s.coreURL+path, bytes.NewReader(buf))
 	if err != nil {
 		return 0, nil, err
 	}
@@ -192,6 +211,14 @@ func (s *server) postCore(ctx context.Context, path string, reqBody io.Reader) (
 		return 0, nil, fmt.Errorf("core surface response exceeds %d-byte limit", maxCoreBytes)
 	}
 	return resp.StatusCode, b, nil
+}
+
+func (s *server) postCore(ctx context.Context, path string, reqBody io.Reader) (int, []byte, error) {
+	return s.doCore(ctx, http.MethodPost, path, reqBody)
+}
+
+func (s *server) putCore(ctx context.Context, path string, reqBody io.Reader) (int, []byte, error) {
+	return s.doCore(ctx, http.MethodPut, path, reqBody)
 }
 
 // handleQuarantine proxies GET /v1/quarantine — the cold-start quarantine review queue.
@@ -263,6 +290,84 @@ func (s *server) handleFeedbackDistillation(w http.ResponseWriter, r *http.Reque
 	_, _ = w.Write(body)
 }
 
+// handleInterestProfile proxies GET /v1/interest-profile. Unlike most GET proxies, a 404 from
+// core (no active profile) is passed through rather than mapped to 502, so the SPA can render an
+// "empty" state instead of an error on cold start.
+func (s *server) handleInterestProfile(w http.ResponseWriter, r *http.Request) {
+	status, body, err := s.fetchCoreWithStatus(r.Context(), "/v1/interest-profile")
+	if err != nil {
+		badGateway(w, err)
+		return
+	}
+	if (status >= 200 && status < 300) || status == http.StatusNotFound {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_, _ = w.Write(body)
+		return
+	}
+	badGateway(w, &gatewayError{status: status})
+}
+
+// handleInterestProfileVersions proxies GET /v1/interest-profile/versions — all versions
+// (active + proposed + superseded) so the operator can see pending proposals and approve them.
+func (s *server) handleInterestProfileVersions(w http.ResponseWriter, r *http.Request) {
+	body, err := s.fetchCore(r.Context(), "/v1/interest-profile/versions")
+	if err != nil {
+		badGateway(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, json.RawMessage(body))
+}
+
+// handleProposeInterestProfile proxies POST /v1/interest-profile (propose a new version).
+// Core 4xx (duplicate version, bad fields) propagates; transport errors become 502.
+func (s *server) handleProposeInterestProfile(w http.ResponseWriter, r *http.Request) {
+	status, body, err := s.postCore(r.Context(), "/v1/interest-profile", r.Body)
+	if err != nil {
+		badGateway(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_, _ = w.Write(body)
+}
+
+// handleApproveInterestProfile proxies POST /v1/interest-profile/approve (human approval).
+// Core 4xx (version not proposed) propagates; transport errors become 502.
+func (s *server) handleApproveInterestProfile(w http.ResponseWriter, r *http.Request) {
+	status, body, err := s.postCore(r.Context(), "/v1/interest-profile/approve", r.Body)
+	if err != nil {
+		badGateway(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_, _ = w.Write(body)
+}
+
+// handleGateRules proxies GET /v1/gate-rules — all allow/deny rules (enabled and disabled).
+func (s *server) handleGateRules(w http.ResponseWriter, r *http.Request) {
+	body, err := s.fetchCore(r.Context(), "/v1/gate-rules")
+	if err != nil {
+		badGateway(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, json.RawMessage(body))
+}
+
+// handleUpsertGateRule proxies PUT /v1/gate-rules (full-record upsert of one rule).
+// Core 4xx (invalid action/match_type) propagates; transport errors become 502.
+func (s *server) handleUpsertGateRule(w http.ResponseWriter, r *http.Request) {
+	status, body, err := s.putCore(r.Context(), "/v1/gate-rules", r.Body)
+	if err != nil {
+		badGateway(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_, _ = w.Write(body)
+}
+
 // handleHealthz is the console's own liveness probe; it also reports whether the core surface is
 // reachable so a deploy can confirm the BFF link is live. It is always 200 (the console is up).
 func (s *server) handleHealthz(w http.ResponseWriter, r *http.Request) {
@@ -276,7 +381,7 @@ func (s *server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 }
 
 func badGateway(w http.ResponseWriter, err error) {
-	log.Printf("console: core surface unreachable: %v", err)
+	log.Printf("console: core surface unreachable: %v", err) // NOSONAR — err is from internal HTTP client, not user-supplied data
 	writeJSON(w, http.StatusBadGateway, map[string]string{"error": "core surface unreachable"})
 }
 
@@ -310,6 +415,12 @@ func main() {
 	mux.HandleFunc("GET /api/distillations/{id}", s.handleDistillationDetail)
 	mux.HandleFunc("POST /api/quarantine/review", s.handleQuarantineReview)
 	mux.HandleFunc("POST /api/feedback/distillation", s.handleFeedbackDistillation)
+	mux.HandleFunc("GET /api/interest-profile", s.handleInterestProfile)
+	mux.HandleFunc("GET /api/interest-profile/versions", s.handleInterestProfileVersions)
+	mux.HandleFunc("POST /api/interest-profile", s.handleProposeInterestProfile)
+	mux.HandleFunc("POST /api/interest-profile/approve", s.handleApproveInterestProfile)
+	mux.HandleFunc("GET /api/gate-rules", s.handleGateRules)
+	mux.HandleFunc("PUT /api/gate-rules", s.handleUpsertGateRule)
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
 	mux.Handle("GET /", spaHandler(dist))
 
