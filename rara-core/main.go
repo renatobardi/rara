@@ -852,7 +852,7 @@ Commands:
                              Review a quarantined item: up rescues it, down confirms the drop
   requeue --capability <cap> [--status failed] [--limit N] [--item-status <s>]
                              Reset failed steps back to pending (and parent item status).
-                             --capability: required (gate_barato|transcrever|gate_rico|destilar)
+                             --capability: required (gate_barato|transcrever|extrair|gate_rico|destilar)
                              --status: step status to match (default: failed)
                              --limit N: requeue at most N steps (default: no limit)
                              --item-status: override item status (default: derived from capability)

@@ -14,14 +14,33 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// capabilityItemStatus is the minimum map from capability to the item lifecycle status
-// that item should be at when that capability's steps are re-enqueued. Derived from the
-// YouTube flow rail; capabilities not in this map require an explicit --item-status flag.
+// capabilityItemStatus maps each capability to the item lifecycle status the parent item
+// should re-enter when its steps are re-enqueued. Capabilities not listed here require
+// an explicit --item-status flag.
 var capabilityItemStatus = map[string]string{
 	capGateBarato:  itemDiscovered,
 	capTranscrever: itemToText,
+	capExtrair:     itemToText,
 	capGateRico:    itemToText,
 	capDestilar:    itemDistilled,
+}
+
+// deriveItemStatus resolves the target item status for a requeue operation.
+// If override is non-empty it is used directly (after validation). Otherwise the
+// capability map is consulted; an unknown capability returns an error so the caller
+// can surface a helpful message without guessing.
+func deriveItemStatus(capability, override string) (string, error) {
+	if override != "" {
+		if !isValidItemStatus(override) {
+			return "", fmt.Errorf("invalid --item-status %q", override)
+		}
+		return override, nil
+	}
+	s, ok := capabilityItemStatus[capability]
+	if !ok {
+		return "", fmt.Errorf("unknown capability %q; provide --item-status explicitly", capability)
+	}
+	return s, nil
 }
 
 func (d *pgxDatabase) RequeueSteps(ctx context.Context, capability, fromStatus string, limit int, itemStatus string) (int, error) {
@@ -52,13 +71,13 @@ func (d *pgxDatabase) RequeueSteps(ctx context.Context, capability, fromStatus s
 	if err != nil {
 		return 0, err
 	}
+	defer rows.Close()
 
 	var stepIDs []int
 	itemSet := make(map[int]struct{})
 	for rows.Next() {
 		var sid, iid int
 		if err := rows.Scan(&sid, &iid); err != nil {
-			rows.Close()
 			return 0, err
 		}
 		stepIDs = append(stepIDs, sid)
@@ -67,6 +86,7 @@ func (d *pgxDatabase) RequeueSteps(ctx context.Context, capability, fromStatus s
 	if err := rows.Err(); err != nil {
 		return 0, err
 	}
+	rows.Close() // close before issuing further queries on the same connection
 
 	if len(stepIDs) == 0 {
 		return 0, tx.Commit(ctx)
@@ -107,21 +127,14 @@ func runRequeue(ctx context.Context, db Database, argv []string) {
 		log.Fatalf("requeue: invalid --status %q", *fromStatus)
 	}
 
-	target := *itemStatus
-	if target == "" {
-		var ok bool
-		target, ok = capabilityItemStatus[*capability]
-		if !ok {
-			log.Fatalf("requeue: unknown capability %q; provide --item-status explicitly", *capability)
-		}
-	}
-	if !isValidItemStatus(target) {
-		log.Fatalf("requeue: invalid --item-status %q", target)
+	target, err := deriveItemStatus(*capability, *itemStatus)
+	if err != nil {
+		log.Fatalf("requeue: %v", err)
 	}
 
 	n, err := db.RequeueSteps(ctx, *capability, *fromStatus, *limit, target)
 	if err != nil {
 		log.Fatalf("requeue: %v", err)
 	}
-	log.Printf("rara-core: requeued %d steps for capability=%s (item status → %s)", n, *capability, target)
+	log.Printf("rara-core: requeued %d steps for capability=%s (item status -> %s)", n, *capability, target)
 }

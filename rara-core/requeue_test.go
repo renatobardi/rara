@@ -166,22 +166,59 @@ func TestRequeueSteps_ZeroMatchesIsNoOp(t *testing.T) {
 	}
 }
 
-// TestCapabilityItemStatusMap verifies the static map covers the known capability rail.
-func TestCapabilityItemStatusMap(t *testing.T) {
-	cases := map[string]string{
-		capGateBarato:  itemDiscovered,
-		capTranscrever: itemToText,
-		capGateRico:    itemToText,
-		capDestilar:    itemDistilled,
+// TestDeriveItemStatus_KnownCapabilities verifies that each known capability maps to the
+// item status the reconciler expects before running that stage.
+func TestDeriveItemStatus_KnownCapabilities(t *testing.T) {
+	// gate_barato runs first (item is still discovered); transcrever/extrair/gate_rico
+	// require transcription done (to_text); destilar requires to_text done (distilled).
+	cases := []struct {
+		cap  string
+		want string
+	}{
+		{capGateBarato, itemDiscovered},
+		{capTranscrever, itemToText},
+		{capExtrair, itemToText},
+		{capGateRico, itemToText},
+		{capDestilar, itemDistilled},
 	}
-	for cap, want := range cases {
-		got, ok := capabilityItemStatus[cap]
-		if !ok {
-			t.Errorf("capability %q not in capabilityItemStatus map", cap)
+	for _, c := range cases {
+		got, err := deriveItemStatus(c.cap, "")
+		if err != nil {
+			t.Errorf("deriveItemStatus(%q, %q): unexpected error: %v", c.cap, "", err)
 			continue
 		}
-		if got != want {
-			t.Errorf("capabilityItemStatus[%q] = %q, want %q", cap, got, want)
+		if got != c.want {
+			t.Errorf("deriveItemStatus(%q, %q) = %q, want %q", c.cap, "", got, c.want)
 		}
+	}
+}
+
+// TestDeriveItemStatus_Override verifies that an explicit override is used verbatim.
+func TestDeriveItemStatus_Override(t *testing.T) {
+	got, err := deriveItemStatus(capGateBarato, itemQuarantine)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != itemQuarantine {
+		t.Errorf("got %q, want %q", got, itemQuarantine)
+	}
+}
+
+// TestDeriveItemStatus_InvalidOverride verifies that an invalid override is rejected.
+func TestDeriveItemStatus_InvalidOverride(t *testing.T) {
+	if _, err := deriveItemStatus(capTranscrever, "bogus"); err == nil {
+		t.Error("invalid override should return an error")
+	}
+}
+
+// TestDeriveItemStatus_UnknownCapabilityRequiresOverride verifies that an unknown capability
+// without an explicit --item-status is an error, not a silent guess.
+func TestDeriveItemStatus_UnknownCapabilityRequiresOverride(t *testing.T) {
+	if _, err := deriveItemStatus("coletar", ""); err == nil {
+		t.Error("unknown capability without override should return an error")
+	}
+	// But the same unknown capability succeeds when an override is provided.
+	if _, err := deriveItemStatus("coletar", itemDiscovered); err != nil {
+		t.Errorf("unknown capability with valid override should succeed, got: %v", err)
 	}
 }
