@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -443,6 +444,39 @@ func (d *pgxDatabase) ListGateDecisions(ctx context.Context, itemID int) ([]Gate
 		if err := rows.Scan(&dec.ItemID, &dec.Gate, &dec.Decision, &dec.Score, &dec.Rank, &dec.DecidedBy, &dec.Reason); err != nil {
 			return nil, err
 		}
+		out = append(out, dec)
+	}
+	return out, rows.Err()
+}
+
+// ListRecentDecisions returns the most recent gate_decisions rows (newest first), capped at
+// limit. Callers pass 0 for the default (50). Cap keeps the response bounded regardless of
+// the limit param.
+func (d *pgxDatabase) ListRecentDecisions(ctx context.Context, limit int) ([]RecentDecision, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 200 {
+		limit = 200
+	}
+	const q = `
+		SELECT id, item_id, gate, decision, score, created_at
+		FROM gate_decisions
+		ORDER BY id DESC
+		LIMIT $1`
+	rows, err := d.conn.Query(ctx, q, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []RecentDecision
+	for rows.Next() {
+		var dec RecentDecision
+		var when time.Time
+		if err := rows.Scan(&dec.ID, &dec.ItemID, &dec.Gate, &dec.Decision, &dec.Score, &when); err != nil {
+			return nil, err
+		}
+		dec.When = when.UTC().Format(time.RFC3339)
 		out = append(out, dec)
 	}
 	return out, rows.Err()

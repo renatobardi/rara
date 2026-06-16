@@ -82,6 +82,11 @@ func (c *Core) ItemDecisions(ctx context.Context, itemID int) ([]GateDecision, e
 	return c.db.ListGateDecisions(ctx, itemID)
 }
 
+// RecentDecisions returns the global gate_decisions feed, newest first.
+func (c *Core) RecentDecisions(ctx context.Context, limit int) ([]RecentDecision, error) {
+	return c.db.ListRecentDecisions(ctx, limit)
+}
+
 // Quarantine lists the deferred (quarantine) items — the cold-start review sample.
 func (c *Core) Quarantine(ctx context.Context) ([]Item, error) {
 	return c.db.ListQuarantinedItems(ctx)
@@ -270,6 +275,7 @@ func NewSurfaceMux(core *Core, token string) http.Handler {
 	mux.HandleFunc("GET /v1/items", h.listItems)
 	mux.HandleFunc("GET /v1/items/{id}/steps", h.itemSteps)
 	mux.HandleFunc("GET /v1/items/{id}/decisions", h.itemDecisions)
+	mux.HandleFunc("GET /v1/decisions", h.listDecisions)
 	mux.HandleFunc("GET /v1/quarantine", h.quarantine)
 	mux.HandleFunc("GET /v1/distillations", h.listDistillations)
 	mux.HandleFunc("GET /v1/distillations/{id}", h.getDistillation)
@@ -353,6 +359,12 @@ func (h *httpSurface) itemDecisions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	decs, err := h.core.ItemDecisions(r.Context(), id)
+	writeResult(w, decs, err)
+}
+
+func (h *httpSurface) listDecisions(w http.ResponseWriter, r *http.Request) {
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	decs, err := h.core.RecentDecisions(r.Context(), limit)
 	writeResult(w, decs, err)
 }
 
