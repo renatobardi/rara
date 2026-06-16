@@ -1500,6 +1500,17 @@ func TestDecisionsFeedReturns502WhenCoreUnreachable(t *testing.T) {
 	}
 }
 
+func TestDecisionsFeedRejectsNonNumericLimit(t *testing.T) {
+	s := &server{coreURL: "http://127.0.0.1:1", token: "secret", client: http.DefaultClient}
+
+	rec := httptest.NewRecorder()
+	s.handleDecisionsFeed(rec, httptest.NewRequest("GET", "/api/decisions?limit=abc", nil))
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status=%d, want 400 for non-numeric limit", rec.Code)
+	}
+}
+
 func TestItemDecisionsProxiesWithBearer(t *testing.T) {
 	core := fakeC4Core(t, "secret")
 	s := &server{coreURL: core.URL, token: "secret", client: core.Client()}

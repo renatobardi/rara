@@ -93,7 +93,6 @@ export const t = {
 		colQuality: 'Qualidade',
 		colLatency: 'Latência (ms)',
 		colEnabled: 'Ativo',
-		saveBtn: 'Salvar',
 		saving: 'Salvando…',
 		saveError: 'Erro ao salvar provider.',
 		saveOk: 'Salvo.',

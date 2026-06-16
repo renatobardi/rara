@@ -22,6 +22,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"time"
 )
 
@@ -415,12 +416,16 @@ func (s *server) handleUpsertRoutingPolicy(w http.ResponseWriter, r *http.Reques
 }
 
 // handleDecisionsFeed proxies GET /v1/decisions, forwarding the optional ?limit= param.
-// Limit is re-encoded via url.Values to prevent query-parameter injection.
+// Validates limit is numeric (non-numeric → 400); core clamps the value to 1-200.
 func (s *server) handleDecisionsFeed(w http.ResponseWriter, r *http.Request) {
 	path := "/v1/decisions"
-	if limit := r.URL.Query().Get("limit"); limit != "" {
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		if _, err := strconv.Atoi(raw); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "limit must be a number"})
+			return
+		}
 		q := url.Values{}
-		q.Set("limit", limit)
+		q.Set("limit", raw)
 		path += "?" + q.Encode()
 	}
 	body, err := s.fetchCore(r.Context(), path)

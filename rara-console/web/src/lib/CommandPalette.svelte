@@ -32,6 +32,13 @@
 		}
 	});
 
+	// Reset selection whenever the filtered list changes (e.g. user types a query that shrinks
+	// the list below the current activeIdx — Enter would otherwise hit undefined).
+	$effect(() => {
+		filtered;
+		activeIdx = 0;
+	});
+
 	function pick(href: string) {
 		open = false;
 		goto(href);

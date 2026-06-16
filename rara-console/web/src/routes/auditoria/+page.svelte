@@ -50,7 +50,6 @@
 		{t.auditoria.limitLabel}
 		<select
 			bind:value={limit}
-			onchange={load}
 			class="rounded-token border border-border bg-surface-2 px-2 py-1 text-[13px] text-text"
 		>
 			<option value={20}>20</option>
