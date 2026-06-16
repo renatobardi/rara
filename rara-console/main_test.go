@@ -670,3 +670,409 @@ func TestFeedbackDistillationPropagatesCoreError(t *testing.T) {
 		t.Errorf("status = %d, want 400 (core error must propagate, not become 502)", rec.Code)
 	}
 }
+
+// --- B1: interest-profile + gate-rules ---
+
+// fakeB1Core serves all 6 B1 endpoints. Reads require the bearer token; writes echo the body back
+// so tests can confirm the payload was forwarded.
+func fakeB1Core(t *testing.T, token string) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	requireBearer := func(w http.ResponseWriter, r *http.Request) bool {
+		if r.Header.Get("Authorization") != "Bearer "+token {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return false
+		}
+		return true
+	}
+	mux.HandleFunc("GET /v1/interest-profile", func(w http.ResponseWriter, r *http.Request) {
+		if !requireBearer(w, r) {
+			return
+		}
+		_, _ = w.Write([]byte(`{"version":1,"status":"active","narrative":"Tech content"}`))
+	})
+	mux.HandleFunc("GET /v1/interest-profile/versions", func(w http.ResponseWriter, r *http.Request) {
+		if !requireBearer(w, r) {
+			return
+		}
+		_, _ = w.Write([]byte(`[{"version":1,"status":"active"},{"version":2,"status":"proposed"}]`))
+	})
+	mux.HandleFunc("POST /v1/interest-profile", func(w http.ResponseWriter, r *http.Request) {
+		if !requireBearer(w, r) {
+			return
+		}
+		body, _ := io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(body)
+	})
+	mux.HandleFunc("POST /v1/interest-profile/approve", func(w http.ResponseWriter, r *http.Request) {
+		if !requireBearer(w, r) {
+			return
+		}
+		body, _ := io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(body)
+	})
+	mux.HandleFunc("GET /v1/gate-rules", func(w http.ResponseWriter, r *http.Request) {
+		if !requireBearer(w, r) {
+			return
+		}
+		_, _ = w.Write([]byte(`[{"action":"allow","match_type":"channel","value":"@tech","enabled":true}]`))
+	})
+	mux.HandleFunc("PUT /v1/gate-rules", func(w http.ResponseWriter, r *http.Request) {
+		if !requireBearer(w, r) {
+			return
+		}
+		body, _ := io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(body)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// fakeB1CoreReturns4xx returns 400 for all B1 write endpoints.
+func fakeB1CoreReturns4xx(t *testing.T) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /v1/interest-profile", func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, `{"error":"version already exists"}`, http.StatusBadRequest)
+	})
+	mux.HandleFunc("POST /v1/interest-profile/approve", func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, `{"error":"not a proposed version"}`, http.StatusBadRequest)
+	})
+	mux.HandleFunc("PUT /v1/gate-rules", func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, `{"error":"invalid action"}`, http.StatusBadRequest)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// fakeB1CoreNoProfile serves GET /v1/interest-profile as 404 (cold start, no active profile).
+func fakeB1CoreNoProfile(t *testing.T) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /v1/interest-profile", func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, `{"error":"no active interest_profile"}`, http.StatusNotFound)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// --- interest-profile (active) ---
+
+func TestInterestProfileProxiesActiveWithBearer(t *testing.T) {
+	core := fakeB1Core(t, "secret")
+	s := &server{coreURL: core.URL, token: "secret", client: core.Client()}
+
+	rec := httptest.NewRecorder()
+	s.handleInterestProfile(rec, httptest.NewRequest("GET", "/api/interest-profile", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got["status"] != "active" {
+		t.Errorf("status = %v, want active", got["status"])
+	}
+}
+
+func TestInterestProfilePropagates404WhenNoneConfigured(t *testing.T) {
+	core := fakeB1CoreNoProfile(t)
+	s := &server{coreURL: core.URL, token: "secret", client: core.Client()}
+
+	rec := httptest.NewRecorder()
+	s.handleInterestProfile(rec, httptest.NewRequest("GET", "/api/interest-profile", nil))
+
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404 (no profile must propagate as 404, not 502)", rec.Code)
+	}
+}
+
+func TestInterestProfileNeverLeaksToken(t *testing.T) {
+	core := fakeB1Core(t, "supersecret")
+	s := &server{coreURL: core.URL, token: "supersecret", client: core.Client()}
+
+	rec := httptest.NewRecorder()
+	s.handleInterestProfile(rec, httptest.NewRequest("GET", "/api/interest-profile", nil))
+
+	if body := rec.Body.String(); contains(body, "supersecret") {
+		t.Errorf("response leaked the surface token: %s", body)
+	}
+}
+
+func TestInterestProfileReturns502WhenCoreUnreachable(t *testing.T) {
+	s := &server{coreURL: "http://127.0.0.1:1", token: "secret", client: http.DefaultClient}
+
+	rec := httptest.NewRecorder()
+	s.handleInterestProfile(rec, httptest.NewRequest("GET", "/api/interest-profile", nil))
+
+	if rec.Code != http.StatusBadGateway {
+		t.Errorf("status = %d, want 502", rec.Code)
+	}
+}
+
+// --- interest-profile/versions ---
+
+func TestInterestProfileVersionsProxiesAllWithBearer(t *testing.T) {
+	core := fakeB1Core(t, "secret")
+	s := &server{coreURL: core.URL, token: "secret", client: core.Client()}
+
+	rec := httptest.NewRecorder()
+	s.handleInterestProfileVersions(rec, httptest.NewRequest("GET", "/api/interest-profile/versions", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var got []map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got) != 2 {
+		t.Errorf("versions len = %d, want 2", len(got))
+	}
+}
+
+func TestInterestProfileVersionsNeverLeaksToken(t *testing.T) {
+	core := fakeB1Core(t, "supersecret")
+	s := &server{coreURL: core.URL, token: "supersecret", client: core.Client()}
+
+	rec := httptest.NewRecorder()
+	s.handleInterestProfileVersions(rec, httptest.NewRequest("GET", "/api/interest-profile/versions", nil))
+
+	if body := rec.Body.String(); contains(body, "supersecret") {
+		t.Errorf("response leaked the surface token: %s", body)
+	}
+}
+
+func TestInterestProfileVersionsReturns502WhenCoreUnreachable(t *testing.T) {
+	s := &server{coreURL: "http://127.0.0.1:1", token: "secret", client: http.DefaultClient}
+
+	rec := httptest.NewRecorder()
+	s.handleInterestProfileVersions(rec, httptest.NewRequest("GET", "/api/interest-profile/versions", nil))
+
+	if rec.Code != http.StatusBadGateway {
+		t.Errorf("status = %d, want 502", rec.Code)
+	}
+}
+
+// --- POST /api/interest-profile (propose) ---
+
+func TestProposeInterestProfileForwardsBodyAndBearer(t *testing.T) {
+	core := fakeB1Core(t, "secret")
+	s := &server{coreURL: core.URL, token: "secret", client: core.Client()}
+
+	payload := `{"version":3,"narrative":"New topics"}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/api/interest-profile", strings.NewReader(payload))
+	s.handleProposeInterestProfile(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if body := rec.Body.String(); !contains(body, "narrative") {
+		t.Errorf("body = %q; forwarded payload not reflected", body)
+	}
+}
+
+func TestProposeInterestProfileNeverLeaksToken(t *testing.T) {
+	core := fakeB1Core(t, "supersecret")
+	s := &server{coreURL: core.URL, token: "supersecret", client: core.Client()}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/api/interest-profile", strings.NewReader(`{"version":3}`))
+	s.handleProposeInterestProfile(rec, req)
+
+	if body := rec.Body.String(); contains(body, "supersecret") {
+		t.Errorf("response leaked the surface token: %s", body)
+	}
+}
+
+func TestProposeInterestProfileReturns502WhenCoreUnreachable(t *testing.T) {
+	s := &server{coreURL: "http://127.0.0.1:1", token: "secret", client: http.DefaultClient}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/api/interest-profile", strings.NewReader(`{}`))
+	s.handleProposeInterestProfile(rec, req)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Errorf("status = %d, want 502", rec.Code)
+	}
+}
+
+func TestProposeInterestProfilePropagatesCoreError(t *testing.T) {
+	core := fakeB1CoreReturns4xx(t)
+	s := &server{coreURL: core.URL, token: "secret", client: core.Client()}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/api/interest-profile", strings.NewReader(`{"version":1}`))
+	s.handleProposeInterestProfile(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400 (core error must propagate, not become 502)", rec.Code)
+	}
+}
+
+// --- POST /api/interest-profile/approve ---
+
+func TestApproveInterestProfileForwardsBodyAndBearer(t *testing.T) {
+	core := fakeB1Core(t, "secret")
+	s := &server{coreURL: core.URL, token: "secret", client: core.Client()}
+
+	payload := `{"version":2}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/api/interest-profile/approve", strings.NewReader(payload))
+	s.handleApproveInterestProfile(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if body := rec.Body.String(); !contains(body, "version") {
+		t.Errorf("body = %q; forwarded payload not reflected", body)
+	}
+}
+
+func TestApproveInterestProfileNeverLeaksToken(t *testing.T) {
+	core := fakeB1Core(t, "supersecret")
+	s := &server{coreURL: core.URL, token: "supersecret", client: core.Client()}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/api/interest-profile/approve", strings.NewReader(`{"version":2}`))
+	s.handleApproveInterestProfile(rec, req)
+
+	if body := rec.Body.String(); contains(body, "supersecret") {
+		t.Errorf("response leaked the surface token: %s", body)
+	}
+}
+
+func TestApproveInterestProfileReturns502WhenCoreUnreachable(t *testing.T) {
+	s := &server{coreURL: "http://127.0.0.1:1", token: "secret", client: http.DefaultClient}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/api/interest-profile/approve", strings.NewReader(`{"version":2}`))
+	s.handleApproveInterestProfile(rec, req)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Errorf("status = %d, want 502", rec.Code)
+	}
+}
+
+func TestApproveInterestProfilePropagatesCoreError(t *testing.T) {
+	core := fakeB1CoreReturns4xx(t)
+	s := &server{coreURL: core.URL, token: "secret", client: core.Client()}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/api/interest-profile/approve", strings.NewReader(`{"version":99}`))
+	s.handleApproveInterestProfile(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400 (core error must propagate, not become 502)", rec.Code)
+	}
+}
+
+// --- GET /api/gate-rules ---
+
+func TestGateRulesProxiesWithBearer(t *testing.T) {
+	core := fakeB1Core(t, "secret")
+	s := &server{coreURL: core.URL, token: "secret", client: core.Client()}
+
+	rec := httptest.NewRecorder()
+	s.handleGateRules(rec, httptest.NewRequest("GET", "/api/gate-rules", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var got []map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got) != 1 || got[0]["action"] != "allow" {
+		t.Errorf("gate-rules = %+v, want one allow rule", got)
+	}
+}
+
+func TestGateRulesNeverLeaksToken(t *testing.T) {
+	core := fakeB1Core(t, "supersecret")
+	s := &server{coreURL: core.URL, token: "supersecret", client: core.Client()}
+
+	rec := httptest.NewRecorder()
+	s.handleGateRules(rec, httptest.NewRequest("GET", "/api/gate-rules", nil))
+
+	if body := rec.Body.String(); contains(body, "supersecret") {
+		t.Errorf("response leaked the surface token: %s", body)
+	}
+}
+
+func TestGateRulesReturns502WhenCoreUnreachable(t *testing.T) {
+	s := &server{coreURL: "http://127.0.0.1:1", token: "secret", client: http.DefaultClient}
+
+	rec := httptest.NewRecorder()
+	s.handleGateRules(rec, httptest.NewRequest("GET", "/api/gate-rules", nil))
+
+	if rec.Code != http.StatusBadGateway {
+		t.Errorf("status = %d, want 502", rec.Code)
+	}
+}
+
+// --- PUT /api/gate-rules ---
+
+func TestUpsertGateRuleForwardsBodyAndBearer(t *testing.T) {
+	core := fakeB1Core(t, "secret")
+	s := &server{coreURL: core.URL, token: "secret", client: core.Client()}
+
+	payload := `{"action":"deny","match_type":"title_contains","value":"spam","enabled":true}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("PUT", "/api/gate-rules", strings.NewReader(payload))
+	s.handleUpsertGateRule(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if body := rec.Body.String(); !contains(body, "action") {
+		t.Errorf("body = %q; forwarded payload not reflected", body)
+	}
+}
+
+func TestUpsertGateRuleNeverLeaksToken(t *testing.T) {
+	core := fakeB1Core(t, "supersecret")
+	s := &server{coreURL: core.URL, token: "supersecret", client: core.Client()}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("PUT", "/api/gate-rules", strings.NewReader(`{"action":"allow","match_type":"channel","value":"@tech","enabled":true}`))
+	s.handleUpsertGateRule(rec, req)
+
+	if body := rec.Body.String(); contains(body, "supersecret") {
+		t.Errorf("response leaked the surface token: %s", body)
+	}
+}
+
+func TestUpsertGateRuleReturns502WhenCoreUnreachable(t *testing.T) {
+	s := &server{coreURL: "http://127.0.0.1:1", token: "secret", client: http.DefaultClient}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("PUT", "/api/gate-rules", strings.NewReader(`{}`))
+	s.handleUpsertGateRule(rec, req)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Errorf("status = %d, want 502", rec.Code)
+	}
+}
+
+func TestUpsertGateRulePropagatesCoreError(t *testing.T) {
+	core := fakeB1CoreReturns4xx(t)
+	s := &server{coreURL: core.URL, token: "secret", client: core.Client()}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("PUT", "/api/gate-rules", strings.NewReader(`{"action":"invalid"}`))
+	s.handleUpsertGateRule(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400 (core error must propagate, not become 502)", rec.Code)
+	}
+}

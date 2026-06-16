@@ -24,7 +24,7 @@
 		{ icon: '⚑', label: t.nav.quarantine, href: '/quarentena' },
 		{ icon: '✦', label: t.nav.distillations, href: '/distillations' },
 		{ section: t.nav.secTrain },
-		{ icon: '◐', label: t.nav.curation },
+		{ icon: '◐', label: t.nav.curation, href: '/curadoria' },
 		{ icon: '⇄', label: t.nav.sources },
 		{ icon: '⚙', label: t.nav.providers },
 		{ section: t.nav.secSystem },
@@ -36,7 +36,8 @@
 		'/': t.nav.overview,
 		'/pipeline': t.nav.pipeline,
 		'/quarentena': t.nav.quarantine,
-		'/distillations': t.nav.distillations
+		'/distillations': t.nav.distillations,
+		'/curadoria': t.nav.curation
 	};
 </script>
 
