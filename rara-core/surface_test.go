@@ -73,6 +73,113 @@ func TestCoreItemDecisionsFullTrail(t *testing.T) {
 	}
 }
 
+func TestCoreRecentDecisionsReturnsNewestFirst(t *testing.T) {
+	ctx := context.Background()
+	core, db, _ := newTestCore(t)
+	fid := seedFlow(t, db)
+	id, _ := db.UpsertItem(ctx, Item{Lane: "youtube", SourceRef: "x", FlowID: fid, FlowVersion: 1, Status: itemToText})
+	_ = db.InsertGateDecision(ctx, GateDecision{ItemID: id, Gate: gateBarato, Decision: decisionDefer, DecidedBy: "rules"})
+	_ = db.InsertGateDecision(ctx, GateDecision{ItemID: id, Gate: gateBarato, Decision: decisionKeep, DecidedBy: "llm"})
+
+	decs, err := core.RecentDecisions(ctx, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(decs) != 2 {
+		t.Fatalf("want 2 decisions, got %d", len(decs))
+	}
+	// Newest first: keep (inserted second) must be decs[0]
+	if decs[0].Decision != decisionKeep {
+		t.Errorf("want keep first (newest), got %s", decs[0].Decision)
+	}
+}
+
+func TestCoreRecentDecisionsDefaultLimit(t *testing.T) {
+	ctx := context.Background()
+	core, db, _ := newTestCore(t)
+	fid := seedFlow(t, db)
+	id, _ := db.UpsertItem(ctx, Item{Lane: "youtube", SourceRef: "x", FlowID: fid, FlowVersion: 1, Status: itemToText})
+	for i := 0; i < 60; i++ {
+		_ = db.InsertGateDecision(ctx, GateDecision{ItemID: id, Gate: gateBarato, Decision: decisionKeep, DecidedBy: "rules"})
+	}
+
+	decs, err := core.RecentDecisions(ctx, 0) // 0 → default 50
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(decs) != 50 {
+		t.Errorf("want 50 (default limit), got %d", len(decs))
+	}
+}
+
+func TestCoreRecentDecisionsCapsAt200(t *testing.T) {
+	ctx := context.Background()
+	core, db, _ := newTestCore(t)
+	fid := seedFlow(t, db)
+	id, _ := db.UpsertItem(ctx, Item{Lane: "youtube", SourceRef: "x", FlowID: fid, FlowVersion: 1, Status: itemToText})
+	for i := 0; i < 10; i++ {
+		_ = db.InsertGateDecision(ctx, GateDecision{ItemID: id, Gate: gateBarato, Decision: decisionKeep, DecidedBy: "rules"})
+	}
+
+	decs, err := core.RecentDecisions(ctx, 999) // over cap → returns all 10
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(decs) != 10 {
+		t.Errorf("want 10 (only 10 exist), got %d", len(decs))
+	}
+}
+
+func TestHTTPListDecisionsFeed(t *testing.T) {
+	ctx := context.Background()
+	core, db, _ := newTestCore(t)
+	fid := seedFlow(t, db)
+	id, _ := db.UpsertItem(ctx, Item{Lane: "youtube", SourceRef: "x", FlowID: fid, FlowVersion: 1, Status: itemToText})
+	_ = db.InsertGateDecision(ctx, GateDecision{ItemID: id, Gate: gateBarato, Decision: decisionKeep, DecidedBy: "rules"})
+
+	mux := NewSurfaceMux(core, testToken)
+	req := httptest.NewRequest("GET", "/v1/decisions", nil)
+	req.Header.Set("Authorization", "Bearer "+testToken)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d, body=%s", rec.Code, rec.Body)
+	}
+	var got []map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0]["gate"] != gateBarato {
+		t.Errorf("decisions = %+v, want 1 gate_barato decision", got)
+	}
+}
+
+func TestHTTPListDecisionsFeedForwardsLimit(t *testing.T) {
+	ctx := context.Background()
+	core, db, _ := newTestCore(t)
+	fid := seedFlow(t, db)
+	id, _ := db.UpsertItem(ctx, Item{Lane: "youtube", SourceRef: "x", FlowID: fid, FlowVersion: 1, Status: itemToText})
+	for i := 0; i < 5; i++ {
+		_ = db.InsertGateDecision(ctx, GateDecision{ItemID: id, Gate: gateBarato, Decision: decisionKeep, DecidedBy: "rules"})
+	}
+
+	mux := NewSurfaceMux(core, testToken)
+	req := httptest.NewRequest("GET", "/v1/decisions?limit=2", nil)
+	req.Header.Set("Authorization", "Bearer "+testToken)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d, body=%s", rec.Code, rec.Body)
+	}
+	var got []map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &got)
+	if len(got) != 2 {
+		t.Errorf("want 2 (limit=2), got %d", len(got))
+	}
+}
+
 func TestCoreConfigReadsAndEdits(t *testing.T) {
 	ctx := context.Background()
 	core, db, _ := newTestCore(t)

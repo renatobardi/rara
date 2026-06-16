@@ -338,6 +338,18 @@ type GateDecision struct {
 	Reason    string   `json:"reason,omitempty"`
 }
 
+// RecentDecision is a light projection of gate_decisions for the global audit feed.
+// id and when are omitted from GateDecision (per-item trail doesn't need them) but
+// required here so the feed can be sorted and paginated client-side.
+type RecentDecision struct {
+	ID        int      `json:"id"`
+	ItemID    int      `json:"item_id"`
+	Gate      string   `json:"gate"`
+	Decision  string   `json:"decision"`
+	Score     *float64 `json:"score,omitempty"`
+	When      string   `json:"when"` // RFC3339
+}
+
 // Feedback is one append-only learning signal. CreatedAt is read-only (set by the DB default on
 // insert, populated on reads); the Phase 6 reviser windows feedback by it.
 type Feedback struct {
@@ -528,6 +540,9 @@ type Database interface {
 	// ListGateDecisions returns ALL gate_decisions for an item, oldest first — the full
 	// curation audit trail (LatestGateDecision returns only the most recent per gate).
 	ListGateDecisions(ctx context.Context, itemID int) ([]GateDecision, error)
+	// ListRecentDecisions returns the most recent gate_decisions rows, newest first,
+	// capped at limit (default 50, max 200). Used by the global audit feed.
+	ListRecentDecisions(ctx context.Context, limit int) ([]RecentDecision, error)
 	// ListFlows returns every flow (config-as-data), ordered by id.
 	ListFlows(ctx context.Context) ([]Flow, error)
 	// ListProviders returns every provider, enabled or not (config-as-data), ordered by name.

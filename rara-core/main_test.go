@@ -485,6 +485,29 @@ func (m *MockDatabase) ListGateDecisions(_ context.Context, itemID int) ([]GateD
 	return out, nil
 }
 
+func (m *MockDatabase) ListRecentDecisions(_ context.Context, limit int) ([]RecentDecision, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 200 {
+		limit = 200
+	}
+	n := len(m.gateDecisions)
+	out := make([]RecentDecision, 0, min(limit, n))
+	for i := n - 1; i >= 0 && len(out) < limit; i-- {
+		d := m.gateDecisions[i]
+		out = append(out, RecentDecision{
+			ID:       i + 1,
+			ItemID:   d.ItemID,
+			Gate:     d.Gate,
+			Decision: d.Decision,
+			Score:    d.Score,
+			When:     "2026-01-01T00:00:00Z",
+		})
+	}
+	return out, nil
+}
+
 func (m *MockDatabase) ListFlows(_ context.Context) ([]Flow, error) {
 	var out []Flow
 	for _, f := range m.flows {
