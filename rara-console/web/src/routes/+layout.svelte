@@ -2,8 +2,12 @@
 	import '../app.css';
 	import { t } from '$lib/strings';
 	import { page } from '$app/stores';
+	import BrandMark from '$lib/BrandMark.svelte';
+	import CommandPalette from '$lib/CommandPalette.svelte';
 
 	let { children } = $props();
+
+	let paletteOpen = $state(false);
 
 	// Clean is the default; Dark is opt-in and persisted. The pre-paint script in app.html already
 	// applied the saved choice before render; this syncs the toggle's state to it once on mount.
@@ -18,6 +22,13 @@
 		localStorage.setItem('theme', next);
 	}
 
+	function globalKeydown(e: KeyboardEvent) {
+		if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+			e.preventDefault();
+			paletteOpen = true;
+		}
+	}
+
 	const nav = [
 		{ icon: '◍', label: t.nav.overview, href: '/' },
 		{ icon: '▤', label: t.nav.pipeline, href: '/pipeline' },
@@ -26,9 +37,9 @@
 		{ section: t.nav.secTrain },
 		{ icon: '◐', label: t.nav.curation, href: '/curadoria' },
 		{ icon: '⇄', label: t.nav.sources },
-		{ icon: '⚙', label: t.nav.providers },
+		{ icon: '⚙', label: t.nav.providers, href: '/providers' },
 		{ section: t.nav.secSystem },
-		{ icon: '≣', label: t.nav.audit },
+		{ icon: '≣', label: t.nav.audit, href: '/auditoria' },
 		{ icon: '⚙', label: t.nav.settings }
 	];
 
@@ -37,16 +48,23 @@
 		'/pipeline': t.nav.pipeline,
 		'/quarentena': t.nav.quarantine,
 		'/distillations': t.nav.distillations,
-		'/curadoria': t.nav.curation
+		'/curadoria': t.nav.curation,
+		'/providers': t.nav.providers,
+		'/auditoria': t.nav.audit
 	};
 </script>
+
+<svelte:window onkeydown={globalKeydown} />
+
+<CommandPalette bind:open={paletteOpen} />
 
 <div class="grid h-screen grid-cols-app overflow-hidden">
 	<aside class="flex flex-col gap-0.5 bg-sidebar p-3">
 		<div class="flex items-center gap-2 px-2 pb-4 pt-2 text-[15px] font-semibold">
 			<span
-				class="grid h-[26px] w-[26px] place-items-center rounded-token bg-text text-[13px] font-extrabold text-bg"
-				>ra</span
+				aria-label="rara"
+				class="block h-[30px] w-[30px] flex-none text-text"
+			><BrandMark /></span
 			>
 			{t.brand}
 		</div>
@@ -107,13 +125,14 @@
 					onclick={() => setTheme('dark')}>{t.topbar.dark}</button
 				>
 			</div>
-			<!-- Decorative placeholder until ⌘K lands (C4); aria-hidden so it isn't a fake search field. -->
-			<div
-				aria-hidden="true"
-				class="ml-auto flex min-w-[220px] items-center gap-2 rounded-pill border border-border bg-surface-2 px-3.5 py-[7px] text-[13px] text-muted"
+			<button
+				class="ml-auto flex min-w-[220px] cursor-pointer items-center gap-2 rounded-pill border border-border bg-surface-2 px-3.5 py-[7px] text-[13px] text-muted"
+				onclick={() => (paletteOpen = true)}
+				aria-label="Abrir command palette (⌘K)"
 			>
 				⌕ {t.topbar.search}
-			</div>
+				<kbd class="ml-auto text-[11px] opacity-50">⌘K</kbd>
+			</button>
 		</div>
 
 		<div class="mx-auto max-w-[1180px] p-6">

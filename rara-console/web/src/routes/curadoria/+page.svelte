@@ -143,14 +143,20 @@
 				const data = await r.json().catch(() => ({}));
 				approveError = (data as { error?: string }).error ?? t.curadoria.profileApproveError;
 			} else {
-				[activeProfile, versions] = await Promise.all([
+				const refreshed = await Promise.all([
 					fetch('/api/interest-profile').then((r2) =>
-						r2.status === 404 ? null : r2.ok ? r2.json() : activeProfile
+						r2.status === 404 ? null : r2.ok ? r2.json() : Promise.reject(r2.status)
 					),
 					fetch('/api/interest-profile/versions').then((r2) =>
-						r2.ok ? r2.json() : versions
+						r2.ok ? r2.json() : Promise.reject(r2.status)
 					)
-				]).catch(() => [activeProfile, versions]);
+				]).catch(() => null);
+				if (refreshed) {
+					[activeProfile, versions] = refreshed as [InterestProfile | null, InterestProfile[]];
+				} else {
+					// Approve succeeded but refresh failed — user sees stale state
+					approveError = 'Aprovado! Recarregue a página para ver o histórico atualizado.';
+				}
 			}
 		} catch {
 			approveError = t.curadoria.profileApproveError;
@@ -194,7 +200,7 @@
 				rules = await fetch('/api/gate-rules')
 					.then((r2) => (r2.ok ? r2.json() : rules))
 					.catch(() => rules);
-				ruleValue = '';
+				ruleValue = ''; // action/match_type/enabled kept so the user can batch-add similar rules
 			}
 		} catch {
 			saveRuleError = t.curadoria.gateSaveError;

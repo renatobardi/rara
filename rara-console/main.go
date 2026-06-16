@@ -22,6 +22,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"time"
 )
 
@@ -368,6 +369,88 @@ func (s *server) handleUpsertGateRule(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(body)
 }
 
+// handleProviders proxies GET /v1/providers — list of all providers (config-as-data).
+func (s *server) handleProviders(w http.ResponseWriter, r *http.Request) {
+	body, err := s.fetchCore(r.Context(), "/v1/providers")
+	if err != nil {
+		badGateway(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, json.RawMessage(body))
+}
+
+// handleUpsertProvider proxies PUT /v1/providers with bearer injected server-side.
+// Core 4xx (e.g. invalid enum) propagates; only transport errors become 502.
+func (s *server) handleUpsertProvider(w http.ResponseWriter, r *http.Request) {
+	status, body, err := s.putCore(r.Context(), "/v1/providers", r.Body)
+	if err != nil {
+		badGateway(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_, _ = w.Write(body)
+}
+
+// handleRoutingPolicies proxies GET /v1/routing-policies — list of all policies.
+func (s *server) handleRoutingPolicies(w http.ResponseWriter, r *http.Request) {
+	body, err := s.fetchCore(r.Context(), "/v1/routing-policies")
+	if err != nil {
+		badGateway(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, json.RawMessage(body))
+}
+
+// handleUpsertRoutingPolicy proxies PUT /v1/routing-policies with bearer injected.
+// Core 4xx propagates; transport errors become 502.
+func (s *server) handleUpsertRoutingPolicy(w http.ResponseWriter, r *http.Request) {
+	status, body, err := s.putCore(r.Context(), "/v1/routing-policies", r.Body)
+	if err != nil {
+		badGateway(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_, _ = w.Write(body)
+}
+
+// handleDecisionsFeed proxies GET /v1/decisions, forwarding the optional ?limit= param.
+// Validates limit is numeric (non-numeric → 400); core clamps the value to 1-200.
+func (s *server) handleDecisionsFeed(w http.ResponseWriter, r *http.Request) {
+	path := "/v1/decisions"
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		if _, err := strconv.Atoi(raw); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "limit must be a number"})
+			return
+		}
+		q := url.Values{}
+		q.Set("limit", raw)
+		path += "?" + q.Encode()
+	}
+	body, err := s.fetchCore(r.Context(), path)
+	if err != nil {
+		badGateway(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, json.RawMessage(body))
+}
+
+// handleItemDecisions proxies GET /v1/items/{id}/decisions. Rejects non-numeric ids.
+func (s *server) handleItemDecisions(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !isNumericID(id) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid item id"})
+		return
+	}
+	body, err := s.fetchCore(r.Context(), "/v1/items/"+id+"/decisions")
+	if err != nil {
+		badGateway(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, json.RawMessage(body))
+}
+
 // handleHealthz is the console's own liveness probe; it also reports whether the core surface is
 // reachable so a deploy can confirm the BFF link is live. It is always 200 (the console is up).
 func (s *server) handleHealthz(w http.ResponseWriter, r *http.Request) {
@@ -421,6 +504,12 @@ func main() {
 	mux.HandleFunc("POST /api/interest-profile/approve", s.handleApproveInterestProfile)
 	mux.HandleFunc("GET /api/gate-rules", s.handleGateRules)
 	mux.HandleFunc("PUT /api/gate-rules", s.handleUpsertGateRule)
+	mux.HandleFunc("GET /api/providers", s.handleProviders)
+	mux.HandleFunc("PUT /api/providers", s.handleUpsertProvider)
+	mux.HandleFunc("GET /api/routing-policies", s.handleRoutingPolicies)
+	mux.HandleFunc("PUT /api/routing-policies", s.handleUpsertRoutingPolicy)
+	mux.HandleFunc("GET /api/decisions", s.handleDecisionsFeed)
+	mux.HandleFunc("GET /api/items/{id}/decisions", s.handleItemDecisions)
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
 	mux.Handle("GET /", spaHandler(dist))
 
