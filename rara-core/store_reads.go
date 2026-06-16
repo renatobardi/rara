@@ -14,8 +14,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 func (d *pgxDatabase) GetFlow(ctx context.Context, name string) (Flow, bool, error) {
@@ -339,7 +341,20 @@ const itemDisplaySelect = `
 	LEFT JOIN emails           em ON i.lane = 'email'   AND em.message_id     = i.source_ref
 	LEFT JOIN linkedin_posts   lp ON i.lane = 'linkedin' AND lp.url           = i.source_ref`
 
-// scanItemWithDisplay scans one row from a query that uses itemDisplaySelect.
+// itemBaseSelect is the DEGRADED projection used when a lane's domain table is absent
+// (a non-deployed lane never created its table). It returns the same column shape as
+// itemDisplaySelect — id..sensitivity plus the four display columns — but with the
+// display columns empty and no JOINs, so it can never hit a missing relation. The empty
+// display values serialize away via `omitempty`, so the JSON shape is unchanged. The
+// column count/order matches itemDisplaySelect so scanItemWithDisplay scans both.
+const itemBaseSelect = `
+	SELECT i.id, i.lane, i.source_ref, i.flow_id, i.flow_version, i.status, i.sensitivity,
+	  '' AS display_title, '' AS display_channel, '' AS display_summary,
+	  NULL::timestamptz AS published_at
+	FROM items i`
+
+// scanItemWithDisplay scans one row from a query that uses itemDisplaySelect (or its
+// degraded twin itemBaseSelect — same column shape).
 func scanItemWithDisplay(rows interface {
 	Scan(...any) error
 }) (Item, error) {
@@ -351,11 +366,11 @@ func scanItemWithDisplay(rows interface {
 	return it, err
 }
 
-// ListQuarantinedItems returns the deferred (quarantine) items — the cold-start review
-// sample. idx_items_status backs the scan.
-func (d *pgxDatabase) ListQuarantinedItems(ctx context.Context) ([]Item, error) {
-	q := itemDisplaySelect + ` WHERE i.status = 'quarantine' ORDER BY i.id`
-	rows, err := d.conn.Query(ctx, q)
+// scanItemsWithDisplay runs q (an itemDisplaySelect/itemBaseSelect query) and collects the
+// rows. It is the inner pass shared by the resilient read below — separated so the read
+// can re-run it with the degraded query on a missing-table error.
+func scanItemsWithDisplay(ctx context.Context, conn pgConn, q string, args ...any) ([]Item, error) {
+	rows, err := conn.Query(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -371,27 +386,44 @@ func (d *pgxDatabase) ListQuarantinedItems(ctx context.Context) ([]Item, error) 
 	return out, rows.Err()
 }
 
+// listItemsWithDisplay is the resilient core of both surface item reads. It runs the
+// enriched read (itemDisplaySelect + the caller's WHERE/ORDER clause); if a lane's domain
+// table is absent — Postgres 42P01 (undefined_table), raised because a non-deployed lane
+// never created its table — it degrades to itemBaseSelect, returning the items WITHOUT the
+// display fields instead of failing the whole endpoint for every lane. Only 42P01 degrades;
+// any other error propagates. The missing relation is named in a warning for observability.
+//
+// A 42P01 can surface either when Query executes the statement or later from rows.Err()
+// during iteration; scanItemsWithDisplay funnels both into the returned error, so a single
+// errors.As here catches both.
+func (d *pgxDatabase) listItemsWithDisplay(ctx context.Context, whereOrder string, args ...any) ([]Item, error) {
+	out, err := scanItemsWithDisplay(ctx, d.conn, itemDisplaySelect+whereOrder, args...)
+	if err == nil {
+		return out, nil
+	}
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "42P01" {
+		// table_name is not populated for undefined_table; the relation name lives in Message
+		// (e.g. `relation "emails" does not exist`), so log Message to name the absent table.
+		log.Printf("warning: item read degrading to base projection — lane domain table absent: %s", pgErr.Message)
+		return scanItemsWithDisplay(ctx, d.conn, itemBaseSelect+whereOrder, args...)
+	}
+	return nil, err
+}
+
+// ListQuarantinedItems returns the deferred (quarantine) items — the cold-start review
+// sample. idx_items_status backs the scan.
+func (d *pgxDatabase) ListQuarantinedItems(ctx context.Context) ([]Item, error) {
+	return d.listItemsWithDisplay(ctx, ` WHERE i.status = 'quarantine' ORDER BY i.id`)
+}
+
 // --- Surface reads (Phase 5) -------------------------------------------------
 // Pure reads backing the HTTP core + MCP adapter: state observation and config-as-data.
 
 // ListItemsByStatus returns the items in a given status, ordered by id. idx_items_status
 // backs the scan. The status is validated by the caller (the surface).
 func (d *pgxDatabase) ListItemsByStatus(ctx context.Context, status string) ([]Item, error) {
-	q := itemDisplaySelect + ` WHERE i.status = $1 ORDER BY i.id`
-	rows, err := d.conn.Query(ctx, q, status)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []Item
-	for rows.Next() {
-		it, err := scanItemWithDisplay(rows)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, it)
-	}
-	return out, rows.Err()
+	return d.listItemsWithDisplay(ctx, ` WHERE i.status = $1 ORDER BY i.id`, status)
 }
 
 // ListGateDecisions returns the full curation audit trail for an item, oldest first
