@@ -33,10 +33,10 @@ jobs:
     with:
       app: rara-sift
       job_name: rara-${{ matrix.provider }}
-      # NOTE: groq-llama hardcoded here — vars.LITELLM_MODEL=gemini-flash (spend-capped → 429s on the
-      # LLM judge). Every deploy that reads the var reverts the gates and breaks them.
-      # To change the model: edit this YAML directly (the repo var has no effect here).
-      env_vars: SIFT_GATE=${{ matrix.gate }},SIFT_PROVIDER=${{ matrix.provider }},LITELLM_BASE_URL=${{ vars.LITELLM_BASE_URL }},LITELLM_MODEL=groq-llama
+      # NOTE: groq-fast hardcoded here (llama-3.1-8b-instant) — gates are a simple JSON judge and don't
+      # need the 70b; keeping them on groq-fast avoids quota contention with distill (groq-llama/70b).
+      # vars.LITELLM_MODEL=gemini-flash is spend-capped → ignored. Edit this YAML to change the model.
+      env_vars: SIFT_GATE=${{ matrix.gate }},SIFT_PROVIDER=${{ matrix.provider }},LITELLM_BASE_URL=${{ vars.LITELLM_BASE_URL }},LITELLM_MODEL=groq-fast
       extra_secrets: LITELLM_API_KEY=litellm-api-key:latest
       run_after_deploy: ${{ inputs.run_after_deploy }}
     secrets:
