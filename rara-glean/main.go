@@ -7,12 +7,14 @@
 // (rara-scribe) writes, keyed on (source_ref, source_type) — the universal "to-text" convention the
 // gate_rico/distill lookups chain on. extrair is a peer of transcrever, not a special case.
 //
-// ONE app serves BOTH providers purely by config (GLEAN_PROVIDER): `extrair-email` cleans an email
-// body, `extrair-linkedin` normalizes a post. The handler picks the cleaner + the to-text source_type
-// by the item's lane, so a single codebase covers every text lane — codebases ≪ providers.
+// ONE app serves ALL the text providers purely by config (GLEAN_PROVIDER): `extrair-email` cleans an
+// email body, `extrair-linkedin` normalizes a post, `extrair-news` cleans a feed article. The handler
+// picks the cleaner + the to-text source_type by the item's lane, so a single codebase covers every
+// text lane — codebases ≪ providers.
 //
 // Per claimed item: 1) read the raw body from the collector's domain table (emails.body keyed on
-// message_id, linkedin_posts.body keyed on url — a cross-app SELECT, the 1.0 isolation convention);
+// message_id, linkedin_posts.body keyed on url, news_items.body|excerpt keyed on url — a cross-app
+// SELECT, the 1.0 isolation convention);
 // 2) run the PURE, deterministic cleaner; 3) upsert the cleaned text as a `transcripts` row and
 // return its id as the step's output_ref. A body that cleans to nothing is benign no-content
 // (`empty`): the step is done and the item is curated out rather than marched into a distill that
@@ -49,11 +51,12 @@ import (
 // provider; addon.Run claims them by (capability, assigned_provider).
 const capExtrair = "extrair"
 
-// The two providers this one app serves, selected by GLEAN_PROVIDER. Each is pinned to a text lane
+// The providers this one app serves, selected by GLEAN_PROVIDER. Each is pinned to a text lane
 // by its seed `accepts` so the email extractor never grabs a post and vice-versa.
 const (
 	provExtrairEmail    = "extrair-email"    // email HTML/quote/signature cleaner
 	provExtrairLinkedIn = "extrair-linkedin" // LinkedIn post normalizer
+	provExtrairNews     = "extrair-news"     // feed-article HTML/boilerplate cleaner
 )
 
 // items.lane — the body read and the to-text source_type are lane-aware (a different domain table
@@ -61,17 +64,19 @@ const (
 const (
 	laneEmail    = "email"
 	laneLinkedIn = "linkedin"
+	laneNews     = "news"
 )
 
 // transcripts.engine labels for an extrair to-text row (a NOT NULL column), distinguishing extractor
-// output from real ASR engines, and the two lanes from each other in the audit trail.
+// output from real ASR engines, and the lanes from each other in the audit trail.
 const (
 	emailEngine    = "rara-glean/extrair"
 	linkedinEngine = "rara-glean/extrair-linkedin"
+	newsEngine     = "rara-glean/extrair-news"
 )
 
 func isValidProvider(s string) bool {
-	return s == provExtrairEmail || s == provExtrairLinkedIn
+	return s == provExtrairEmail || s == provExtrairLinkedIn || s == provExtrairNews
 }
 
 // ---------------------------------------------------------------------------
@@ -96,13 +101,19 @@ var (
 
 // cleanerForLane resolves the lane's deterministic cleaner AND its transcripts.engine label in one
 // place, so the two can never drift (a new lane is added to both at once). email needs
-// signature/quoted-reply stripping; linkedin — the only other lane extrair serves — is the lighter
-// normalize-only path. An unsupported lane never reaches here: appDB.ReadSource rejects it first.
+// signature/quoted-reply stripping; linkedin and news are the lighter normalize-only path (a post
+// or article has neither). An unsupported lane never reaches here: appDB.ReadSource rejects it first.
 func cleanerForLane(lane string) (clean func(string) string, engine string) {
-	if lane == laneEmail {
+	switch lane {
+	case laneEmail:
 		return cleanEmailText, emailEngine
+	case laneNews:
+		// News articles are already text; like a post they have no signature/quote to strip — just
+		// strip HTML/boilerplate and collapse blanks (the cleanPostText path).
+		return cleanPostText, newsEngine
+	default:
+		return cleanPostText, linkedinEngine
 	}
-	return cleanPostText, linkedinEngine
 }
 
 // cleanEmailText returns the human-written body of an email: HTML stripped (if any), the
@@ -242,6 +253,10 @@ func (db *appDB) ReadSource(ctx context.Context, item addon.Item) (string, bool,
 		q = `SELECT COALESCE(body, '') FROM emails WHERE message_id = $1`
 	case laneLinkedIn:
 		q = `SELECT COALESCE(body, '') FROM linkedin_posts WHERE url = $1`
+	case laneNews:
+		// Feed articles: body is the captured full text (NULL if not captured); fall back to the
+		// excerpt the feed always carries. Keyed on the article url (= items.source_ref).
+		q = `SELECT COALESCE(body, excerpt, '') FROM news_items WHERE url = $1`
 	default:
 		return "", false, fmt.Errorf("extrair: unsupported lane %q", item.Lane)
 	}
@@ -294,9 +309,10 @@ func (db *appDB) WriteText(ctx context.Context, sourceType, sourceRef, text, eng
 // ---------------------------------------------------------------------------
 
 // main wires the bridge-total claim-worker: the SDK (addon.Run) owns the queue protocol; this
-// process only supplies the extrair domain (gleanHandler). One app serves BOTH text providers by
-// config: GLEAN_PROVIDER picks the concrete provider it serves (extrair-email | extrair-linkedin) so
-// it claims only the steps the reconciler routed to it. Default is on_demand (drain once and exit,
+// process only supplies the extrair domain (gleanHandler). One app serves all text providers by
+// config: GLEAN_PROVIDER picks the concrete provider it serves (extrair-email | extrair-linkedin |
+// extrair-news) so it claims only the steps the reconciler routed to it. Default is on_demand (drain
+// once and exit,
 // the woken Cloud Run job); a resident deploy opts into the long-running loop + symmetric activation
 // via WORK_POLL_INTERVAL and/or POKE_ADDR + POKE_TOKEN.
 func main() {
@@ -306,7 +322,7 @@ func main() {
 	}
 	provider := os.Getenv("GLEAN_PROVIDER")
 	if !isValidProvider(provider) {
-		log.Fatalf("GLEAN_PROVIDER must be %q or %q, got %q", provExtrairEmail, provExtrairLinkedIn, provider)
+		log.Fatalf("GLEAN_PROVIDER must be %q, %q, or %q, got %q", provExtrairEmail, provExtrairLinkedIn, provExtrairNews, provider)
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
