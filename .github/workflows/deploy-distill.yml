@@ -25,7 +25,9 @@ jobs:
     with:
       app: rara-distill
       job_name: rara-distill
-      env_vars: DISTILL_PROVIDER=distill,LITELLM_BASE_URL=${{ vars.LITELLM_BASE_URL }},LITELLM_MODEL=${{ vars.LITELLM_MODEL }}
+      # NOTE: groq-llama hardcoded here (llama-3.3-70b) — distill needs 70b quality for curation chains.
+      # vars.LITELLM_MODEL=gemini-flash is spend-capped → ignored. Edit this YAML to change the model.
+      env_vars: DISTILL_PROVIDER=distill,LITELLM_BASE_URL=${{ vars.LITELLM_BASE_URL }},LITELLM_MODEL=groq-llama
       extra_secrets: LITELLM_API_KEY=litellm-api-key:latest
       run_after_deploy: ${{ inputs.run_after_deploy }}
     secrets:
