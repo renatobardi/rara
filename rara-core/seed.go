@@ -154,6 +154,28 @@ func seedLaneFlow(ctx context.Context, db Database, name, sourceType string, cap
 	return nil
 }
 
+// seedOptInLaneFlow is like seedLaneFlow but preserves an existing flow's Enabled flag so that
+// re-seeding never silently disables a lane the operator has turned on. Defaults to disabled on
+// first seed (operator must opt in explicitly).
+func seedOptInLaneFlow(ctx context.Context, db Database, name, sourceType string, capabilities []string) error {
+	enabled := false
+	if f, found, err := db.GetFlow(ctx, name); err != nil {
+		return err
+	} else if found {
+		enabled = f.Enabled
+	}
+	flowID, err := db.UpsertFlow(ctx, Flow{Name: name, SourceType: sourceType, Enabled: enabled, Version: 1})
+	if err != nil {
+		return err
+	}
+	for i, capName := range capabilities {
+		if err := db.UpsertFlowStep(ctx, FlowStep{FlowID: flowID, Seq: i + 1, Capability: capName, Enabled: true}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // SeedYouTubeLane writes the YouTube lane: shared capabilities/providers/config plus the
 // YouTube-specific collectors (harvest, shelf) and the residential-constrained scribe
 // (asr-youtube), and the youtube flow. Idempotent: safe to call on every boot.
@@ -189,22 +211,11 @@ func SeedYouTubeLane(ctx context.Context, db Database) error {
 			return err
 		}
 	}
-	// Preserve the operator's enable across re-seeds; default to disabled on first seed.
-	enabled := false
-	if f, found, err := db.GetFlow(ctx, youtubeFlowName); err != nil {
-		return err
-	} else if found {
-		enabled = f.Enabled
-	}
 	// Flow: coletar -> gate_barato -> transcrever -> gate_rico -> destilar.
-	flowID, err := db.UpsertFlow(ctx, Flow{Name: youtubeFlowName, SourceType: laneYouTube, Enabled: enabled, Version: 1})
-	if err != nil {
+	// Preserves operator's enable across re-seeds; defaults to disabled on first seed.
+	if err := seedOptInLaneFlow(ctx, db, youtubeFlowName, laneYouTube,
+		[]string{capColetar, capGateBarato, capTranscrever, capGateRico, capDestilar}); err != nil {
 		return err
-	}
-	for i, capName := range []string{capColetar, capGateBarato, capTranscrever, capGateRico, capDestilar} {
-		if err := db.UpsertFlowStep(ctx, FlowStep{FlowID: flowID, Seq: i + 1, Capability: capName, Enabled: true}); err != nil {
-			return err
-		}
 	}
 	return seedSharedConfig(ctx, db)
 }
@@ -259,21 +270,10 @@ func SeedEmailLane(ctx context.Context, db Database) error {
 	}); err != nil {
 		return err
 	}
-	// Preserve the operator's enable across re-seeds; default to disabled on first seed.
-	enabled := false
-	if f, found, err := db.GetFlow(ctx, emailFlowName); err != nil {
+	// Preserves operator's enable across re-seeds; defaults to disabled on first seed.
+	if err := seedOptInLaneFlow(ctx, db, emailFlowName, laneEmail,
+		[]string{capColetar, capGateBarato, capExtrair, capGateRico, capDestilar}); err != nil {
 		return err
-	} else if found {
-		enabled = f.Enabled
-	}
-	flowID, err := db.UpsertFlow(ctx, Flow{Name: emailFlowName, SourceType: laneEmail, Enabled: enabled, Version: 1})
-	if err != nil {
-		return err
-	}
-	for i, capName := range []string{capColetar, capGateBarato, capExtrair, capGateRico, capDestilar} {
-		if err := db.UpsertFlowStep(ctx, FlowStep{FlowID: flowID, Seq: i + 1, Capability: capName, Enabled: true}); err != nil {
-			return err
-		}
 	}
 	return seedSharedConfig(ctx, db)
 }
@@ -303,21 +303,10 @@ func SeedNewsLane(ctx context.Context, db Database) error {
 	}); err != nil {
 		return err
 	}
-	// Preserve the operator's enable across re-seeds; default to disabled on first seed.
-	enabled := false
-	if f, found, err := db.GetFlow(ctx, newsFlowName); err != nil {
+	// Preserves operator's enable across re-seeds; defaults to disabled on first seed.
+	if err := seedOptInLaneFlow(ctx, db, newsFlowName, laneNews,
+		[]string{capColetar, capGateBarato, capExtrair, capGateRico, capDestilar}); err != nil {
 		return err
-	} else if found {
-		enabled = f.Enabled
-	}
-	flowID, err := db.UpsertFlow(ctx, Flow{Name: newsFlowName, SourceType: laneNews, Enabled: enabled, Version: 1})
-	if err != nil {
-		return err
-	}
-	for i, capName := range []string{capColetar, capGateBarato, capExtrair, capGateRico, capDestilar} {
-		if err := db.UpsertFlowStep(ctx, FlowStep{FlowID: flowID, Seq: i + 1, Capability: capName, Enabled: true}); err != nil {
-			return err
-		}
 	}
 	return seedSharedConfig(ctx, db)
 }

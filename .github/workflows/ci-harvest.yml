@@ -23,6 +23,9 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: read
+    defaults:
+      run:
+        working-directory: rara-harvest
 
     steps:
       - name: Checkout code
@@ -42,13 +45,10 @@ jobs:
             ${{ runner.os }}-go-harvest-
 
       - name: Download dependencies
-        run: |
-          cd rara-harvest
-          go mod download
+        run: go mod download
 
       - name: Format check
         run: |
-          cd rara-harvest
           if [ -n "$(gofmt -s -l .)" ]; then
             echo "❌ Code formatting issues found. Run: gofmt -w ."
             gofmt -s -d .
@@ -58,19 +58,18 @@ jobs:
 
       - name: Lint
         run: |
-          cd rara-harvest
           go vet ./...
-          echo "✅ Vet check passed"
+          go install honnef.co/go/tools/cmd/staticcheck@latest
+          staticcheck ./...
+          echo "✅ Vet + staticcheck passed"
 
       - name: Run tests
         run: |
-          cd rara-harvest
           go test -v -race -coverprofile=coverage.out ./...
           echo "✅ Tests passed"
 
       - name: Check coverage
         run: |
-          cd rara-harvest
           go tool cover -func=coverage.out | tail -1
           echo "✅ Coverage report generated"
 
@@ -95,7 +94,7 @@ jobs:
       - name: Vulnerability scan (govulncheck)
         run: |
           cd rara-harvest
-          go install golang.org/x/vuln/cmd/govulncheck@latest
+          go install golang.org/x/vuln/cmd/govulncheck@v1.1.3
           "$(go env GOPATH)/bin/govulncheck" ./...
 
       - name: Secret scan (gitleaks)

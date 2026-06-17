@@ -94,30 +94,25 @@ jobs:
 
       - name: Deploy Cloud Run Job
         run: |
+          # Common flags shared by update and create.
+          JOB_FLAGS=(
+            --image "$IMAGE"
+            --region "$REGION"
+            --project "${{ vars.GCP_PROJECT_ID }}"
+            --set-secrets "DATABASE_URL=database-url:latest,YOUTUBE_API_KEY=youtube-api-key:latest"
+            --max-retries 1
+            --task-timeout 900s
+            --memory 512Mi
+            --cpu 1
+          )
           # Try to update first; if the job doesn't exist yet, create it.
           # gcloud sends progress to stderr even on success, so check the exit code
           # first; only inspect stderr content when the command actually fails.
-          if gcloud run jobs update "$JOB_NAME" \
-               --image "$IMAGE" \
-               --region "$REGION" \
-               --project "${{ vars.GCP_PROJECT_ID }}" \
-               --set-secrets "DATABASE_URL=database-url:latest,YOUTUBE_API_KEY=youtube-api-key:latest" \
-               --max-retries 1 \
-               --task-timeout 900s \
-               --memory 512Mi \
-               --cpu 1 2>/tmp/update_err.txt; then
+          if gcloud run jobs update "$JOB_NAME" "${JOB_FLAGS[@]}" 2>/tmp/update_err.txt; then
             echo "Job updated successfully"
           elif grep -qi "not found\|does not exist" /tmp/update_err.txt; then
             echo "Job not found — creating for the first time..."
-            gcloud run jobs create "$JOB_NAME" \
-              --image "$IMAGE" \
-              --region "$REGION" \
-              --project "${{ vars.GCP_PROJECT_ID }}" \
-              --set-secrets "DATABASE_URL=database-url:latest,YOUTUBE_API_KEY=youtube-api-key:latest" \
-              --max-retries 1 \
-              --task-timeout 900s \
-              --memory 512Mi \
-              --cpu 1
+            gcloud run jobs create "$JOB_NAME" "${JOB_FLAGS[@]}"
           else
             echo "Update failed:"; cat /tmp/update_err.txt
             exit 1

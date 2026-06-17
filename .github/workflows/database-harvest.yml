@@ -42,20 +42,26 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y postgresql-client
 
-      - name: Build DATABASE_URL from secrets
+      - name: Configure database credentials
         env:
-          NEON_USERNAME: ${{ secrets.NEON_USERNAME }}
-          NEON_PASSWORD: ${{ secrets.NEON_PASSWORD }}
-          NEON_HOST: ${{ secrets.NEON_HOST }}
-          NEON_PORT: ${{ secrets.NEON_PORT }}
-          NEON_DATABASE: ${{ secrets.NEON_DATABASE }}
+          PGHOST: ${{ secrets.NEON_HOST }}
+          PGPORT: ${{ secrets.NEON_PORT }}
+          PGUSER: ${{ secrets.NEON_USERNAME }}
+          PGPASSWORD: ${{ secrets.NEON_PASSWORD }}
+          PGDATABASE: ${{ secrets.NEON_DATABASE }}
         run: |
-          echo "DATABASE_URL=postgresql://${NEON_USERNAME}:${NEON_PASSWORD}@${NEON_HOST}:${NEON_PORT}/${NEON_DATABASE}" >> "$GITHUB_ENV"
+          {
+            echo "PGHOST=${PGHOST}"
+            echo "PGPORT=${PGPORT}"
+            echo "PGUSER=${PGUSER}"
+            echo "PGPASSWORD=${PGPASSWORD}"
+            echo "PGDATABASE=${PGDATABASE}"
+          } >> "$GITHUB_ENV"
 
       - name: Test database connection
         run: |
           echo "Testing connection to Neon..."
-          psql "$DATABASE_URL" -c "SELECT version();" || exit 1
+          psql -c "SELECT version();" || exit 1
           echo "✅ Database connection successful"
 
       - name: Check migration files
@@ -75,10 +81,10 @@ jobs:
         run: |
           # Execute each migration inside a transaction and roll it back, so the
           # SQL is genuinely parsed/planned by Postgres without persisting changes.
-          for file in rara-harvest/migrations/*.sql; do
+          for file in $(ls rara-harvest/migrations/*.sql | sort -V); do
             echo "Validating: $(basename "$file")"
             { echo "BEGIN;"; cat "$file"; echo "ROLLBACK;"; } \
-              | psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -q \
+              | psql -v ON_ERROR_STOP=1 -q \
               && echo "✅ $(basename "$file") is valid" \
               || { echo "❌ $(basename "$file") failed validation"; exit 1; }
           done
@@ -86,6 +92,9 @@ jobs:
   migrate:
     name: Apply Migrations
     runs-on: ubuntu-latest
+    concurrency:
+      group: database-harvest-migrate
+      cancel-in-progress: false
     # Auto-apply on merge to main, or on a manual "migrate" dispatch.
     if: >-
       (github.ref == 'refs/heads/main' && github.event_name == 'push') ||
@@ -103,32 +112,40 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y postgresql-client
 
-      - name: Build DATABASE_URL from secrets
+      - name: Configure database credentials
         env:
-          NEON_USERNAME: ${{ secrets.NEON_USERNAME }}
-          NEON_PASSWORD: ${{ secrets.NEON_PASSWORD }}
-          NEON_HOST: ${{ secrets.NEON_HOST }}
-          NEON_PORT: ${{ secrets.NEON_PORT }}
-          NEON_DATABASE: ${{ secrets.NEON_DATABASE }}
+          PGHOST: ${{ secrets.NEON_HOST }}
+          PGPORT: ${{ secrets.NEON_PORT }}
+          PGUSER: ${{ secrets.NEON_USERNAME }}
+          PGPASSWORD: ${{ secrets.NEON_PASSWORD }}
+          PGDATABASE: ${{ secrets.NEON_DATABASE }}
         run: |
-          echo "DATABASE_URL=postgresql://${NEON_USERNAME}:${NEON_PASSWORD}@${NEON_HOST}:${NEON_PORT}/${NEON_DATABASE}" >> "$GITHUB_ENV"
+          {
+            echo "PGHOST=${PGHOST}"
+            echo "PGPORT=${PGPORT}"
+            echo "PGUSER=${PGUSER}"
+            echo "PGPASSWORD=${PGPASSWORD}"
+            echo "PGDATABASE=${PGDATABASE}"
+          } >> "$GITHUB_ENV"
 
       - name: Apply migrations
         run: |
           echo "Applying migrations..."
-          for migration in rara-harvest/migrations/*.sql; do
-            if [ -f "$migration" ]; then
-              echo "Running: $(basename $migration)..."
-              psql "$DATABASE_URL" -f "$migration" || exit 1
-              echo "✅ $(basename $migration) applied successfully"
-            fi
-          done
+          (
+            echo "BEGIN;"
+            for migration in $(ls rara-harvest/migrations/*.sql | sort -V); do
+              echo "-- $(basename "$migration")"
+              cat "$migration"
+            done
+            echo "COMMIT;"
+          ) | psql -v ON_ERROR_STOP=1
+          echo "✅ All migrations applied"
 
       - name: Verify schema
         run: |
           echo "Verifying schema..."
-          TARGET_CHANNELS=$(psql "$DATABASE_URL" -t -c "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = 'target_channels'")
-          CHANNEL_VIDEOS=$(psql "$DATABASE_URL" -t -c "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = 'channel_videos'")
+          TARGET_CHANNELS=$(psql -t -c "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'target_channels'")
+          CHANNEL_VIDEOS=$(psql -t -c "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'channel_videos'")
           if [ "$TARGET_CHANNELS" -eq 1 ] && [ "$CHANNEL_VIDEOS" -eq 1 ]; then
             echo "✅ Schema verified successfully"
           else
@@ -139,4 +156,4 @@ jobs:
       - name: Check indexes
         run: |
           echo "Verifying indexes..."
-          psql "$DATABASE_URL" -c "\di public.*" | head -20
+          psql -c "\di public.*" | head -20
