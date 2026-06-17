@@ -87,3 +87,27 @@ In `.github/workflows/`, each agent gets its own trio, triggered only when its p
 Auth to GCP is Workload Identity Federation (no SA key files); secrets live in GCP Secret Manager,
 except scribe which reads `~/.rara-scribe/.env`. When adding an agent, copy an existing agent's
 Makefile + the three workflow files and adapt the path filters.
+
+## Code review loop (CodeRabbit reports → Claude Code fixes)
+
+**Standard workflow before opening any PR.** Run a CodeRabbit review locally and fix every finding
+*through Claude Code* (not via CodeRabbit's one-click suggestion), so each fix goes through the
+mandatory TDD cycle and respects the conventions above.
+
+The loop, inside a Claude Code session in the agent dir:
+
+1. Implement the change (Red→Green→Refactor with the fluent harness over `MockDatabase`).
+2. Trigger the review: `/coderabbit:review uncommitted` (or just ask "review my changes with
+   CodeRabbit"). The CLI reads this `CLAUDE.md`, so findings are scoped to our conventions.
+3. Claude Code turns the findings into a task list and fixes each one — **security findings first**
+   (the `.coderabbit.yaml` makes security priority #1), then quality. Every fix that touches logic
+   gets a failing test written first, then `make test` must pass.
+4. Re-review until clean, then commit and push.
+
+**Severity policy:** fix *all* findings, including low/medium and nitpicks (profile is `assertive`).
+Only apply CodeRabbit's one-click committable suggestion for truly trivial, logic-free diffs
+(typos, import order); everything else goes through Claude Code so it lands with a test.
+
+The GitHub PR review (CodeRabbit app + `.coderabbit.yaml`) stays on as an independent safety net;
+`request_changes_workflow: true` blocks approval until every finding is resolved. Config lives in
+`.coderabbit.yaml` at the repo root and overrides any dashboard UI setting.

@@ -5,23 +5,23 @@
 # Coloque este arquivo na RAIZ do repositório, na branch default (main).
 
 language: pt-BR
-tone_instructions: "Seja técnico, direto e objetivo. Priorize arquitetura, segurança, correção e manutenibilidade. Evite comentários decorativos."
+tone_instructions: "Priorize SEGURANÇA acima de tudo, depois qualidade e correção. Aponte tudo, inclusive low/medium e nitpicks. Comentários curtos, mas sempre explique o porquê e o risco para ensinar o autor."
 early_access: false
 enable_free_tier: true       # mantém os recursos do free tier ativos para quem não tem plano pago
-focus: balanced               # casual = tudo | balanced = sem enfeites | high = só o essencial
+focus: high                   # casual = tudo | balanced = sem enfeites | high = só o essencial (menos verboso)
 
 reviews:
-  profile: chill              # 'chill' = menos nitpick | 'assertive' = mais agressivo
-  request_changes_workflow: false
-  high_level_summary: true
+  profile: assertive          # 'assertive' = pega tudo, inclusive low/medium e nitpicks
+  request_changes_workflow: true   # não aprova o PR enquanto houver apontamento não resolvido
+  high_level_summary: true    # resumo didático do que mudou
   review_status: true
   collapse_walkthrough: true
   changed_files_summary: true
-  sequence_diagrams: true
+  sequence_diagrams: false    # desligado para reduzir verbosidade
   estimate_code_review_effort: true
   related_issues: true
-  related_prs: true
-  suggested_reviewers: true
+  related_prs: false
+  suggested_reviewers: false
 
   # Arquivos ignorados na revisão (gerados, lockfiles, build artifacts)
   path_filters:
@@ -40,6 +40,14 @@ reviews:
 
   # Instruções específicas por tipo de arquivo
   path_instructions:
+    - path: "**"
+      instructions: >-
+        SEGURANÇA é prioridade #1. Procure ativamente e sinalize: SQL/command
+        injection, secrets ou credenciais hardcoded, dados de entrada não
+        validados, authz/authn ausente ou frágil, SSRF, path traversal,
+        deserialização insegura e exposição de dados sensíveis em logs. Para
+        cada achado (qualquer severidade), explique em 1-2 frases o que está
+        errado e qual o risco concreto — comentário curto, mas didático.
     - path: "**/*.go"
       instructions: >-
         Revise como Go idiomático. Verifique: tratamento de erros com wrapping
