@@ -513,6 +513,26 @@ func (d *pgxDatabase) ListFlows(ctx context.Context) ([]Flow, error) {
 	return out, rows.Err()
 }
 
+// ListPodcastFeeds returns every podcast feed (active or not), ordered by id — the operator's
+// config-as-data view of rara-dial's podcast_feeds table (see the Database interface note).
+func (d *pgxDatabase) ListPodcastFeeds(ctx context.Context) ([]PodcastFeed, error) {
+	const q = `SELECT id, feed_url, COALESCE(title, ''), active FROM podcast_feeds ORDER BY id`
+	rows, err := d.conn.Query(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []PodcastFeed
+	for rows.Next() {
+		var f PodcastFeed
+		if err := rows.Scan(&f.ID, &f.FeedURL, &f.Title, &f.Active); err != nil {
+			return nil, err
+		}
+		out = append(out, f)
+	}
+	return out, rows.Err()
+}
+
 // ListProviders returns every provider (enabled or not), ordered by name.
 func (d *pgxDatabase) ListProviders(ctx context.Context) ([]Provider, error) {
 	const q = `

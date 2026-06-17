@@ -276,6 +276,18 @@ type Flow struct {
 	Version    int    `json:"version"`
 }
 
+// PodcastFeed is one operator-curated RSS source. The podcast_feeds table is owned (DDL,
+// migrations) by rara-dial — the collector only READS active=true. This struct is the control
+// plane's view of it: the surface lets an operator ADD a feed and TOGGLE active (config-as-data),
+// the first core write into a collector's table. Title is optional on add; the dial refreshes it
+// from the feed on collection.
+type PodcastFeed struct {
+	ID      int    `json:"id"`
+	FeedURL string `json:"feed_url"`
+	Title   string `json:"title"`
+	Active  bool   `json:"active"`
+}
+
 // FlowStep is one ordered step of a flow.
 type FlowStep struct {
 	FlowID     int             `json:"flow_id"`
@@ -446,6 +458,14 @@ type Database interface {
 	// UpsertGateRule writes one deterministic allow/deny rule (Phase 3 gate cascade),
 	// idempotent on (action, match_type, value).
 	UpsertGateRule(ctx context.Context, r GateRule) error
+
+	// --- Podcast sources (control-plane config — the first core write into a collector's
+	// table). podcast_feeds is OWNED (DDL) by rara-dial; the collector only reads active=true.
+	// These are the operator's curate path: add a feed / toggle it / list them as config-as-data.
+	// No dial domain here (no episode/spine logic) — it is config, not collection.
+	ListPodcastFeeds(ctx context.Context) ([]PodcastFeed, error)
+	UpsertPodcastFeed(ctx context.Context, feedURL, title string) (int, error)
+	SetPodcastFeedActive(ctx context.Context, id int, active bool) error
 
 	// Spine (idempotent upserts).
 	UpsertItem(ctx context.Context, it Item) (int, error)
@@ -679,6 +699,31 @@ func (d *pgxDatabase) UpsertFlowStep(ctx context.Context, s FlowStep) error {
 			options    = EXCLUDED.options,
 			enabled    = EXCLUDED.enabled`
 	_, err := d.conn.Exec(ctx, q, s.FlowID, s.Seq, s.Capability, jsonOrEmpty(s.Options, "{}"), s.Enabled)
+	return err
+}
+
+// UpsertPodcastFeed idempotently adds an operator-curated feed (ON CONFLICT (feed_url)). Title is
+// optional: an empty title is left for the dial to fill on collection, and a re-add with an empty
+// title never wipes a title the dial already refreshed (COALESCE keeps the stored one). The
+// podcast_feeds table is rara-dial's — see the Database interface note: this is operator config, not
+// dial domain. Returns the row id.
+func (d *pgxDatabase) UpsertPodcastFeed(ctx context.Context, feedURL, title string) (int, error) {
+	const q = `
+		INSERT INTO podcast_feeds (feed_url, title)
+		VALUES ($1, $2)
+		ON CONFLICT (feed_url) DO UPDATE SET
+			title = COALESCE(EXCLUDED.title, podcast_feeds.title)
+		RETURNING id`
+	var id int
+	err := d.conn.QueryRow(ctx, q, feedURL, nullStr(title)).Scan(&id)
+	return id, err
+}
+
+// SetPodcastFeedActive toggles a feed on/off — active=false stops collection without orphaning the
+// already-collected episodes (no hard delete in v1). Targeted UPDATE; never clobbers feed_url/title.
+func (d *pgxDatabase) SetPodcastFeedActive(ctx context.Context, id int, active bool) error {
+	const q = `UPDATE podcast_feeds SET active = $2 WHERE id = $1`
+	_, err := d.conn.Exec(ctx, q, id, active)
 	return err
 }
 

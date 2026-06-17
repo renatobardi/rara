@@ -89,8 +89,12 @@ type MockDatabase struct {
 	profiles      map[int]InterestProfile // UNIQUE(version)
 	distillations []Distillation          // cross-agent read-only seam (rara-distill owns the table)
 
+	podcastFeeds map[int]PodcastFeed // rara-dial's table, written by the core surface (config)
+	feedByURL    map[string]int      // UNIQUE(feed_url) -> id
+
 	nextFlowID int
 	nextItemID int
+	nextFeedID int
 
 	// nowFn stamps CreatedAt on appended feedback / inserted profiles when the caller leaves it
 	// zero (mirroring the SQL DEFAULT CURRENT_TIMESTAMP). Tests override it for determinism.
@@ -115,8 +119,11 @@ func newMockDatabase() *MockDatabase {
 		stepOrder:    make(map[itemStepKey]int),
 		gateRules:    make(map[gateRuleKey]GateRule),
 		profiles:     make(map[int]InterestProfile),
+		podcastFeeds: make(map[int]PodcastFeed),
+		feedByURL:    make(map[string]int),
 		nextFlowID:   1,
 		nextItemID:   1,
+		nextFeedID:   1,
 		nowFn:        time.Now,
 	}
 }
@@ -165,6 +172,39 @@ func (m *MockDatabase) UpsertFlowStep(_ context.Context, s FlowStep) error {
 
 func (m *MockDatabase) UpsertRoutingPolicy(_ context.Context, p RoutingPolicy) error {
 	m.policies[p.Scope] = p // ON CONFLICT (scope) DO UPDATE
+	return nil
+}
+
+func (m *MockDatabase) UpsertPodcastFeed(_ context.Context, feedURL, title string) (int, error) {
+	if id, ok := m.feedByURL[feedURL]; ok { // ON CONFLICT (feed_url)
+		f := m.podcastFeeds[id]
+		if title != "" { // empty title never wipes a title the dial already refreshed (COALESCE)
+			f.Title = title
+		}
+		m.podcastFeeds[id] = f
+		return id, nil
+	}
+	id := m.nextFeedID
+	m.nextFeedID++
+	m.podcastFeeds[id] = PodcastFeed{ID: id, FeedURL: feedURL, Title: title, Active: true} // DEFAULT TRUE
+	m.feedByURL[feedURL] = id
+	return id, nil
+}
+
+func (m *MockDatabase) ListPodcastFeeds(_ context.Context) ([]PodcastFeed, error) {
+	out := make([]PodcastFeed, 0, len(m.podcastFeeds))
+	for _, f := range m.podcastFeeds {
+		out = append(out, f)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out, nil
+}
+
+func (m *MockDatabase) SetPodcastFeedActive(_ context.Context, id int, active bool) error {
+	if f, ok := m.podcastFeeds[id]; ok { // UPDATE ... WHERE id — a miss is a no-op, not an error
+		f.Active = active
+		m.podcastFeeds[id] = f
+	}
 	return nil
 }
 

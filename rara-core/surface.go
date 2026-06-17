@@ -107,6 +107,36 @@ func (c *Core) RoutingPolicies(ctx context.Context) ([]RoutingPolicy, error) {
 }
 func (c *Core) GateRules(ctx context.Context) ([]GateRule, error) { return c.db.ListAllGateRules(ctx) }
 
+// --- Podcast sources (control-plane config) -------------------------------
+// Managing what to collect is an operator decision, so the core surface WRITES podcast_feeds —
+// just as it already owns flows/providers. The table's DDL is rara-dial's; the collector keeps
+// only READING active=true. This is the first core write into a collector's table: operator
+// config, not dial domain.
+
+// PodcastFeeds lists every podcast feed (config-as-data).
+func (c *Core) PodcastFeeds(ctx context.Context) ([]PodcastFeed, error) {
+	return c.db.ListPodcastFeeds(ctx)
+}
+
+// AddPodcastFeed idempotently adds a feed (the dial then collects it). Title is optional — the dial
+// fills it on collection. A blank feed_url is a caller error (400).
+func (c *Core) AddPodcastFeed(ctx context.Context, feedURL, title string) (int, error) {
+	feedURL = strings.TrimSpace(feedURL)
+	if feedURL == "" {
+		return 0, badInput("feed_url cannot be empty")
+	}
+	return c.db.UpsertPodcastFeed(ctx, feedURL, strings.TrimSpace(title))
+}
+
+// SetPodcastFeedActive toggles a feed on/off (active=false stops collection without orphaning
+// episodes — there is no hard delete in v1).
+func (c *Core) SetPodcastFeedActive(ctx context.Context, id int, active bool) error {
+	if id <= 0 {
+		return badInput("feed id must be positive, got %d", id)
+	}
+	return c.db.SetPodcastFeedActive(ctx, id, active)
+}
+
 // InterestProfile returns the ACTIVE preferences document (the version in force the gate reads),
 // not merely the latest — a `proposed` revision is invisible here until approved.
 func (c *Core) InterestProfile(ctx context.Context) (InterestProfile, bool, error) {
@@ -289,6 +319,11 @@ func NewSurfaceMux(core *Core, token string) http.Handler {
 	mux.HandleFunc("GET /v1/interest-profile", h.getInterestProfile)
 	mux.HandleFunc("GET /v1/interest-profile/versions", h.listInterestProfiles)
 
+	// Sources — podcast feeds (control-plane config; the table is rara-dial's, the core writes it).
+	mux.HandleFunc("GET /v1/sources/podcast", h.listPodcastFeeds)
+	mux.HandleFunc("POST /v1/sources/podcast", h.addPodcastFeed)
+	mux.HandleFunc("PUT /v1/sources/podcast", h.setPodcastFeedActive)
+
 	// Config edits (idempotent upserts; a new profile version is append-only).
 	mux.HandleFunc("PUT /v1/flows", h.upsertFlow)
 	mux.HandleFunc("PUT /v1/flow-steps", h.upsertFlowStep)
@@ -415,6 +450,38 @@ func (h *httpSurface) listRoutingPolicies(w http.ResponseWriter, r *http.Request
 func (h *httpSurface) listGateRules(w http.ResponseWriter, r *http.Request) {
 	rules, err := h.core.GateRules(r.Context())
 	writeResult(w, rules, err)
+}
+
+func (h *httpSurface) listPodcastFeeds(w http.ResponseWriter, r *http.Request) {
+	feeds, err := h.core.PodcastFeeds(r.Context())
+	writeResult(w, feeds, err)
+}
+
+func (h *httpSurface) addPodcastFeed(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		FeedURL string `json:"feed_url"`
+		Title   string `json:"title"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	id, err := h.core.AddPodcastFeed(r.Context(), req.FeedURL, req.Title)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]int{"id": id})
+}
+
+func (h *httpSurface) setPodcastFeedActive(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ID     int  `json:"id"`
+		Active bool `json:"active"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	writeResult(w, okResult{OK: true}, h.core.SetPodcastFeedActive(r.Context(), req.ID, req.Active))
 }
 
 func (h *httpSurface) getInterestProfile(w http.ResponseWriter, r *http.Request) {
