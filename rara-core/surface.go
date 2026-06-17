@@ -29,8 +29,60 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 )
+
+// lastReconcileNano is the Unix nanosecond timestamp of the most recent reconcile pass.
+// Zero means never. Stamped by StampReconcile (called from the --loop runner in main.go)
+// and read by the health handler — both in the same process, so a package-level atomic
+// is the right seam (no DB write needed).
+var lastReconcileNano int64
+
+// StampReconcile records the current wall-clock time as the last reconcile pass.
+func StampReconcile() { atomic.StoreInt64(&lastReconcileNano, time.Now().UnixNano()) }
+
+// ---------------------------------------------------------------------------
+// Health + usage report types
+// ---------------------------------------------------------------------------
+
+// HealthReport is the response shape for GET /v1/health.
+type HealthReport struct {
+	DBOk            bool           `json:"db_ok"`
+	LastReconcileAt *time.Time     `json:"last_reconcile_at,omitempty"`
+	Providers       ProviderHealth `json:"providers"`
+}
+
+// ProviderHealth aggregates provider heartbeat health for the health report.
+type ProviderHealth struct {
+	Total   int `json:"total"`
+	Enabled int `json:"enabled"`
+	// Stale counts RESIDENT providers whose heartbeat_at is older than defaultHealthTTL.
+	// on_demand providers are exempt (scale-to-zero: they only heartbeat when active).
+	Stale int `json:"stale"`
+}
+
+// UsageReport is the response shape for GET /v1/usage.
+type UsageReport struct {
+	Items         []ItemCount `json:"items"`
+	ItemSteps     []StepCount `json:"item_steps"`
+	Distillations int         `json:"distillations"`
+	Quarantine    int         `json:"quarantine"`
+}
+
+// ItemCount is one (lane, status) cell from the items GROUP BY.
+type ItemCount struct {
+	Lane   string `json:"lane"`
+	Status string `json:"status"`
+	Count  int    `json:"count"`
+}
+
+// StepCount is one (capability, status) cell from the item_steps GROUP BY.
+type StepCount struct {
+	Capability string `json:"capability"`
+	Status     string `json:"status"`
+	Count      int    `json:"count"`
+}
 
 // ---------------------------------------------------------------------------
 // Core — the operations layer (the "núcleo" both adapters drive).
@@ -280,6 +332,42 @@ func (c *Core) ReviewQuarantineItem(ctx context.Context, itemID int, signal stri
 	return ReviewQuarantine(ctx, c.db, itemID, signal)
 }
 
+// Health returns a degraded-safe aggregate of system health: DB connectivity, the most recent
+// reconcile timestamp, and a provider heartbeat summary. Sub-checks that fail are reported as
+// false/zero — the endpoint never 500s on a partial failure.
+func (c *Core) Health(ctx context.Context) HealthReport {
+	var r HealthReport
+	r.DBOk = c.db.HealthPing(ctx) == nil
+
+	if n := atomic.LoadInt64(&lastReconcileNano); n > 0 {
+		t := time.Unix(0, n)
+		r.LastReconcileAt = &t
+	}
+
+	if providers, err := c.db.ListProviders(ctx); err == nil {
+		now := time.Now()
+		for _, p := range providers {
+			r.Providers.Total++
+			if p.Enabled {
+				r.Providers.Enabled++
+			}
+			// Resident providers are stale if their heartbeat is old; on_demand providers are
+			// exempt (scale-to-zero: they only heartbeat when active, not while idle).
+			if p.Activation == activationResident && p.HeartbeatAt != nil &&
+				now.Sub(*p.HeartbeatAt) > defaultHealthTTL {
+				r.Providers.Stale++
+			}
+		}
+	}
+	return r
+}
+
+// Usage returns exact COUNT(*) GROUP BY aggregates for items, item_steps, and distillations.
+// Cross-agent tables (distillations) degrade gracefully when absent (table not deployed).
+func (c *Core) Usage(ctx context.Context) (UsageReport, error) {
+	return c.db.UsageCounts(ctx)
+}
+
 // SubmitLinkedIn is the manual-inbox collector (deliverable #3): upsert the post + discover the
 // spine item. Returns the item id.
 func (c *Core) SubmitLinkedIn(ctx context.Context, p LinkedInPost) (int, error) {
@@ -300,6 +388,10 @@ func (c *Core) SubmitLinkedIn(ctx context.Context, p LinkedInPost) (int, error) 
 func NewSurfaceMux(core *Core, token string) http.Handler {
 	mux := http.NewServeMux()
 	h := &httpSurface{core: core}
+
+	// Health + usage.
+	mux.HandleFunc("GET /v1/health", h.health)
+	mux.HandleFunc("GET /v1/usage", h.usage)
 
 	// State reads.
 	mux.HandleFunc("GET /v1/items", h.listItems)
@@ -373,6 +465,15 @@ func authMiddleware(token string, next http.Handler) http.Handler {
 type httpSurface struct{ core *Core }
 
 // --- read handlers --------------------------------------------------------
+
+func (h *httpSurface) health(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, h.core.Health(r.Context()))
+}
+
+func (h *httpSurface) usage(w http.ResponseWriter, r *http.Request) {
+	report, err := h.core.Usage(r.Context())
+	writeResult(w, report, err)
+}
 
 func (h *httpSurface) listItems(w http.ResponseWriter, r *http.Request) {
 	items, err := h.core.ListItems(r.Context(), r.URL.Query().Get("status"))
