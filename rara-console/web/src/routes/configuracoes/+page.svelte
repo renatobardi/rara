@@ -111,6 +111,7 @@
 					{t.settings.itemsSection}
 				</h3>
 				<table class="w-full text-[13px]">
+					<caption class="sr-only">{t.settings.itemsSection}</caption>
 					<thead>
 						<tr class="border-b border-border text-left text-[11px] text-muted">
 							<th class="px-4 py-2 font-medium">{t.settings.colLane}</th>
@@ -138,6 +139,7 @@
 					{t.settings.stepsSection}
 				</h3>
 				<table class="w-full text-[13px]">
+					<caption class="sr-only">{t.settings.stepsSection}</caption>
 					<thead>
 						<tr class="border-b border-border text-left text-[11px] text-muted">
 							<th class="px-4 py-2 font-medium">{t.settings.colCapability}</th>

@@ -1623,7 +1623,11 @@ func TestCoreUsageProxiesWithBearer(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	if body["distillations"].(float64) != 10 {
-		t.Errorf("distillations = %v, want 10", body["distillations"])
+	gotDist, ok := body["distillations"].(float64)
+	if !ok {
+		t.Fatalf("distillations type unexpected: %T (value=%v)", body["distillations"], body["distillations"])
+	}
+	if gotDist != 10 {
+		t.Errorf("distillations = %v, want 10", gotDist)
 	}
 }
