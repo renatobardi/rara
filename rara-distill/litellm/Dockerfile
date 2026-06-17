@@ -4,4 +4,4 @@ COPY config.yaml /app/config.yaml
 
 USER nonroot
 
-CMD ["--config", "/app/config.yaml", "--port", "8080", "--detailed_debug"]
+CMD exec litellm --config /app/config.yaml --port "${PORT:-8080}"
