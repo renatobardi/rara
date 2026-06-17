@@ -44,6 +44,12 @@ func TestReconcileEmailRoutesSelfHost(t *testing.T) {
 	if err := SeedEmailLane(ctx, db); err != nil {
 		t.Fatal(err)
 	}
+	// Enable the lane so ingest runs (email ships disabled).
+	ef := db.flows[emailFlowName]
+	ef.Enabled = true
+	if _, err := db.UpsertFlow(ctx, ef); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := IngestEmail(ctx, db, fakeEmailSource{emails: []EmailItem{{MessageID: "msg1"}}}); err != nil {
 		t.Fatal(err)
 	}

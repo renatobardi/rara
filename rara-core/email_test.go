@@ -23,6 +23,42 @@ func (f fakeEmailSource) Emails(_ context.Context) ([]EmailItem, error) {
 // Seed + ingest.
 // ---------------------------------------------------------------------------
 
+// TestSeedEmailLaneDisabledByDefault: email is an opt-in lane — it ships DISABLED so lighting it is
+// a deliberate operator action (Fontes & Flows toggle / UPDATE flows).
+func TestSeedEmailLaneDisabledByDefault(t *testing.T) {
+	ctx := context.Background()
+	db := newMockDatabase()
+	if err := SeedEmailLane(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	if db.flows[emailFlowName].Enabled {
+		t.Error("email lane should ship disabled (opt-in), got enabled")
+	}
+}
+
+// TestSeedEmailLanePreservesOperatorEnable: once an operator enables the lane, a later re-seed
+// must NOT silently turn it back off.
+func TestSeedEmailLanePreservesOperatorEnable(t *testing.T) {
+	ctx := context.Background()
+	db := newMockDatabase()
+	if err := SeedEmailLane(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	// Operator lights the lane.
+	f := db.flows[emailFlowName]
+	f.Enabled = true
+	if _, err := db.UpsertFlow(ctx, f); err != nil {
+		t.Fatal(err)
+	}
+	// Re-seed.
+	if err := SeedEmailLane(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	if !db.flows[emailFlowName].Enabled {
+		t.Error("re-seed turned an operator-enabled email lane back off")
+	}
+}
+
 // TestSeedEmailLane: the extrair-email provider on `extrair` (accepts email) and the email
 // flow that swaps transcrever for extrair.
 func TestSeedEmailLane(t *testing.T) {
@@ -64,6 +100,12 @@ func TestIngestEmail(t *testing.T) {
 	if err := SeedEmailLane(ctx, db); err != nil {
 		t.Fatal(err)
 	}
+	// Enable the lane so ingest runs (email ships disabled).
+	f := db.flows[emailFlowName]
+	f.Enabled = true
+	if _, err := db.UpsertFlow(ctx, f); err != nil {
+		t.Fatal(err)
+	}
 	src := fakeEmailSource{emails: []EmailItem{
 		{MessageID: "msg1", Subject: "One"},
 		{MessageID: ""}, // malformed -> skipped
@@ -93,6 +135,12 @@ func TestReconcileEmailUsesExtrairAndReachesToText(t *testing.T) {
 	ctx := context.Background()
 	db := newMockDatabase()
 	if err := SeedEmailLane(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	// Enable the lane so ingest runs (email ships disabled).
+	ef := db.flows[emailFlowName]
+	ef.Enabled = true
+	if _, err := db.UpsertFlow(ctx, ef); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := IngestEmail(ctx, db, fakeEmailSource{emails: []EmailItem{{MessageID: "msg1"}}}); err != nil {
