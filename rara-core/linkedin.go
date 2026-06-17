@@ -56,6 +56,13 @@ type LinkedInPostStore interface {
 	UpsertLinkedInPost(ctx context.Context, p LinkedInPost) error
 }
 
+// normalizeLinkedInURL returns the canonical form of a LinkedIn post URL used as the spine's
+// source_ref. Both producers (manual-inbox and rara-clip) must call this so that the same
+// post always maps to the same item regardless of who collected it.
+func normalizeLinkedInURL(raw string) string {
+	return strings.TrimSpace(raw)
+}
+
 // SubmitLinkedInPost is the manual-inbox collector: it cleans the pasted post, upserts it into
 // the linkedin_posts domain table (so the gate/extractor can read it), and discovers the spine
 // item (lane=linkedin, source_ref=url, sensitivity=public). Idempotent on the URL — a
@@ -64,7 +71,7 @@ type LinkedInPostStore interface {
 // Order matters: the domain row is written BEFORE the item is discovered, so by the time the
 // reconciler assigns gate_barato (a later pass) the metadata it reads already exists.
 func SubmitLinkedInPost(ctx context.Context, db Database, store LinkedInPostStore, p LinkedInPost) (int, error) {
-	url := strings.TrimSpace(p.URL)
+	url := normalizeLinkedInURL(p.URL)
 	if url == "" {
 		return 0, fmt.Errorf("linkedin: url is required")
 	}
@@ -129,18 +136,19 @@ func IngestLinkedIn(ctx context.Context, db Database, src LinkedInSource) (int, 
 	}
 	n := 0
 	for _, p := range posts {
-		if p.URL == "" {
+		url := normalizeLinkedInURL(p.URL)
+		if url == "" {
 			continue
 		}
 		if _, err := db.DiscoverItem(ctx, Item{
 			Lane:        laneLinkedIn,
-			SourceRef:   p.URL,
+			SourceRef:   url,
 			FlowID:      flow.ID,
 			FlowVersion: flow.Version,
 			Status:      itemDiscovered,
 			Sensitivity: sensitivityPublic,
 		}); err != nil {
-			return n, fmt.Errorf("ingest: discover item %q: %w", p.URL, err)
+			return n, fmt.Errorf("ingest: discover item %q: %w", url, err)
 		}
 		n++
 	}
