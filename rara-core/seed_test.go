@@ -131,16 +131,25 @@ func TestSeedYouTubeLanePreservesEnabled(t *testing.T) {
 	if err := SeedYouTubeLane(ctx, db); err != nil {
 		t.Fatal(err)
 	}
-	// Simulate operator enabling the lane.
-	f := db.flows[youtubeFlowName]
+	// Simulate operator enabling the lane via the public API.
+	f, found, err := db.GetFlow(ctx, youtubeFlowName)
+	if err != nil || !found {
+		t.Fatalf("GetFlow: err=%v found=%v", err, found)
+	}
 	f.Enabled = true
-	db.flows[youtubeFlowName] = f
+	if _, err := db.UpsertFlow(ctx, f); err != nil {
+		t.Fatalf("UpsertFlow: %v", err)
+	}
 
 	// Re-seed must not flip it back to disabled.
 	if err := SeedYouTubeLane(ctx, db); err != nil {
 		t.Fatal(err)
 	}
-	if !db.flows[youtubeFlowName].Enabled {
+	f, found, err = db.GetFlow(ctx, youtubeFlowName)
+	if err != nil || !found {
+		t.Fatalf("GetFlow after re-seed: err=%v found=%v", err, found)
+	}
+	if !f.Enabled {
 		t.Error("re-seed flipped operator-enabled youtube flow back to disabled")
 	}
 }

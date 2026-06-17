@@ -14,6 +14,7 @@ on:
     paths:
       - 'rara-harvest/migrations/**'
       - 'rara-harvest/cleanup.sql'
+      - '.github/workflows/database-harvest.yml'
   workflow_dispatch:
     inputs:
       action:
