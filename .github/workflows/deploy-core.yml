@@ -3,7 +3,12 @@ name: Deploy rara-core
 # Deploys rara-core as a Cloud Run Service (always-on reconciler + HTTP surface).
 # Uses the same multi-module Cloud Build pattern as the workers (rara-addon + rara-core packed
 # together so `replace ../rara-addon` resolves). Service account: rara-core-activator (has
-# run.developer on the 4 podcast-lane jobs) — ADC picks it up natively, no SA key needed.
+# run.developer on the lane worker jobs) — ADC picks it up natively, no SA key needed.
+# --no-cpu-throttling is REQUIRED: the reconcile --loop ticker is background work between HTTP
+# requests, and the Cloud Run default (CPU only during a request) freezes it — the loop only
+# advances when the surface happens to get traffic, so items stall. CPU-always-allocated (with
+# min/max-instances=1) keeps the single reconciler instance actually always-on, as the design
+# intends. Costs ~1 vCPU continuously; revert with --cpu-throttling.
 # Surface auth stays bearer (SURFACE_TOKEN secret); SURFACE_ADDR=0.0.0.0:8080 (Cloud Run port).
 # After deploy, update CORE_SURFACE_URL in the console's /etc/rara-console/env on the Oracle VM
 # to the new Cloud Run service URL.
@@ -88,6 +93,7 @@ jobs:
             --max-instances 1 \
             --memory 512Mi \
             --cpu 1 \
+            --no-cpu-throttling \
             --port 8080 \
             --allow-unauthenticated \
             --args "reconcile,--loop"
