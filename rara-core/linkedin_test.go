@@ -246,9 +246,85 @@ func TestIngestLinkedIn(t *testing.T) {
 	if len(db.items) != 2 {
 		t.Errorf("dedup failed: %d items, want 2", len(db.items))
 	}
-	it := db.items[itemKey(laneLinkedIn, "https://linkedin.com/posts/1")]
+	it, ok := db.items[itemKey(laneLinkedIn, "https://linkedin.com/posts/1")]
+	if !ok {
+		t.Fatal("item for https://linkedin.com/posts/1 not found")
+	}
 	if it.Sensitivity != sensitivityPublic {
 		t.Errorf("linkedin item sensitivity = %q, want public", it.Sensitivity)
+	}
+}
+
+// TestIngestLinkedInNormalizesURL: a URL with leading/trailing whitespace in linkedin_posts
+// (e.g. from a rara-clip normalization gap) must produce the SAME spine item as the clean URL.
+// Whitespace-only URLs must be skipped (same as empty).
+func TestIngestLinkedInNormalizesURL(t *testing.T) {
+	ctx := context.Background()
+	db := newMockDatabase()
+	if err := SeedLinkedInLane(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	f := db.flows[linkedinFlowName]
+	f.Enabled = true
+	if _, err := db.UpsertFlow(ctx, f); err != nil {
+		t.Fatal(err)
+	}
+	const clean = "https://linkedin.com/posts/padded"
+	src := fakeLinkedInSource{posts: []LinkedInPost{
+		{URL: "  " + clean + "  "}, // padded URL from rara-clip
+		{URL: "   "},               // whitespace-only → must be skipped
+		{URL: clean},               // clean duplicate → same item
+	}}
+	n, err := IngestLinkedIn(ctx, db, src)
+	if err != nil {
+		t.Fatalf("ingest: %v", err)
+	}
+	// whitespace-only is skipped; padded + clean both processed (2)
+	if n != 2 {
+		t.Errorf("processed %d, want 2 (whitespace-only skipped)", n)
+	}
+	// padded and clean normalize to the same source_ref → one item
+	if len(db.items) != 1 {
+		t.Errorf("url normalization failed: %d items, want 1", len(db.items))
+	}
+	if _, ok := db.items[itemKey(laneLinkedIn, clean)]; !ok {
+		t.Errorf("item keyed on clean url %q not found (got %v)", clean, db.items)
+	}
+}
+
+// TestIngestLinkedInPaddedURLConvergesWithManualInbox: manual-inbox submits a clean URL;
+// rara-clip stores the same URL with padding. IngestLinkedIn must normalize and collapse
+// onto the single existing spine item — the cross-producer convergence invariant.
+func TestIngestLinkedInPaddedURLConvergesWithManualInbox(t *testing.T) {
+	ctx := context.Background()
+	db := newMockDatabase()
+	if err := SeedLinkedInLane(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	f := db.flows[linkedinFlowName]
+	f.Enabled = true
+	if _, err := db.UpsertFlow(ctx, f); err != nil {
+		t.Fatal(err)
+	}
+	store := newFakeLinkedInStore()
+	const clean = "https://linkedin.com/posts/convergence"
+
+	// Manual-inbox: clean URL → spine item.
+	if _, err := SubmitLinkedInPost(ctx, db, store, LinkedInPost{
+		URL: clean, Author: "Alice", Text: "Convergence test.",
+	}); err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+
+	// Bright Data: same URL with padding → must normalize and collapse.
+	if _, err := IngestLinkedIn(ctx, db, fakeLinkedInSource{
+		posts: []LinkedInPost{{URL: "  " + clean + "  "}},
+	}); err != nil {
+		t.Fatalf("ingest: %v", err)
+	}
+
+	if len(db.items) != 1 {
+		t.Errorf("padded url produced %d items, want 1 (convergence broken)", len(db.items))
 	}
 }
 
