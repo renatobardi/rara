@@ -541,6 +541,28 @@ func (s *server) handleUpsertFlowStep(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(body)
 }
 
+// handleCoreHealth proxies GET /v1/health — the system health aggregate (db_ok, last reconcile,
+// provider staleness). Always 200 from core; transport failures become 502.
+func (s *server) handleCoreHealth(w http.ResponseWriter, r *http.Request) {
+	body, err := s.fetchCore(r.Context(), "/v1/health")
+	if err != nil {
+		badGateway(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, json.RawMessage(body))
+}
+
+// handleCoreUsage proxies GET /v1/usage — exact COUNT(*) GROUP BY aggregates for items,
+// item_steps, and distillations. Transport failures become 502.
+func (s *server) handleCoreUsage(w http.ResponseWriter, r *http.Request) {
+	body, err := s.fetchCore(r.Context(), "/v1/usage")
+	if err != nil {
+		badGateway(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, json.RawMessage(body))
+}
+
 // handleHealthz is the console's own liveness probe; it also reports whether the core surface is
 // reachable so a deploy can confirm the BFF link is live. It is always 200 (the console is up).
 func (s *server) handleHealthz(w http.ResponseWriter, r *http.Request) {
@@ -580,6 +602,8 @@ func main() {
 	}
 
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/health", s.handleCoreHealth)
+	mux.HandleFunc("GET /api/usage", s.handleCoreUsage)
 	mux.HandleFunc("GET /api/overview", s.handleOverview)
 	mux.HandleFunc("GET /api/pipeline", s.handlePipeline)
 	mux.HandleFunc("GET /api/items/{id}/steps", s.handleItemSteps)

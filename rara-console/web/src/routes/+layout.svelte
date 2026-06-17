@@ -40,7 +40,7 @@
 		{ icon: '⚙', label: t.nav.providers, href: '/providers' },
 		{ section: t.nav.secSystem },
 		{ icon: '≣', label: t.nav.audit, href: '/auditoria' },
-		{ icon: '⚙', label: t.nav.settings }
+		{ icon: '⚙', label: t.nav.settings, href: '/configuracoes' }
 	];
 
 	const pageTitles: Record<string, string> = {
@@ -51,7 +51,8 @@
 		'/curadoria': t.nav.curation,
 		'/providers': t.nav.providers,
 		'/fontes-flows': t.nav.sources,
-		'/auditoria': t.nav.audit
+		'/auditoria': t.nav.audit,
+		'/configuracoes': t.settings.title
 	};
 </script>
 

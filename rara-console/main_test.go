@@ -1571,3 +1571,59 @@ func TestItemDecisionsRejectsBadID(t *testing.T) {
 		t.Errorf("status=%d, want 400", rec.Code)
 	}
 }
+
+func TestCoreHealthProxiesWithBearer(t *testing.T) {
+	const tok = "health-tok"
+	core := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer "+tok {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		_, _ = w.Write([]byte(`{"db_ok":true,"providers":{"total":3,"enabled":2,"stale":0}}`))
+	}))
+	defer core.Close()
+	s := &server{coreURL: core.URL, token: tok, client: http.DefaultClient}
+
+	req := httptest.NewRequest("GET", "/api/health", nil)
+	rec := httptest.NewRecorder()
+	s.handleCoreHealth(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d, want 200", rec.Code)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body["db_ok"] != true {
+		t.Errorf("db_ok = %v, want true", body["db_ok"])
+	}
+}
+
+func TestCoreUsageProxiesWithBearer(t *testing.T) {
+	const tok = "usage-tok"
+	core := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer "+tok {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		_, _ = w.Write([]byte(`{"items":[{"lane":"youtube","status":"discovered","count":5}],"item_steps":[],"distillations":10,"quarantine":2}`))
+	}))
+	defer core.Close()
+	s := &server{coreURL: core.URL, token: tok, client: http.DefaultClient}
+
+	req := httptest.NewRequest("GET", "/api/usage", nil)
+	rec := httptest.NewRecorder()
+	s.handleCoreUsage(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d, want 200", rec.Code)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body["distillations"].(float64) != 10 {
+		t.Errorf("distillations = %v, want 10", body["distillations"])
+	}
+}
