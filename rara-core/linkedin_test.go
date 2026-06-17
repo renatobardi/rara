@@ -189,6 +189,42 @@ func TestSeedLinkedInLane(t *testing.T) {
 	}
 }
 
+// TestSeedLinkedInLaneDisabledByDefault: linkedin is an opt-in lane — it ships DISABLED so
+// lighting it is a deliberate operator action (Fontes & Flows toggle / UPDATE flows).
+func TestSeedLinkedInLaneDisabledByDefault(t *testing.T) {
+	ctx := context.Background()
+	db := newMockDatabase()
+	if err := SeedLinkedInLane(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	if db.flows[linkedinFlowName].Enabled {
+		t.Error("linkedin lane should ship disabled (opt-in), got enabled")
+	}
+}
+
+// TestSeedLinkedInLanePreservesOperatorEnable: once an operator enables the lane, a later
+// re-seed (e.g. a core redeploy running `core-job seed`) must NOT silently turn it back off.
+func TestSeedLinkedInLanePreservesOperatorEnable(t *testing.T) {
+	ctx := context.Background()
+	db := newMockDatabase()
+	if err := SeedLinkedInLane(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	// Operator lights the lane.
+	f := db.flows[linkedinFlowName]
+	f.Enabled = true
+	if _, err := db.UpsertFlow(ctx, f); err != nil {
+		t.Fatal(err)
+	}
+	// Re-seed.
+	if err := SeedLinkedInLane(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	if !db.flows[linkedinFlowName].Enabled {
+		t.Error("re-seed turned an operator-enabled linkedin lane back off")
+	}
+}
+
 // TestReconcileLinkedInRoutesToExtrairLinkedin: the linkedin flow routes the to-text step to
 // the extrair-linkedin provider (not the email extractor), and once it completes the item
 // reaches to_text; gate_rico for a PUBLIC post routes to the third-party (cloud) gate, not the

@@ -62,6 +62,20 @@ trabalho roda*):
 O core **não executa trabalho de domínio** — só decide, observa e acorda. (`core` e `core console`
 na VPC são mandatórios.)
 
+> **Regra de host (não negociável):** **always-on → VPC Oracle (systemd); on_demand → Cloud Run Jobs.**
+> O `rara-core` (reconciler + surface) é always-on → mora na VM (systemd, custo marginal ~zero, a VM já é
+> paga). Os workers (coletores, gates, glean, scribe-direct, distill) são on_demand → Cloud Run Jobs
+> (scale-to-zero, ~grátis ocioso). O `hone` é cron → Cloud Run Job + Scheduler.
+>
+> **⚠️ Armadilha (já aconteceu — commit `b517553`, W1):** é tentador deployar o `core` como **Cloud Run
+> Service** porque (a) o activator fica *keyless* (o token de `jobs:run` vem do metadata server do GCP de
+> graça) e (b) "tudo já está no Cloud Run". **NÃO faça.** Um Cloud Run Service always-on (`min-instances=1`
+> + `--no-cpu-throttling`, necessário pro ticker de background rodar) custa ~US$40-50/mês — exatamente o
+> custo que a VPC elimina. O "atrito" do activator na VPC se resolve com **uma SA key** na VM
+> (`GOOGLE_APPLICATION_CREDENTIALS`, que o `activator.go` já lê) — não mudando a casa do cérebro. Sintoma do
+> desvio: o reconciler só ticka sob tráfego HTTP (CPU congelada entre requests), e/ou uma conta de Cloud
+> Run crescendo no `rara-core`.
+
 ## 4. Despacho: pull universal + ativação simétrica
 
 - **Trabalho = pull** sempre: o worker puxa do Neon com `SELECT … FOR UPDATE SKIP LOCKED`. Uniforme,
