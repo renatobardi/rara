@@ -96,6 +96,7 @@ type Reconciler struct {
 	yt           SpineSource
 	pod          PodcastSource
 	email        EmailSource
+	news         NewsSource
 	ingestEveryN int
 	passCount    int
 }
@@ -157,6 +158,15 @@ func (r *Reconciler) ingestOnce(ctx context.Context) {
 		} else if found && f.Enabled {
 			if _, err := IngestEmail(ctx, r.db, r.email); err != nil {
 				log.Printf("auto-ingest email: %v", err)
+			}
+		}
+	}
+	if r.news != nil {
+		if f, found, err := r.db.GetFlow(ctx, newsFlowName); err != nil {
+			log.Printf("auto-ingest news: %v", err)
+		} else if found && f.Enabled {
+			if _, err := IngestFeed(ctx, r.db, r.news); err != nil {
+				log.Printf("auto-ingest news: %v", err)
 			}
 		}
 	}
