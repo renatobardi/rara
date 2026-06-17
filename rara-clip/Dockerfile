@@ -18,7 +18,11 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
 
 FROM alpine:3.21
 
-RUN apk add --no-cache ca-certificates
+# bdata CLI is an npm package; Node.js >= 20 required (Alpine 3.21 ships 22.x).
+RUN apk add --no-cache ca-certificates nodejs npm && \
+    npm install -g @brightdata/cli
+
+RUN bdata --version
 
 WORKDIR /app
 
