@@ -58,6 +58,11 @@ type Database interface {
 // parsePublishedFloor parses the PODCAST_MIN_PUBLISHED env var (ISO date like "2025-07-01").
 // Returns nil if the env var is empty (no floor), or a time.Time pointer if valid.
 // An invalid date string returns an error.
+//
+// The floor is midnight UTC of the given day. Episode pubDates carry their own zone, so the
+// comparison is timezone-aware (compares instants). At the exact boundary an episode dated for
+// the floor day but in a zone behind UTC can land just under it — immaterial for a coarse
+// back-catalog cutoff, where day-granularity is the intent.
 func parsePublishedFloor(s string) (*time.Time, error) {
 	s = strings.TrimSpace(s)
 	if s == "" {
@@ -151,12 +156,6 @@ func runWithFloor(ctx context.Context, db Database, fetch Fetcher, floor *time.T
 		total += catalogued
 	}
 	return total, nil
-}
-
-// run is the collector loop without a floor (for backward compatibility and testing).
-// Calls runWithFloor with floor=nil.
-func run(ctx context.Context, db Database, fetch Fetcher) (int, error) {
-	return runWithFloor(ctx, db, fetch, nil)
 }
 
 // ---------------------------------------------------------------------------

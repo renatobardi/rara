@@ -165,6 +165,12 @@ func staticFetcher(body string) Fetcher {
 	return func(_ context.Context, _ string) ([]byte, error) { return []byte(body), nil }
 }
 
+// run is the no-floor collector loop — a test helper so the floor-agnostic cases stay concise.
+// Production always goes through runWithFloor (floor from PODCAST_MIN_PUBLISHED).
+func run(ctx context.Context, db Database, fetch Fetcher) (int, error) {
+	return runWithFloor(ctx, db, fetch, nil)
+}
+
 // TestRunCollectsEpisodes: the loop fetches each active feed, parses it, refreshes the title,
 // and upserts every audio episode.
 func TestRunCollectsEpisodes(t *testing.T) {
