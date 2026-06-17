@@ -157,6 +157,10 @@ func seedLaneFlow(ctx context.Context, db Database, name, sourceType string, cap
 // SeedYouTubeLane writes the YouTube lane: shared capabilities/providers/config plus the
 // YouTube-specific collectors (harvest, shelf) and the residential-constrained scribe
 // (asr-youtube), and the youtube flow. Idempotent: safe to call on every boot.
+//
+// The flow seeds DISABLED on first run and preserves the operator's enable on re-seed — a
+// later `core-job seed` must never silently turn the lane back off. Enable deliberately via
+// Fontes & Flows or: UPDATE flows SET enabled=true WHERE name='youtube'.
 func SeedYouTubeLane(ctx context.Context, db Database) error {
 	if err := seedCapabilities(ctx, db); err != nil {
 		return err
@@ -185,10 +189,22 @@ func SeedYouTubeLane(ctx context.Context, db Database) error {
 			return err
 		}
 	}
-	// Flow: coletar -> gate_barato -> transcrever -> gate_rico -> destilar.
-	if err := seedLaneFlow(ctx, db, youtubeFlowName, laneYouTube,
-		[]string{capColetar, capGateBarato, capTranscrever, capGateRico, capDestilar}); err != nil {
+	// Preserve the operator's enable across re-seeds; default to disabled on first seed.
+	enabled := false
+	if f, found, err := db.GetFlow(ctx, youtubeFlowName); err != nil {
 		return err
+	} else if found {
+		enabled = f.Enabled
+	}
+	// Flow: coletar -> gate_barato -> transcrever -> gate_rico -> destilar.
+	flowID, err := db.UpsertFlow(ctx, Flow{Name: youtubeFlowName, SourceType: laneYouTube, Enabled: enabled, Version: 1})
+	if err != nil {
+		return err
+	}
+	for i, capName := range []string{capColetar, capGateBarato, capTranscrever, capGateRico, capDestilar} {
+		if err := db.UpsertFlowStep(ctx, FlowStep{FlowID: flowID, Seq: i + 1, Capability: capName, Enabled: true}); err != nil {
+			return err
+		}
 	}
 	return seedSharedConfig(ctx, db)
 }

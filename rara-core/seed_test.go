@@ -55,13 +55,13 @@ func TestSeedYouTubeLane(t *testing.T) {
 		t.Errorf("asr-youtube constraints = %q, want residential + accepts youtube", got)
 	}
 
-	// Flow: single youtube lane at version 1.
+	// Flow: single youtube lane at version 1, seeded DISABLED (opt-in lane).
 	f, ok := db.flows[youtubeFlowName]
 	if !ok {
 		t.Fatalf("flow %q not seeded", youtubeFlowName)
 	}
-	if f.SourceType != laneYouTube || f.Version != 1 || !f.Enabled {
-		t.Errorf("flow = %+v, want youtube/v1/enabled", f)
+	if f.SourceType != laneYouTube || f.Version != 1 || f.Enabled {
+		t.Errorf("flow = %+v, want youtube/v1/disabled", f)
 	}
 
 	// Steps: coletar -> gate_barato -> transcrever -> gate_rico -> destilar, in order.
@@ -120,5 +120,36 @@ func TestSeedIdempotent(t *testing.T) {
 	// interest_profile is seeded exactly once — re-seeding must not create a v2 or error.
 	if len(db.profiles) != 1 {
 		t.Errorf("expected interest_profile seeded once, got %d versions", len(db.profiles))
+	}
+}
+
+// TestSeedYouTubeLanePreservesEnabled ensures a re-seed never silently disables a lane the
+// operator already enabled (the opt-in contract).
+func TestSeedYouTubeLanePreservesEnabled(t *testing.T) {
+	ctx := context.Background()
+	db := newMockDatabase()
+	if err := SeedYouTubeLane(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	// Simulate operator enabling the lane via the public API.
+	f, found, err := db.GetFlow(ctx, youtubeFlowName)
+	if err != nil || !found {
+		t.Fatalf("GetFlow: err=%v found=%v", err, found)
+	}
+	f.Enabled = true
+	if _, err := db.UpsertFlow(ctx, f); err != nil {
+		t.Fatalf("UpsertFlow: %v", err)
+	}
+
+	// Re-seed must not flip it back to disabled.
+	if err := SeedYouTubeLane(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	f, found, err = db.GetFlow(ctx, youtubeFlowName)
+	if err != nil || !found {
+		t.Fatalf("GetFlow after re-seed: err=%v found=%v", err, found)
+	}
+	if !f.Enabled {
+		t.Error("re-seed flipped operator-enabled youtube flow back to disabled")
 	}
 }

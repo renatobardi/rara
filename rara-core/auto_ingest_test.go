@@ -14,6 +14,7 @@ func TestAutoIngestRunsOnFirstPass(t *testing.T) {
 	if err := SeedYouTubeLane(ctx, db); err != nil {
 		t.Fatal(err)
 	}
+	enableYouTubeFlow(t, db)
 	r := NewReconciler(db, nil)
 	r.yt = fakeSpineSource{videos: []YouTubeVideo{{VideoID: "vid1"}}}
 	r.ingestEveryN = 1
@@ -33,6 +34,7 @@ func TestAutoIngestIdempotent(t *testing.T) {
 	if err := SeedYouTubeLane(ctx, db); err != nil {
 		t.Fatal(err)
 	}
+	enableYouTubeFlow(t, db)
 	r := NewReconciler(db, nil)
 	r.yt = fakeSpineSource{videos: []YouTubeVideo{{VideoID: "vid1"}}}
 	r.ingestEveryN = 1
@@ -98,6 +100,7 @@ func TestAutoIngestEveryNPasses(t *testing.T) {
 	if err := SeedYouTubeLane(ctx, db); err != nil {
 		t.Fatal(err)
 	}
+	enableYouTubeFlow(t, db)
 	r := NewReconciler(db, nil)
 	r.yt = fakeSpineSource{videos: []YouTubeVideo{{VideoID: "vid1"}}}
 	r.ingestEveryN = 3
