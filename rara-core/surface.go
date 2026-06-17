@@ -64,10 +64,10 @@ type ProviderHealth struct {
 
 // UsageReport is the response shape for GET /v1/usage.
 type UsageReport struct {
-	Items         []ItemCount  `json:"items"`
-	ItemSteps     []StepCount  `json:"item_steps"`
-	Distillations int          `json:"distillations"`
-	Quarantine    int          `json:"quarantine"`
+	Items         []ItemCount `json:"items"`
+	ItemSteps     []StepCount `json:"item_steps"`
+	Distillations int         `json:"distillations"`
+	Quarantine    int         `json:"quarantine"`
 }
 
 // ItemCount is one (lane, status) cell from the items GROUP BY.

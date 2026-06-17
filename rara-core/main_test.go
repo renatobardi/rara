@@ -692,9 +692,17 @@ func (m *MockDatabase) RequeueSteps(_ context.Context, capability, fromStatus st
 	return len(cands), nil
 }
 
-func (m *MockDatabase) HealthPing(_ context.Context) error { return nil }
+func (m *MockDatabase) HealthPing(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return nil
+}
 
-func (m *MockDatabase) UsageCounts(_ context.Context) (UsageReport, error) {
+func (m *MockDatabase) UsageCounts(ctx context.Context) (UsageReport, error) {
+	if err := ctx.Err(); err != nil {
+		return UsageReport{}, err
+	}
 	var r UsageReport
 	// items by (lane, status)
 	counts := map[[2]string]int{}

@@ -834,7 +834,8 @@ func TestCoreHealthNoReconcileYet(t *testing.T) {
 	ctx := context.Background()
 	core, _, _ := newTestCore(t)
 	// Reset so this test doesn't depend on a prior stamp from another test.
-	atomic.StoreInt64(&lastReconcileNano, 0)
+	prev := atomic.SwapInt64(&lastReconcileNano, 0)
+	t.Cleanup(func() { atomic.StoreInt64(&lastReconcileNano, prev) })
 	report := core.Health(ctx)
 	if report.LastReconcileAt != nil {
 		t.Errorf("last_reconcile_at should be nil when never stamped, got %v", report.LastReconcileAt)
@@ -844,30 +845,40 @@ func TestCoreHealthNoReconcileYet(t *testing.T) {
 func TestCoreHealthStaleProvider(t *testing.T) {
 	ctx := context.Background()
 	core, db, _ := newTestCore(t)
-	_ = db.UpsertCapability(ctx, Capability{Name: "transcrever"})
+	if err := db.UpsertCapability(ctx, Capability{Name: "transcrever"}); err != nil {
+		t.Fatalf("seed capability: %v", err)
+	}
 
 	fresh := time.Now().Add(-1 * time.Minute)
 	stale := time.Now().Add(-10 * time.Minute) // older than defaultHealthTTL (5m)
-	_ = db.UpsertProvider(ctx, Provider{
+	if err := db.UpsertProvider(ctx, Provider{
 		Name: "asr-fresh", Capability: "transcrever",
 		Runtime: runtimeLocal, Activation: activationResident,
 		Enabled: true, HeartbeatAt: &fresh,
-	})
-	_ = db.UpsertProvider(ctx, Provider{
+	}); err != nil {
+		t.Fatalf("seed provider asr-fresh: %v", err)
+	}
+	if err := db.UpsertProvider(ctx, Provider{
 		Name: "asr-stale", Capability: "transcrever",
 		Runtime: runtimeLocal, Activation: activationResident,
 		Enabled: true, HeartbeatAt: &stale,
-	})
-	_ = db.UpsertProvider(ctx, Provider{
+	}); err != nil {
+		t.Fatalf("seed provider asr-stale: %v", err)
+	}
+	if err := db.UpsertProvider(ctx, Provider{
 		Name: "asr-on-demand", Capability: "transcrever",
 		Runtime: runtimeCloudRun, Activation: activationOnDemand,
 		Enabled: true, HeartbeatAt: &stale, // on_demand: exempt from staleness
-	})
-	_ = db.UpsertProvider(ctx, Provider{
+	}); err != nil {
+		t.Fatalf("seed provider asr-on-demand: %v", err)
+	}
+	if err := db.UpsertProvider(ctx, Provider{
 		Name: "asr-disabled", Capability: "transcrever",
 		Runtime: runtimeLocal, Activation: activationResident,
 		Enabled: false, HeartbeatAt: &stale,
-	})
+	}); err != nil {
+		t.Fatalf("seed provider asr-disabled: %v", err)
+	}
 
 	report := core.Health(ctx)
 	if report.Providers.Total != 4 {
@@ -886,7 +897,8 @@ func TestCoreHealthStaleProvider(t *testing.T) {
 func TestHTTPHealth(t *testing.T) {
 	ctx := context.Background()
 	core, _, _ := newTestCore(t)
-	atomic.StoreInt64(&lastReconcileNano, 0)
+	prev := atomic.SwapInt64(&lastReconcileNano, 0)
+	t.Cleanup(func() { atomic.StoreInt64(&lastReconcileNano, prev) })
 	h := NewSurfaceMux(core, testToken)
 	rec := do(t, h, http.MethodGet, "/v1/health", "")
 	if rec.Code != http.StatusOK {
@@ -906,10 +918,18 @@ func TestCoreUsageCounts(t *testing.T) {
 	ctx := context.Background()
 	core, db, _ := newTestCore(t)
 	fid := seedFlow(t, db)
-	mustItem(t, db, "youtube", "v1", fid, itemDiscovered)
+	itemID := mustItem(t, db, "youtube", "v1", fid, itemDiscovered)
 	mustItem(t, db, "youtube", "v2", fid, itemDiscovered)
 	mustItem(t, db, "youtube", "v3", fid, itemDone)
 	mustItem(t, db, "podcast", "ep1", fid, itemQuarantine)
+	if err := db.UpsertCapability(ctx, Capability{Name: capTranscrever}); err != nil {
+		t.Fatalf("seed capability: %v", err)
+	}
+	if err := db.UpsertItemStep(ctx, ItemStep{
+		ItemID: itemID, Seq: 1, Capability: capTranscrever, Status: stepPending,
+	}); err != nil {
+		t.Fatalf("seed item step: %v", err)
+	}
 	seedDistillation(t, db, 1, "content")
 	seedDistillation(t, db, 2, "content2")
 
@@ -917,7 +937,6 @@ func TestCoreUsageCounts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Find youtube/discovered count
 	var ytDisc int
 	for _, ic := range report.Items {
 		if ic.Lane == "youtube" && ic.Status == itemDiscovered {
@@ -932,6 +951,15 @@ func TestCoreUsageCounts(t *testing.T) {
 	}
 	if report.Quarantine != 1 {
 		t.Errorf("quarantine = %d, want 1", report.Quarantine)
+	}
+	var pending int
+	for _, sc := range report.ItemSteps {
+		if sc.Capability == capTranscrever && sc.Status == stepPending {
+			pending = sc.Count
+		}
+	}
+	if pending != 1 {
+		t.Errorf("item_steps %s/pending = %d, want 1", capTranscrever, pending)
 	}
 }
 
