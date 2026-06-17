@@ -50,6 +50,12 @@
 			.finally(() => (loading = false));
 	});
 
+	function resolveUrl(lane: string, sourceRef: string): string {
+		if (sourceRef.startsWith('http://') || sourceRef.startsWith('https://')) return sourceRef;
+		if (lane === 'youtube') return `https://www.youtube.com/watch?v=${sourceRef}`;
+		return sourceRef;
+	}
+
 	async function review(itemId: number, signal: 'up' | 'down') {
 		reviewState = { ...reviewState, [itemId]: 'pending' };
 		try {
@@ -91,7 +97,7 @@
 							title={item.title}
 							channel={item.channel}
 							summary={item.summary}
-							source_ref={item.source_ref}
+							source_ref={resolveUrl(item.lane, item.source_ref)}
 							published_at={item.published_at}
 						>
 							{#snippet actions()}
