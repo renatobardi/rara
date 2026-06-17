@@ -651,6 +651,88 @@ func (d *pgxDatabase) GetDistillation(ctx context.Context, id int) (Distillation
 	return dist, true, nil
 }
 
+// HealthPing verifies database connectivity with a lightweight SELECT 1.
+func (d *pgxDatabase) HealthPing(ctx context.Context) error {
+	var n int
+	return d.conn.QueryRow(ctx, "SELECT 1").Scan(&n)
+}
+
+// UsageCounts returns exact COUNT(*) GROUP BY aggregates. The distillations cross-agent read
+// degrades gracefully on 42P01 (table not deployed) — items/item_steps are owned by core,
+// so their queries never degrade. Distillations = 0 when the table is absent.
+func (d *pgxDatabase) UsageCounts(ctx context.Context) (UsageReport, error) {
+	var r UsageReport
+
+	// items by (lane, status)
+	{
+		const q = `SELECT lane, status, COUNT(*) FROM items GROUP BY lane, status ORDER BY lane, status`
+		rows, err := d.conn.Query(ctx, q)
+		if err != nil {
+			return r, err
+		}
+		r.Items = make([]ItemCount, 0)
+		for rows.Next() {
+			var ic ItemCount
+			if err := rows.Scan(&ic.Lane, &ic.Status, &ic.Count); err != nil {
+				rows.Close()
+				return r, err
+			}
+			r.Items = append(r.Items, ic)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return r, err
+		}
+	}
+
+	// quarantine derived from items (no extra query)
+	for _, ic := range r.Items {
+		if ic.Status == itemQuarantine {
+			r.Quarantine += ic.Count
+		}
+	}
+
+	// item_steps by (capability, status)
+	{
+		const q = `SELECT capability, status, COUNT(*) FROM item_steps GROUP BY capability, status ORDER BY capability, status`
+		rows, err := d.conn.Query(ctx, q)
+		if err != nil {
+			return r, err
+		}
+		r.ItemSteps = make([]StepCount, 0)
+		for rows.Next() {
+			var sc StepCount
+			if err := rows.Scan(&sc.Capability, &sc.Status, &sc.Count); err != nil {
+				rows.Close()
+				return r, err
+			}
+			r.ItemSteps = append(r.ItemSteps, sc)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return r, err
+		}
+	}
+
+	// distillations total — cross-agent table; degrade on 42P01 (table absent)
+	{
+		var count int
+		err := d.conn.QueryRow(ctx, "SELECT COUNT(*) FROM distillations").Scan(&count)
+		if err != nil {
+			var pgErr *pgconn.PgError
+			if errors.As(err, &pgErr) && pgErr.Code == "42P01" {
+				log.Printf("warning: distillations table absent, usage count degraded")
+			} else {
+				return r, err
+			}
+		} else {
+			r.Distillations = count
+		}
+	}
+
+	return r, nil
+}
+
 // TouchProviderHeartbeat stamps heartbeat_at = now for a live provider. An unknown name
 // updates zero rows (no error) — liveness is best-effort. It deliberately touches only
 // heartbeat_at, never the config columns (unlike the full-record UpsertProvider).

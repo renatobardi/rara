@@ -582,6 +582,15 @@ type Database interface {
 	// found=false if absent.
 	GetDistillation(ctx context.Context, id int) (Distillation, bool, error)
 
+	// --- Health + usage (surface observability) ------------------------------
+	// HealthPing verifies that the database connection is alive (SELECT 1). Used by GET /v1/health
+	// to populate db_ok without running a heavy query.
+	HealthPing(ctx context.Context) error
+	// UsageCounts returns exact COUNT(*) GROUP BY aggregates for items, item_steps, and
+	// distillations. The distillations cross-agent read degrades gracefully on 42P01
+	// (table not deployed), returning 0 instead of an error.
+	UsageCounts(ctx context.Context) (UsageReport, error)
+
 	// --- Health feed (Phase 2) -----------------------------------------------
 	// TouchProviderHeartbeat stamps providers.heartbeat_at = now for a live provider,
 	// so the router's health gate keeps it eligible. A worker calls it when it pulls
@@ -1094,6 +1103,7 @@ func runReconcile(ctx context.Context, db Database, conn *pgx.Conn, dbURL string
 		if err := r.ReconcileOnce(ctx); err != nil {
 			log.Printf("reconcile pass: %v", err)
 		}
+		StampReconcile()
 		select {
 		case <-ctx.Done():
 			return

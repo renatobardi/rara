@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -814,6 +815,142 @@ func TestHTTPItemsResponseIncludesDisplayFields(t *testing.T) {
 	}
 	if items[0].PublishedAt == nil || !items[0].PublishedAt.Equal(ts) {
 		t.Errorf("PublishedAt = %v, want %v", items[0].PublishedAt, ts)
+	}
+	_ = ctx
+}
+
+// --- health + usage -------------------------------------------------------
+
+func TestCoreHealthDBOK(t *testing.T) {
+	ctx := context.Background()
+	core, _, _ := newTestCore(t)
+	report := core.Health(ctx)
+	if !report.DBOk {
+		t.Error("db_ok should be true for mock database")
+	}
+}
+
+func TestCoreHealthNoReconcileYet(t *testing.T) {
+	ctx := context.Background()
+	core, _, _ := newTestCore(t)
+	// Reset so this test doesn't depend on a prior stamp from another test.
+	atomic.StoreInt64(&lastReconcileNano, 0)
+	report := core.Health(ctx)
+	if report.LastReconcileAt != nil {
+		t.Errorf("last_reconcile_at should be nil when never stamped, got %v", report.LastReconcileAt)
+	}
+}
+
+func TestCoreHealthStaleProvider(t *testing.T) {
+	ctx := context.Background()
+	core, db, _ := newTestCore(t)
+	_ = db.UpsertCapability(ctx, Capability{Name: "transcrever"})
+
+	fresh := time.Now().Add(-1 * time.Minute)
+	stale := time.Now().Add(-10 * time.Minute) // older than defaultHealthTTL (5m)
+	_ = db.UpsertProvider(ctx, Provider{
+		Name: "asr-fresh", Capability: "transcrever",
+		Runtime: runtimeLocal, Activation: activationResident,
+		Enabled: true, HeartbeatAt: &fresh,
+	})
+	_ = db.UpsertProvider(ctx, Provider{
+		Name: "asr-stale", Capability: "transcrever",
+		Runtime: runtimeLocal, Activation: activationResident,
+		Enabled: true, HeartbeatAt: &stale,
+	})
+	_ = db.UpsertProvider(ctx, Provider{
+		Name: "asr-on-demand", Capability: "transcrever",
+		Runtime: runtimeCloudRun, Activation: activationOnDemand,
+		Enabled: true, HeartbeatAt: &stale, // on_demand: exempt from staleness
+	})
+	_ = db.UpsertProvider(ctx, Provider{
+		Name: "asr-disabled", Capability: "transcrever",
+		Runtime: runtimeLocal, Activation: activationResident,
+		Enabled: false, HeartbeatAt: &stale,
+	})
+
+	report := core.Health(ctx)
+	if report.Providers.Total != 4 {
+		t.Errorf("total = %d, want 4", report.Providers.Total)
+	}
+	if report.Providers.Enabled != 3 {
+		t.Errorf("enabled = %d, want 3", report.Providers.Enabled)
+	}
+	// Only asr-stale is a stale RESIDENT; asr-on-demand is exempt; asr-disabled is stale
+	// but also disabled — the health count covers enabled+disabled (it's a connectivity concern).
+	if report.Providers.Stale != 2 { // asr-stale + asr-disabled (both resident, both old)
+		t.Errorf("stale = %d, want 2 (resident stale regardless of enabled)", report.Providers.Stale)
+	}
+}
+
+func TestHTTPHealth(t *testing.T) {
+	ctx := context.Background()
+	core, _, _ := newTestCore(t)
+	atomic.StoreInt64(&lastReconcileNano, 0)
+	h := NewSurfaceMux(core, testToken)
+	rec := do(t, h, http.MethodGet, "/v1/health", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got %d: %s", rec.Code, rec.Body.String())
+	}
+	var report HealthReport
+	if err := json.Unmarshal(rec.Body.Bytes(), &report); err != nil {
+		t.Fatal(err)
+	}
+	if !report.DBOk {
+		t.Error("db_ok should be true")
+	}
+	_ = ctx
+}
+
+func TestCoreUsageCounts(t *testing.T) {
+	ctx := context.Background()
+	core, db, _ := newTestCore(t)
+	fid := seedFlow(t, db)
+	mustItem(t, db, "youtube", "v1", fid, itemDiscovered)
+	mustItem(t, db, "youtube", "v2", fid, itemDiscovered)
+	mustItem(t, db, "youtube", "v3", fid, itemDone)
+	mustItem(t, db, "podcast", "ep1", fid, itemQuarantine)
+	seedDistillation(t, db, 1, "content")
+	seedDistillation(t, db, 2, "content2")
+
+	report, err := core.Usage(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Find youtube/discovered count
+	var ytDisc int
+	for _, ic := range report.Items {
+		if ic.Lane == "youtube" && ic.Status == itemDiscovered {
+			ytDisc = ic.Count
+		}
+	}
+	if ytDisc != 2 {
+		t.Errorf("youtube/discovered = %d, want 2", ytDisc)
+	}
+	if report.Distillations != 2 {
+		t.Errorf("distillations = %d, want 2", report.Distillations)
+	}
+	if report.Quarantine != 1 {
+		t.Errorf("quarantine = %d, want 1", report.Quarantine)
+	}
+}
+
+func TestHTTPUsage(t *testing.T) {
+	ctx := context.Background()
+	core, db, _ := newTestCore(t)
+	fid := seedFlow(t, db)
+	mustItem(t, db, "youtube", "v1", fid, itemDiscovered)
+	h := NewSurfaceMux(core, testToken)
+	rec := do(t, h, http.MethodGet, "/v1/usage", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got %d: %s", rec.Code, rec.Body.String())
+	}
+	var report UsageReport
+	if err := json.Unmarshal(rec.Body.Bytes(), &report); err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Items) == 0 {
+		t.Error("items should not be empty")
 	}
 	_ = ctx
 }

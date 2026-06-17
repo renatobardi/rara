@@ -692,6 +692,49 @@ func (m *MockDatabase) RequeueSteps(_ context.Context, capability, fromStatus st
 	return len(cands), nil
 }
 
+func (m *MockDatabase) HealthPing(_ context.Context) error { return nil }
+
+func (m *MockDatabase) UsageCounts(_ context.Context) (UsageReport, error) {
+	var r UsageReport
+	// items by (lane, status)
+	counts := map[[2]string]int{}
+	for _, it := range m.itemByID {
+		counts[[2]string{it.Lane, it.Status}]++
+	}
+	r.Items = make([]ItemCount, 0)
+	for k, c := range counts {
+		r.Items = append(r.Items, ItemCount{Lane: k[0], Status: k[1], Count: c})
+	}
+	sort.Slice(r.Items, func(i, j int) bool {
+		if r.Items[i].Lane != r.Items[j].Lane {
+			return r.Items[i].Lane < r.Items[j].Lane
+		}
+		return r.Items[i].Status < r.Items[j].Status
+	})
+	for _, ic := range r.Items {
+		if ic.Status == itemQuarantine {
+			r.Quarantine += ic.Count
+		}
+	}
+	// item_steps by (capability, status)
+	stepCounts := map[[2]string]int{}
+	for _, s := range m.itemSteps {
+		stepCounts[[2]string{s.Capability, s.Status}]++
+	}
+	r.ItemSteps = make([]StepCount, 0)
+	for k, c := range stepCounts {
+		r.ItemSteps = append(r.ItemSteps, StepCount{Capability: k[0], Status: k[1], Count: c})
+	}
+	sort.Slice(r.ItemSteps, func(i, j int) bool {
+		if r.ItemSteps[i].Capability != r.ItemSteps[j].Capability {
+			return r.ItemSteps[i].Capability < r.ItemSteps[j].Capability
+		}
+		return r.ItemSteps[i].Status < r.ItemSteps[j].Status
+	})
+	r.Distillations = len(m.distillations)
+	return r, nil
+}
+
 // compile-time guarantee the mock satisfies the seam the pgx impl does.
 var _ Database = (*MockDatabase)(nil)
 
