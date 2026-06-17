@@ -57,4 +57,5 @@ jobs:
             --region "$REGION" \
             --project "$PROJECT" \
             --port 8080 \
+            --args="--config,/app/config.yaml,--port,8080" \
             --set-secrets="GEMINI_API_KEY=gemini-api-key:latest,GROQ_API_KEY=groq-api-key:latest,LITELLM_MASTER_KEY=litellm-api-key:latest,DEEPSEEK_API_KEY=deepseek-api-key:latest"
