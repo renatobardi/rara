@@ -243,9 +243,21 @@ func SeedEmailLane(ctx context.Context, db Database) error {
 	}); err != nil {
 		return err
 	}
-	if err := seedLaneFlow(ctx, db, emailFlowName, laneEmail,
-		[]string{capColetar, capGateBarato, capExtrair, capGateRico, capDestilar}); err != nil {
+	// Preserve the operator's enable across re-seeds; default to disabled on first seed.
+	enabled := false
+	if f, found, err := db.GetFlow(ctx, emailFlowName); err != nil {
 		return err
+	} else if found {
+		enabled = f.Enabled
+	}
+	flowID, err := db.UpsertFlow(ctx, Flow{Name: emailFlowName, SourceType: laneEmail, Enabled: enabled, Version: 1})
+	if err != nil {
+		return err
+	}
+	for i, capName := range []string{capColetar, capGateBarato, capExtrair, capGateRico, capDestilar} {
+		if err := db.UpsertFlowStep(ctx, FlowStep{FlowID: flowID, Seq: i + 1, Capability: capName, Enabled: true}); err != nil {
+			return err
+		}
 	}
 	return seedSharedConfig(ctx, db)
 }
