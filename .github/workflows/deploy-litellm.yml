@@ -38,11 +38,17 @@ jobs:
       - name: Set up Cloud SDK
         uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
 
-      - name: Build image via Cloud Build
+      - name: Configure Docker for Artifact Registry
         run: |
-          gcloud builds submit rara-distill/litellm \
-            --tag "$IMAGE" \
-            --project "$PROJECT"
+          test -n "$REGION" || { echo "GCP_REGION not set"; exit 1; }
+          test -n "$PROJECT" || { echo "GCP_PROJECT_ID not set"; exit 1; }
+          gcloud auth configure-docker "$REGION-docker.pkg.dev" --quiet
+
+      - name: Build and push image
+        run: |
+          test -n "$IMAGE" || { echo "IMAGE not set"; exit 1; }
+          docker build --pull -t "$IMAGE" rara-distill/litellm
+          docker push "$IMAGE"
 
       - name: Deploy to Cloud Run Service
         run: |
