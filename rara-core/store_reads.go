@@ -655,7 +655,7 @@ func (d *pgxDatabase) GetDistillation(ctx context.Context, id int) (Distillation
 func (d *pgxDatabase) HealthPing(ctx context.Context) error {
 	var n int
 	if err := d.conn.QueryRow(ctx, "SELECT 1").Scan(&n); err != nil {
-		return fmt.Errorf("health ping query: %w", err)
+		return fmt.Errorf("health ping: %w", err)
 	}
 	return nil
 }
@@ -675,12 +675,24 @@ func (d *pgxDatabase) UsageCounts(ctx context.Context) (UsageReport, error) {
 			r.Quarantine += ic.Count
 		}
 	}
+
 	if r.ItemSteps, err = d.queryStepCounts(ctx); err != nil {
 		return r, err
 	}
-	if r.Distillations, err = d.queryDistillationCount(ctx); err != nil {
-		return r, err
+
+	// distillations total — cross-agent table; degrade on 42P01 (table absent)
+	var count int
+	if err := d.conn.QueryRow(ctx, "SELECT COUNT(*) FROM distillations").Scan(&count); err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "42P01" {
+			log.Printf("warning: distillations table absent, usage count degraded")
+		} else {
+			return r, fmt.Errorf("usage distillations: %w", err)
+		}
+	} else {
+		r.Distillations = count
 	}
+
 	return r, nil
 }
 
@@ -690,56 +702,42 @@ func (d *pgxDatabase) queryItemCounts(ctx context.Context) ([]ItemCount, error) 
 	if err != nil {
 		return nil, fmt.Errorf("usage items query: %w", err)
 	}
-	defer rows.Close()
-	items := make([]ItemCount, 0)
+	out := make([]ItemCount, 0)
 	for rows.Next() {
 		var ic ItemCount
 		if err := rows.Scan(&ic.Lane, &ic.Status, &ic.Count); err != nil {
+			rows.Close()
 			return nil, fmt.Errorf("usage items scan: %w", err)
 		}
-		items = append(items, ic)
+		out = append(out, ic)
 	}
+	rows.Close()
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("usage items rows: %w", err)
 	}
-	return items, nil
+	return out, nil
 }
 
 func (d *pgxDatabase) queryStepCounts(ctx context.Context) ([]StepCount, error) {
 	const q = `SELECT capability, status, COUNT(*) FROM item_steps GROUP BY capability, status ORDER BY capability, status`
 	rows, err := d.conn.Query(ctx, q)
 	if err != nil {
-		return nil, fmt.Errorf("usage steps query: %w", err)
+		return nil, fmt.Errorf("usage item_steps query: %w", err)
 	}
-	defer rows.Close()
-	steps := make([]StepCount, 0)
+	out := make([]StepCount, 0)
 	for rows.Next() {
 		var sc StepCount
 		if err := rows.Scan(&sc.Capability, &sc.Status, &sc.Count); err != nil {
-			return nil, fmt.Errorf("usage steps scan: %w", err)
+			rows.Close()
+			return nil, fmt.Errorf("usage item_steps scan: %w", err)
 		}
-		steps = append(steps, sc)
+		out = append(out, sc)
 	}
+	rows.Close()
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("usage steps rows: %w", err)
+		return nil, fmt.Errorf("usage item_steps rows: %w", err)
 	}
-	return steps, nil
-}
-
-// queryDistillationCount queries the cross-agent distillations table. Degrades to 0 on 42P01
-// (table absent in environments where rara-distill is not deployed).
-func (d *pgxDatabase) queryDistillationCount(ctx context.Context) (int, error) {
-	var count int
-	err := d.conn.QueryRow(ctx, "SELECT COUNT(*) FROM distillations").Scan(&count)
-	if err != nil {
-		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == "42P01" {
-			log.Printf("warning: distillations table absent, usage count degraded")
-			return 0, nil
-		}
-		return 0, fmt.Errorf("usage distillations query: %w", err)
-	}
-	return count, nil
+	return out, nil
 }
 
 // TouchProviderHeartbeat stamps heartbeat_at = now for a live provider. An unknown name
