@@ -1,0 +1,92 @@
+# yaml-language-server: $schema=https://storage.googleapis.com/coderabbit_public_assets/schema.v2.json
+#
+# Configuração do CodeRabbit para o projeto rara (Go + SvelteKit).
+# Repo público/open-source => plano Pro completo, gratuito e ilimitado.
+# Coloque este arquivo na RAIZ do repositório, na branch default (main).
+
+language: pt-BR
+tone_instructions: "Seja técnico, direto e objetivo. Priorize arquitetura, segurança, correção e manutenibilidade. Evite comentários decorativos."
+early_access: false
+enable_free_tier: true       # mantém os recursos do free tier ativos para quem não tem plano pago
+focus: balanced               # casual = tudo | balanced = sem enfeites | high = só o essencial
+
+reviews:
+  profile: chill              # 'chill' = menos nitpick | 'assertive' = mais agressivo
+  request_changes_workflow: false
+  high_level_summary: true
+  review_status: true
+  collapse_walkthrough: true
+  changed_files_summary: true
+  sequence_diagrams: true
+  estimate_code_review_effort: true
+  related_issues: true
+  related_prs: true
+  suggested_reviewers: true
+
+  # Arquivos ignorados na revisão (gerados, lockfiles, build artifacts)
+  path_filters:
+    - "!**/node_modules/**"
+    - "!**/.svelte-kit/**"
+    - "!**/dist/**"
+    - "!**/build/**"
+    - "!**/vendor/**"
+    - "!**/*.min.js"
+    - "!**/*.pb.go"
+    - "!**/*_gen.go"
+    - "!**/mocks/**"
+    - "!**/go.sum"
+    - "!**/package-lock.json"
+    - "!**/pnpm-lock.yaml"
+
+  # Instruções específicas por tipo de arquivo
+  path_instructions:
+    - path: "**/*.go"
+      instructions: >-
+        Revise como Go idiomático. Verifique: tratamento de erros com wrapping
+        (fmt.Errorf("...: %w", err)); erros nunca ignorados; uso correto de
+        context.Context (propagação e cancelamento); ausência de goroutine leaks
+        e race conditions; uso adequado de defer; e ausência de panic em código
+        de produção. Sinalize alocações desnecessárias em hot paths.
+    - path: "**/*.{ts,svelte}"
+      instructions: >-
+        Revise componentes SvelteKit/TypeScript. Verifique: reatividade correta;
+        separação entre código de servidor (+page.server.ts / +server.ts) e
+        cliente; nenhum secret exposto no bundle do cliente; acessibilidade
+        (a11y); e evite 'any' desnecessário. Sinalize chamadas de fetch sem
+        tratamento de erro.
+    - path: "**/*.{yaml,yml}"
+      instructions: >-
+        Revise manifests e arquivos de configuração. Verifique indentação,
+        secrets hardcoded, e consistência de valores entre ambientes.
+    - path: "**/Dockerfile*"
+      instructions: >-
+        Verifique boas práticas: imagens base fixadas por tag/digest, usuário
+        não-root, multi-stage builds, e ausência de secrets em layers.
+
+  auto_review:
+    enabled: true
+    auto_incremental_review: true   # re-revisa a cada push
+    drafts: false                   # não revisa PRs em draft
+    base_branches:
+      - main
+      - develop
+
+  # Linters que o CodeRabbit roda automaticamente (sem config local necessária)
+  tools:
+    golangci-lint:
+      enabled: true
+    eslint:
+      enabled: true
+    gitleaks:
+      enabled: true     # detecção de secrets vazados
+    yamllint:
+      enabled: true
+    actionlint:
+      enabled: true     # valida workflows do GitHub Actions
+    markdownlint:
+      enabled: true
+    languagetool:
+      enabled: false    # desliga checagem gramatical de prosa
+
+chat:
+  auto_reply: true
