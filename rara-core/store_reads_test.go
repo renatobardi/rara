@@ -260,6 +260,15 @@ func TestItemDisplaySelectJoinsPlaylistVideos(t *testing.T) {
 	}
 }
 
+// TestItemDisplaySelectJoinsNews: the news lane shows title/source/excerpt from news_items,
+// joined on the article url (= items.source_ref). The 42P01 fallback degrades it if the
+// rara-feed table is absent (A3) — same as every other lane's domain table.
+func TestItemDisplaySelectJoinsNews(t *testing.T) {
+	if !strings.Contains(itemDisplaySelect, "news_items") {
+		t.Fatal("itemDisplaySelect must JOIN news_items for news title/source/excerpt")
+	}
+}
+
 // TestListItemsByStatus_YoutubePlaylistTitleShown: when the enriched query returns a
 // youtube item whose title comes from the playlist fallback (COALESCE picked pv.title),
 // the scanning code must surface it unchanged.

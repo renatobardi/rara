@@ -21,6 +21,7 @@ const (
 	youtubeFlowName = "youtube"
 	podcastFlowName = "podcast"
 	emailFlowName   = "email"
+	newsFlowName    = "news"
 )
 
 // Lane names — the source type carried on items.lane (and matched by a provider's `accepts`).
@@ -28,6 +29,7 @@ const (
 	laneYouTube = "youtube"
 	lanePodcast = "podcast"
 	laneEmail   = "email"
+	laneNews    = "news"
 )
 
 // Provider names (mirror the architecture's naming).
@@ -40,6 +42,7 @@ const (
 	provGateBarato     = "gate-barato"      // gate_barato — metadata cascade worker (third-party LLM)
 	provGateRico       = "gate-rico"        // gate_rico — full-text cascade worker (third-party LLM)
 	provExtrairEmail   = "extrair-email"    // extrair — email HTML/quote/signature cleaner (Cloud Run)
+	provExtrairNews    = "extrair-news"     // extrair — feed-article HTML/boilerplate cleaner (Cloud Run)
 	// Self-host variants (VPC) of the LLM steps — the ONLY route for private content. Strictly
 	// pricier and lower quality than their cloud siblings, so the cloud (third-party) provider
 	// wins for public items, while a private item (third-party excluded) falls to these.
@@ -243,6 +246,50 @@ func SeedEmailLane(ctx context.Context, db Database) error {
 	if err := seedLaneFlow(ctx, db, emailFlowName, laneEmail,
 		[]string{capColetar, capGateBarato, capExtrair, capGateRico, capDestilar}); err != nil {
 		return err
+	}
+	return seedSharedConfig(ctx, db)
+}
+
+// SeedNewsLane writes the News lane: shared capabilities/providers/config plus the news extractor
+// (extrair-news) and the news flow. Like email, the source is already text (feed articles from
+// rara-feed: HN/RSS/html), so the lane swaps `transcrever` for `extrair` (clean HTML/boilerplate
+// instead of transcribing audio). News is PUBLIC, so IngestFeed stamps items sensitivity=public.
+//
+// Unlike the always-on lanes, news ships DISABLED: lighting it is a deliberate operator action
+// (Fontes & Flows toggle, or UPDATE flows SET enabled=true WHERE name='news'). So this seeder does
+// not reuse seedLaneFlow (which would force enabled=true): it seeds the flow disabled on first run
+// and PRESERVES an operator's enable on re-seed — a later `core-job seed` must never silently turn
+// the lane back off. Idempotent.
+func SeedNewsLane(ctx context.Context, db Database) error {
+	if err := seedCapabilities(ctx, db); err != nil {
+		return err
+	}
+	if err := seedSharedProviders(ctx, db); err != nil {
+		return err
+	}
+	// extrair: deterministic HTML/boilerplate cleaning — any runtime, accepts only news.
+	if err := db.UpsertProvider(ctx, Provider{
+		Name: provExtrairNews, Capability: capExtrair, Runtime: runtimeCloudRun, Activation: activationOnDemand,
+		Cost: 0.20, Quality: 0.85, LatencyMs: 2000,
+		Constraints: []byte(`{"accepts":["news"]}`), Enabled: true,
+	}); err != nil {
+		return err
+	}
+	// Preserve the operator's enable across re-seeds; default to disabled on first seed.
+	enabled := false
+	if f, found, err := db.GetFlow(ctx, newsFlowName); err != nil {
+		return err
+	} else if found {
+		enabled = f.Enabled
+	}
+	flowID, err := db.UpsertFlow(ctx, Flow{Name: newsFlowName, SourceType: laneNews, Enabled: enabled, Version: 1})
+	if err != nil {
+		return err
+	}
+	for i, capName := range []string{capColetar, capGateBarato, capExtrair, capGateRico, capDestilar} {
+		if err := db.UpsertFlowStep(ctx, FlowStep{FlowID: flowID, Seq: i + 1, Capability: capName, Enabled: true}); err != nil {
+			return err
+		}
 	}
 	return seedSharedConfig(ctx, db)
 }

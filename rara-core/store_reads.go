@@ -321,22 +321,26 @@ const itemDisplaySelect = `
 	    WHEN 'podcast'  THEN pe.title
 	    WHEN 'youtube'  THEN COALESCE(NULLIF(cv.title,''), NULLIF(pv.title,''))
 	    WHEN 'email'    THEN em.subject
+	    WHEN 'news'     THEN ni.title
 	    WHEN 'linkedin' THEN LEFT(lp.body, 100)
 	    ELSE '' END, '') AS display_title,
 	  COALESCE(CASE i.lane
 	    WHEN 'podcast'  THEN pf.title
 	    WHEN 'youtube'  THEN COALESCE(tc.channel_name, pl.title)
 	    WHEN 'email'    THEN em.sender
+	    WHEN 'news'     THEN ni.source
 	    ELSE '' END, '') AS display_channel,
 	  COALESCE(CASE i.lane
 	    WHEN 'podcast'  THEN LEFT(pe.description, 280)
 	    WHEN 'email'    THEN LEFT(em.body, 280)
+	    WHEN 'news'     THEN LEFT(ni.excerpt, 280)
 	    WHEN 'linkedin' THEN LEFT(lp.body, 280)
 	    ELSE '' END, '') AS display_summary,
 	  CASE i.lane
 	    WHEN 'podcast' THEN pe.published_at
 	    WHEN 'youtube' THEN COALESCE(cv.published_at, pv.published_at)
 	    WHEN 'email'   THEN em.received_at
+	    WHEN 'news'    THEN ni.published_at
 	    ELSE NULL END AS published_at
 	FROM items i
 	LEFT JOIN podcast_episodes pe ON i.lane = 'podcast' AND pe.guid             = i.source_ref
@@ -352,6 +356,7 @@ const itemDisplaySelect = `
 	) pv ON i.lane = 'youtube'
 	LEFT JOIN playlists        pl ON pl.id = pv.playlist_id
 	LEFT JOIN emails           em ON i.lane = 'email'    AND em.message_id      = i.source_ref
+	LEFT JOIN news_items       ni ON i.lane = 'news'     AND ni.url             = i.source_ref
 	LEFT JOIN linkedin_posts   lp ON i.lane = 'linkedin' AND lp.url             = i.source_ref`
 
 // itemBaseSelect is the DEGRADED projection used when a lane's domain table is absent

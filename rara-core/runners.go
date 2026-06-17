@@ -125,6 +125,35 @@ func (s *pgxEmailSource) Emails(ctx context.Context) ([]EmailItem, error) {
 }
 
 // ---------------------------------------------------------------------------
+// pgx NewsSource — the read side of news ingest (news_items).
+// ---------------------------------------------------------------------------
+
+type pgxNewsSource struct{ conn *pgx.Conn }
+
+// News returns every collected feed article that carries a url. The spine is keyed on
+// (lane=news, source_ref=url); the collector (rara-feed) owns the table (HN/RSS/html).
+func (s *pgxNewsSource) News(ctx context.Context) ([]NewsItem, error) {
+	const q = `
+		SELECT url, COALESCE(title, '')
+		FROM news_items
+		WHERE url IS NOT NULL AND url <> ''`
+	rows, err := s.conn.Query(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []NewsItem
+	for rows.Next() {
+		var a NewsItem
+		if err := rows.Scan(&a.URL, &a.Title); err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+// ---------------------------------------------------------------------------
 // pgx LinkedInPostStore — the write side of the manual-inbox collector (linkedin_posts).
 //
 // The manual inbox lives inside the surface (a person pastes a post through an MCP tool / HTTP

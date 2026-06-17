@@ -186,3 +186,57 @@ func IngestEmail(ctx context.Context, db Database, src EmailSource) (int, error)
 	}
 	return n, nil
 }
+
+// NewsItem is the minimal projection the spine needs from a collected feed article. URL is the
+// article's canonical address -> items.source_ref; Title is carried for symmetry (the gate reads
+// metadata from the news_items table directly).
+type NewsItem struct {
+	URL   string
+	Title string
+}
+
+// NewsSource reads the collected-article universe the news spine is built from. The concrete
+// implementation reads the news_items table (written by the rara-feed collector: HN/RSS/html).
+type NewsSource interface {
+	News(ctx context.Context) ([]NewsItem, error)
+}
+
+// IngestFeed upserts one `items` row per collected feed article (lane=news, source_ref=url).
+// News articles are PUBLIC, so every news item is stamped sensitivity=public. Mirrors the other
+// ingests: idempotent on (lane, source_ref), stamps the news flow's version, never regresses an
+// in-flight item, and skips entirely when the lane is disabled (news ships opt-in).
+func IngestFeed(ctx context.Context, db Database, src NewsSource) (int, error) {
+	flow, found, err := db.GetFlow(ctx, newsFlowName)
+	if err != nil {
+		return 0, err
+	}
+	if !found {
+		return 0, fmt.Errorf("ingest: flow %q not seeded (run SeedNewsLane first)", newsFlowName)
+	}
+	if !flow.Enabled {
+		log.Printf("ingest: lane %q disabled, skipping", newsFlowName)
+		return 0, nil
+	}
+	articles, err := src.News(ctx)
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, a := range articles {
+		if a.URL == "" {
+			continue // skip malformed rows (an article with no url)
+		}
+		if _, err := db.DiscoverItem(ctx, Item{
+			Lane:        laneNews,
+			SourceRef:   a.URL,
+			FlowID:      flow.ID,
+			FlowVersion: flow.Version,
+			Status:      itemDiscovered,
+			Sensitivity: sensitivityPublic,
+		}); err != nil {
+			return n, err
+		}
+		n++
+	}
+	return n, nil
+}

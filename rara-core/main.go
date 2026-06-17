@@ -952,13 +952,14 @@ func main() {
 			{"youtube", SeedYouTubeLane},
 			{"podcast", SeedPodcastLane},
 			{"email", SeedEmailLane},
+			{"news", SeedNewsLane},
 			{"linkedin", SeedLinkedInLane},
 		} {
 			if err := seed.fn(ctx, db); err != nil {
 				log.Fatalf("seed %s: %v", seed.name, err)
 			}
 		}
-		log.Println("rara-core: lane config seeded (youtube, podcast, email, linkedin)")
+		log.Println("rara-core: lane config seeded (youtube, podcast, email, news, linkedin)")
 
 	case "ingest":
 		runIngest(ctx, db, conn, os.Args[2:])
@@ -996,7 +997,7 @@ func main() {
 // podcast_episodes). Each is idempotent — re-ingesting converges.
 func runIngest(ctx context.Context, db Database, conn *pgx.Conn, argv []string) {
 	fs := flag.NewFlagSet("ingest", flag.ExitOnError)
-	lane := fs.String("lane", laneYouTube, "lane to ingest: youtube | podcast | email")
+	lane := fs.String("lane", laneYouTube, "lane to ingest: youtube | podcast | email | news")
 	_ = fs.Parse(argv)
 
 	var (
@@ -1010,8 +1011,10 @@ func runIngest(ctx context.Context, db Database, conn *pgx.Conn, argv []string) 
 		n, err = IngestPodcast(ctx, db, &pgxPodcastSource{conn: conn})
 	case laneEmail:
 		n, err = IngestEmail(ctx, db, &pgxEmailSource{conn: conn})
+	case laneNews:
+		n, err = IngestFeed(ctx, db, &pgxNewsSource{conn: conn})
 	default:
-		log.Fatalf("ingest: --lane must be one of youtube|podcast|email, got %q", *lane)
+		log.Fatalf("ingest: --lane must be one of youtube|podcast|email|news, got %q", *lane)
 	}
 	if err != nil {
 		log.Fatalf("ingest %s: %v", *lane, err)
@@ -1063,6 +1066,7 @@ func runReconcile(ctx context.Context, db Database, conn *pgx.Conn, dbURL string
 		r.yt = &pgxSpineSource{conn: conn}
 		r.pod = &pgxPodcastSource{conn: conn}
 		r.email = &pgxEmailSource{conn: conn}
+		r.news = &pgxNewsSource{conn: conn}
 		r.ingestEveryN = 1
 		if v := os.Getenv("INGEST_EVERY_N_PASSES"); v != "" {
 			if n, err := strconv.Atoi(v); err == nil && n > 0 {
