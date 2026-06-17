@@ -130,7 +130,6 @@ func NewReconciler(db Database, activator Activator) *Reconciler {
 //
 // Disabled lanes are also skipped silently here (same as !found): checking f.Enabled before
 // calling IngestX avoids both the redundant second GetFlow and a log line every 30s.
-//
 func (r *Reconciler) ingestOnce(ctx context.Context) {
 	if r.yt != nil {
 		if f, found, err := r.db.GetFlow(ctx, youtubeFlowName); err != nil {

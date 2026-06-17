@@ -232,7 +232,7 @@ func TestIngestLinkedIn(t *testing.T) {
 	}
 	src := fakeLinkedInSource{posts: []LinkedInPost{
 		{URL: "https://linkedin.com/posts/1", Author: "Alice"},
-		{URL: ""},                                              // malformed → skipped
+		{URL: ""}, // malformed → skipped
 		{URL: "https://linkedin.com/posts/1", Author: "Alice"}, // duplicate → one item
 		{URL: "https://linkedin.com/posts/2", Author: "Bob"},
 	}}

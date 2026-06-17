@@ -114,7 +114,7 @@ type LinkedInSource interface {
 func IngestLinkedIn(ctx context.Context, db Database, src LinkedInSource) (int, error) {
 	flow, found, err := db.GetFlow(ctx, linkedinFlowName)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("ingest: get flow %q: %w", linkedinFlowName, err)
 	}
 	if !found {
 		return 0, fmt.Errorf("ingest: flow %q not seeded (run SeedLinkedInLane first)", linkedinFlowName)
@@ -125,7 +125,7 @@ func IngestLinkedIn(ctx context.Context, db Database, src LinkedInSource) (int, 
 	}
 	posts, err := src.LinkedInPosts(ctx)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("ingest: fetch linkedin posts: %w", err)
 	}
 	n := 0
 	for _, p := range posts {
@@ -140,7 +140,7 @@ func IngestLinkedIn(ctx context.Context, db Database, src LinkedInSource) (int, 
 			Status:      itemDiscovered,
 			Sensitivity: sensitivityPublic,
 		}); err != nil {
-			return n, err
+			return n, fmt.Errorf("ingest: discover item %q: %w", p.URL, err)
 		}
 		n++
 	}

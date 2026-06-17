@@ -14,6 +14,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 
 	"github.com/jackc/pgx/v5"
@@ -139,14 +140,14 @@ func (s *pgxNewsSource) News(ctx context.Context) ([]NewsItem, error) {
 		WHERE url IS NOT NULL AND url <> ''`
 	rows, err := s.conn.Query(ctx, q)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("query news_items: %w", err)
 	}
 	defer rows.Close()
 	var out []NewsItem
 	for rows.Next() {
 		var a NewsItem
 		if err := rows.Scan(&a.URL, &a.Title); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("scan news_items row: %w", err)
 		}
 		out = append(out, a)
 	}
@@ -204,14 +205,14 @@ func (s *pgxLinkedInSource) LinkedInPosts(ctx context.Context) ([]LinkedInPost, 
 		WHERE url IS NOT NULL AND url <> ''`
 	rows, err := s.conn.Query(ctx, q)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("query linkedin_posts: %w", err)
 	}
 	defer rows.Close()
 	var out []LinkedInPost
 	for rows.Next() {
 		var p LinkedInPost
 		if err := rows.Scan(&p.URL, &p.Author); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("scan linkedin_posts row: %w", err)
 		}
 		out = append(out, p)
 	}
