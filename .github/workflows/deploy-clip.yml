@@ -117,7 +117,11 @@ jobs:
             --memory 512Mi
             --cpu 1
           )
-          if ! gcloud run jobs update "$JOB_NAME" "${COMMON_FLAGS[@]}" 2>/dev/null; then
+          if gcloud run jobs describe "$JOB_NAME" \
+               --region "$REGION" \
+               --project "${{ vars.GCP_PROJECT_ID }}" > /dev/null 2>&1; then
+            gcloud run jobs update "$JOB_NAME" "${COMMON_FLAGS[@]}"
+          else
             echo "Job not found — creating for the first time..."
             gcloud run jobs create "$JOB_NAME" "${COMMON_FLAGS[@]}"
           fi
