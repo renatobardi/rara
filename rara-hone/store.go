@@ -1,7 +1,7 @@
 // store.go — the domain types, the narrow persistence seam, and its pgx implementation.
 //
 // rara-hone is the interest_profile reviser, lifted out of rara-core into its own PERIODIC job
-// (a systemd timer on the VPC, run-once-and-exit). It owns the learning loop; the CONTROL plane
+// (a Cloud Run Job woken by Cloud Scheduler, run-once-and-exit). It owns the learning loop; the CONTROL plane
 // (rara-core) keeps only the human APPROVAL of a proposed version. So this seam is deliberately
 // tiny — exactly the four operations ReviseProfile needs over the shared interest_profile /
 // feedback tables, no more:
@@ -206,7 +206,7 @@ func (d *pgxStore) ListFeedbackSince(ctx context.Context, since time.Time) ([]Fe
 // errVersionExists is returned by InsertInterestProfile when a row with the target version already
 // exists — a concurrent proposal (a human surface `AddInterestProfile`, or an overlapping run)
 // claimed the number first. It is a benign, expected outcome of the shared proposal-version
-// namespace, NOT a fatal error: the caller skips this run and the next timer fire renumbers.
+// namespace, NOT a fatal error: the caller skips this run and the next scheduled fire renumbers.
 var errVersionExists = errors.New("interest_profile version already exists")
 
 // InsertInterestProfile appends a new version (append-only — versions are immutable). hone always

@@ -15,7 +15,7 @@ help:
 	@echo ""
 	@echo "Build:"
 	@echo "  make build             Build binary for current OS"
-	@echo "  make build-linux       Build linux/amd64 binary for the VPC (systemd timer)"
+	@echo "  make build-linux       Build linux/amd64 binary (Cloud Run is built via Dockerfile)"
 	@echo ""
 	@echo "Maintenance:"
 	@echo "  make clean             Clean build artifacts"
@@ -61,7 +61,7 @@ build:
 	@echo "Built: hone-job"
 
 build-linux:
-	@echo "Building linux/amd64 binary for the VPC..."
+	@echo "Building linux/amd64 binary..."
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-w -s" -o hone-job-linux-amd64 .
 	@echo "Built: hone-job-linux-amd64"
 

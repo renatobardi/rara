@@ -6,8 +6,8 @@ document the gates read. It is the slice of the system that lets curation *impro
 time, through a single closed loop over a **human-readable artifact** (no training infra).
 
 It is **not** a claim-worker. There is no [`rara-addon`](../rara-addon) SDK, no per-item routing,
-no provider to wake. hone is a **run-once-and-exit batch** fired by a **systemd timer** on the VPC:
-each invocation checks whether a revision is due and, if so, proposes one and exits.
+no provider to wake. hone is a **run-once-and-exit batch** fired by **Cloud Scheduler** (a Cloud Run
+Job): each invocation checks whether a revision is due and, if so, proposes one and exits.
 
 ## Propose vs. approve
 
@@ -37,7 +37,7 @@ The revision has **strictly separated jobs**:
 
 `shouldRevise` fires when the **cadence** has elapsed *or* enough **new feedback** has accumulated —
 but **never** while a proposal already awaits approval (no stacking), **never** within the
-**debounce** window of the last revision, and **never** with zero new signal. So the timer can fire
+**debounce** window of the last revision, and **never** with zero new signal. So the schedule can fire
 as often as you like; a run with nothing to learn from is a clean no-op.
 
 ## What it reads / writes
@@ -62,7 +62,7 @@ the LiteLLM narrator — live in `runners.go`.
 | `DATABASE_URL` | ✅ | — | Neon control database |
 | `LITELLM_BASE_URL` | — | — | LiteLLM gateway for the narrator (unset → template narrative) |
 | `LITELLM_API_KEY` | — | — | Bearer for the gateway |
-| `LITELLM_MODEL` | — | `claude-sonnet-4-6` | Narrator model |
+| `LITELLM_MODEL` | — | `claude-sonnet-4-6` | Narrator model (prod pins `groq-llama` in the workflow — the default model isn't in the gateway) |
 | `REVISE_CADENCE_HOURS` | — | `168` (weekly) | Revise at least this often if there's new feedback |
 | `REVISE_FEEDBACK_THRESHOLD` | — | `20` | ...or sooner, once this many new signals accumulate |
 | `REVISE_DEBOUNCE_HOURS` | — | `24` | Never revise within this window of the last revision |
@@ -74,29 +74,25 @@ it still no-ops when there is genuinely no new feedback.
 
 ```bash
 make test          # unit tests (zero I/O)
-make build-linux   # linux/amd64 binary for the VPC
+make build         # local binary
 DATABASE_URL=... ./hone-job            # one revision pass, then exit
 DATABASE_URL=... ./hone-job --force    # force the gate (still no-ops with no new feedback)
 ```
 
 ## Deploy
 
-A native binary on the always-on **VPC**, driven by a **systemd timer** (weekly by default). Not a
-Cloud Run Job — there is no gate/activation to wake, the timer *is* the trigger. A sketch:
+A **Cloud Run Job** (`rara-hone`) woken by **Cloud Scheduler** (daily by default) — there is no
+gate/activation to wake, the schedule *is* the trigger. Built and deployed by
+[`deploy-hone.yml`](../.github/workflows/deploy-hone.yml) (Cloud Build → Artifact Registry → Cloud
+Run, WIF keyless). The workflow pins `LITELLM_MODEL=groq-llama` and wires `DATABASE_URL` +
+`LITELLM_API_KEY` from Secret Manager. Trigger with a push to `main` (paths-filtered) or
+`gh workflow run deploy-hone.yml --ref main`.
 
-```ini
-# /etc/systemd/system/rara-hone.service
-[Service]
-Type=oneshot
-EnvironmentFile=/etc/rara-hone/.env
-ExecStart=/opt/rara-hone/hone-job
-
-# /etc/systemd/system/rara-hone.timer
-[Timer]
-OnCalendar=weekly
-Persistent=true
-[Install]
-WantedBy=timers.target
+```bash
+# Scheduler (cadence can be loose — the internal debounce/threshold gate the actual revision):
+gcloud scheduler jobs create http rara-hone-daily \
+  --schedule="0 6 * * *" --uri=".../jobs/rara-hone:run" --http-method=POST \
+  --oauth-service-account-email="<scheduler-sa>@${GCP_PROJECT_ID}.iam.gserviceaccount.com"
 ```
 
 ## Boundaries
