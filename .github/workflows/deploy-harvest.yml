@@ -95,9 +95,9 @@ jobs:
       - name: Deploy Cloud Run Job
         run: |
           # Try to update first; if the job doesn't exist yet, create it.
-          # Capture stderr so only a "not found" failure falls through to create;
-          # any other error (quota, permissions, bad image) surfaces immediately.
-          UPDATE_ERR=$(gcloud run jobs update "$JOB_NAME" \
+          # gcloud sends progress to stderr even on success, so check the exit code
+          # first; only inspect stderr content when the command actually fails.
+          if gcloud run jobs update "$JOB_NAME" \
                --image "$IMAGE" \
                --region "$REGION" \
                --project "${{ vars.GCP_PROJECT_ID }}" \
@@ -105,10 +105,9 @@ jobs:
                --max-retries 1 \
                --task-timeout 900s \
                --memory 512Mi \
-               --cpu 1 2>&1 >/dev/null) || true
-          if [ -z "$UPDATE_ERR" ]; then
+               --cpu 1 2>/tmp/update_err.txt; then
             echo "Job updated successfully"
-          elif echo "$UPDATE_ERR" | grep -qi "not found\|does not exist"; then
+          elif grep -qi "not found\|does not exist" /tmp/update_err.txt; then
             echo "Job not found — creating for the first time..."
             gcloud run jobs create "$JOB_NAME" \
               --image "$IMAGE" \
@@ -120,7 +119,7 @@ jobs:
               --memory 512Mi \
               --cpu 1
           else
-            echo "Update failed: $UPDATE_ERR"
+            echo "Update failed:"; cat /tmp/update_err.txt
             exit 1
           fi
 
