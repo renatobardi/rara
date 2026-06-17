@@ -97,6 +97,7 @@ type Reconciler struct {
 	pod          PodcastSource
 	email        EmailSource
 	news         NewsSource
+	li           LinkedInSource
 	ingestEveryN int
 	passCount    int
 }
@@ -129,10 +130,6 @@ func NewReconciler(db Database, activator Activator) *Reconciler {
 //
 // Disabled lanes are also skipped silently here (same as !found): checking f.Enabled before
 // calling IngestX avoids both the redundant second GetFlow and a log line every 30s.
-//
-// LinkedIn is absent here: LinkedIn posts land in the spine at submission time via the
-// surface (SubmitLinkedInPost). There is no external collector to poll, so auto-ingest
-// does not apply to the linkedin lane.
 func (r *Reconciler) ingestOnce(ctx context.Context) {
 	if r.yt != nil {
 		if f, found, err := r.db.GetFlow(ctx, youtubeFlowName); err != nil {
@@ -167,6 +164,15 @@ func (r *Reconciler) ingestOnce(ctx context.Context) {
 		} else if found && f.Enabled {
 			if _, err := IngestFeed(ctx, r.db, r.news); err != nil {
 				log.Printf("auto-ingest news: %v", err)
+			}
+		}
+	}
+	if r.li != nil {
+		if f, found, err := r.db.GetFlow(ctx, linkedinFlowName); err != nil {
+			log.Printf("auto-ingest linkedin: %v", err)
+		} else if found && f.Enabled {
+			if _, err := IngestLinkedIn(ctx, r.db, r.li); err != nil {
+				log.Printf("auto-ingest linkedin: %v", err)
 			}
 		}
 	}

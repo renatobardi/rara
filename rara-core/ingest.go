@@ -208,7 +208,7 @@ type NewsSource interface {
 func IngestFeed(ctx context.Context, db Database, src NewsSource) (int, error) {
 	flow, found, err := db.GetFlow(ctx, newsFlowName)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("ingest: get flow %q: %w", newsFlowName, err)
 	}
 	if !found {
 		return 0, fmt.Errorf("ingest: flow %q not seeded (run SeedNewsLane first)", newsFlowName)
@@ -219,7 +219,7 @@ func IngestFeed(ctx context.Context, db Database, src NewsSource) (int, error) {
 	}
 	articles, err := src.News(ctx)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("ingest: fetch news: %w", err)
 	}
 	n := 0
 	for _, a := range articles {
@@ -234,7 +234,7 @@ func IngestFeed(ctx context.Context, db Database, src NewsSource) (int, error) {
 			Status:      itemDiscovered,
 			Sensitivity: sensitivityPublic,
 		}); err != nil {
-			return n, err
+			return n, fmt.Errorf("ingest: discover item %q: %w", a.URL, err)
 		}
 		n++
 	}

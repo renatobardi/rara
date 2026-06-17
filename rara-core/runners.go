@@ -14,6 +14,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 
 	"github.com/jackc/pgx/v5"
@@ -139,14 +140,14 @@ func (s *pgxNewsSource) News(ctx context.Context) ([]NewsItem, error) {
 		WHERE url IS NOT NULL AND url <> ''`
 	rows, err := s.conn.Query(ctx, q)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("query news_items: %w", err)
 	}
 	defer rows.Close()
 	var out []NewsItem
 	for rows.Next() {
 		var a NewsItem
 		if err := rows.Scan(&a.URL, &a.Title); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("scan news_items row: %w", err)
 		}
 		out = append(out, a)
 	}
@@ -185,3 +186,35 @@ func (s *pgxLinkedInInbox) UpsertLinkedInPost(ctx context.Context, p LinkedInPos
 // the SAME linkedin_posts contract table behind the SAME url-idempotent contract. rara-core keeps
 // only the manual-inbox write (above) and the linkedin_posts -> spine bridge (SubmitLinkedInPost's
 // DiscoverItem), both unchanged. rara-clip writes ONLY the domain table; it never touches the spine.
+
+// ---------------------------------------------------------------------------
+// pgx LinkedInSource — the read side of bulk LinkedIn ingest (linkedin_posts).
+//
+// Both producers (manual-inbox and rara-clip) write the same table behind the same
+// url-idempotent contract; this source covers all of them in one SELECT.
+// ---------------------------------------------------------------------------
+
+type pgxLinkedInSource struct{ conn *pgx.Conn }
+
+// LinkedInPosts returns every row in linkedin_posts that carries a url. The spine is keyed on
+// (lane=linkedin, source_ref=url); both producers (manual-inbox and rara-clip) write the same table.
+func (s *pgxLinkedInSource) LinkedInPosts(ctx context.Context) ([]LinkedInPost, error) {
+	const q = `
+		SELECT url, COALESCE(author, '')
+		FROM linkedin_posts
+		WHERE url IS NOT NULL AND url <> ''`
+	rows, err := s.conn.Query(ctx, q)
+	if err != nil {
+		return nil, fmt.Errorf("query linkedin_posts: %w", err)
+	}
+	defer rows.Close()
+	var out []LinkedInPost
+	for rows.Next() {
+		var p LinkedInPost
+		if err := rows.Scan(&p.URL, &p.Author); err != nil {
+			return nil, fmt.Errorf("scan linkedin_posts row: %w", err)
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
