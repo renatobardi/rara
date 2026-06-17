@@ -165,3 +165,71 @@ func TestIngestPropagatesSourceError(t *testing.T) {
 		t.Fatalf("ingest should surface the source error, got %v", err)
 	}
 }
+
+// TestIngestYouTubeSkipsDisabledFlow: a disabled youtube flow must not be ingested.
+// Returns 0 items and nil error — the lane is intentionally off, not broken.
+func TestIngestYouTubeSkipsDisabledFlow(t *testing.T) {
+	ctx := context.Background()
+	db := newMockDatabase()
+	if err := SeedYouTubeLane(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	// Disable the flow.
+	f := db.flows[youtubeFlowName]
+	f.Enabled = false
+	if _, err := db.UpsertFlow(ctx, f); err != nil {
+		t.Fatal(err)
+	}
+	n, err := IngestYouTube(ctx, db, fakeSpineSource{videos: []YouTubeVideo{{VideoID: "vid1"}}})
+	if err != nil {
+		t.Fatalf("disabled flow should not error, got %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("disabled flow: ingested %d items, want 0", n)
+	}
+	if len(db.items) != 0 {
+		t.Fatalf("disabled flow: %d items created, want 0", len(db.items))
+	}
+}
+
+// TestIngestPodcastSkipsDisabledFlow: same contract for the podcast lane.
+func TestIngestPodcastSkipsDisabledFlow(t *testing.T) {
+	ctx := context.Background()
+	db := newMockDatabase()
+	if err := SeedPodcastLane(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	f := db.flows[podcastFlowName]
+	f.Enabled = false
+	if _, err := db.UpsertFlow(ctx, f); err != nil {
+		t.Fatal(err)
+	}
+	n, err := IngestPodcast(ctx, db, fakePodcastSource{episodes: []PodcastEpisode{{GUID: "ep1"}}})
+	if err != nil {
+		t.Fatalf("disabled podcast flow should not error, got %v", err)
+	}
+	if n != 0 || len(db.items) != 0 {
+		t.Fatalf("disabled podcast flow: n=%d items=%d, want both 0", n, len(db.items))
+	}
+}
+
+// TestIngestEmailSkipsDisabledFlow: same contract for the email lane.
+func TestIngestEmailSkipsDisabledFlow(t *testing.T) {
+	ctx := context.Background()
+	db := newMockDatabase()
+	if err := SeedEmailLane(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	f := db.flows[emailFlowName]
+	f.Enabled = false
+	if _, err := db.UpsertFlow(ctx, f); err != nil {
+		t.Fatal(err)
+	}
+	n, err := IngestEmail(ctx, db, fakeEmailSource{emails: []EmailItem{{MessageID: "msg1"}}})
+	if err != nil {
+		t.Fatalf("disabled email flow should not error, got %v", err)
+	}
+	if n != 0 || len(db.items) != 0 {
+		t.Fatalf("disabled email flow: n=%d items=%d, want both 0", n, len(db.items))
+	}
+}

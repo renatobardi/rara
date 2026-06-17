@@ -126,32 +126,35 @@ func NewReconciler(db Database, activator Activator) *Reconciler {
 // log a spurious error instead of skipping silently, violating the spec. Two reads at a 30s
 // cadence on a low-traffic control plane are acceptable.
 //
+// Disabled lanes are also skipped silently here (same as !found): checking f.Enabled before
+// calling IngestX avoids both the redundant second GetFlow and a log line every 30s.
+//
 // LinkedIn is absent here: LinkedIn posts land in the spine at submission time via the
 // surface (SubmitLinkedInPost). There is no external collector to poll, so auto-ingest
 // does not apply to the linkedin lane.
 func (r *Reconciler) ingestOnce(ctx context.Context) {
 	if r.yt != nil {
-		if _, found, err := r.db.GetFlow(ctx, youtubeFlowName); err != nil {
+		if f, found, err := r.db.GetFlow(ctx, youtubeFlowName); err != nil {
 			log.Printf("auto-ingest youtube: %v", err)
-		} else if found {
+		} else if found && f.Enabled {
 			if _, err := IngestYouTube(ctx, r.db, r.yt); err != nil {
 				log.Printf("auto-ingest youtube: %v", err)
 			}
 		}
 	}
 	if r.pod != nil {
-		if _, found, err := r.db.GetFlow(ctx, podcastFlowName); err != nil {
+		if f, found, err := r.db.GetFlow(ctx, podcastFlowName); err != nil {
 			log.Printf("auto-ingest podcast: %v", err)
-		} else if found {
+		} else if found && f.Enabled {
 			if _, err := IngestPodcast(ctx, r.db, r.pod); err != nil {
 				log.Printf("auto-ingest podcast: %v", err)
 			}
 		}
 	}
 	if r.email != nil {
-		if _, found, err := r.db.GetFlow(ctx, emailFlowName); err != nil {
+		if f, found, err := r.db.GetFlow(ctx, emailFlowName); err != nil {
 			log.Printf("auto-ingest email: %v", err)
-		} else if found {
+		} else if found && f.Enabled {
 			if _, err := IngestEmail(ctx, r.db, r.email); err != nil {
 				log.Printf("auto-ingest email: %v", err)
 			}

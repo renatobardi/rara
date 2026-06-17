@@ -309,19 +309,23 @@ func (d *pgxDatabase) LatestGateDecision(ctx context.Context, itemID int, gate s
 //
 //	podcast  → podcast_episodes (rara-dial), podcast_feeds (rara-dial)
 //	youtube  → channel_videos (rara-harvest), target_channels (rara-harvest)
+//	           playlist_videos (rara-shelf), playlists (rara-shelf) — fallback for playlist-only videos
 //	email    → emails (rara-courier)
 //	linkedin → linkedin_posts (rara-core)
+//
+// playlist_videos dedup: a video may appear in N playlists (UNIQUE per playlist_id,youtube_video_id).
+// The LATERAL LIMIT 1 ensures at most one playlist row per item, preventing row multiplication.
 const itemDisplaySelect = `
 	SELECT i.id, i.lane, i.source_ref, i.flow_id, i.flow_version, i.status, i.sensitivity,
 	  COALESCE(CASE i.lane
 	    WHEN 'podcast'  THEN pe.title
-	    WHEN 'youtube'  THEN cv.title
+	    WHEN 'youtube'  THEN COALESCE(NULLIF(cv.title,''), NULLIF(pv.title,''))
 	    WHEN 'email'    THEN em.subject
 	    WHEN 'linkedin' THEN LEFT(lp.body, 100)
 	    ELSE '' END, '') AS display_title,
 	  COALESCE(CASE i.lane
 	    WHEN 'podcast'  THEN pf.title
-	    WHEN 'youtube'  THEN tc.channel_name
+	    WHEN 'youtube'  THEN COALESCE(tc.channel_name, pl.title)
 	    WHEN 'email'    THEN em.sender
 	    ELSE '' END, '') AS display_channel,
 	  COALESCE(CASE i.lane
@@ -331,16 +335,24 @@ const itemDisplaySelect = `
 	    ELSE '' END, '') AS display_summary,
 	  CASE i.lane
 	    WHEN 'podcast' THEN pe.published_at
-	    WHEN 'youtube' THEN cv.published_at
+	    WHEN 'youtube' THEN COALESCE(cv.published_at, pv.published_at)
 	    WHEN 'email'   THEN em.received_at
 	    ELSE NULL END AS published_at
 	FROM items i
-	LEFT JOIN podcast_episodes pe ON i.lane = 'podcast' AND pe.guid           = i.source_ref
-	LEFT JOIN podcast_feeds    pf ON i.lane = 'podcast' AND pf.id             = pe.feed_id
+	LEFT JOIN podcast_episodes pe ON i.lane = 'podcast' AND pe.guid             = i.source_ref
+	LEFT JOIN podcast_feeds    pf ON i.lane = 'podcast' AND pf.id               = pe.feed_id
 	LEFT JOIN channel_videos   cv ON i.lane = 'youtube' AND cv.youtube_video_id = i.source_ref
-	LEFT JOIN target_channels  tc ON i.lane = 'youtube' AND tc.id             = cv.channel_id
-	LEFT JOIN emails           em ON i.lane = 'email'   AND em.message_id     = i.source_ref
-	LEFT JOIN linkedin_posts   lp ON i.lane = 'linkedin' AND lp.url           = i.source_ref`
+	LEFT JOIN target_channels  tc ON i.lane = 'youtube' AND tc.id               = cv.channel_id
+	LEFT JOIN LATERAL (
+	    SELECT title, playlist_id, published_at
+	    FROM playlist_videos
+	    WHERE youtube_video_id = i.source_ref
+	    ORDER BY playlist_id
+	    LIMIT 1
+	) pv ON i.lane = 'youtube'
+	LEFT JOIN playlists        pl ON pl.id = pv.playlist_id
+	LEFT JOIN emails           em ON i.lane = 'email'    AND em.message_id      = i.source_ref
+	LEFT JOIN linkedin_posts   lp ON i.lane = 'linkedin' AND lp.url             = i.source_ref`
 
 // itemBaseSelect is the DEGRADED projection used when a lane's domain table is absent
 // (a non-deployed lane never created its table). It returns the same column shape as

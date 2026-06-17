@@ -16,6 +16,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
 )
 
 // YouTubeVideo is the minimal projection the spine needs from a collected video. Title is
@@ -43,6 +44,10 @@ func IngestYouTube(ctx context.Context, db Database, src SpineSource) (int, erro
 	}
 	if !found {
 		return 0, fmt.Errorf("ingest: flow %q not seeded (run SeedYouTubeLane first)", youtubeFlowName)
+	}
+	if !flow.Enabled {
+		log.Printf("ingest: lane %q disabled, skipping", youtubeFlowName)
+		return 0, nil
 	}
 
 	videos, err := src.YouTubeVideos(ctx)
@@ -100,6 +105,10 @@ func IngestPodcast(ctx context.Context, db Database, src PodcastSource) (int, er
 	if !found {
 		return 0, fmt.Errorf("ingest: flow %q not seeded (run SeedPodcastLane first)", podcastFlowName)
 	}
+	if !flow.Enabled {
+		log.Printf("ingest: lane %q disabled, skipping", podcastFlowName)
+		return 0, nil
+	}
 	episodes, err := src.PodcastEpisodes(ctx)
 	if err != nil {
 		return 0, err
@@ -149,6 +158,10 @@ func IngestEmail(ctx context.Context, db Database, src EmailSource) (int, error)
 	}
 	if !found {
 		return 0, fmt.Errorf("ingest: flow %q not seeded (run SeedEmailLane first)", emailFlowName)
+	}
+	if !flow.Enabled {
+		log.Printf("ingest: lane %q disabled, skipping", emailFlowName)
+		return 0, nil
 	}
 	emails, err := src.Emails(ctx)
 	if err != nil {

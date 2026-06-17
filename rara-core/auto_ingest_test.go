@@ -119,3 +119,29 @@ func TestAutoIngestEveryNPasses(t *testing.T) {
 		t.Error("ingest did not run on pass 3")
 	}
 }
+
+// TestAutoIngestSkipsDisabledLane: a seeded but disabled flow must be skipped silently by
+// the reconciler — no item created, no error, no redundant log every 30s.
+func TestAutoIngestSkipsDisabledLane(t *testing.T) {
+	ctx := context.Background()
+	db := newMockDatabase()
+	if err := SeedYouTubeLane(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	// Disable the youtube flow after seeding.
+	f := db.flows[youtubeFlowName]
+	f.Enabled = false
+	if _, err := db.UpsertFlow(ctx, f); err != nil {
+		t.Fatal(err)
+	}
+	r := NewReconciler(db, nil)
+	r.yt = fakeSpineSource{videos: []YouTubeVideo{{VideoID: "vid1"}}}
+	r.ingestEveryN = 1
+
+	if err := r.ReconcileOnce(ctx); err != nil {
+		t.Fatalf("unexpected error with disabled lane: %v", err)
+	}
+	if len(db.items) != 0 {
+		t.Errorf("disabled lane: %d items created, want 0", len(db.items))
+	}
+}
