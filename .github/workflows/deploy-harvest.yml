@@ -1,0 +1,122 @@
+name: Deploy rara-harvest
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_after_deploy:
+        description: 'Execute the job once right after deploying'
+        required: false
+        default: 'true'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+  push:
+    branches:
+      - main
+    paths:
+      - 'rara-harvest/**'
+      - '.github/workflows/deploy-harvest.yml'
+
+# Required for Workload Identity Federation (keyless auth to GCP).
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  REGION: ${{ vars.GCP_REGION }}
+  JOB_NAME: rara-harvest
+  IMAGE: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/rara/rara-harvest:${{ github.sha }}
+
+jobs:
+  deploy:
+    name: Build & Deploy Cloud Run Job
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+          token_format: access_token
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
+
+      - name: Build image with Cloud Build
+        run: |
+          tar -czf /tmp/harvest-source.tgz -C rara-harvest .
+          gcloud storage cp /tmp/harvest-source.tgz \
+            "gs://${{ vars.GCP_PROJECT_ID }}_cloudbuild/source/harvest-${GITHUB_SHA}.tgz"
+
+          cat > /tmp/cloudbuild-harvest.yaml << YAML
+          steps:
+          - name: 'gcr.io/cloud-builders/docker'
+            args: ['build', '-t', '${IMAGE}', '.']
+          source:
+            storageSource:
+              bucket: ${{ vars.GCP_PROJECT_ID }}_cloudbuild
+              object: source/harvest-${GITHUB_SHA}.tgz
+          images: ['${IMAGE}']
+          YAML
+
+          BUILD_ID=$(gcloud builds submit \
+            --no-source \
+            --config=/tmp/cloudbuild-harvest.yaml \
+            --project "${{ vars.GCP_PROJECT_ID }}" \
+            --async \
+            --format='value(id)')
+          echo "Cloud Build ID: $BUILD_ID"
+
+          while true; do
+            STATUS=$(gcloud builds describe "$BUILD_ID" \
+              --project "${{ vars.GCP_PROJECT_ID }}" \
+              --format='value(status)')
+            echo "Build status: $STATUS"
+            case "$STATUS" in
+              SUCCESS) echo "Image built successfully"; break ;;
+              FAILURE|CANCELLED|TIMEOUT|INTERNAL_ERROR)
+                echo "Build failed: $STATUS"
+                exit 1 ;;
+              *) sleep 15 ;;
+            esac
+          done
+
+      - name: Deploy Cloud Run Job
+        run: |
+          # Try to update first; if the job doesn't exist yet, create it.
+          if ! gcloud run jobs update "$JOB_NAME" \
+               --image "$IMAGE" \
+               --region "$REGION" \
+               --project "${{ vars.GCP_PROJECT_ID }}" \
+               --set-secrets "DATABASE_URL=database-url:latest,YOUTUBE_API_KEY=youtube-api-key:latest" \
+               --max-retries 1 \
+               --task-timeout 900s \
+               --memory 512Mi \
+               --cpu 1 2>/dev/null; then
+            echo "Job not found — creating for the first time..."
+            gcloud run jobs create "$JOB_NAME" \
+              --image "$IMAGE" \
+              --region "$REGION" \
+              --project "${{ vars.GCP_PROJECT_ID }}" \
+              --set-secrets "DATABASE_URL=database-url:latest,YOUTUBE_API_KEY=youtube-api-key:latest" \
+              --max-retries 1 \
+              --task-timeout 900s \
+              --memory 512Mi \
+              --cpu 1
+          fi
+
+      - name: Execute job once
+        if: github.event_name == 'push' || github.event.inputs.run_after_deploy == 'true'
+        run: |
+          # --wait blocks until the execution completes, but gcloud itself has no
+          # built-in timeout flag for jobs execute. Wrap with `timeout` (1000s > the
+          # 900s task-timeout) so the runner never hangs indefinitely on a stuck job.
+          timeout 1000 gcloud run jobs execute "$JOB_NAME" \
+            --region "$REGION" \
+            --project "${{ vars.GCP_PROJECT_ID }}" \
+            --wait

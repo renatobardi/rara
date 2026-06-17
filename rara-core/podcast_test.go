@@ -115,6 +115,7 @@ func TestReconcilePodcastRoutesDirectAudio(t *testing.T) {
 	if err := SeedYouTubeLane(ctx, db); err != nil {
 		t.Fatal(err)
 	}
+	enableYouTubeFlow(t, db)
 	if err := SeedPodcastLane(ctx, db); err != nil {
 		t.Fatal(err)
 	}

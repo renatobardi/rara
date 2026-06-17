@@ -31,6 +31,7 @@ func TestIngestCreatesItems(t *testing.T) {
 	if err := SeedYouTubeLane(ctx, db); err != nil {
 		t.Fatal(err)
 	}
+	enableYouTubeFlow(t, db)
 	src := fakeSpineSource{videos: []YouTubeVideo{
 		{VideoID: "vid1", Title: "One"},
 		{VideoID: "vid2", Title: "Two"},
@@ -68,6 +69,7 @@ func TestIngestIdempotentPreservesStatus(t *testing.T) {
 	if err := SeedYouTubeLane(ctx, db); err != nil {
 		t.Fatal(err)
 	}
+	enableYouTubeFlow(t, db)
 	src := fakeSpineSource{videos: []YouTubeVideo{{VideoID: "vid1"}}}
 	if _, err := IngestYouTube(ctx, db, src); err != nil {
 		t.Fatal(err)
@@ -99,6 +101,7 @@ func TestIngestFreezesFlowVersion(t *testing.T) {
 	if err := SeedYouTubeLane(ctx, db); err != nil {
 		t.Fatal(err)
 	}
+	enableYouTubeFlow(t, db)
 	src := fakeSpineSource{videos: []YouTubeVideo{{VideoID: "vid1"}}}
 	if _, err := IngestYouTube(ctx, db, src); err != nil {
 		t.Fatal(err)
@@ -137,6 +140,7 @@ func TestIngestSkipsEmptyAndDedups(t *testing.T) {
 	if err := SeedYouTubeLane(ctx, db); err != nil {
 		t.Fatal(err)
 	}
+	enableYouTubeFlow(t, db)
 	src := fakeSpineSource{videos: []YouTubeVideo{
 		{VideoID: "vid1"},
 		{VideoID: ""},     // malformed (private/deleted) -> skipped
@@ -160,6 +164,7 @@ func TestIngestPropagatesSourceError(t *testing.T) {
 	if err := SeedYouTubeLane(ctx, db); err != nil {
 		t.Fatal(err)
 	}
+	enableYouTubeFlow(t, db)
 	sentinel := errors.New("boom")
 	if _, err := IngestYouTube(ctx, db, fakeSpineSource{err: sentinel}); !errors.Is(err, sentinel) {
 		t.Fatalf("ingest should surface the source error, got %v", err)

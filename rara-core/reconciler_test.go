@@ -28,11 +28,25 @@ func seedAndIngestOne(t *testing.T, db *MockDatabase, videoID string) int {
 	if err := SeedYouTubeLane(ctx, db); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
+	// SeedYouTubeLane seeds the flow disabled (opt-in); tests that exercise the reconciler
+	// need it enabled to process items.
+	f := db.flows[youtubeFlowName]
+	f.Enabled = true
+	db.flows[youtubeFlowName] = f
 	if _, err := IngestYouTube(ctx, db, fakeSpineSource{videos: []YouTubeVideo{{VideoID: videoID}}}); err != nil {
 		t.Fatalf("ingest: %v", err)
 	}
 	markProviderAlive(t, db, provASRYouTube)
 	return db.items[itemKey(laneYouTube, videoID)].ID
+}
+
+// enableYouTubeFlow marks the youtube flow enabled. SeedYouTubeLane seeds it disabled
+// (opt-in lane); tests that exercise active ingestion or routing must call this.
+func enableYouTubeFlow(t *testing.T, db *MockDatabase) {
+	t.Helper()
+	f := db.flows[youtubeFlowName]
+	f.Enabled = true
+	db.flows[youtubeFlowName] = f
 }
 
 // markProviderAlive stamps a fresh heartbeat on a provider so the router's health gate
