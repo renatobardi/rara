@@ -1,0 +1,51 @@
+name: Deploy LiteLLM gateway
+
+# Triggered on push to main when litellm config/image changes, or manually.
+# Builds a custom image with config.yaml baked in and deploys to the existing
+# Cloud Run Service "litellm". API keys come from Secret Manager — no manual
+# secret mount of litellm-config needed.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'rara-distill/litellm/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  deploy:
+    name: Build & Deploy LiteLLM
+    runs-on: ubuntu-latest
+    env:
+      REGION: ${{ vars.GCP_REGION }}
+      PROJECT: ${{ vars.GCP_PROJECT_ID }}
+      IMAGE: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/rara/litellm:${{ github.sha }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Build image via Cloud Build
+        run: |
+          gcloud builds submit rara-distill/litellm \
+            --tag "$IMAGE" \
+            --project "$PROJECT"
+
+      - name: Deploy to Cloud Run Service
+        run: |
+          gcloud run deploy litellm \
+            --image "$IMAGE" \
+            --region "$REGION" \
+            --project "$PROJECT" \
+            --set-secrets="GEMINI_API_KEY=gemini-api-key:latest,GROQ_API_KEY=groq-api-key:latest,LITELLM_MASTER_KEY=litellm-api-key:latest"
