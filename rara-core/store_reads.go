@@ -665,75 +665,79 @@ func (d *pgxDatabase) HealthPing(ctx context.Context) error {
 // so their queries never degrade. Distillations = 0 when the table is absent.
 func (d *pgxDatabase) UsageCounts(ctx context.Context) (UsageReport, error) {
 	var r UsageReport
+	var err error
 
-	// items by (lane, status)
-	{
-		const q = `SELECT lane, status, COUNT(*) FROM items GROUP BY lane, status ORDER BY lane, status`
-		rows, err := d.conn.Query(ctx, q)
-		if err != nil {
-			return r, fmt.Errorf("usage items query: %w", err)
-		}
-		r.Items = make([]ItemCount, 0)
-		for rows.Next() {
-			var ic ItemCount
-			if err := rows.Scan(&ic.Lane, &ic.Status, &ic.Count); err != nil {
-				rows.Close()
-				return r, fmt.Errorf("usage items scan: %w", err)
-			}
-			r.Items = append(r.Items, ic)
-		}
-		rows.Close()
-		if err := rows.Err(); err != nil {
-			return r, fmt.Errorf("usage items rows: %w", err)
-		}
+	if r.Items, err = d.queryItemCounts(ctx); err != nil {
+		return r, err
 	}
-
-	// quarantine derived from items (no extra query)
 	for _, ic := range r.Items {
 		if ic.Status == itemQuarantine {
 			r.Quarantine += ic.Count
 		}
 	}
 
-	// item_steps by (capability, status)
-	{
-		const q = `SELECT capability, status, COUNT(*) FROM item_steps GROUP BY capability, status ORDER BY capability, status`
-		rows, err := d.conn.Query(ctx, q)
-		if err != nil {
-			return r, fmt.Errorf("usage item_steps query: %w", err)
-		}
-		r.ItemSteps = make([]StepCount, 0)
-		for rows.Next() {
-			var sc StepCount
-			if err := rows.Scan(&sc.Capability, &sc.Status, &sc.Count); err != nil {
-				rows.Close()
-				return r, fmt.Errorf("usage item_steps scan: %w", err)
-			}
-			r.ItemSteps = append(r.ItemSteps, sc)
-		}
-		rows.Close()
-		if err := rows.Err(); err != nil {
-			return r, fmt.Errorf("usage item_steps rows: %w", err)
-		}
+	if r.ItemSteps, err = d.queryStepCounts(ctx); err != nil {
+		return r, err
 	}
 
 	// distillations total — cross-agent table; degrade on 42P01 (table absent)
-	{
-		var count int
-		err := d.conn.QueryRow(ctx, "SELECT COUNT(*) FROM distillations").Scan(&count)
-		if err != nil {
-			var pgErr *pgconn.PgError
-			if errors.As(err, &pgErr) && pgErr.Code == "42P01" {
-				log.Printf("warning: distillations table absent, usage count degraded")
-			} else {
-				return r, fmt.Errorf("usage distillations: %w", err)
-			}
+	var count int
+	if err := d.conn.QueryRow(ctx, "SELECT COUNT(*) FROM distillations").Scan(&count); err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "42P01" {
+			log.Printf("warning: distillations table absent, usage count degraded")
 		} else {
-			r.Distillations = count
+			return r, fmt.Errorf("usage distillations: %w", err)
 		}
+	} else {
+		r.Distillations = count
 	}
 
 	return r, nil
+}
+
+func (d *pgxDatabase) queryItemCounts(ctx context.Context) ([]ItemCount, error) {
+	const q = `SELECT lane, status, COUNT(*) FROM items GROUP BY lane, status ORDER BY lane, status`
+	rows, err := d.conn.Query(ctx, q)
+	if err != nil {
+		return nil, fmt.Errorf("usage items query: %w", err)
+	}
+	out := make([]ItemCount, 0)
+	for rows.Next() {
+		var ic ItemCount
+		if err := rows.Scan(&ic.Lane, &ic.Status, &ic.Count); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("usage items scan: %w", err)
+		}
+		out = append(out, ic)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("usage items rows: %w", err)
+	}
+	return out, nil
+}
+
+func (d *pgxDatabase) queryStepCounts(ctx context.Context) ([]StepCount, error) {
+	const q = `SELECT capability, status, COUNT(*) FROM item_steps GROUP BY capability, status ORDER BY capability, status`
+	rows, err := d.conn.Query(ctx, q)
+	if err != nil {
+		return nil, fmt.Errorf("usage item_steps query: %w", err)
+	}
+	out := make([]StepCount, 0)
+	for rows.Next() {
+		var sc StepCount
+		if err := rows.Scan(&sc.Capability, &sc.Status, &sc.Count); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("usage item_steps scan: %w", err)
+		}
+		out = append(out, sc)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("usage item_steps rows: %w", err)
+	}
+	return out, nil
 }
 
 // TouchProviderHeartbeat stamps heartbeat_at = now for a live provider. An unknown name
