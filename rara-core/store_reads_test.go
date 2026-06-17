@@ -246,3 +246,44 @@ type errRows struct {
 func (r *errRows) Next() bool { return false }
 func (r *errRows) Close()     {}
 func (r *errRows) Err() error { return r.err }
+
+// TestItemDisplaySelectJoinsPlaylistVideos: the query must join playlist_videos so that a
+// YouTube video ingested via a playlist (not a channel upload) shows its title instead of
+// the raw video ID. Dedup (1 row per item even when a video sits in N playlists) is
+// guaranteed by the LATERAL LIMIT 1 in the query itself.
+func TestItemDisplaySelectJoinsPlaylistVideos(t *testing.T) {
+	if !strings.Contains(itemDisplaySelect, "playlist_videos") {
+		t.Fatal("itemDisplaySelect must JOIN playlist_videos for youtube playlist title fallback")
+	}
+	if !strings.Contains(itemDisplaySelect, "playlists") {
+		t.Fatal("itemDisplaySelect must JOIN playlists to resolve playlist channel name")
+	}
+}
+
+// TestListItemsByStatus_YoutubePlaylistTitleShown: when the enriched query returns a
+// youtube item whose title comes from the playlist fallback (COALESCE picked pv.title),
+// the scanning code must surface it unchanged.
+func TestListItemsByStatus_YoutubePlaylistTitleShown(t *testing.T) {
+	conn := &fakeDisplayConn{
+		fullRows: []displayRow{
+			{id: 9, lane: "youtube", sourceRef: "BcLtqQ3JlMU", status: "quarantine",
+				title: "Deep Dive into Go Generics", channel: "Golang Weekly"},
+		},
+	}
+	d := &pgxDatabase{conn: conn}
+
+	items, err := d.ListItemsByStatus(context.Background(), "quarantine")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("expected 1 item, got %d", len(items))
+	}
+	it := items[0]
+	if it.Title != "Deep Dive into Go Generics" {
+		t.Errorf("youtube item title = %q, want playlist title (not raw video ID)", it.Title)
+	}
+	if it.Channel != "Golang Weekly" {
+		t.Errorf("youtube item channel = %q, want playlist name", it.Channel)
+	}
+}
