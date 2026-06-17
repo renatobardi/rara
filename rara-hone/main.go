@@ -1,6 +1,6 @@
 // rara-hone is the interest_profile reviser — the 2.0 learning loop, extracted from rara-core into
 // its own PERIODIC job. It is NOT a claim-worker (no rara-addon SDK, no per-item routing): it is a
-// run-once-and-exit batch fired by a systemd timer on the VPC. Each invocation:
+// run-once-and-exit batch fired by Cloud Scheduler (a Cloud Run Job). Each invocation:
 //
 //  1. reads the ACTIVE interest_profile (the base) + the feedback accumulated since the last
 //     revision over the shared Neon tables;
@@ -13,9 +13,9 @@
 // proposal (ActivateInterestProfile) stays in rara-core's surface (MCP/HTTP). The gate cascade
 // reads the ACTIVE version, so a proposal is inert until a person approves it there.
 //
-// Deploy: a native binary on the always-on VPC under a systemd timer (weekly by default), NOT a
-// Cloud Run Job — so there is no gate/activation to wake; the timer is the trigger. The trigger
-// logic itself still no-ops a run with nothing new to learn from, so the timer can fire freely.
+// Deploy: a Cloud Run Job woken by Cloud Scheduler (daily by default) — there is no gate/activation
+// to wake, the schedule is the trigger. The trigger logic itself still no-ops a run with nothing new
+// to learn from (cadence/threshold/debounce gate), so the schedule can fire freely.
 package main
 
 import (
@@ -42,7 +42,7 @@ func main() {
 		log.Fatalf("DATABASE_URL environment variable is required")
 	}
 
-	// Signal-aware context so a SIGTERM during the run (the systemd timer's stop) cancels cleanly.
+	// Signal-aware context so a SIGTERM during the run (Cloud Run's task stop) cancels cleanly.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
@@ -69,8 +69,8 @@ func main() {
 	switch {
 	case errors.Is(err, errVersionExists):
 		// A concurrent proposal (a human surface add, or an overlapping run) claimed the version
-		// number first. Benign: skip this run cleanly; the next timer fire renumbers off the new
-		// max. NOT fatal — exiting non-zero here would needlessly alarm the systemd timer.
+		// number first. Benign: skip this run cleanly; the next scheduled fire renumbers off the new
+		// max. NOT fatal — exiting non-zero here would needlessly alarm the scheduler.
 		log.Printf("rara-hone: profile version already taken by a concurrent proposal; skipping this run")
 		return
 	case err != nil:
@@ -84,7 +84,7 @@ func main() {
 }
 
 // configFromEnv builds the reviser config from the conservative defaults, overriding the trigger
-// knobs (cadence/threshold/debounce) from the environment so the systemd timer's cadence can be
+// knobs (cadence/threshold/debounce) from the environment so the schedule's cadence can be
 // tuned without a rebuild. --force collapses the gate (an operator forcing a revision now), but
 // the engine still no-ops when there is genuinely no new feedback to learn from.
 func configFromEnv(force bool) reviseConfig {
