@@ -109,22 +109,6 @@
 			style="background:color-mix(in srgb, var(--bg) 82%, transparent)"
 		>
 			<h1 class="m-0 text-[17px] font-semibold">{pageTitles[$page.url.pathname] ?? $page.url.pathname.slice(1)}</h1>
-			<div class="flex rounded-pill border border-border bg-surface-2 p-[3px]">
-				<button
-					class="cursor-pointer rounded-pill border-0 px-3.5 py-1 text-xs font-semibold {theme ===
-					'clean'
-						? 'bg-primary text-primary-fg'
-						: 'bg-transparent text-muted'}"
-					onclick={() => setTheme('clean')}>{t.topbar.clean}</button
-				>
-				<button
-					class="cursor-pointer rounded-pill border-0 px-3.5 py-1 text-xs font-semibold {theme ===
-					'dark'
-						? 'bg-primary text-primary-fg'
-						: 'bg-transparent text-muted'}"
-					onclick={() => setTheme('dark')}>{t.topbar.dark}</button
-				>
-			</div>
 			<button
 				class="ml-auto flex min-w-[220px] cursor-pointer items-center gap-2 rounded-pill border border-border bg-surface-2 px-3.5 py-[7px] text-[13px] text-muted"
 				onclick={() => (paletteOpen = true)}
@@ -132,6 +116,22 @@
 			>
 				⌕ {t.topbar.search}
 				<kbd class="ml-auto text-[11px] opacity-50">⌘K</kbd>
+			</button>
+			<button
+				class="flex h-[34px] w-[34px] cursor-pointer items-center justify-center rounded-token border-0 bg-transparent text-muted hover:bg-hover"
+				onclick={() => setTheme(theme === 'dark' ? 'clean' : 'dark')}
+				aria-label="Alternar tema (claro/escuro)"
+			>
+				{#if theme === 'dark'}
+					<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+						<path d="M20 14.5A8 8 0 0 1 9.5 4 7 7 0 1 0 20 14.5Z"/>
+					</svg>
+				{:else}
+					<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+						<circle cx="12" cy="12" r="4"/>
+						<path d="M12 2v2M12 20v2M2 12h2M20 12h2M5 5l1.4 1.4M17.6 17.6L19 19M19 5l-1.4 1.4M6.4 17.6L5 19"/>
+					</svg>
+				{/if}
 			</button>
 		</div>
 
