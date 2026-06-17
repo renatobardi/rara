@@ -26,6 +26,7 @@ import (
 	"context"
 	"fmt"
 	"html"
+	"log"
 	"regexp"
 	"strings"
 )
@@ -95,6 +96,55 @@ func SubmitLinkedInPost(ctx context.Context, db Database, store LinkedInPostStor
 		Status:      itemDiscovered,
 		Sensitivity: sensitivityPublic,
 	})
+}
+
+// LinkedInSource reads the collected-post universe the LinkedIn spine is built from. Both
+// producers — the manual-inbox (SubmitLinkedInPost) and the Bright Data crawler (rara-clip) —
+// write the same linkedin_posts table behind the same url-idempotent contract.
+type LinkedInSource interface {
+	LinkedInPosts(ctx context.Context) ([]LinkedInPost, error)
+}
+
+// IngestLinkedIn upserts one items row per collected LinkedIn post (lane=linkedin,
+// source_ref=url). Posts are PUBLIC; idempotent on (lane, source_ref); stamps the linkedin
+// flow's version; skips when the lane is disabled. Mirrors IngestFeed. Both the manual-inbox
+// path (SubmitLinkedInPost) and the Bright Data collector (rara-clip) write linkedin_posts;
+// IngestLinkedIn bridges every row not yet in the spine, so a rara-clip post lands there on
+// the next reconcile without a manual core-job ingest call.
+func IngestLinkedIn(ctx context.Context, db Database, src LinkedInSource) (int, error) {
+	flow, found, err := db.GetFlow(ctx, linkedinFlowName)
+	if err != nil {
+		return 0, err
+	}
+	if !found {
+		return 0, fmt.Errorf("ingest: flow %q not seeded (run SeedLinkedInLane first)", linkedinFlowName)
+	}
+	if !flow.Enabled {
+		log.Printf("ingest: lane %q disabled, skipping", linkedinFlowName)
+		return 0, nil
+	}
+	posts, err := src.LinkedInPosts(ctx)
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, p := range posts {
+		if p.URL == "" {
+			continue
+		}
+		if _, err := db.DiscoverItem(ctx, Item{
+			Lane:        laneLinkedIn,
+			SourceRef:   p.URL,
+			FlowID:      flow.ID,
+			FlowVersion: flow.Version,
+			Status:      itemDiscovered,
+			Sensitivity: sensitivityPublic,
+		}); err != nil {
+			return n, err
+		}
+		n++
+	}
+	return n, nil
 }
 
 // reTag matches any HTML tag — the only regex the collector's emptiness check needs. The full

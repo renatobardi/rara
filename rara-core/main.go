@@ -1067,6 +1067,7 @@ func runReconcile(ctx context.Context, db Database, conn *pgx.Conn, dbURL string
 		r.pod = &pgxPodcastSource{conn: conn}
 		r.email = &pgxEmailSource{conn: conn}
 		r.news = &pgxNewsSource{conn: conn}
+		r.li = &pgxLinkedInSource{conn: conn}
 		r.ingestEveryN = 1
 		if v := os.Getenv("INGEST_EVERY_N_PASSES"); v != "" {
 			if n, err := strconv.Atoi(v); err == nil && n > 0 {

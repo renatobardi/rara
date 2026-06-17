@@ -202,6 +202,133 @@ func TestSeedLinkedInLaneDisabledByDefault(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// IngestLinkedIn — Bright Data path: linkedin_posts → spine.
+// ---------------------------------------------------------------------------
+
+// fakeLinkedInSource is a fixed list of collected posts — the read side of bulk ingest, mocked.
+type fakeLinkedInSource struct {
+	posts []LinkedInPost
+	err   error
+}
+
+func (f fakeLinkedInSource) LinkedInPosts(_ context.Context) ([]LinkedInPost, error) {
+	return f.posts, f.err
+}
+
+// TestIngestLinkedIn: posts from the source become spine items (lane=linkedin, source_ref=url,
+// PUBLIC), idempotent on (lane, source_ref), rows with empty url are skipped.
+func TestIngestLinkedIn(t *testing.T) {
+	ctx := context.Background()
+	db := newMockDatabase()
+	if err := SeedLinkedInLane(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	// LinkedIn ships disabled — enable it for this test.
+	f := db.flows[linkedinFlowName]
+	f.Enabled = true
+	if _, err := db.UpsertFlow(ctx, f); err != nil {
+		t.Fatal(err)
+	}
+	src := fakeLinkedInSource{posts: []LinkedInPost{
+		{URL: "https://linkedin.com/posts/1", Author: "Alice"},
+		{URL: ""},                                              // malformed → skipped
+		{URL: "https://linkedin.com/posts/1", Author: "Alice"}, // duplicate → one item
+		{URL: "https://linkedin.com/posts/2", Author: "Bob"},
+	}}
+	n, err := IngestLinkedIn(ctx, db, src)
+	if err != nil {
+		t.Fatalf("ingest: %v", err)
+	}
+	if n != 3 {
+		t.Errorf("processed %d, want 3 (empty url skipped)", n)
+	}
+	if len(db.items) != 2 {
+		t.Errorf("dedup failed: %d items, want 2", len(db.items))
+	}
+	it := db.items[itemKey(laneLinkedIn, "https://linkedin.com/posts/1")]
+	if it.Sensitivity != sensitivityPublic {
+		t.Errorf("linkedin item sensitivity = %q, want public", it.Sensitivity)
+	}
+}
+
+// TestIngestLinkedInSkipsDisabledLane: linkedin ships disabled, so IngestLinkedIn is a no-op
+// until the operator lights the lane.
+func TestIngestLinkedInSkipsDisabledLane(t *testing.T) {
+	ctx := context.Background()
+	db := newMockDatabase()
+	if err := SeedLinkedInLane(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	src := fakeLinkedInSource{posts: []LinkedInPost{{URL: "https://linkedin.com/posts/1"}}}
+	n, err := IngestLinkedIn(ctx, db, src)
+	if err != nil {
+		t.Fatalf("ingest: %v", err)
+	}
+	if n != 0 || len(db.items) != 0 {
+		t.Errorf("disabled lane: processed %d / %d items, want 0/0", n, len(db.items))
+	}
+}
+
+// TestIngestLinkedInManualAndBrightDataConverge: a post submitted via the manual-inbox
+// (SubmitLinkedInPost) and the same URL arriving via the Bright Data bulk source
+// (IngestLinkedIn) converge to exactly ONE spine item — DiscoverItem is idempotent.
+func TestIngestLinkedInManualAndBrightDataConverge(t *testing.T) {
+	ctx := context.Background()
+	db := newMockDatabase()
+	if err := SeedLinkedInLane(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	f := db.flows[linkedinFlowName]
+	f.Enabled = true
+	if _, err := db.UpsertFlow(ctx, f); err != nil {
+		t.Fatal(err)
+	}
+	store := newFakeLinkedInStore()
+	const url = "https://linkedin.com/posts/shared"
+
+	// Manual-inbox path.
+	if _, err := SubmitLinkedInPost(ctx, db, store, LinkedInPost{
+		URL: url, Author: "Alice", Text: "Shipping today.",
+	}); err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+
+	// Bright Data bulk path — same URL.
+	if _, err := IngestLinkedIn(ctx, db, fakeLinkedInSource{posts: []LinkedInPost{{URL: url}}}); err != nil {
+		t.Fatalf("ingest: %v", err)
+	}
+
+	if len(db.items) != 1 {
+		t.Errorf("manual + bulk ingest produced %d items, want 1", len(db.items))
+	}
+}
+
+// TestAutoIngestLinkedIn: a Reconciler with a linkedin source and an enabled linkedin lane
+// discovers posts on its ingest pass — the linkedin lane joins the auto-ingest loop.
+func TestAutoIngestLinkedIn(t *testing.T) {
+	ctx := context.Background()
+	db := newMockDatabase()
+	if err := SeedLinkedInLane(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	f := db.flows[linkedinFlowName]
+	f.Enabled = true
+	if _, err := db.UpsertFlow(ctx, f); err != nil {
+		t.Fatal(err)
+	}
+	r := NewReconciler(db, nil)
+	r.li = fakeLinkedInSource{posts: []LinkedInPost{{URL: "https://linkedin.com/posts/1"}}}
+	r.ingestEveryN = 1
+
+	if err := r.ReconcileOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := db.items[itemKey(laneLinkedIn, "https://linkedin.com/posts/1")]; !ok {
+		t.Error("auto-ingest did not discover the linkedin post on the first pass")
+	}
+}
+
 // TestSeedLinkedInLanePreservesOperatorEnable: once an operator enables the lane, a later
 // re-seed (e.g. a core redeploy running `core-job seed`) must NOT silently turn it back off.
 func TestSeedLinkedInLanePreservesOperatorEnable(t *testing.T) {
