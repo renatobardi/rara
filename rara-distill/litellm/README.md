@@ -48,6 +48,6 @@ LITELLM_API_KEY=$LITELLM_MASTER_KEY   # omit if the gateway is keyless
 
 `LITELLM_BASE_URL` is the gateway's OpenAI-compatible base; distill appends
 `/chat/completions`. `LITELLM_MODEL` is one of the `model_name` aliases in `config.yaml`:
-`groq-llama` (llama-3.3-70b, default for distill), `groq-fast` (llama-3.1-8b), or
-`gemini-flash` (gemini-2.0-flash). The curation logic is unchanged — only the model-call
-seam moved.
+`groq-llama` (llama-3.3-70b, default for distill), `groq-fast` (llama-3.1-8b),
+`gemini-flash` (gemini-2.5-flash-lite, thinking off), or `deepseek-chat` (deepseek-v4-flash).
+The curation logic is unchanged — only the model-call seam moved.
