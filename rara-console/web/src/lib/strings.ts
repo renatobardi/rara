@@ -62,7 +62,8 @@ export const t = {
 		confirmDrop: 'Não me interessa',
 		reviewing: 'Processando…',
 		reviewError: 'Erro ao processar decisão.',
-		retry: 'Tentar novamente'
+		retry: 'Tentar novamente',
+		keyboardHint: 'y = Me interesso · n = Não me interessa · j/k = navegar'
 	},
 	distillations: {
 		title: 'Distillations',

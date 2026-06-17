@@ -20,6 +20,27 @@
 
 	// per-item review state: null = idle, 'pending' = in-flight, 'done' = resolved, 'err' = failed
 	let reviewState = $state<Record<number, 'pending' | 'done' | 'err' | undefined>>({});
+	let focusedIndex = $state(0);
+
+	$effect(() => {
+		// clamp focus when items list shrinks after a review action
+		items;
+		if (focusedIndex >= items.length) focusedIndex = Math.max(0, items.length - 1);
+	});
+
+	function handleKey(e: KeyboardEvent) {
+		if (loading || error || items.length === 0) return;
+		if (e.metaKey || e.ctrlKey || e.altKey) return;
+		if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+		const item = items[focusedIndex];
+		if (!item || reviewState[item.id] === 'pending') return;
+		switch (e.key) {
+			case 'y': case 'Y': e.preventDefault(); review(item.id, 'up'); break;
+			case 'n': case 'N': e.preventDefault(); review(item.id, 'down'); break;
+			case 'j': case 'ArrowDown': e.preventDefault(); focusedIndex = Math.min(focusedIndex + 1, items.length - 1); break;
+			case 'k': case 'ArrowUp': e.preventDefault(); focusedIndex = Math.max(focusedIndex - 1, 0); break;
+		}
+	}
 
 	$effect(() => {
 		fetch('/api/quarantine')
@@ -50,6 +71,8 @@
 	}
 </script>
 
+<svelte:window onkeydown={handleKey} />
+
 {#if loading}
 	<p class="text-muted">{t.quarantine.loading}</p>
 {:else if error}
@@ -57,11 +80,12 @@
 {:else if items.length === 0}
 	<p class="text-[13px] text-muted">{t.quarantine.empty}</p>
 {:else}
+	<p class="mb-2 text-[11px] text-muted">{t.quarantine.keyboardHint}</p>
 	<div class="overflow-hidden rounded-card border border-border bg-surface">
 		<Paginator {items}>
 			{#snippet children(page)}
 				{#each page as item}
-					<div class="border-b border-border last:border-b-0">
+					<div class="border-b border-border last:border-b-0 {item.id === items[focusedIndex]?.id ? 'bg-hover' : ''}">
 						<ItemCard
 							id={item.id}
 							title={item.title}
