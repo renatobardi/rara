@@ -124,7 +124,7 @@ jobs:
       - name: Verify schema
         run: |
           echo "Verifying schema..."
-          TABLE=$(psql "$DATABASE_URL" -t -c "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = 'linkedin_posts'")
+          TABLE=$(psql "$DATABASE_URL" -A -t -c "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = 'linkedin_posts'")
           if [ "$TABLE" -eq 1 ]; then
             echo "✅ Schema verified successfully"
           else

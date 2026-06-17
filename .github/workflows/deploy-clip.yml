@@ -123,7 +123,10 @@ jobs:
           fi
 
       - name: Execute job once
-        if: github.event_name == 'push' || github.event.inputs.run_after_deploy == 'true'
+        # Only on explicit opt-in (workflow_dispatch). Push-triggered deploys do NOT auto-run
+        # the clip job: the LinkedIn collector needs BRIGHTDATA_API_KEY + BRIGHTDATA_LINKEDIN_URLS
+        # configured first (ops step), so auto-running on merge would be a no-op at best.
+        if: github.event.inputs.run_after_deploy == 'true'
         run: |
           gcloud run jobs execute "$JOB_NAME" \
             --region "$REGION" \
