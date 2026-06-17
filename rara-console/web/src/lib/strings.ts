@@ -16,9 +16,7 @@ export const t = {
 		settings: 'Configurações'
 	},
 	topbar: {
-		search: 'Buscar ou comandar…',
-		clean: 'Clean',
-		dark: 'Dark'
+		search: 'Buscar ou comandar…'
 	},
 	status: { online: 'VPC Oracle · online', offline: 'core inacessível' },
 	overview: {
