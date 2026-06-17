@@ -165,6 +165,12 @@ func staticFetcher(body string) Fetcher {
 	return func(_ context.Context, _ string) ([]byte, error) { return []byte(body), nil }
 }
 
+// run is the no-floor collector loop — a test helper so the floor-agnostic cases stay concise.
+// Production always goes through runWithFloor (floor from PODCAST_MIN_PUBLISHED).
+func run(ctx context.Context, db Database, fetch Fetcher) (int, error) {
+	return runWithFloor(ctx, db, fetch, nil)
+}
+
 // TestRunCollectsEpisodes: the loop fetches each active feed, parses it, refreshes the title,
 // and upserts every audio episode.
 func TestRunCollectsEpisodes(t *testing.T) {
@@ -286,5 +292,123 @@ func TestRunStoresEpisodeDescription(t *testing.T) {
 	}
 	if ep.Description != "itunes summary" {
 		t.Errorf("stored description = %q, want itunes summary", ep.Description)
+	}
+}
+
+// TestPublishedFloorParsing: floor date is parsed and validated correctly.
+func TestPublishedFloorParsing(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		wantErr bool
+	}{
+		{"empty (no floor)", "", false},
+		{"valid ISO date", "2025-07-01", false},
+		{"malformed date", "07-01-2025", true},
+		{"partial date", "2025-07", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := parsePublishedFloor(tt.input)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("parsePublishedFloor(%q): err=%v, wantErr=%v", tt.input, err, tt.wantErr)
+			}
+		})
+	}
+}
+
+// TestPublishedFloorFiltersOldEpisodes: episodes before the floor are skipped.
+func TestPublishedFloorFiltersOldEpisodes(t *testing.T) {
+	feed := `<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Podcast</title>
+    <item>
+      <title>Old Episode</title>
+      <guid>ep-old</guid>
+      <pubDate>Mon, 01 Jul 2024 08:00:00 +0000</pubDate>
+      <enclosure url="https://cdn.example.com/old.mp3" type="audio/mpeg"/>
+    </item>
+    <item>
+      <title>Recent Episode</title>
+      <guid>ep-new</guid>
+      <pubDate>Tue, 02 Jul 2025 08:00:00 +0000</pubDate>
+      <enclosure url="https://cdn.example.com/new.mp3" type="audio/mpeg"/>
+    </item>
+  </channel>
+</rss>`
+
+	ctx := context.Background()
+	db := newMockDatabase()
+	db.feeds = []Feed{{ID: 1, FeedURL: "https://example.com/feed.xml"}}
+
+	floor, _ := parsePublishedFloor("2025-07-01")
+	n, err := runWithFloor(ctx, db, staticFetcher(feed), floor)
+	if err != nil {
+		t.Fatalf("runWithFloor: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("catalogued %d, want 1 (old episode skipped)", n)
+	}
+	if _, ok := db.episodes["ep-new"]; !ok {
+		t.Fatal("recent episode not catalogued")
+	}
+	if _, ok := db.episodes["ep-old"]; ok {
+		t.Fatal("old episode should be skipped")
+	}
+}
+
+// TestPublishedFloorKeepsEpisodesWithoutDate: episodes without published_at are kept.
+func TestPublishedFloorKeepsEpisodesWithoutDate(t *testing.T) {
+	feed := `<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Podcast</title>
+    <item>
+      <title>Episode with date</title>
+      <guid>ep-dated</guid>
+      <pubDate>Tue, 02 Jul 2025 08:00:00 +0000</pubDate>
+      <enclosure url="https://cdn.example.com/dated.mp3" type="audio/mpeg"/>
+    </item>
+    <item>
+      <title>Episode without date</title>
+      <guid>ep-undated</guid>
+      <enclosure url="https://cdn.example.com/undated.mp3" type="audio/mpeg"/>
+    </item>
+  </channel>
+</rss>`
+
+	ctx := context.Background()
+	db := newMockDatabase()
+	db.feeds = []Feed{{ID: 1, FeedURL: "https://example.com/feed.xml"}}
+
+	floor, _ := parsePublishedFloor("2025-07-01")
+	n, err := runWithFloor(ctx, db, staticFetcher(feed), floor)
+	if err != nil {
+		t.Fatalf("runWithFloor: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("catalogued %d, want 2 (undated kept)", n)
+	}
+	if _, ok := db.episodes["ep-dated"]; !ok {
+		t.Fatal("dated episode not catalogued")
+	}
+	if _, ok := db.episodes["ep-undated"]; !ok {
+		t.Fatal("undated episode should be kept")
+	}
+}
+
+// TestPublishedFloorDisabledWhenEmpty: no floor (empty string) catalogs all episodes.
+func TestPublishedFloorDisabledWhenEmpty(t *testing.T) {
+	ctx := context.Background()
+	db := newMockDatabase()
+	db.feeds = []Feed{{ID: 1, FeedURL: "https://example.com/feed.xml"}}
+
+	n, err := runWithFloor(ctx, db, staticFetcher(sampleFeed), nil)
+	if err != nil {
+		t.Fatalf("runWithFloor: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("catalogued %d, want 2 (no floor = all episodes)", n)
 	}
 }

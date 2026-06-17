@@ -55,10 +55,35 @@ type Database interface {
 	SetFeedTitle(ctx context.Context, feedID int, title string) error
 }
 
+// parsePublishedFloor parses the PODCAST_MIN_PUBLISHED env var (ISO date like "2025-07-01").
+// Returns nil if the env var is empty (no floor), or a time.Time pointer if valid.
+// An invalid date string returns an error.
+//
+// The floor is midnight UTC of the given day. Episode pubDates carry their own zone, so the
+// comparison is timezone-aware (compares instants). At the exact boundary an episode dated for
+// the floor day but in a zone behind UTC can land just under it — immaterial for a coarse
+// back-catalog cutoff, where day-granularity is the intent.
+func parsePublishedFloor(s string) (*time.Time, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil, nil
+	}
+	t, err := time.Parse("2006-01-02", s)
+	if err != nil {
+		return nil, fmt.Errorf("PODCAST_MIN_PUBLISHED must be ISO date (YYYY-MM-DD), got %q: %v", s, err)
+	}
+	return &t, nil
+}
+
 func main() {
 	databaseURL := os.Getenv("DATABASE_URL")
 	if databaseURL == "" {
 		log.Fatalf("DATABASE_URL environment variable is required")
+	}
+
+	publishedFloor, err := parsePublishedFloor(os.Getenv("PODCAST_MIN_PUBLISHED"))
+	if err != nil {
+		log.Fatalf("invalid PODCAST_MIN_PUBLISHED: %v", err)
 	}
 
 	connectCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -70,17 +95,19 @@ func main() {
 	defer conn.Close(context.Background())
 	log.Println("Connected to database successfully")
 
-	n, err := run(context.Background(), &pgxDatabase{conn: conn}, httpFetch)
+	n, err := runWithFloor(context.Background(), &pgxDatabase{conn: conn}, httpFetch, publishedFloor)
 	if err != nil {
 		log.Fatalf("podcast collector: %v", err)
 	}
 	log.Printf("Podcast job completed: %d episodes catalogued", n)
 }
 
-// run is the collector loop: for each active feed, fetch + parse the RSS, refresh the feed
-// title, and upsert every audio episode. A per-feed error is logged and the loop continues —
-// one bad feed must not stall the others. Returns the total episodes catalogued.
-func run(ctx context.Context, db Database, fetch Fetcher) (int, error) {
+// runWithFloor is the collector loop: for each active feed, fetch + parse the RSS, refresh
+// the feed title, and upsert every audio episode. Episodes with published_at before the
+// floor are skipped (if floor is set); episodes without a date are always kept.
+// A per-feed error is logged and the loop continues — one bad feed must not stall the others.
+// Returns the total episodes catalogued (not counting skipped).
+func runWithFloor(ctx context.Context, db Database, fetch Fetcher, floor *time.Time) (int, error) {
 	feeds, err := db.ActiveFeeds(ctx)
 	if err != nil {
 		return 0, err
@@ -107,7 +134,13 @@ func run(ctx context.Context, db Database, fetch Fetcher) (int, error) {
 			}
 		}
 		catalogued := 0
+		skipped := 0
 		for _, e := range episodes {
+			// Skip episodes before the floor (if set) only if their published_at is known.
+			if floor != nil && e.PublishedAt != nil && e.PublishedAt.Before(*floor) {
+				skipped++
+				continue
+			}
 			if err := db.UpsertEpisode(feedCtx, f.ID, e); err != nil {
 				log.Printf("upsert episode %s (feed %s): %v", e.GUID, f.FeedURL, err)
 				continue
@@ -115,7 +148,11 @@ func run(ctx context.Context, db Database, fetch Fetcher) (int, error) {
 			catalogued++
 		}
 		cancel()
-		log.Printf("Feed %q: catalogued %d/%d episodes", title, catalogued, len(episodes))
+		if skipped > 0 {
+			log.Printf("Feed %q: catalogued %d, skipped %d (before %s)", title, catalogued, skipped, floor.Format("2006-01-02"))
+		} else {
+			log.Printf("Feed %q: catalogued %d/%d episodes", title, catalogued, len(episodes))
+		}
 		total += catalogued
 	}
 	return total, nil
