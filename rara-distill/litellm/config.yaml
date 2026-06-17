@@ -1,42 +1,30 @@
 # LiteLLM gateway config (rara 2.0) — the self-hosted, OpenAI-compatible proxy in front of
-# distill's curation models (and the future LLM-judge gates). distill calls ONE dialect
-# (OpenAI chat completions) at this gateway; the real model behind each alias is config
-# here, so swapping Claude <-> Gemini <-> Groq <-> a local model is a gateway edit, not a
-# distill change (ARCHITECTURE-2.0.md, "Lock-in posture" #2).
+# distill's curation models. distill calls ONE dialect (OpenAI chat completions) at this
+# gateway; the real model behind each alias is configured here, so swapping models is a
+# gateway edit, not a distill change (ARCHITECTURE-2.0.md, "Lock-in posture" #2).
 #
-# Run it (VPC, resident):
-#   litellm --config rara-distill/litellm/config.yaml --port 4000
-# then point distill at it:
-#   CURATE_ENGINE=litellm LITELLM_BASE_URL=http://localhost:4000/v1 \
-#   LITELLM_MODEL=claude-sonnet-4-6 LITELLM_API_KEY=$LITELLM_MASTER_KEY
+# This file is baked into the Docker image at build time (deploy-litellm.yml). API keys come
+# from Cloud Run secrets at runtime — never from this file and never from the image.
 #
-# The model_name values are the ALIASES distill sends as `model`; litellm_params.model is
-# the real upstream. Keys come from the gateway's own environment, never from distill.
+# model_name values are the ALIASES distill sends as `model` (set via LITELLM_MODEL env var).
+# litellm_params.model is the real upstream. Keys come from the gateway's environment only.
 
 model_list:
-  # Default curation model (distill's defaultLiteLLMModel alias).
-  - model_name: claude-sonnet-4-6
+  - model_name: gemini-flash
     litellm_params:
-      model: anthropic/claude-sonnet-4-6
-      api_key: os.environ/ANTHROPIC_API_KEY
-
-  # Alternate backends behind stable aliases — swap distill's LITELLM_MODEL to switch,
-  # with no code change and no recipe re-hash (the engine string is provenance, not hashed).
-  - model_name: gemini-pro
-    litellm_params:
-      model: gemini/gemini-3.1-pro-preview
+      model: gemini/gemini-2.0-flash
       api_key: os.environ/GEMINI_API_KEY
 
-  - model_name: groq-oss
+  - model_name: groq-llama
     litellm_params:
-      model: groq/openai/gpt-oss-120b
+      model: groq/llama-3.3-70b-versatile
       api_key: os.environ/GROQ_API_KEY
 
-litellm_settings:
-  # JSON-mode requests (distill sends response_format: json_object) must pass through.
-  drop_params: false
+  - model_name: groq-fast
+    litellm_params:
+      model: groq/llama-3.1-8b-instant
+      api_key: os.environ/GROQ_API_KEY
 
 general_settings:
-  # The gateway's master key (clients send it as a bearer token). Distill reads the same
-  # value from LITELLM_API_KEY; leave unset to run the gateway keyless on a private network.
+  # Master key: clients (distill) send this as bearer token via LITELLM_API_KEY.
   master_key: os.environ/LITELLM_MASTER_KEY
