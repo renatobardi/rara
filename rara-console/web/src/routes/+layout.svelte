@@ -36,7 +36,7 @@
 		{ icon: '✦', label: t.nav.distillations, href: '/distillations' },
 		{ section: t.nav.secTrain },
 		{ icon: '◐', label: t.nav.curation, href: '/curadoria' },
-		{ icon: '⇄', label: t.nav.sources },
+		{ icon: '⇄', label: t.nav.sources, href: '/fontes-flows' },
 		{ icon: '⚙', label: t.nav.providers, href: '/providers' },
 		{ section: t.nav.secSystem },
 		{ icon: '≣', label: t.nav.audit, href: '/auditoria' },
@@ -50,6 +50,7 @@
 		'/distillations': t.nav.distillations,
 		'/curadoria': t.nav.curation,
 		'/providers': t.nav.providers,
+		'/fontes-flows': t.nav.sources,
 		'/auditoria': t.nav.audit
 	};
 </script>

@@ -451,6 +451,96 @@ func (s *server) handleItemDecisions(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, json.RawMessage(body))
 }
 
+// --- Fontes & Flows --------------------------------------------------------
+// Fontes (podcast feeds) and Flows are both control-plane config the core surface owns. The BFF
+// proxies them with the bearer injected server-side; reads map any core failure to 502, writes
+// propagate core 4xx so the SPA can show validation errors.
+
+// handlePodcastSources proxies GET /v1/sources/podcast — the operator-curated podcast feed list.
+func (s *server) handlePodcastSources(w http.ResponseWriter, r *http.Request) {
+	body, err := s.fetchCore(r.Context(), "/v1/sources/podcast")
+	if err != nil {
+		badGateway(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, json.RawMessage(body))
+}
+
+// handleAddPodcastSource proxies POST /v1/sources/podcast (add a feed). Core 4xx (empty feed_url)
+// propagates; transport errors become 502.
+func (s *server) handleAddPodcastSource(w http.ResponseWriter, r *http.Request) {
+	status, body, err := s.postCore(r.Context(), "/v1/sources/podcast", r.Body)
+	if err != nil {
+		badGateway(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_, _ = w.Write(body)
+}
+
+// handleTogglePodcastSource proxies PUT /v1/sources/podcast (toggle active). Core 4xx propagates;
+// transport errors become 502.
+func (s *server) handleTogglePodcastSource(w http.ResponseWriter, r *http.Request) {
+	status, body, err := s.putCore(r.Context(), "/v1/sources/podcast", r.Body)
+	if err != nil {
+		badGateway(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_, _ = w.Write(body)
+}
+
+// handleFlows proxies GET /v1/flows — every flow (lane) as config-as-data.
+func (s *server) handleFlows(w http.ResponseWriter, r *http.Request) {
+	body, err := s.fetchCore(r.Context(), "/v1/flows")
+	if err != nil {
+		badGateway(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, json.RawMessage(body))
+}
+
+// handleFlowSteps proxies GET /v1/flows/{id}/steps. Rejects non-numeric ids before touching core.
+func (s *server) handleFlowSteps(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !isNumericID(id) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid flow id"})
+		return
+	}
+	body, err := s.fetchCore(r.Context(), "/v1/flows/"+id+"/steps")
+	if err != nil {
+		badGateway(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, json.RawMessage(body))
+}
+
+// handleUpsertFlow proxies PUT /v1/flows (toggle enabled / edit a lane). Core 4xx propagates.
+func (s *server) handleUpsertFlow(w http.ResponseWriter, r *http.Request) {
+	status, body, err := s.putCore(r.Context(), "/v1/flows", r.Body)
+	if err != nil {
+		badGateway(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_, _ = w.Write(body)
+}
+
+// handleUpsertFlowStep proxies PUT /v1/flow-steps (edit one step). Core 4xx propagates.
+func (s *server) handleUpsertFlowStep(w http.ResponseWriter, r *http.Request) {
+	status, body, err := s.putCore(r.Context(), "/v1/flow-steps", r.Body)
+	if err != nil {
+		badGateway(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_, _ = w.Write(body)
+}
+
 // handleHealthz is the console's own liveness probe; it also reports whether the core surface is
 // reachable so a deploy can confirm the BFF link is live. It is always 200 (the console is up).
 func (s *server) handleHealthz(w http.ResponseWriter, r *http.Request) {
@@ -510,6 +600,13 @@ func main() {
 	mux.HandleFunc("PUT /api/routing-policies", s.handleUpsertRoutingPolicy)
 	mux.HandleFunc("GET /api/decisions", s.handleDecisionsFeed)
 	mux.HandleFunc("GET /api/items/{id}/decisions", s.handleItemDecisions)
+	mux.HandleFunc("GET /api/sources/podcast", s.handlePodcastSources)
+	mux.HandleFunc("POST /api/sources/podcast", s.handleAddPodcastSource)
+	mux.HandleFunc("PUT /api/sources/podcast", s.handleTogglePodcastSource)
+	mux.HandleFunc("GET /api/flows", s.handleFlows)
+	mux.HandleFunc("GET /api/flows/{id}/steps", s.handleFlowSteps)
+	mux.HandleFunc("PUT /api/flows", s.handleUpsertFlow)
+	mux.HandleFunc("PUT /api/flow-steps", s.handleUpsertFlowStep)
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
 	mux.Handle("GET /", spaHandler(dist))
 
