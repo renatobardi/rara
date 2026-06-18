@@ -139,6 +139,9 @@ func (m *MockDatabase) UpsertProvider(_ context.Context, p Provider) error {
 	if !isValidRuntime(p.Runtime) || !isValidActivation(p.Activation) {
 		return errCheckViolation
 	}
+	if !isJSONObject(p.Env) {
+		return errCheckViolation // CHECK (jsonb_typeof(env) = 'object')
+	}
 	if _, ok := m.capabilities[p.Capability]; !ok {
 		return errFKViolation // REFERENCES capabilities(name)
 	}
@@ -1287,6 +1290,32 @@ func TestProviderEnv(t *testing.T) {
 	}
 	if string(got.Env) != `{"DISTILL_PROVIDER":"distill","FUTURE_KNOB":"x"}` {
 		t.Errorf("Env not round-tripped (unknown keys must survive), got %q", got.Env)
+	}
+}
+
+// TestProviderEnvMustBeObject mirrors the DB CHECK (jsonb_typeof(env)='object'): env is injected
+// key=value when waking a worker, so a non-object (array/scalar/null) would break the dispatch.
+// Empty env is allowed — it defaults to '{}'.
+func TestProviderEnvMustBeObject(t *testing.T) {
+	ctx := context.Background()
+	db := newMockDatabase()
+	if err := db.UpsertCapability(ctx, Capability{Name: capDestilar}); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	base := Provider{Name: "p", Capability: capDestilar, Runtime: runtimeCloudRun, Activation: activationOnDemand, Enabled: true}
+	for _, bad := range []string{`["a"]`, `"x"`, `42`, `null`} {
+		p := base
+		p.Env = []byte(bad)
+		if err := db.UpsertProvider(ctx, p); !errors.Is(err, errCheckViolation) {
+			t.Errorf("env %s: want errCheckViolation, got %v", bad, err)
+		}
+	}
+	for _, ok := range []string{``, `{}`, `{"K":"v"}`} {
+		p := base
+		p.Env = []byte(ok)
+		if err := db.UpsertProvider(ctx, p); err != nil {
+			t.Errorf("env %q: want accepted, got %v", ok, err)
+		}
 	}
 }
 

@@ -122,7 +122,7 @@ func TestSeedSharedProviderEnv(t *testing.T) {
 	// No secret ever leaks into env (the host/agent resolves DATABASE_URL and API keys).
 	for name, p := range db.providers {
 		envUpper := strings.ToUpper(string(p.Env))
-		for _, secret := range []string{"DATABASE_URL", "API_KEY", "_KEY", "PASSWORD", "TOKEN"} {
+		for _, secret := range []string{"DATABASE_URL", "API_KEY", "_KEY", "_SECRET", "PASSWORD", "TOKEN"} {
 			if strings.Contains(envUpper, secret) {
 				t.Errorf("provider %q env leaks a secret-shaped key %q: %s", name, secret, p.Env)
 			}
