@@ -104,17 +104,48 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   docker-build:
-    name: Docker build (multi-module)
+    name: Docker build (multi-module, multi-arch)
     runs-on: ubuntu-latest
     permissions:
       contents: read
+
+    # Local registry so buildx can push the manifest list and we can inspect it — no GCP creds
+    # needed. This is the PR-time proof that the multi-arch image builds (amd64 + arm64) and that
+    # `replace ../rara-addon` resolves with the repo root as context. See DOCKER-MULTIMODULE.md.
+    services:
+      registry:
+        image: registry:2
+        ports:
+          - 5000:5000
 
     steps:
       - name: Checkout code
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
 
-      # Build only, no push — proves the multi-module Dockerfile compiles on every PR
-      # without GCP credentials. Context is the repo root so `replace ../rara-addon`
-      # resolves. See DOCKER-MULTIMODULE.md.
-      - name: Build image
-        run: docker build -f rara-sift/Dockerfile .
+      # QEMU only emulates the tiny final alpine stage; the Go compile cross-builds natively.
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@29109295f81e9208d7d86ff1c6c12d2833863392 # v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3
+        with:
+          driver-opts: network=host
+
+      - name: Build and push to local registry (amd64 + arm64)
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6
+        with:
+          context: .
+          file: rara-sift/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: localhost:5000/rara-sift:ci
+
+      # Acceptance check: the manifest list MUST carry exactly amd64 + arm64.
+      - name: Verify manifest list has both arches
+        run: |
+          docker buildx imagetools inspect localhost:5000/rara-sift:ci
+          ARCHES=$(docker buildx imagetools inspect localhost:5000/rara-sift:ci --format '{{range .Manifest.Manifests}}{{.Platform.Architecture}} {{end}}')
+          echo "Arches in manifest list: $ARCHES"
+          echo "$ARCHES" | grep -qw amd64 || { echo "❌ missing amd64"; exit 1; }
+          echo "$ARCHES" | grep -qw arm64 || { echo "❌ missing arm64"; exit 1; }
+          echo "✅ manifest list has amd64 + arm64"
