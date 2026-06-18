@@ -213,7 +213,7 @@ func (r *Reconciler) reconcileItem(ctx context.Context, item Item) error {
 			// (timeout->fallback), then continue.
 			st := bySeq[fs.Seq]
 			if st.Status == stepRunning && r.isStale(st) {
-				if err := r.handleStaleStep(ctx, item, st); err != nil {
+				if err := r.handleStaleStep(ctx, item, fs, st); err != nil {
 					return err
 				}
 			}
@@ -276,8 +276,9 @@ func (r *Reconciler) materialize(ctx context.Context, item Item, fs FlowStep) (d
 		// A real work step — transcrever, destilar, OR a curation gate (gate_barato /
 		// gate_rico are workers now, no longer pass-through). Route to a provider by policy
 		// (cost<->quality + constraints + health + fallback) and write a pending assignment
-		// for the worker to pull; wake on_demand providers.
-		prov, ok, err := r.router.Select(ctx, fs.Capability, item, r.now(), r.healthTTL)
+		// for the worker to pull. A per-step providers list in flow_steps.options overrides
+		// the policy fallback for this step.
+		prov, ok, err := r.router.SelectForStep(ctx, fs.Capability, item, r.now(), r.healthTTL, stepFallbackFromOptions(fs.Options))
 		if err != nil {
 			return false, err
 		}
@@ -303,9 +304,9 @@ func (r *Reconciler) materialize(ctx context.Context, item Item, fs FlowStep) (d
 // the step is re-queued on the same provider to be re-claimed should it revive. Either way the
 // step returns to the pending frontier (heartbeat cleared). Waking the new provider is the
 // dispatcher's responsibility — the reconciler only updates the assignment row.
-func (r *Reconciler) handleStaleStep(ctx context.Context, item Item, st ItemStep) error {
+func (r *Reconciler) handleStaleStep(ctx context.Context, item Item, fs FlowStep, st ItemStep) error {
 	dead := st.AssignedProvider
-	next, ok, err := r.router.Select(ctx, st.Capability, item, r.now(), r.healthTTL, dead)
+	next, ok, err := r.router.SelectForStep(ctx, st.Capability, item, r.now(), r.healthTTL, stepFallbackFromOptions(fs.Options), dead)
 	if err != nil {
 		return err
 	}

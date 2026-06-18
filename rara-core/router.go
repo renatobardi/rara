@@ -24,6 +24,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"sort"
 	"time"
 )
@@ -51,6 +52,13 @@ func NewRouter(db Database) *Router { return &Router{db: db} }
 // providers to skip — the timeout->fallback path passes the dead provider so Select returns
 // the NEXT one in the ordered candidate chain.
 func (rt *Router) Select(ctx context.Context, capability string, item Item, now time.Time, healthTTL time.Duration, exclude ...string) (Provider, bool, error) {
+	return rt.SelectForStep(ctx, capability, item, now, healthTTL, nil, exclude...)
+}
+
+// SelectForStep is like Select but if stepFallback is a non-empty JSON array it overrides
+// the policy's Fallback for this specific step, giving per-step host-priority control
+// without touching the global routing policy.
+func (rt *Router) SelectForStep(ctx context.Context, capability string, item Item, now time.Time, healthTTL time.Duration, stepFallback json.RawMessage, exclude ...string) (Provider, bool, error) {
 	providers, err := rt.db.ListProvidersForCapability(ctx, capability)
 	if err != nil {
 		return Provider{}, false, err
@@ -58,6 +66,13 @@ func (rt *Router) Select(ctx context.Context, capability string, item Item, now 
 	policy, err := rt.policyFor(ctx, capability)
 	if err != nil {
 		return Provider{}, false, err
+	}
+	if len(stepFallback) > 0 {
+		var check []string
+		if err := json.Unmarshal(stepFallback, &check); err != nil {
+			return Provider{}, false, fmt.Errorf("select for step: invalid stepFallback JSON: %w", err)
+		}
+		policy.Fallback = stepFallback
 	}
 	ex := make(map[string]bool, len(exclude))
 	for _, n := range exclude {

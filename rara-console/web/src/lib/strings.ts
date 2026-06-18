@@ -135,7 +135,20 @@ export const t = {
 		stepsEmpty: 'Sem etapas registradas.',
 		stepsError: 'Erro ao carregar etapas.',
 		colSeq: 'Seq',
-		colCapability: 'Capability'
+		colCapability: 'Capability',
+		hostsToggle: 'Hosts',
+		hostsLoading: 'Carregando hosts…',
+		hostsError: 'Erro ao carregar hosts.',
+		hostsEmpty: 'Sem prioridade definida — usa política global.',
+		hostsAvailableLabel: 'Disponíveis',
+		hostsSaveOk: 'Prioridade salva.',
+		hostsSaveError: 'Erro ao salvar prioridade.',
+		hostsSaveBtn: 'Salvar ordem',
+		hostsSaving: 'Salvando…',
+		hostsUp: '↑',
+		hostsDown: '↓',
+		hostsRemove: '×',
+		hostsAddPlaceholder: 'Adicionar host…'
 	},
 	auditoria: {
 		title: 'Auditoria',

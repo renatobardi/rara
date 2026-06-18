@@ -541,6 +541,48 @@ func (s *server) handleUpsertFlowStep(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(body)
 }
 
+// handleStepHosts proxies GET /v1/flows/{flow_id}/steps/{seq}/hosts — per-step host priority.
+func (s *server) handleStepHosts(w http.ResponseWriter, r *http.Request) {
+	flowID := r.PathValue("flow_id")
+	seq := r.PathValue("seq")
+	if !isNumericID(flowID) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid flow_id"})
+		return
+	}
+	if !isNumericID(seq) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid seq"})
+		return
+	}
+	body, err := s.fetchCore(r.Context(), "/v1/flows/"+flowID+"/steps/"+seq+"/hosts")
+	if err != nil {
+		badGateway(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, json.RawMessage(body))
+}
+
+// handleSetStepHosts proxies PUT /v1/flows/{flow_id}/steps/{seq}/hosts. Core 4xx propagates.
+func (s *server) handleSetStepHosts(w http.ResponseWriter, r *http.Request) {
+	flowID := r.PathValue("flow_id")
+	seq := r.PathValue("seq")
+	if !isNumericID(flowID) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid flow_id"})
+		return
+	}
+	if !isNumericID(seq) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid seq"})
+		return
+	}
+	status, body, err := s.putCore(r.Context(), "/v1/flows/"+flowID+"/steps/"+seq+"/hosts", r.Body)
+	if err != nil {
+		badGateway(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_, _ = w.Write(body)
+}
+
 // handleCoreHealth proxies GET /v1/health — the system health aggregate (db_ok, last reconcile,
 // provider staleness). Always 200 from core; transport failures become 502.
 func (s *server) handleCoreHealth(w http.ResponseWriter, r *http.Request) {
@@ -629,6 +671,8 @@ func main() {
 	mux.HandleFunc("PUT /api/sources/podcast", s.handleTogglePodcastSource)
 	mux.HandleFunc("GET /api/flows", s.handleFlows)
 	mux.HandleFunc("GET /api/flows/{id}/steps", s.handleFlowSteps)
+	mux.HandleFunc("GET /api/flows/{flow_id}/steps/{seq}/hosts", s.handleStepHosts)
+	mux.HandleFunc("PUT /api/flows/{flow_id}/steps/{seq}/hosts", s.handleSetStepHosts)
 	mux.HandleFunc("PUT /api/flows", s.handleUpsertFlow)
 	mux.HandleFunc("PUT /api/flow-steps", s.handleUpsertFlowStep)
 	mux.HandleFunc("GET /healthz", s.handleHealthz)

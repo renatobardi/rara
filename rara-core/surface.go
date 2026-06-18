@@ -99,6 +99,9 @@ type Core struct {
 // NewCore wires the operations layer over the seam and the LinkedIn store.
 func NewCore(db Database, inbox LinkedInPostStore) *Core { return &Core{db: db, inbox: inbox} }
 
+// errNotFound is returned by Core methods when a resource cannot be found; HTTP maps it to 404.
+var errNotFound = errors.New("not found")
+
 // badInputError marks a caller error (bad id, unknown status, invalid enum) so the adapters
 // answer 400, not 500. Genuine seam failures stay unwrapped and answer 500.
 type badInputError struct{ msg string }
@@ -154,6 +157,117 @@ func (c *Core) FlowSteps(ctx context.Context, flowID int) ([]FlowStep, error) {
 	return c.db.ListFlowSteps(ctx, flowID)
 }
 func (c *Core) Providers(ctx context.Context) ([]Provider, error) { return c.db.ListProviders(ctx) }
+
+// StepHostsResponse is the shape returned by GET /v1/flows/{id}/steps/{seq}/hosts.
+type StepHostsResponse struct {
+	Providers []string   `json:"providers"` // current per-step priority list (may be empty)
+	Available []Provider `json:"available"` // all enabled providers for the step's capability
+}
+
+// StepHosts returns the per-step host priority list and the full set of available providers
+// for a step's capability. Returns badInput when the flow or seq cannot be resolved.
+func (c *Core) StepHosts(ctx context.Context, flowID, seq int) (StepHostsResponse, error) {
+	steps, err := c.db.ListFlowSteps(ctx, flowID)
+	if err != nil {
+		return StepHostsResponse{}, err
+	}
+	var fs FlowStep
+	found := false
+	for _, s := range steps {
+		if s.Seq == seq {
+			fs = s
+			found = true
+			break
+		}
+	}
+	if !found {
+		return StepHostsResponse{}, errNotFound
+	}
+	avail, err := c.db.ListProvidersForCapability(ctx, fs.Capability)
+	if err != nil {
+		return StepHostsResponse{}, err
+	}
+	var names []string
+	if fb := stepFallbackFromOptions(fs.Options); len(fb) > 0 {
+		if err := json.Unmarshal(fb, &names); err != nil {
+			log.Printf("stepHosts: malformed providers in flow %d step %d: %v", flowID, seq, err)
+			names = nil
+		}
+	}
+	if names == nil {
+		names = []string{}
+	}
+	return StepHostsResponse{Providers: names, Available: avail}, nil
+}
+
+// SetStepHosts updates the per-step host priority list for a flow step.
+// Validates: flow+seq must exist; each provider must exist with matching capability;
+// no duplicates. An empty list clears the override.
+func (c *Core) SetStepHosts(ctx context.Context, flowID, seq int, providers []string) error {
+	steps, err := c.db.ListFlowSteps(ctx, flowID)
+	if err != nil {
+		return err
+	}
+	var fs FlowStep
+	found := false
+	for _, s := range steps {
+		if s.Seq == seq {
+			fs = s
+			found = true
+			break
+		}
+	}
+	if !found {
+		return errNotFound
+	}
+
+	// Validate: each provider must exist and match this step's capability; no duplicates.
+	seen := make(map[string]bool, len(providers))
+	for _, name := range providers {
+		if seen[name] {
+			return badInput("duplicate provider %q in hosts list", name)
+		}
+		seen[name] = true
+		p, ok, err := c.db.GetProvider(ctx, name)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return badInput("provider %q does not exist", name)
+		}
+		if p.Capability != fs.Capability {
+			return badInput("provider %q has capability %q, want %q", name, p.Capability, fs.Capability)
+		}
+	}
+
+	// Merge into options: preserve existing keys, update/clear providers.
+	var opts map[string]json.RawMessage
+	if len(fs.Options) > 0 {
+		if err := json.Unmarshal(fs.Options, &opts); err != nil {
+			return err
+		}
+	}
+	if opts == nil {
+		opts = make(map[string]json.RawMessage)
+	}
+	if len(providers) == 0 {
+		delete(opts, "providers")
+	} else {
+		b, err := json.Marshal(providers)
+		if err != nil {
+			return err
+		}
+		opts["providers"] = b
+	}
+	var newOpts json.RawMessage
+	if len(opts) > 0 {
+		if newOpts, err = json.Marshal(opts); err != nil {
+			return err
+		}
+	}
+	fs.Options = newOpts
+	return c.db.UpsertFlowStep(ctx, fs)
+}
 func (c *Core) RoutingPolicies(ctx context.Context) ([]RoutingPolicy, error) {
 	return c.db.ListRoutingPolicies(ctx)
 }
@@ -405,6 +519,8 @@ func NewSurfaceMux(core *Core, token string) http.Handler {
 	// Config reads.
 	mux.HandleFunc("GET /v1/flows", h.listFlows)
 	mux.HandleFunc("GET /v1/flows/{id}/steps", h.flowSteps)
+	mux.HandleFunc("GET /v1/flows/{flow_id}/steps/{seq}/hosts", h.listStepHosts)
+	mux.HandleFunc("PUT /v1/flows/{flow_id}/steps/{seq}/hosts", h.setStepHosts)
 	mux.HandleFunc("GET /v1/providers", h.listProviders)
 	mux.HandleFunc("GET /v1/routing-policies", h.listRoutingPolicies)
 	mux.HandleFunc("GET /v1/gate-rules", h.listGateRules)
@@ -636,6 +752,37 @@ func (h *httpSurface) upsertFlowStep(w http.ResponseWriter, r *http.Request) {
 	writeResult(w, okResult{OK: true}, h.core.UpsertFlowStep(r.Context(), s))
 }
 
+func (h *httpSurface) listStepHosts(w http.ResponseWriter, r *http.Request) {
+	flowID, ok := pathIntParam(w, r, "flow_id")
+	if !ok {
+		return
+	}
+	seq, ok := pathIntParam(w, r, "seq")
+	if !ok {
+		return
+	}
+	resp, err := h.core.StepHosts(r.Context(), flowID, seq)
+	writeResult(w, resp, err)
+}
+
+func (h *httpSurface) setStepHosts(w http.ResponseWriter, r *http.Request) {
+	flowID, ok := pathIntParam(w, r, "flow_id")
+	if !ok {
+		return
+	}
+	seq, ok := pathIntParam(w, r, "seq")
+	if !ok {
+		return
+	}
+	var req struct {
+		Providers []string `json:"providers"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	writeResult(w, okResult{OK: true}, h.core.SetStepHosts(r.Context(), flowID, seq, req.Providers))
+}
+
 func (h *httpSurface) upsertProvider(w http.ResponseWriter, r *http.Request) {
 	var p Provider
 	if !decodeJSON(w, r, &p) {
@@ -717,12 +864,17 @@ type okResult struct {
 
 // pathID parses the {id} path wildcard as a positive int, answering 400 on a bad value.
 func pathID(w http.ResponseWriter, r *http.Request) (int, bool) {
-	id, err := strconv.Atoi(r.PathValue("id"))
-	if err != nil || id <= 0 {
-		http.Error(w, `{"error":"invalid id in path"}`, http.StatusBadRequest)
+	return pathIntParam(w, r, "id")
+}
+
+// pathIntParam parses a named path wildcard as a positive int, answering 400 on bad input.
+func pathIntParam(w http.ResponseWriter, r *http.Request, name string) (int, bool) {
+	v, err := strconv.Atoi(r.PathValue(name))
+	if err != nil || v <= 0 {
+		http.Error(w, `{"error":"invalid `+name+` in path"}`, http.StatusBadRequest)
 		return 0, false
 	}
-	return id, true
+	return v, true
 }
 
 // maxBodyBytes caps a request body (1 MiB) — far above any config row or pasted post, but a
@@ -751,12 +903,14 @@ func writeResult(w http.ResponseWriter, data any, err error) {
 	writeJSON(w, http.StatusOK, data)
 }
 
-// writeErr maps an error to its HTTP status: a badInputError is 400, anything else 500.
+// writeErr maps an error to its HTTP status: badInputError → 400, errNotFound → 404, else 500.
 func writeErr(w http.ResponseWriter, err error) {
 	status := http.StatusInternalServerError
 	var bad badInputError
 	if errors.As(err, &bad) {
 		status = http.StatusBadRequest
+	} else if errors.Is(err, errNotFound) {
+		status = http.StatusNotFound
 	}
 	writeJSON(w, status, map[string]string{"error": err.Error()})
 }

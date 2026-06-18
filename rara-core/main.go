@@ -302,6 +302,25 @@ type FlowStep struct {
 	Enabled    bool            `json:"enabled"`
 }
 
+// stepOptions is the parsed shape of flow_steps.options for the fields the control plane
+// understands. Unknown keys pass through unchanged (json.RawMessage round-trip).
+type stepOptions struct {
+	Providers json.RawMessage `json:"providers,omitempty"` // ordered priority list of provider names
+}
+
+// stepFallbackFromOptions extracts the per-step provider priority list from a flow_step's
+// options blob. Returns nil when options is empty or carries no providers key.
+func stepFallbackFromOptions(options json.RawMessage) json.RawMessage {
+	if len(options) == 0 {
+		return nil
+	}
+	var o stepOptions
+	if err := json.Unmarshal(options, &o); err != nil {
+		return nil
+	}
+	return o.Providers
+}
+
 // RoutingPolicy is a cost<->quality weighting + ordered fallback.
 type RoutingPolicy struct {
 	Scope         string          `json:"scope"` // 'global' or a capability name

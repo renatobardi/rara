@@ -274,6 +274,66 @@ func TestRouterSelectNoneEligible(t *testing.T) {
 	}
 }
 
+// TestRouterSelectForStepOverridesFallback: when a step carries a per-step providers list
+// in its options, SelectForStep uses that as the fallback order instead of the policy's.
+// Here the global policy prefers "cheap" (cost-heavy), but the step says ["premium", "cheap"],
+// so premium should be selected first.
+func TestRouterSelectForStepOverridesFallback(t *testing.T) {
+	ctx := context.Background()
+	db := newMockDatabase()
+	_ = db.UpsertCapability(ctx, Capability{Name: capTranscrever})
+	mustProvider(t, db, onDemand("cheap", 1, 0.5))
+	mustProvider(t, db, onDemand("premium", 10, 0.95))
+	_ = db.UpsertRoutingPolicy(ctx, RoutingPolicy{Scope: policyScopeGlobal, CostWeight: 1, QualityWeight: 0})
+
+	rt := NewRouter(db)
+
+	// Without step override: cheap wins (global policy is cost-heavy).
+	p, ok, err := rt.Select(ctx, capTranscrever, routerItem, routerClock, routerHealthTTL)
+	if err != nil || !ok || p.Name != "cheap" {
+		t.Fatalf("baseline: want cheap, got %q (ok=%v, err=%v)", p.Name, ok, err)
+	}
+
+	// With step override ["premium","cheap"]: premium is pinned first.
+	stepFb := json.RawMessage(`["premium","cheap"]`)
+	p, ok, err = rt.SelectForStep(ctx, capTranscrever, routerItem, routerClock, routerHealthTTL, stepFb)
+	if err != nil || !ok {
+		t.Fatalf("SelectForStep: ok=%v err=%v", ok, err)
+	}
+	if p.Name != "premium" {
+		t.Errorf("step override should pin premium first, got %q", p.Name)
+	}
+}
+
+// TestRouterSelectForStepNilFallback: nil stepFallback behaves identically to Select.
+func TestRouterSelectForStepNilFallback(t *testing.T) {
+	ctx := context.Background()
+	db := newMockDatabase()
+	_ = db.UpsertCapability(ctx, Capability{Name: capTranscrever})
+	mustProvider(t, db, onDemand("only", 1, 1))
+
+	rt := NewRouter(db)
+	p, ok, err := rt.SelectForStep(ctx, capTranscrever, routerItem, routerClock, routerHealthTTL, nil)
+	if err != nil || !ok || p.Name != "only" {
+		t.Errorf("nil stepFallback: ok=%v err=%v name=%q, want only", ok, err, p.Name)
+	}
+}
+
+// TestRouterSelectForStepInvalidFallbackJSON: malformed stepFallback returns an error rather
+// than silently assigning garbage to policy.Fallback.
+func TestRouterSelectForStepInvalidFallbackJSON(t *testing.T) {
+	ctx := context.Background()
+	db := newMockDatabase()
+	_ = db.UpsertCapability(ctx, Capability{Name: capTranscrever})
+	mustProvider(t, db, onDemand("only", 1, 1))
+
+	rt := NewRouter(db)
+	_, _, err := rt.SelectForStep(ctx, capTranscrever, routerItem, routerClock, routerHealthTTL, json.RawMessage(`not-valid-json`))
+	if err == nil {
+		t.Error("want error for invalid stepFallback JSON, got nil")
+	}
+}
+
 // mustProvider upserts a provider into the mock or fails the test.
 func mustProvider(t *testing.T, db *MockDatabase, p Provider) {
 	t.Helper()
