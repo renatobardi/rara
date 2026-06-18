@@ -447,4 +447,3 @@ func (r *Reconciler) gateTerminalStatus(ctx context.Context, item Item, flowStep
 	}
 	return "", false, nil
 }
-

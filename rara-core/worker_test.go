@@ -97,7 +97,7 @@ func TestEndToEndYouTubeFlow(t *testing.T) {
 	ctx := context.Background()
 	db := newMockDatabase()
 	itemID := seedAndIngestOne(t, db, "vid1")
-	
+
 	r := NewReconciler(db)
 	// The work steps (transcrever seq 3, destilar seq 5) are completed by their out-of-process apps;
 	// we simulate each finishing its claimed step with its domain row id.
