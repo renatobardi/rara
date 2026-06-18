@@ -80,9 +80,9 @@ func TestDispatchOnceEnvWithSpecialChars(t *testing.T) {
 	// The transport layer (Cloud Run / docker -e) owns injection safety; the Dispatcher
 	// must not mangle the values it receives.
 	env := map[string]string{
-		"QUOTED":    `va"lue`,
-		"NEWLINE":   "val\nue",
-		"METACHAR":  "val$ue;|`",
+		"QUOTED":   `va"lue`,
+		"NEWLINE":  "val\nue",
+		"METACHAR": "val$ue;|`",
 	}
 	db := &mockDispatchDB{
 		steps:     []AssignedStep{{ItemID: 1, Seq: 2, AssignedProvider: "gate-barato"}},
