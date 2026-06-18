@@ -25,6 +25,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"sort"
 	"time"
 )
@@ -68,11 +69,28 @@ func (rt *Router) SelectForStep(ctx context.Context, capability string, item Ite
 		return Provider{}, false, err
 	}
 	if len(stepFallback) > 0 {
+		// Unmarshal once here to validate shape + length; fallbackPositions will
+		// unmarshal policy.Fallback again. Double-unmarshal is intentional: the
+		// raw bytes are kept so downstream callers work on the canonical form.
 		var check []string
 		if err := json.Unmarshal(stepFallback, &check); err != nil {
 			return Provider{}, false, fmt.Errorf("select for step: invalid stepFallback JSON: %w", err)
 		}
 		if len(check) > 0 {
+			known := make(map[string]bool, len(providers))
+			for _, p := range providers {
+				known[p.Name] = true
+			}
+			anyKnown := false
+			for _, name := range check {
+				if known[name] {
+					anyKnown = true
+					break
+				}
+			}
+			if !anyKnown {
+				log.Printf("router: stepFallback %v contains no known %s provider — check for typos", check, capability)
+			}
 			policy.Fallback = stepFallback
 		}
 	}
