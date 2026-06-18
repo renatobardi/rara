@@ -23,7 +23,8 @@ type DispatchProvider struct {
 	Name       string
 	Runtime    string
 	Activation string
-	RunnerURL  string // rara-runner agent tailnet URL; empty for Cloud Run providers
+	RunnerURL  string            // rara-runner agent tailnet URL; empty for Cloud Run providers
+	Env        map[string]string // per-run config injected at wake (Cloud Run overrides / docker -e); may carry secrets — never log values, only len
 }
 
 // DispatchDB is the storage contract the dispatcher reads. It is the minimal subset of the full
@@ -67,11 +68,21 @@ func (d *Dispatcher) DispatchOnce(ctx context.Context) error {
 			log.Printf("dispatch: provider %q not found; skipping", name)
 			continue
 		}
+		// Copy Env so the RunRequest owns it — prov is per-call, but the copy keeps the wake's
+		// config independent of any downstream mutation.
+		var env map[string]string
+		if len(prov.Env) > 0 {
+			env = make(map[string]string, len(prov.Env))
+			for k, v := range prov.Env {
+				env[k] = v
+			}
+		}
 		req := RunRequest{
 			App:        prov.Name,
 			Runtime:    prov.Runtime,
 			Activation: prov.Activation,
 			RunnerURL:  prov.RunnerURL,
+			Env:        env,
 		}
 		if err := d.runner.Run(ctx, req); err != nil {
 			log.Printf("dispatch: wake %q: %v", name, err) // best-effort

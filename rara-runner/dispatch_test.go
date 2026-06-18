@@ -51,6 +51,86 @@ func TestDispatchOnceWakesAssignedProviders(t *testing.T) {
 	}
 }
 
+func TestDispatchOncePassesProviderEnv(t *testing.T) {
+	// The dispatcher must copy the provider's per-run Env into the RunRequest so the transport
+	// (Cloud Run overrides / docker -e) injects it. Without this, host providers wake with no config.
+	env := map[string]string{"DISTILL_RECIPE": "opus", "LITELLM_MODEL": "gemini-flash"}
+	db := &mockDispatchDB{
+		steps: []AssignedStep{
+			{ItemID: 1, Seq: 2, AssignedProvider: "gate-barato"},
+		},
+		providers: map[string]DispatchProvider{
+			"gate-barato": {Name: "gate-barato", Runtime: runtimeCloudRun, Env: env},
+		},
+	}
+	runner := &fakeTransport{}
+	d := Dispatcher{db: db, runner: runner}
+
+	if err := d.DispatchOnce(context.Background()); err != nil {
+		t.Fatalf("DispatchOnce: %v", err)
+	}
+	if len(runner.called) != 1 {
+		t.Fatalf("runner called %d times, want 1", len(runner.called))
+	}
+	got := runner.called[0].Env
+	if len(got) != 2 || got["DISTILL_RECIPE"] != "opus" || got["LITELLM_MODEL"] != "gemini-flash" {
+		t.Errorf("req.Env = %v, want %v", got, env)
+	}
+	// The RunRequest must own a copy: mutating it must not bleed back into the provider's map.
+	got["DISTILL_RECIPE"] = "mutated"
+	if env["DISTILL_RECIPE"] != "opus" {
+		t.Errorf("mutating req.Env changed provider Env: %v", env)
+	}
+}
+
+func TestDispatchOnceEmptyMapEnvStillWakes(t *testing.T) {
+	// Explicit empty map (not nil) must also wake normally — same as the nil case.
+	db := &mockDispatchDB{
+		steps: []AssignedStep{
+			{ItemID: 1, Seq: 2, AssignedProvider: "gate-barato"},
+		},
+		providers: map[string]DispatchProvider{
+			"gate-barato": {Name: "gate-barato", Runtime: runtimeCloudRun, Env: map[string]string{}},
+		},
+	}
+	runner := &fakeTransport{}
+	d := Dispatcher{db: db, runner: runner}
+
+	if err := d.DispatchOnce(context.Background()); err != nil {
+		t.Fatalf("DispatchOnce: %v", err)
+	}
+	if len(runner.called) != 1 {
+		t.Fatalf("runner called %d times, want 1", len(runner.called))
+	}
+	if len(runner.called[0].Env) != 0 {
+		t.Errorf("req.Env = %v, want empty", runner.called[0].Env)
+	}
+}
+
+func TestDispatchOnceEmptyEnvStillWakes(t *testing.T) {
+	// A provider with no env must still wake normally (nil/empty Env, no panic).
+	db := &mockDispatchDB{
+		steps: []AssignedStep{
+			{ItemID: 1, Seq: 2, AssignedProvider: "gate-barato"},
+		},
+		providers: map[string]DispatchProvider{
+			"gate-barato": {Name: "gate-barato", Runtime: runtimeCloudRun}, // Env nil
+		},
+	}
+	runner := &fakeTransport{}
+	d := Dispatcher{db: db, runner: runner}
+
+	if err := d.DispatchOnce(context.Background()); err != nil {
+		t.Fatalf("DispatchOnce: %v", err)
+	}
+	if len(runner.called) != 1 {
+		t.Fatalf("runner called %d times, want 1", len(runner.called))
+	}
+	if len(runner.called[0].Env) != 0 {
+		t.Errorf("req.Env = %v, want empty", runner.called[0].Env)
+	}
+}
+
 func TestDispatchOnceCoalescesPerProvider(t *testing.T) {
 	db := &mockDispatchDB{
 		steps: []AssignedStep{
