@@ -43,20 +43,26 @@ func (f *fakeDoer) Do(req *http.Request) (*http.Response, error) {
 	}, nil
 }
 
-// recordActivator is a sub-activator that records the providers it was asked to wake (for dispatch
+// recordActivator is a sub-runner that records the providers it was asked to wake (for dispatch
 // tests). A non-nil err is returned to assert error propagation.
 type recordActivator struct {
 	woken []string
 	err   error
 }
 
-func (r *recordActivator) Activate(_ context.Context, p Provider) error {
-	r.woken = append(r.woken, p.Name)
+func (r *recordActivator) Run(_ context.Context, req RunRequest) error {
+	r.woken = append(r.woken, req.Provider.Name)
 	return r.err
 }
 
 func staticToken(tok string) tokenSource {
 	return func(_ context.Context) (string, error) { return tok, nil }
+}
+
+// rr builds a RunRequest for a provider the way the reconciler does (App == provider name, the
+// deployable unit today). Keeps the transport tests reading as "wake this provider".
+func rr(p Provider) RunRequest {
+	return RunRequest{App: p.Name, Provider: p, Capability: p.Capability}
 }
 
 // fakeOAuth2Source is a fake oauth2.TokenSource injected into cloudRunTokenSource for tests.
@@ -110,7 +116,7 @@ func TestCloudRunActivatorFiresJobsRun(t *testing.T) {
 	a := &cloudRunActivator{project: "proj", region: "us-central1", http: doer, token: staticToken("tok123")}
 
 	p := Provider{Name: "asr-direct-audio", Runtime: runtimeCloudRun, Activation: activationOnDemand}
-	if err := a.Activate(context.Background(), p); err != nil {
+	if err := a.Run(context.Background(), rr(p)); err != nil {
 		t.Fatalf("Activate: %v", err)
 	}
 	req := doer.gotReq
@@ -132,7 +138,7 @@ func TestCloudRunActivatorFiresJobsRun(t *testing.T) {
 func TestCloudRunActivatorJobPrefix(t *testing.T) {
 	doer := &fakeDoer{}
 	a := &cloudRunActivator{project: "p", region: "r", jobPrefix: "rara-", http: doer, token: staticToken("t")}
-	if err := a.Activate(context.Background(), Provider{Name: "gate-barato", Runtime: runtimeCloudRun}); err != nil {
+	if err := a.Run(context.Background(), rr(Provider{Name: "gate-barato", Runtime: runtimeCloudRun})); err != nil {
 		t.Fatalf("Activate: %v", err)
 	}
 	if !strings.Contains(doer.gotReq.URL.String(), "/jobs/rara-gate-barato:run") {
@@ -143,7 +149,7 @@ func TestCloudRunActivatorJobPrefix(t *testing.T) {
 func TestCloudRunActivatorErrorOnNon2xx(t *testing.T) {
 	doer := &fakeDoer{status: http.StatusForbidden, body: "PERMISSION_DENIED"}
 	a := &cloudRunActivator{project: "p", region: "r", http: doer, token: staticToken("t")}
-	err := a.Activate(context.Background(), Provider{Name: "distill", Runtime: runtimeCloudRun})
+	err := a.Run(context.Background(), rr(Provider{Name: "distill", Runtime: runtimeCloudRun}))
 	if err == nil {
 		t.Fatal("expected error on 403")
 	}
@@ -155,7 +161,7 @@ func TestCloudRunActivatorErrorOnNon2xx(t *testing.T) {
 func TestCloudRunActivatorErrorOnTransport(t *testing.T) {
 	doer := &fakeDoer{err: errors.New("dial tcp: timeout")}
 	a := &cloudRunActivator{project: "p", region: "r", http: doer, token: staticToken("t")}
-	if err := a.Activate(context.Background(), Provider{Name: "distill", Runtime: runtimeCloudRun}); err == nil {
+	if err := a.Run(context.Background(), rr(Provider{Name: "distill", Runtime: runtimeCloudRun})); err == nil {
 		t.Fatal("expected error on transport failure")
 	}
 }
@@ -165,7 +171,7 @@ func TestCloudRunActivatorErrorOnTokenFailure(t *testing.T) {
 	a := &cloudRunActivator{project: "p", region: "r", http: doer, token: func(context.Context) (string, error) {
 		return "", errors.New("no token")
 	}}
-	if err := a.Activate(context.Background(), Provider{Name: "distill", Runtime: runtimeCloudRun}); err == nil {
+	if err := a.Run(context.Background(), rr(Provider{Name: "distill", Runtime: runtimeCloudRun})); err == nil {
 		t.Fatal("expected error when token source fails")
 	}
 	if doer.calls != 0 {
@@ -180,7 +186,7 @@ func TestPokeActivatorPostsPoke(t *testing.T) {
 	a := &pokeActivator{token: "poketok", http: doer}
 
 	p := Provider{Name: "distill-local", Runtime: runtimeVPC, Activation: activationResident, PokeURL: "http://mac.tailnet:7700"}
-	if err := a.Activate(context.Background(), p); err != nil {
+	if err := a.Run(context.Background(), rr(p)); err != nil {
 		t.Fatalf("Activate: %v", err)
 	}
 	req := doer.gotReq
@@ -198,7 +204,7 @@ func TestPokeActivatorPostsPoke(t *testing.T) {
 func TestPokeActivatorTrimsTrailingSlash(t *testing.T) {
 	doer := &fakeDoer{}
 	a := &pokeActivator{token: "t", http: doer}
-	_ = a.Activate(context.Background(), Provider{Name: "x", PokeURL: "http://host:7700/"})
+	_ = a.Run(context.Background(), rr(Provider{Name: "x", PokeURL: "http://host:7700/"}))
 	if doer.gotReq.URL.String() != "http://host:7700/poke" {
 		t.Errorf("url = %s, want single /poke", doer.gotReq.URL.String())
 	}
@@ -207,7 +213,7 @@ func TestPokeActivatorTrimsTrailingSlash(t *testing.T) {
 func TestPokeActivatorNoopWithoutURL(t *testing.T) {
 	doer := &fakeDoer{}
 	a := &pokeActivator{token: "t", http: doer}
-	if err := a.Activate(context.Background(), Provider{Name: "asr-youtube", Activation: activationResident}); err != nil {
+	if err := a.Run(context.Background(), rr(Provider{Name: "asr-youtube", Activation: activationResident})); err != nil {
 		t.Fatalf("Activate: %v", err)
 	}
 	if doer.calls != 0 {
@@ -218,7 +224,7 @@ func TestPokeActivatorNoopWithoutURL(t *testing.T) {
 func TestPokeActivatorErrorOnNon2xx(t *testing.T) {
 	doer := &fakeDoer{status: http.StatusUnauthorized}
 	a := &pokeActivator{token: "t", http: doer}
-	if err := a.Activate(context.Background(), Provider{Name: "x", PokeURL: "http://h:1"}); err == nil {
+	if err := a.Run(context.Background(), rr(Provider{Name: "x", PokeURL: "http://h:1"})); err == nil {
 		t.Fatal("expected error on 401")
 	}
 }
@@ -226,7 +232,7 @@ func TestPokeActivatorErrorOnNon2xx(t *testing.T) {
 func TestPokeActivatorErrorOnTransport(t *testing.T) {
 	doer := &fakeDoer{err: errors.New("host down")}
 	a := &pokeActivator{token: "t", http: doer}
-	if err := a.Activate(context.Background(), Provider{Name: "x", PokeURL: "http://h:1"}); err == nil {
+	if err := a.Run(context.Background(), rr(Provider{Name: "x", PokeURL: "http://h:1"})); err == nil {
 		t.Fatal("expected error when the Mac is asleep / unreachable")
 	}
 }
@@ -236,7 +242,7 @@ func TestPokeActivatorErrorOnTransport(t *testing.T) {
 func TestDispatchRoutesCloudRun(t *testing.T) {
 	cr, poke := &recordActivator{}, &recordActivator{}
 	d := dispatchActivator{cloudRun: cr, poke: poke}
-	if err := d.Activate(context.Background(), Provider{Name: "distill", Runtime: runtimeCloudRun, Activation: activationOnDemand}); err != nil {
+	if err := d.Run(context.Background(), rr(Provider{Name: "distill", Runtime: runtimeCloudRun, Activation: activationOnDemand})); err != nil {
 		t.Fatalf("Activate: %v", err)
 	}
 	if len(cr.woken) != 1 || cr.woken[0] != "distill" {
@@ -250,7 +256,7 @@ func TestDispatchRoutesCloudRun(t *testing.T) {
 func TestDispatchRoutesResidentToPoke(t *testing.T) {
 	cr, poke := &recordActivator{}, &recordActivator{}
 	d := dispatchActivator{cloudRun: cr, poke: poke}
-	if err := d.Activate(context.Background(), Provider{Name: "asr-youtube", Runtime: runtimeLocal, Activation: activationResident}); err != nil {
+	if err := d.Run(context.Background(), rr(Provider{Name: "asr-youtube", Runtime: runtimeLocal, Activation: activationResident})); err != nil {
 		t.Fatalf("Activate: %v", err)
 	}
 	if len(poke.woken) != 1 || poke.woken[0] != "asr-youtube" {
@@ -264,7 +270,7 @@ func TestDispatchRoutesResidentToPoke(t *testing.T) {
 func TestDispatchUnconfiguredBranchIsNoop(t *testing.T) {
 	// A cloudrun provider with no cloud run activator configured: best-effort no-op, not an error.
 	d := dispatchActivator{poke: &recordActivator{}}
-	if err := d.Activate(context.Background(), Provider{Name: "distill", Runtime: runtimeCloudRun}); err != nil {
+	if err := d.Run(context.Background(), rr(Provider{Name: "distill", Runtime: runtimeCloudRun})); err != nil {
 		t.Errorf("unconfigured cloud run must be a no-op, got %v", err)
 	}
 }
@@ -274,7 +280,7 @@ func TestDispatchDefaultBranchIsNoop(t *testing.T) {
 	// woken by nothing) — so the dispatcher's default arm is a best-effort no-op.
 	cr, poke := &recordActivator{}, &recordActivator{}
 	d := dispatchActivator{cloudRun: cr, poke: poke}
-	if err := d.Activate(context.Background(), Provider{Name: "vpc-ondemand-example", Runtime: runtimeVPC, Activation: activationOnDemand}); err != nil {
+	if err := d.Run(context.Background(), rr(Provider{Name: "vpc-ondemand-example", Runtime: runtimeVPC, Activation: activationOnDemand})); err != nil {
 		t.Errorf("default branch must be a no-op, got %v", err)
 	}
 	if len(cr.woken)+len(poke.woken) != 0 {
@@ -284,7 +290,7 @@ func TestDispatchDefaultBranchIsNoop(t *testing.T) {
 
 func TestDispatchPropagatesSubError(t *testing.T) {
 	d := dispatchActivator{cloudRun: &recordActivator{err: errors.New("boom")}}
-	if err := d.Activate(context.Background(), Provider{Name: "distill", Runtime: runtimeCloudRun}); err == nil {
+	if err := d.Run(context.Background(), rr(Provider{Name: "distill", Runtime: runtimeCloudRun})); err == nil {
 		t.Fatal("dispatch must surface a sub-activator error (the reconciler logs it best-effort)")
 	}
 }

@@ -35,6 +35,29 @@ import (
 	addon "rara-addon"
 )
 
+// RunRequest is the unit of work a Runner acts on: wake App (the deployable unit — a Cloud Run job
+// or a docker image) to serve Provider for Capability. Today App == Provider.Name (the provider IS
+// the deployable unit); F5 lets them diverge. Env carries per-run config and ItemStepID names the
+// assignment this wake serves — both are reserved for the F2/F3 agent transport + dispatcher and are
+// ignored by the GCP/poke transports here.
+type RunRequest struct {
+	App        string
+	Provider   Provider
+	Capability string
+	Env        map[string]string
+	ItemStepID int
+}
+
+// Runner wakes a provider so it starts pulling its assignment NOW instead of waiting for its next
+// poll tick (symmetric activation, architecture §4). dispatchActivator routes a request by provider
+// shape to a transport — runtime=cloudrun via Cloud Run Jobs `run`, activation=resident via a
+// tailnet poke. Best-effort: a failed wake is logged, not fatal — the worker's own poll is the
+// safety net. Every transport is injected (httpDoer, tokenSource) so tests assert the wire shape
+// without real I/O.
+type Runner interface {
+	Run(ctx context.Context, req RunRequest) error
+}
+
 // httpDoer is the subset of *http.Client the activators use, injected so tests substitute a fake
 // transport and assert the request without a live endpoint.
 type httpDoer interface {
@@ -51,24 +74,25 @@ type tokenSource func(ctx context.Context) (string, error)
 // — because the worker poll is the safety net. A provider that fits no branch (e.g. an on_demand VPC
 // provider that is never routed per item) is a no-op.
 type dispatchActivator struct {
-	cloudRun Activator // wakes runtime=cloudrun providers; nil = unconfigured
-	poke     Activator // wakes activation=resident providers; nil = unconfigured
+	cloudRun Runner // wakes runtime=cloudrun providers; nil = unconfigured
+	poke     Runner // wakes activation=resident providers; nil = unconfigured
 }
 
-func (d dispatchActivator) Activate(ctx context.Context, p Provider) error {
+func (d dispatchActivator) Run(ctx context.Context, req RunRequest) error {
+	p := req.Provider
 	switch {
 	case p.Runtime == runtimeCloudRun:
 		if d.cloudRun == nil {
 			log.Printf("activate %s: cloud run not configured (set CLOUD_RUN_PROJECT/CLOUD_RUN_REGION); relying on poll", p.Name)
 			return nil
 		}
-		return d.cloudRun.Activate(ctx, p)
+		return d.cloudRun.Run(ctx, req)
 	case p.Activation == activationResident:
 		if d.poke == nil {
 			log.Printf("activate %s: poke not configured (set POKE_AUTH_TOKEN); relying on poll", p.Name)
 			return nil
 		}
-		return d.poke.Activate(ctx, p)
+		return d.poke.Run(ctx, req)
 	default:
 		log.Printf("activate %s: no activation path (runtime=%s activation=%s); relying on poll", p.Name, p.Runtime, p.Activation)
 		return nil
@@ -88,8 +112,8 @@ type cloudRunActivator struct {
 	token     tokenSource
 }
 
-func (a *cloudRunActivator) Activate(ctx context.Context, p Provider) error {
-	job := a.jobPrefix + p.Name
+func (a *cloudRunActivator) Run(ctx context.Context, req RunRequest) error {
+	job := a.jobPrefix + req.App
 	url := fmt.Sprintf("https://run.googleapis.com/v2/projects/%s/locations/%s/jobs/%s:run",
 		a.project, a.region, job)
 
@@ -99,14 +123,14 @@ func (a *cloudRunActivator) Activate(ctx context.Context, p Provider) error {
 	}
 	// An empty body runs the job with its deployed defaults (the `--provider` arg the addon needs is
 	// baked into the job at deploy, not passed per run).
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader("{}"))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader("{}"))
 	if err != nil {
-		return err
+		return fmt.Errorf("cloud run new request for %s: %w", job, err)
 	}
-	req.Header.Set("Authorization", "Bearer "+tok)
-	req.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Authorization", "Bearer "+tok)
+	httpReq.Header.Set("Content-Type", "application/json")
 
-	resp, err := a.http.Do(req)
+	resp, err := a.http.Do(httpReq)
 	if err != nil {
 		return fmt.Errorf("cloud run run %s: %w", job, err)
 	}
@@ -128,19 +152,20 @@ type pokeActivator struct {
 	http  httpDoer
 }
 
-func (a *pokeActivator) Activate(ctx context.Context, p Provider) error {
+func (a *pokeActivator) Run(ctx context.Context, req RunRequest) error {
+	p := req.Provider
 	if p.PokeURL == "" {
 		return nil // resident relying on the slow poll alone; nothing to poke
 	}
 	url := strings.TrimRight(p.PokeURL, "/") + "/poke"
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
 	if err != nil {
-		return err
+		return fmt.Errorf("poke new request for %s: %w", p.Name, err)
 	}
 	// The worker's listener fails CLOSED on an empty token, so always send the Bearer.
-	req.Header.Set("Authorization", "Bearer "+a.token)
+	httpReq.Header.Set("Authorization", "Bearer "+a.token)
 
-	resp, err := a.http.Do(req)
+	resp, err := a.http.Do(httpReq)
 	if err != nil {
 		return fmt.Errorf("poke %s: %w", p.Name, err)
 	}
@@ -152,12 +177,12 @@ func (a *pokeActivator) Activate(ctx context.Context, p Provider) error {
 	return nil
 }
 
-// newActivatorFromEnv builds the production activator from env config. Cloud Run activation needs
+// newRunnerFromEnv builds the production Runner from env config. Cloud Run activation needs
 // CLOUD_RUN_PROJECT + CLOUD_RUN_REGION and a token source: CLOUD_RUN_OAUTH_TOKEN (static, dev/test)
 // or Application Default Credentials via GOOGLE_APPLICATION_CREDENTIALS (SA key file, production).
 // Poke activation needs POKE_AUTH_TOKEN. With NOTHING configured it returns logActivator so the
 // reconciler still runs (worker poll drains the queue).
-func newActivatorFromEnv() Activator {
+func newRunnerFromEnv() Runner {
 	// 30s default (was 10s): a Cloud Run Job `run` on a scale-to-zero service routinely passes 10s
 	// on a cold start, and there is no poll safety net for an on_demand job — a timed-out activation
 	// would leave the step pending until the reconciler's self-healing re-activation (reconciler.go)

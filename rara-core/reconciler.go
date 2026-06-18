@@ -47,22 +47,15 @@ const defaultStaleAfter = 10 * time.Minute
 // spawn concurrent executions (the "swarm" bug). Tunable via REACTIVATE_BACKOFF_SECONDS.
 const defaultReactivateBackoff = 3 * time.Minute
 
-// Activator wakes a provider so it starts pulling its assignment NOW instead of waiting for its
-// next poll tick (symmetric activation, architecture §4). The reconciler calls it for EVERY
-// assignment; the concrete Activator dispatches by provider shape — runtime=cloudrun via Cloud Run
-// Jobs `run`, activation=resident via a tailnet poke (see activator.go). It is best-effort: a failed
-// activation is logged, not fatal — the pending row remains and the worker's own poll (the safety
-// net) still drains it. Tests inject a fake to assert the right path fires per provider type.
-type Activator interface {
-	Activate(ctx context.Context, p Provider) error
-}
+// The Runner contract (the reconciler's wake mechanism) lives in activator.go: the reconciler
+// calls Run for EVERY assignment and the concrete Runner dispatches by provider shape — see there.
 
 // Reconciler is the control loop. now, staleAfter, healthTTL and reactivateBackoff are
 // injectable so the heartbeat-liveness backstop, the router's health gate and the
 // anti-stampede re-activation window are deterministic in tests.
 type Reconciler struct {
 	db                Database
-	activator         Activator
+	runner            Runner
 	router            *Router
 	now               func() time.Time
 	staleAfter        time.Duration
@@ -102,15 +95,15 @@ type Reconciler struct {
 	passCount    int
 }
 
-// NewReconciler wires a reconciler. A nil activator falls back to a logging no-op. now,
+// NewReconciler wires a reconciler. A nil runner falls back to a logging no-op. now,
 // staleAfter and healthTTL default to wall-clock, defaultStaleAfter and defaultHealthTTL;
 // tests overwrite them directly.
-func NewReconciler(db Database, activator Activator) *Reconciler {
-	if activator == nil {
-		activator = logActivator{}
+func NewReconciler(db Database, runner Runner) *Reconciler {
+	if runner == nil {
+		runner = logActivator{}
 	}
 	return &Reconciler{
-		db: db, activator: activator, router: NewRouter(db),
+		db: db, runner: runner, router: NewRouter(db),
 		now: time.Now, staleAfter: defaultStaleAfter, healthTTL: defaultHealthTTL,
 		reactivateBackoff: defaultReactivateBackoff,
 		lastActivatedAt:   make(map[string]time.Time),
@@ -399,12 +392,19 @@ func (r *Reconciler) handleStaleStep(ctx context.Context, item Item, st ItemStep
 // cloudrun, tailnet poke for residents, no-op otherwise — see activator.go). Only the empty
 // (unassigned) provider is skipped, there being nothing to wake. Best-effort: a failed wake is
 // logged, not fatal — the pending assignment stands and the worker's own poll still drains it.
+// wakeRequest builds the RunRequest that wakes a chosen provider. App == provider name (the
+// provider IS the deployable unit today); Env/ItemStepID stay zero — reserved for the F2/F3
+// agent transport + dispatcher, ignored by the current GCP/poke transports.
+func wakeRequest(p Provider) RunRequest {
+	return RunRequest{App: p.Name, Provider: p, Capability: p.Capability}
+}
+
 func (r *Reconciler) activate(ctx context.Context, item Item, prov Provider) {
 	if prov.Name == "" || r.activatedThisPass[prov.Name] {
 		return // nothing to wake, or already woken this pass (one wake drains the whole queue)
 	}
 	r.activatedThisPass[prov.Name] = true
-	if err := r.activator.Activate(ctx, prov); err != nil {
+	if err := r.runner.Run(ctx, wakeRequest(prov)); err != nil {
 		log.Printf("activate %s for item %d: %v", prov.Name, item.ID, err)
 		return // a failed wake does NOT anchor the backoff — self-healing retries next pass
 	}
@@ -449,7 +449,7 @@ func (r *Reconciler) reactivateStalled(ctx context.Context) {
 			continue // a recent success is still draining — re-firing now would swarm
 		}
 		r.activatedThisPass[name] = true
-		if err := r.activator.Activate(ctx, p); err != nil {
+		if err := r.runner.Run(ctx, wakeRequest(p)); err != nil {
 			log.Printf("reactivate %s: %v", name, err) // failure: do not anchor; retry next pass
 			continue
 		}
@@ -572,13 +572,13 @@ func (r *Reconciler) gateTerminalStatus(ctx context.Context, item Item, flowStep
 	return "", false, nil
 }
 
-// logActivator is the default Activator: it records the wake intent without calling any
+// logActivator is the default Runner: it records the wake intent without calling any
 // cloud API. The real Cloud Run Jobs `run` client is wired at deploy (it needs
 // run.jobs.run on the reconciler's service account); until then this keeps the loop
 // runnable and the tests pure.
 type logActivator struct{}
 
-func (logActivator) Activate(_ context.Context, p Provider) error {
-	log.Printf("activate (noop): would wake on_demand provider %q (runtime=%s)", p.Name, p.Runtime)
+func (logActivator) Run(_ context.Context, req RunRequest) error {
+	log.Printf("activate (noop): would wake on_demand provider %q (runtime=%s)", req.Provider.Name, req.Provider.Runtime)
 	return nil
 }
