@@ -28,12 +28,14 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log"
+	"math/rand"
 	"net/http"
 	"os"
 	"os/signal"
@@ -413,11 +415,20 @@ func siftHandler(store SiftStore, gate string, judge Judger) addon.Handler {
 // profile could not decide.
 // ---------------------------------------------------------------------------
 
+// judgeMaxAttempts is the total number of attempts (initial + retries) before giving up.
+// judgeRetryAfterCap caps the Retry-After sleep to avoid runaway waits.
+const (
+	judgeMaxAttempts   = 4
+	judgeRetryAfterCap = 30 * time.Second
+)
+
 type liteLLMJudge struct {
 	apiKey   string // optional gateway master key; Authorization omitted when empty
 	model    string // gateway model alias
 	endpoint string // base + /chat/completions
 	client   *http.Client
+	// ponytail: nil → ctx-aware select on time.After; injected by tests to skip real sleep
+	sleepFn func(context.Context, time.Duration) error
 }
 
 // newLiteLLMJudge builds the judge from the environment (LITELLM_BASE_URL/_API_KEY/_MODEL),
@@ -435,6 +446,44 @@ func newLiteLLMJudge() (*liteLLMJudge, error) {
 	}, nil
 }
 
+// isJudgeTransient reports whether an HTTP status warrants a retry (rate-limited or server-side
+// transient). 4xx other than 429, and non-HTTP errors from bad JSON, are never retried.
+func isJudgeTransient(code int) bool {
+	switch code {
+	case http.StatusTooManyRequests,
+		http.StatusInternalServerError,
+		http.StatusBadGateway,
+		http.StatusServiceUnavailable,
+		http.StatusGatewayTimeout:
+		return true
+	}
+	return false
+}
+
+// parseRetryAfterSecs parses the Retry-After header (seconds or HTTP-date) and returns the
+// duration to wait, capped at judgeRetryAfterCap. Returns false when absent or unparseable.
+func parseRetryAfterSecs(h string) (time.Duration, bool) {
+	if h == "" {
+		return 0, false
+	}
+	if secs, err := strconv.ParseFloat(strings.TrimSpace(h), 64); err == nil && secs > 0 {
+		d := time.Duration(secs * float64(time.Second))
+		if d > judgeRetryAfterCap {
+			d = judgeRetryAfterCap
+		}
+		return d, true
+	}
+	if t, err := http.ParseTime(h); err == nil {
+		if d := time.Until(t); d > 0 {
+			if d > judgeRetryAfterCap {
+				return judgeRetryAfterCap, true
+			}
+			return d, true
+		}
+	}
+	return 0, false
+}
+
 func (j *liteLLMJudge) Judge(ctx context.Context, gate string, in gateInput, prof profileDoc) (GateVerdict, error) {
 	reqBody := map[string]any{
 		"model": j.model,
@@ -449,40 +498,104 @@ func (j *liteLLMJudge) Judge(ctx context.Context, gate string, in gateInput, pro
 	if err != nil {
 		return GateVerdict{}, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, j.endpoint, strings.NewReader(string(payload)))
-	if err != nil {
-		return GateVerdict{}, err
+
+	doSleep := j.sleepFn
+	if doSleep == nil {
+		doSleep = func(ctx context.Context, d time.Duration) error {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(d):
+				return nil
+			}
+		}
 	}
-	req.Header.Set("Content-Type", "application/json")
-	if j.apiKey != "" {
-		req.Header.Set("Authorization", "Bearer "+j.apiKey)
+
+	var lastErr error
+	base := time.Second
+	for attempt := 0; attempt < judgeMaxAttempts; attempt++ {
+		if ctx.Err() != nil {
+			if lastErr != nil {
+				return GateVerdict{}, lastErr
+			}
+			return GateVerdict{}, ctx.Err()
+		}
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, j.endpoint, bytes.NewReader(payload))
+		if err != nil {
+			return GateVerdict{}, err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		if j.apiKey != "" {
+			req.Header.Set("Authorization", "Bearer "+j.apiKey)
+		}
+
+		resp, doErr := j.client.Do(req)
+		if doErr != nil {
+			if ctx.Err() != nil {
+				return GateVerdict{}, doErr
+			}
+			lastErr = doErr
+			if attempt+1 < judgeMaxAttempts {
+				wait := base + time.Duration(rand.Int63n(int64(base)/2+1))
+				base *= 2
+				if serr := doSleep(ctx, wait); serr != nil {
+					return GateVerdict{}, lastErr
+				}
+			}
+			continue
+		}
+
+		body, readErr := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if readErr != nil {
+			lastErr = readErr
+			if attempt+1 < judgeMaxAttempts {
+				wait := base + time.Duration(rand.Int63n(int64(base)/2+1))
+				base *= 2
+				if serr := doSleep(ctx, wait); serr != nil {
+					return GateVerdict{}, lastErr
+				}
+			}
+			continue
+		}
+
+		if !isJudgeTransient(resp.StatusCode) {
+			if resp.StatusCode != http.StatusOK {
+				return GateVerdict{}, fmt.Errorf("litellm judge: status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+			}
+			var lr struct {
+				Choices []struct {
+					Message struct {
+						Content string `json:"content"`
+					} `json:"message"`
+				} `json:"choices"`
+			}
+			if err := json.Unmarshal(body, &lr); err != nil {
+				return GateVerdict{}, err
+			}
+			if len(lr.Choices) == 0 {
+				return GateVerdict{}, fmt.Errorf("litellm judge returned no choices")
+			}
+			return parseJudgeVerdict(lr.Choices[0].Message.Content)
+		}
+
+		lastErr = fmt.Errorf("litellm judge: status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		if attempt+1 < judgeMaxAttempts {
+			var wait time.Duration
+			if d, ok := parseRetryAfterSecs(resp.Header.Get("Retry-After")); ok {
+				wait = d
+			} else {
+				wait = base + time.Duration(rand.Int63n(int64(base)/2+1))
+				base *= 2
+			}
+			if serr := doSleep(ctx, wait); serr != nil {
+				return GateVerdict{}, lastErr
+			}
+		}
 	}
-	resp, err := j.client.Do(req)
-	if err != nil {
-		return GateVerdict{}, err
-	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return GateVerdict{}, err
-	}
-	if resp.StatusCode != http.StatusOK {
-		return GateVerdict{}, fmt.Errorf("litellm judge: status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
-	}
-	var lr struct {
-		Choices []struct {
-			Message struct {
-				Content string `json:"content"`
-			} `json:"message"`
-		} `json:"choices"`
-	}
-	if err := json.Unmarshal(body, &lr); err != nil {
-		return GateVerdict{}, err
-	}
-	if len(lr.Choices) == 0 {
-		return GateVerdict{}, fmt.Errorf("litellm judge returned no choices")
-	}
-	return parseJudgeVerdict(lr.Choices[0].Message.Content)
+
+	return GateVerdict{}, lastErr
 }
 
 // parseJudgeVerdict turns the model's JSON object into a verdict. An unrecognized or missing

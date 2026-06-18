@@ -4,9 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	addon "rara-addon"
@@ -395,5 +399,154 @@ func TestSiftHandlerProfileLoadErrorFails(t *testing.T) {
 	}
 	if errors.Is(err, addon.ErrRetryable) {
 		t.Errorf("a profile load error must not be retryable, got %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// liteLLMJudge retry-with-backoff (httptest.Server — zero real I/O, instant sleep)
+// ---------------------------------------------------------------------------
+
+// llmResponse builds a minimal valid /chat/completions JSON response for the given decision.
+func llmResponse(decision string) string {
+	inner, _ := json.Marshal(map[string]any{"decision": decision, "score": 0.9, "reason": "test"})
+	outer, _ := json.Marshal(map[string]any{
+		"choices": []any{map[string]any{"message": map[string]any{"content": string(inner)}}},
+	})
+	return string(outer)
+}
+
+// newRetryJudge returns a judge aimed at url with a no-op sleep (tests don't pause).
+func newRetryJudge(url string) *liteLLMJudge {
+	return &liteLLMJudge{
+		model:    "test-model",
+		endpoint: url + "/chat/completions",
+		client:   &http.Client{Timeout: 5 * time.Second},
+		sleepFn:  func(_ context.Context, _ time.Duration) error { return nil },
+	}
+}
+
+// TestJudgeRetries429ThenSucceeds: 429 on first two calls, 200 on third → returns verdict.
+func TestJudgeRetries429ThenSucceeds(t *testing.T) {
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if calls < 3 {
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintln(w, llmResponse(decisionKeep))
+	}))
+	defer srv.Close()
+
+	v, err := newRetryJudge(srv.URL).Judge(context.Background(), capGateBarato, gateInput{Title: "t"}, profileDoc{})
+	if err != nil {
+		t.Fatalf("Judge: %v", err)
+	}
+	if v.Decision != decisionKeep {
+		t.Errorf("decision = %q, want %q", v.Decision, decisionKeep)
+	}
+	if calls != 3 {
+		t.Errorf("expected 3 calls (2×429 then 200), got %d", calls)
+	}
+}
+
+// TestJudgeExhaustsMaxAttempts: always 429 → errors after judgeMaxAttempts, not infinite.
+func TestJudgeExhaustsMaxAttempts(t *testing.T) {
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer srv.Close()
+
+	_, err := newRetryJudge(srv.URL).Judge(context.Background(), capGateBarato, gateInput{Title: "t"}, profileDoc{})
+	if err == nil {
+		t.Fatal("expected error after exhausting retries")
+	}
+	if calls != judgeMaxAttempts {
+		t.Errorf("expected %d calls, got %d", judgeMaxAttempts, calls)
+	}
+}
+
+// TestJudgeRespectsRetryAfterHeader: Retry-After: 2 → sleep receives exactly 2s, not exponential.
+func TestJudgeRespectsRetryAfterHeader(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "2")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer srv.Close()
+
+	var slept []time.Duration
+	j := newRetryJudge(srv.URL)
+	j.sleepFn = func(_ context.Context, d time.Duration) error {
+		slept = append(slept, d)
+		return nil
+	}
+	j.Judge(context.Background(), capGateBarato, gateInput{Title: "t"}, profileDoc{}) //nolint:errcheck
+
+	if len(slept) == 0 {
+		t.Fatal("expected at least one sleep call")
+	}
+	for i, d := range slept {
+		if d != 2*time.Second {
+			t.Errorf("slept[%d] = %v, want 2s (from Retry-After)", i, d)
+		}
+	}
+}
+
+// TestJudgeNoRetryOnNonTransient: 400/401 and bad-JSON-in-200 each return on the 1st call.
+func TestJudgeNoRetryOnNonTransient(t *testing.T) {
+	cases := []struct {
+		name   string
+		status int
+		body   string
+	}{
+		{"400", http.StatusBadRequest, "bad request"},
+		{"401", http.StatusUnauthorized, "unauthorized"},
+		{"bad JSON in 200", http.StatusOK, "not-valid-json"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				w.WriteHeader(tc.status)
+				fmt.Fprintln(w, tc.body)
+			}))
+			defer srv.Close()
+
+			_, err := newRetryJudge(srv.URL).Judge(context.Background(), capGateBarato, gateInput{Title: "t"}, profileDoc{})
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if calls != 1 {
+				t.Errorf("expected 1 call (no retry on %s), got %d", tc.name, calls)
+			}
+		})
+	}
+}
+
+// TestJudgeCtxCancelledDuringBackoff: ctx cancel inside sleepFn stops retries.
+func TestJudgeCtxCancelledDuringBackoff(t *testing.T) {
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	j := newRetryJudge(srv.URL)
+	j.sleepFn = func(c context.Context, _ time.Duration) error {
+		cancel()
+		return c.Err()
+	}
+	_, err := j.Judge(ctx, capGateBarato, gateInput{Title: "t"}, profileDoc{})
+	if err == nil {
+		t.Fatal("expected error after ctx cancel")
+	}
+	if calls > 2 {
+		t.Errorf("ctx cancel during sleep should stop retries; got %d calls", calls)
 	}
 }
