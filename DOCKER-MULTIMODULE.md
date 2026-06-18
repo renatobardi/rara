@@ -24,7 +24,9 @@ The Dockerfile copies the SDK first (the `replace` target), then the app, keepin
 `/build/rara-<app>` so `../rara-addon` resolves exactly as it does on disk:
 
 ```dockerfile
-FROM golang:1.26-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS builder    # pin builder to the native runner
+ARG TARGETOS                                                    # arch; buildx sets these per
+ARG TARGETARCH                                                  # --platform entry
 WORKDIR /build
 RUN apk add --no-cache git
 COPY rara-addon/ ./rara-addon/                              # 1) the replace target
@@ -33,7 +35,7 @@ WORKDIR /build/rara-<app>
 RUN go mod download
 COPY rara-<app>/*.go ./
 # + any go:embed asset dirs THIS app has (distill: patterns/ contexts/ strategies/)
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o /<app>-job .
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -ldflags="-w -s" -o /<app>-job .
 
 FROM alpine:3.21
 RUN apk add --no-cache ca-certificates
@@ -46,7 +48,33 @@ ENTRYPOINT ["/app/<app>-job"]
 Only copy the `go:embed` directories that the app actually has — `rara-distill` embeds
 `patterns/contexts/strategies`; `sift`, `glean`, and the cloud `scribe` have none.
 
-## Cloud Build
+## Multi-arch (the `rara-sift` pattern)
+
+The shipped artifact is **one image, two arches** — `amd64` for Cloud Run (the only x86 host) and
+`arm64` for the VPC Oracle (Ampere) and Mac (Apple Silicon) runner hosts, which both `docker run`
+the same image. Built with `docker buildx` as a **manifest list**; Cloud Run pulls the `amd64` leaf
+automatically, the runner hosts pull `arm64`.
+
+The Dockerfile above is already multi-arch: `--platform=$BUILDPLATFORM` keeps the builder stage on
+the runner's native arch and Go **cross-compiles** via `GOOS=$TARGETOS GOARCH=$TARGETARCH` — so the
+slow compile never runs under QEMU. Only the tiny final `alpine` stage (`apk add ca-certificates` +
+`COPY`) runs emulated for the foreign arch, which is cheap.
+
+Build + push the manifest list (context = repo root, Dockerfile via `-f`):
+
+```bash
+docker buildx build --platform linux/amd64,linux/arm64 \
+  -f rara-<app>/Dockerfile -t "$IMAGE" --push .
+docker buildx imagetools inspect "$IMAGE"   # must list amd64 + arm64
+```
+
+`rara-sift` is the first app on this pattern (`deploy-sift.yml` builds the manifest list once in a
+`build` job, then deploys its Cloud Run Jobs from it in a `deploy` matrix). The other SDK workers
+(`distill`/`glean`/`scribe`) are **not migrated yet** — they still build single-arch via the shared
+`_reusable-deploy-worker.yml` + Cloud Build below. Copy the `deploy-sift.yml` shape to migrate them
+(do not change the shared reusable workflow until they all move at once).
+
+## Cloud Build (single-arch — pre-migration apps)
 
 Same idea: the source tarball must contain both modules, and the docker step references the
 Dockerfile with `-f`:
@@ -68,11 +96,16 @@ independent of `make` — it reproduces the same `../rara-addon` layout inside t
 
 ## CI
 
-Each `ci-<app>.yml` has a `docker-build` job that runs `docker build -f rara-<app>/Dockerfile .`
-(build only, no push) — proving the multi-module image compiles on every PR without GCP creds.
+Each `ci-<app>.yml` has a `docker-build` job that builds the multi-module image on every PR without
+GCP creds. Pre-migration apps run `docker build -f rara-<app>/Dockerfile .` (single-arch, build
+only). `ci-sift.yml` is the multi-arch reference: it buildx-builds **both** arches and pushes to a
+throwaway `registry:2` service container, then `docker buildx imagetools inspect` asserts the
+manifest list carries amd64 + arm64 — the PR-time proof of the F2 acceptance.
 
 ## Deploys
 
 `deploy-<app>.yml` is `workflow_dispatch`-only (gated, no `push: main`) until the lane-activation
 wave. Per-provider env (e.g. `DISTILL_PROVIDER`, `SIFT_GATE`, `SCRIBE_PROVIDER`) and app-specific
-secrets are wired in at that point — see each deploy file's comments.
+secrets are wired in there — see each deploy file's comments. `deploy-sift.yml` is self-contained
+(buildx multi-arch → manifest list in Artifact Registry → deploy); the rest still call
+`_reusable-deploy-worker.yml` (single-arch Cloud Build) until migrated.

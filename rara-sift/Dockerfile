@@ -1,7 +1,16 @@
-# Multi-module build (see ../DOCKER-MULTIMODULE.md). Build context is the MONOREPO ROOT,
-# not this dir, so the `replace rara-addon => ../rara-addon` in go.mod resolves inside the
-# container. Invoke from the root: docker build -f rara-sift/Dockerfile .
-FROM golang:1.26-alpine AS builder
+# Multi-module, multi-arch build (see ../DOCKER-MULTIMODULE.md). Build context is the MONOREPO
+# ROOT, not this dir, so the `replace rara-addon => ../rara-addon` in go.mod resolves inside the
+# container. ONE image, two arches: amd64 (Cloud Run) + arm64 (VPC Oracle Ampere + Mac).
+# Build with buildx from the root:
+#   docker buildx build --platform linux/amd64,linux/arm64 -f rara-sift/Dockerfile .
+#
+# `--platform=$BUILDPLATFORM` pins the builder stage to the native runner arch and Go cross-compiles
+# via GOARCH=$TARGETARCH — no QEMU for the (slow) compile; only the tiny final alpine stage runs
+# emulated for the foreign arch.
+FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS builder
+
+ARG TARGETOS
+ARG TARGETARCH
 
 WORKDIR /build
 
@@ -17,8 +26,8 @@ RUN go mod download
 # Go sources only — rara-sift has no go:embed assets.
 COPY rara-sift/*.go ./
 
-# Static binary for the build platform (amd64 on Cloud Build), which is what Cloud Run runs.
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o /sift-job .
+# Static, cross-compiled binary for the target arch (set by buildx per --platform entry).
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -ldflags="-w -s" -o /sift-job .
 
 FROM alpine:3.21
 
