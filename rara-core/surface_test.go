@@ -1035,7 +1035,10 @@ func TestHTTPPutStepHostsSavesProviders(t *testing.T) {
 	}
 
 	// Verify the step options were updated.
-	steps, _ := db.ListFlowSteps(ctx, fid)
+	steps, err := db.ListFlowSteps(ctx, fid)
+	if err != nil {
+		t.Fatal(err)
+	}
 	var ts FlowStep
 	for _, s := range steps {
 		if s.Seq == 3 {
@@ -1047,9 +1050,13 @@ func TestHTTPPutStepHostsSavesProviders(t *testing.T) {
 		t.Fatal("options should be set after PUT hosts")
 	}
 	var o stepOptions
-	_ = json.Unmarshal(ts.Options, &o)
+	if err := json.Unmarshal(ts.Options, &o); err != nil {
+		t.Fatalf("unmarshal options: %v", err)
+	}
 	var got []string
-	_ = json.Unmarshal(o.Providers, &got)
+	if err := json.Unmarshal(o.Providers, &got); err != nil {
+		t.Fatalf("unmarshal providers: %v", err)
+	}
 	if len(got) != 1 || got[0] != "asr-youtube" {
 		t.Errorf("options.providers = %v, want [asr-youtube]", got)
 	}
@@ -1122,24 +1129,73 @@ func TestHTTPPutStepHostsClearsProviders(t *testing.T) {
 	h := NewSurfaceMux(core, testToken)
 
 	// First set providers.
-	do(t, h, http.MethodPut, fmt.Sprintf("/v1/flows/%d/steps/3/hosts", fid), `{"providers":["asr-youtube"]}`)
+	first := do(t, h, http.MethodPut, fmt.Sprintf("/v1/flows/%d/steps/3/hosts", fid), `{"providers":["asr-youtube"]}`)
+	if first.Code != http.StatusOK {
+		t.Fatalf("first put: got %d: %s", first.Code, first.Body.String())
+	}
 	// Then clear.
 	rec := do(t, h, http.MethodPut, fmt.Sprintf("/v1/flows/%d/steps/3/hosts", fid), `{"providers":[]}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("clear: got %d: %s", rec.Code, rec.Body.String())
 	}
 
-	steps, _ := db.ListFlowSteps(ctx, fid)
+	steps, err := db.ListFlowSteps(ctx, fid)
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, s := range steps {
 		if s.Seq == 3 {
+			if len(s.Options) == 0 {
+				break // no options = no providers override; cleared correctly
+			}
 			var o stepOptions
-			_ = json.Unmarshal(s.Options, &o)
+			if err := json.Unmarshal(s.Options, &o); err != nil {
+				t.Fatalf("unmarshal options: %v", err)
+			}
 			var providers []string
-			_ = json.Unmarshal(o.Providers, &providers)
+			_ = json.Unmarshal(o.Providers, &providers) // nil/empty both mean cleared
 			if len(providers) != 0 {
 				t.Errorf("providers not cleared, got %v", providers)
 			}
 		}
+	}
+}
+
+// TestHTTPPutStepHostsRejectsDisabledProvider: a disabled provider returns 400.
+func TestHTTPPutStepHostsRejectsDisabledProvider(t *testing.T) {
+	ctx := context.Background()
+	core, db, _ := newTestCore(t)
+	if err := SeedYouTubeLane(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	// Disable asr-youtube.
+	if err := db.UpsertProvider(ctx, Provider{
+		Name: "asr-youtube", Capability: capTranscrever, Runtime: runtimeLocal,
+		Activation: activationResident, Enabled: false,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	fid := db.flows[youtubeFlowName].ID
+	h := NewSurfaceMux(core, testToken)
+	rec := do(t, h, http.MethodPut, fmt.Sprintf("/v1/flows/%d/steps/3/hosts", fid),
+		`{"providers":["asr-youtube"]}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("disabled provider should be 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestHTTPPutStepHostsRequiresProvidersField: a body without the providers key returns 400.
+func TestHTTPPutStepHostsRequiresProvidersField(t *testing.T) {
+	ctx := context.Background()
+	core, db, _ := newTestCore(t)
+	if err := SeedYouTubeLane(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	fid := db.flows[youtubeFlowName].ID
+	h := NewSurfaceMux(core, testToken)
+	rec := do(t, h, http.MethodPut, fmt.Sprintf("/v1/flows/%d/steps/3/hosts", fid), `{}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("missing providers field should be 400, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
 

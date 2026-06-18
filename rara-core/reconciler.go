@@ -253,6 +253,12 @@ func nextAction(flowSteps []FlowStep, bySeq map[int]ItemStep) (stepAction, FlowS
 		case stepFailed:
 			return actFail, fs
 		default: // pending | assigned | running
+			// stepPending with no provider means the previous pass found no eligible
+			// provider and left the step unassigned; workers require assigned_provider
+			// to claim, so re-route immediately rather than waiting indefinitely.
+			if s.Status == stepPending && s.AssignedProvider == "" {
+				return actMaterialize, fs
+			}
 			return actWait, fs
 		}
 	}
@@ -280,7 +286,7 @@ func (r *Reconciler) materialize(ctx context.Context, item Item, fs FlowStep) (d
 		// the policy fallback for this step.
 		prov, ok, err := r.router.SelectForStep(ctx, fs.Capability, item, r.now(), r.healthTTL, stepFallbackFromOptions(fs.Options))
 		if err != nil {
-			return false, err
+			return false, fmt.Errorf("select provider for item %d seq %d: %w", item.ID, fs.Seq, err)
 		}
 		if !ok {
 			// No eligible provider (none registered, all constraint-violating, or all
@@ -292,7 +298,7 @@ func (r *Reconciler) materialize(ctx context.Context, item Item, fs FlowStep) (d
 			ItemID: item.ID, Seq: fs.Seq, Capability: fs.Capability,
 			Status: stepPending, AssignedProvider: prov.Name,
 		}); err != nil {
-			return false, err
+			return false, fmt.Errorf("upsert item step for item %d seq %d: %w", item.ID, fs.Seq, err)
 		}
 		return false, nil
 	}
@@ -308,7 +314,7 @@ func (r *Reconciler) handleStaleStep(ctx context.Context, item Item, fs FlowStep
 	dead := st.AssignedProvider
 	next, ok, err := r.router.SelectForStep(ctx, st.Capability, item, r.now(), r.healthTTL, stepFallbackFromOptions(fs.Options), dead)
 	if err != nil {
-		return err
+		return fmt.Errorf("select fallback for stale item %d seq %d: %w", item.ID, st.Seq, err)
 	}
 
 	var chosen Provider
@@ -321,7 +327,7 @@ func (r *Reconciler) handleStaleStep(ctx context.Context, item Item, fs FlowStep
 		log.Printf("reconcile item %d seq %d: stale heartbeat, no fallback, re-queuing %s", item.ID, st.Seq, dead)
 		p, found, gerr := r.db.GetProvider(ctx, dead)
 		if gerr != nil {
-			return gerr
+			return fmt.Errorf("get stale provider %q: %w", dead, gerr)
 		}
 		if found {
 			chosen = p
@@ -332,7 +338,10 @@ func (r *Reconciler) handleStaleStep(ctx context.Context, item Item, fs FlowStep
 	st.Status = stepPending
 	st.HeartbeatAt = nil
 	st.AssignedProvider = chosen.Name
-	return r.db.UpsertItemStep(ctx, st)
+	if err := r.db.UpsertItemStep(ctx, st); err != nil {
+		return fmt.Errorf("requeue stale item %d seq %d: %w", item.ID, st.Seq, err)
+	}
+	return nil
 }
 
 // syncItemStatus recomputes the item's status from its completed steps and persists it if

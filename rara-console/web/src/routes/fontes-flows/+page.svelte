@@ -38,6 +38,7 @@
 	let hostsSaving = $state(false);
 	let hostsMsg = $state('');
 	let selectedAddHost = $state('');
+	let hostsReqVersion = 0; // incremented each open; guards against stale responses
 
 	function hostsKey(flowId: number, seq: number): StepHostsKey {
 		return `${flowId}:${seq}`;
@@ -170,11 +171,13 @@
 		hostsLoading = true;
 		hostsMsg = '';
 		selectedAddHost = '';
+		const myVersion = ++hostsReqVersion;
 		const ctrl = new AbortController();
 		const tid = setTimeout(() => ctrl.abort(), 15000);
 		try {
 			const r = await fetch(`/api/flows/${flowId}/steps/${seq}/hosts`, { signal: ctrl.signal });
 			clearTimeout(tid);
+			if (myVersion !== hostsReqVersion || openHostsKey !== key) return; // stale response
 			if (!r.ok) {
 				hostsMsg = r.status >= 500 ? `${t.fontesFlows.hostsError} (${r.status})` : t.fontesFlows.hostsError;
 				throw new Error();
@@ -184,6 +187,7 @@
 			hostsPriority = d.providers ?? [];
 		} catch {
 			clearTimeout(tid);
+			if (myVersion !== hostsReqVersion || openHostsKey !== key) return; // stale response
 			hostsError = true;
 		}
 		hostsLoading = false;
@@ -433,7 +437,7 @@
 																{#if hostsLoading}
 																	<p class="text-muted">{t.fontesFlows.hostsLoading}</p>
 																{:else if hostsError}
-																	<p class="text-red-500">{t.fontesFlows.hostsError}</p>
+																	<p class="text-red-500">{hostsMsg || t.fontesFlows.hostsError}</p>
 																{:else}
 																	<div class="rounded-lg border border-border bg-bg p-3">
 																		<!-- Priority list -->
@@ -482,8 +486,10 @@
 																					{/each}
 																				</select>
 																				<button
+																					type="button"
 																					class="cursor-pointer rounded border border-border bg-surface-2 px-2 py-1 text-[11px] hover:bg-hover disabled:opacity-40"
 																					disabled={!selectedAddHost}
+																					aria-label={t.fontesFlows.hostsAddPlaceholder}
 																					onclick={() => { addHost(selectedAddHost); selectedAddHost = ''; }}
 																				>+</button>
 																			</div>

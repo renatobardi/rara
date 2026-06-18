@@ -158,10 +158,20 @@ func (c *Core) FlowSteps(ctx context.Context, flowID int) ([]FlowStep, error) {
 }
 func (c *Core) Providers(ctx context.Context) ([]Provider, error) { return c.db.ListProviders(ctx) }
 
+// AvailableProvider is the restricted view of a Provider sent to the hosts editor.
+// Internal fields (poke_url, runner_url, heartbeat_at, constraints) are intentionally omitted.
+type AvailableProvider struct {
+	Name       string `json:"name"`
+	Capability string `json:"capability"`
+	Runtime    string `json:"runtime"`
+	Activation string `json:"activation"`
+	Enabled    bool   `json:"enabled"`
+}
+
 // StepHostsResponse is the shape returned by GET /v1/flows/{id}/steps/{seq}/hosts.
 type StepHostsResponse struct {
-	Providers []string   `json:"providers"` // current per-step priority list (may be empty)
-	Available []Provider `json:"available"` // all enabled providers for the step's capability
+	Providers []string            `json:"providers"` // current per-step priority list (may be empty)
+	Available []AvailableProvider `json:"available"` // all enabled providers for the step's capability
 }
 
 // StepHosts returns the per-step host priority list and the full set of available providers
@@ -183,9 +193,13 @@ func (c *Core) StepHosts(ctx context.Context, flowID, seq int) (StepHostsRespons
 	if !found {
 		return StepHostsResponse{}, errNotFound
 	}
-	avail, err := c.db.ListProvidersForCapability(ctx, fs.Capability)
+	raw, err := c.db.ListProvidersForCapability(ctx, fs.Capability)
 	if err != nil {
 		return StepHostsResponse{}, err
+	}
+	avail := make([]AvailableProvider, len(raw))
+	for i, p := range raw {
+		avail[i] = AvailableProvider{Name: p.Name, Capability: p.Capability, Runtime: p.Runtime, Activation: p.Activation, Enabled: p.Enabled}
 	}
 	var names []string
 	if fb := stepFallbackFromOptions(fs.Options); len(fb) > 0 {
@@ -200,9 +214,35 @@ func (c *Core) StepHosts(ctx context.Context, flowID, seq int) (StepHostsRespons
 	return StepHostsResponse{Providers: names, Available: avail}, nil
 }
 
+// validateStepProviders checks that each provider exists, is enabled, matches the required
+// capability, and appears at most once in the list.
+func (c *Core) validateStepProviders(ctx context.Context, capability string, providers []string) error {
+	seen := make(map[string]bool, len(providers))
+	for _, name := range providers {
+		if seen[name] {
+			return badInput("duplicate provider %q in hosts list", name)
+		}
+		seen[name] = true
+		p, ok, err := c.db.GetProvider(ctx, name)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return badInput("provider %q does not exist", name)
+		}
+		if !p.Enabled {
+			return badInput("provider %q is disabled", name)
+		}
+		if p.Capability != capability {
+			return badInput("provider %q has capability %q, want %q", name, p.Capability, capability)
+		}
+	}
+	return nil
+}
+
 // SetStepHosts updates the per-step host priority list for a flow step.
-// Validates: flow+seq must exist; each provider must exist with matching capability;
-// no duplicates. An empty list clears the override.
+// Validates: flow+seq must exist; each provider must exist, be enabled, and match the
+// step's capability; no duplicates. An empty list clears the override.
 func (c *Core) SetStepHosts(ctx context.Context, flowID, seq int, providers []string) error {
 	steps, err := c.db.ListFlowSteps(ctx, flowID)
 	if err != nil {
@@ -221,23 +261,8 @@ func (c *Core) SetStepHosts(ctx context.Context, flowID, seq int, providers []st
 		return errNotFound
 	}
 
-	// Validate: each provider must exist and match this step's capability; no duplicates.
-	seen := make(map[string]bool, len(providers))
-	for _, name := range providers {
-		if seen[name] {
-			return badInput("duplicate provider %q in hosts list", name)
-		}
-		seen[name] = true
-		p, ok, err := c.db.GetProvider(ctx, name)
-		if err != nil {
-			return err
-		}
-		if !ok {
-			return badInput("provider %q does not exist", name)
-		}
-		if p.Capability != fs.Capability {
-			return badInput("provider %q has capability %q, want %q", name, p.Capability, fs.Capability)
-		}
+	if err := c.validateStepProviders(ctx, fs.Capability, providers); err != nil {
+		return err
 	}
 
 	// Merge into options: preserve existing keys, update/clear providers.
@@ -775,12 +800,16 @@ func (h *httpSurface) setStepHosts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Providers []string `json:"providers"`
+		Providers *[]string `json:"providers"`
 	}
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	writeResult(w, okResult{OK: true}, h.core.SetStepHosts(r.Context(), flowID, seq, req.Providers))
+	if req.Providers == nil {
+		writeErr(w, badInput("providers field is required"))
+		return
+	}
+	writeResult(w, okResult{OK: true}, h.core.SetStepHosts(r.Context(), flowID, seq, *req.Providers))
 }
 
 func (h *httpSurface) upsertProvider(w http.ResponseWriter, r *http.Request) {
@@ -904,6 +933,8 @@ func writeResult(w http.ResponseWriter, data any, err error) {
 }
 
 // writeErr maps an error to its HTTP status: badInputError → 400, errNotFound → 404, else 500.
+// 500 responses return a generic message; the actual error is logged server-side to avoid
+// leaking internal details (stack frames, table names, config values) to callers.
 func writeErr(w http.ResponseWriter, err error) {
 	status := http.StatusInternalServerError
 	var bad badInputError
@@ -911,6 +942,11 @@ func writeErr(w http.ResponseWriter, err error) {
 		status = http.StatusBadRequest
 	} else if errors.Is(err, errNotFound) {
 		status = http.StatusNotFound
+	}
+	if status == http.StatusInternalServerError {
+		log.Printf("surface: internal error: %v", err)
+		writeJSON(w, status, map[string]string{"error": "internal server error"})
+		return
 	}
 	writeJSON(w, status, map[string]string{"error": err.Error()})
 }

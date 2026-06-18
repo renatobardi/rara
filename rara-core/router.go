@@ -72,7 +72,9 @@ func (rt *Router) SelectForStep(ctx context.Context, capability string, item Ite
 		if err := json.Unmarshal(stepFallback, &check); err != nil {
 			return Provider{}, false, fmt.Errorf("select for step: invalid stepFallback JSON: %w", err)
 		}
-		policy.Fallback = stepFallback
+		if len(check) > 0 {
+			policy.Fallback = stepFallback
+		}
 	}
 	ex := make(map[string]bool, len(exclude))
 	for _, n := range exclude {

@@ -542,6 +542,7 @@ func (s *server) handleUpsertFlowStep(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleStepHosts proxies GET /v1/flows/{flow_id}/steps/{seq}/hosts — per-step host priority.
+// Core 4xx/404 responses are propagated as-is; transport failures become 502.
 func (s *server) handleStepHosts(w http.ResponseWriter, r *http.Request) {
 	flowID := r.PathValue("flow_id")
 	seq := r.PathValue("seq")
@@ -553,12 +554,14 @@ func (s *server) handleStepHosts(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid seq"})
 		return
 	}
-	body, err := s.fetchCore(r.Context(), "/v1/flows/"+flowID+"/steps/"+seq+"/hosts")
+	status, body, err := s.fetchCoreWithStatus(r.Context(), "/v1/flows/"+flowID+"/steps/"+seq+"/hosts")
 	if err != nil {
 		badGateway(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, json.RawMessage(body))
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_, _ = w.Write(body)
 }
 
 // handleSetStepHosts proxies PUT /v1/flows/{flow_id}/steps/{seq}/hosts. Core 4xx propagates.
@@ -580,7 +583,9 @@ func (s *server) handleSetStepHosts(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_, _ = w.Write(body)
+	if _, err := w.Write(body); err != nil {
+		log.Printf("console: write step hosts response: %v", err)
+	}
 }
 
 // handleCoreHealth proxies GET /v1/health — the system health aggregate (db_ok, last reconcile,

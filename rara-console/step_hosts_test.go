@@ -30,6 +30,26 @@ func fakeStepHostsCore(t *testing.T, token string) *httptest.Server {
 	return srv
 }
 
+// fakeStepHostsCoreError serves the step-hosts endpoints returning the given status code.
+func fakeStepHostsCoreError(t *testing.T, token string, status int) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	handler := func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer "+token {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(`{"error":"core error"}`))
+	}
+	mux.HandleFunc("GET /v1/flows/{flow_id}/steps/{seq}/hosts", handler)
+	mux.HandleFunc("PUT /v1/flows/{flow_id}/steps/{seq}/hosts", handler)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv
+}
+
 func TestStepHostsGETProxiesWithBearer(t *testing.T) {
 	core := fakeStepHostsCore(t, "secret")
 	s := &server{coreURL: core.URL, token: "secret", client: core.Client()}
@@ -58,6 +78,9 @@ func TestStepHostsGETNeverLeaksToken(t *testing.T) {
 	req.SetPathValue("seq", "3")
 	s.handleStepHosts(rec, req)
 
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
 	if strings.Contains(rec.Body.String(), "supersecret") {
 		t.Errorf("response leaked the surface token: %s", rec.Body.String())
 	}
@@ -74,6 +97,21 @@ func TestStepHostsGETRejects502WhenCoreUnreachable(t *testing.T) {
 
 	if rec.Code != http.StatusBadGateway {
 		t.Errorf("status = %d, want 502", rec.Code)
+	}
+}
+
+func TestStepHostsGETPropagatesCoreError(t *testing.T) {
+	core := fakeStepHostsCoreError(t, "secret", http.StatusNotFound)
+	s := &server{coreURL: core.URL, token: "secret", client: core.Client()}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/api/flows/1/steps/99/hosts", nil)
+	req.SetPathValue("flow_id", "1")
+	req.SetPathValue("seq", "99")
+	s.handleStepHosts(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404 propagated from core", rec.Code)
 	}
 }
 
@@ -152,8 +190,28 @@ func TestStepHostsPUTNeverLeaksToken(t *testing.T) {
 	req.SetPathValue("seq", "3")
 	s.handleSetStepHosts(rec, req)
 
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
 	if strings.Contains(rec.Body.String(), "topsecret") {
 		t.Errorf("response leaked the surface token: %s", rec.Body.String())
+	}
+}
+
+func TestStepHostsPUTPropagatesCoreError(t *testing.T) {
+	core := fakeStepHostsCoreError(t, "secret", http.StatusBadRequest)
+	s := &server{coreURL: core.URL, token: "secret", client: core.Client()}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("PUT", "/api/flows/1/steps/3/hosts",
+		strings.NewReader(`{"providers":["no-such"]}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.SetPathValue("flow_id", "1")
+	req.SetPathValue("seq", "3")
+	s.handleSetStepHosts(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400 propagated from core", rec.Code)
 	}
 }
 
