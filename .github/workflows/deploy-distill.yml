@@ -109,8 +109,10 @@ jobs:
         uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
 
       - name: Validate required vars
+        env:
+          LITELLM_BASE_URL: ${{ vars.LITELLM_BASE_URL }}
         run: |
-          [ -n "${{ vars.LITELLM_BASE_URL }}" ] || { echo "❌ vars.LITELLM_BASE_URL is not set"; exit 1; }
+          [ -n "$LITELLM_BASE_URL" ] || { echo "❌ vars.LITELLM_BASE_URL is not set"; exit 1; }
 
       - name: Deploy Cloud Run Job
         env:
