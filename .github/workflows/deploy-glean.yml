@@ -1,39 +1,155 @@
 name: Deploy rara-glean
 
-# GATED — manual dispatch only (NO push:main). Thin caller of the reusable multi-module deploy
-# (_reusable-deploy-worker.yml). rara-glean is a 2.0 claim-worker (the already-text extractor): it
-# only runs once the reconciler routes an `extrair` item_step to its provider.
+# GATED — manual dispatch only (NO push:main). rara-glean is a 2.0 claim-worker (the
+# already-text extractor): it only runs once the reconciler routes an `extrair` item_step to
+# its provider.
 #
-# ONE image, N providers → N Cloud Run Jobs, one per matrix entry, each with its own GLEAN_PROVIDER.
-# Job name = CLOUD_RUN_JOB_PREFIX(rara-) + provider (what the Activator wakes). Extraction is
-# deterministic (HTML/boilerplate cleaning, no LLM), so each job wires only the shared DATABASE_URL —
-# no model key, no extractor credentials (the feed/courier collectors already captured the body).
-# ponytail: the multi-module image builds once per matrix entry (3× for the same rara-glean image) —
-# minor wasted Cloud Build; not worth a build-once/deploy-thrice split.
+# ONE image, THREE providers → THREE Cloud Run Jobs (rara-extrair-email, rara-extrair-linkedin,
+# rara-extrair-news), each with its own GLEAN_PROVIDER. Extraction is deterministic
+# (HTML/boilerplate cleaning, no LLM), so each job wires only the shared DATABASE_URL.
+# The image is built once (the `build` job) and deployed three times (the `deploy` matrix) —
+# an improvement over the old Cloud Build approach which rebuilt per matrix entry. This follows
+# the MULTI-ARCH pattern introduced in deploy-sift.yml: buildx + manifest list (amd64 for
+# Cloud Run + arm64 for VPC/Mac). See DOCKER-MULTIMODULE.md.
 on:
   workflow_dispatch:
     inputs:
       run_after_deploy:
-        description: 'Execute the job once right after deploying (off by default — the worker needs its provider env set first)'
+        description: 'Execute the jobs once right after deploying (off by default — the worker needs its provider env set first)'
         required: false
         default: false
         type: boolean
 
-permissions:
-  contents: read
-  id-token: write
+concurrency:
+  group: deploy-glean
+  cancel-in-progress: true
+
+env:
+  IMAGE: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/rara/rara-glean:${{ github.sha }}
 
 jobs:
+  build:
+    name: Build multi-arch image (amd64 + arm64)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      GCP_REGION: ${{ vars.GCP_REGION }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+          token_format: access_token
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
+
+      # buildx forwards the gcloud credential helper's token over the build session, so no separate
+      # docker login action is needed.
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker "$GCP_REGION-docker.pkg.dev" --quiet
+
+      # QEMU only emulates the tiny final alpine stage; the Go compile cross-builds natively.
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@29109295f81e9208d7d86ff1c6c12d2833863392 # v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3
+
+      # MULTI-MODULE context = repo root so `replace rara-addon => ../rara-addon` resolves; the
+      # Dockerfile lives in the app dir and is selected with `file:`. See DOCKER-MULTIMODULE.md.
+      - name: Build and push manifest list
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6
+        with:
+          context: .
+          file: rara-glean/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ env.IMAGE }}
+
+      # Acceptance check: the manifest list MUST carry exactly linux/amd64 + linux/arm64.
+      # build-push-action v6 also emits attestation entries (platform: unknown/unknown); filter
+      # those out before counting so the check stays exact without disabling provenance.
+      - name: Verify manifest list has both arches
+        run: |
+          docker buildx imagetools inspect "$IMAGE"
+          PLATFORMS=$(docker buildx imagetools inspect "$IMAGE" \
+            --format '{{range .Manifest.Manifests}}{{if ne .Platform.OS "unknown"}}{{.Platform.OS}}/{{.Platform.Architecture}} {{end}}{{end}}')
+          echo "Platforms in manifest list: $PLATFORMS"
+          echo "$PLATFORMS" | grep -qw "linux/amd64" || { echo "❌ missing linux/amd64"; exit 1; }
+          echo "$PLATFORMS" | grep -qw "linux/arm64" || { echo "❌ missing linux/arm64"; exit 1; }
+          COUNT=$(echo "$PLATFORMS" | wc -w)
+          [ "$COUNT" -eq 2 ] || { echo "❌ expected exactly 2 real platforms, found $COUNT: $PLATFORMS"; exit 1; }
+          echo "✅ manifest list has exactly linux/amd64 + linux/arm64"
+
   deploy:
+    name: Deploy Cloud Run Job
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
     strategy:
       matrix:
         provider: [extrair-email, extrair-linkedin, extrair-news]
-    uses: ./.github/workflows/_reusable-deploy-worker.yml
-    with:
-      app: rara-glean
-      job_name: rara-${{ matrix.provider }}
-      env_vars: GLEAN_PROVIDER=${{ matrix.provider }}
-      run_after_deploy: ${{ inputs.run_after_deploy }}
-    secrets:
-      GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
-      GCP_SERVICE_ACCOUNT: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+    env:
+      REGION: ${{ vars.GCP_REGION }}
+      JOB_NAME: rara-${{ matrix.provider }}
+      GCP_PROJECT: ${{ vars.GCP_PROJECT_ID }}
+    steps:
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+          token_format: access_token
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
+
+      - name: Deploy Cloud Run Job
+        env:
+          GLEAN_PROVIDER: ${{ matrix.provider }}
+        run: |
+          # Update first, create if absent (avoids a describe→create/update TOCTOU race).
+          # DATABASE_URL is the shared contract DB. Extraction is deterministic (no LLM),
+          # so no model key or extra secrets — only GLEAN_PROVIDER distinguishes the jobs.
+          SECRETS="DATABASE_URL=database-url:latest"
+          ENV_VARS="GLEAN_PROVIDER=$GLEAN_PROVIDER"
+          COMMON_ARGS=(
+            --image "$IMAGE"
+            --region "$REGION"
+            --project "$GCP_PROJECT"
+            --set-secrets "$SECRETS"
+            --set-env-vars "$ENV_VARS"
+            --max-retries 0
+            --task-timeout 3600s
+            --memory 512Mi
+            --cpu 1
+          )
+
+          STDERR_FILE=$(mktemp)
+          gcloud run jobs update "$JOB_NAME" "${COMMON_ARGS[@]}" 2>"$STDERR_FILE" && rm -f "$STDERR_FILE" || {
+            STDERR=$(cat "$STDERR_FILE"); rm -f "$STDERR_FILE"
+            echo "$STDERR"
+            echo "$STDERR" | grep -qi "not found\|does not exist\|cannot be found" || \
+              { echo "❌ update failed for unexpected reason (not 'not found')"; exit 1; }
+            echo "Job not found — creating for the first time..."
+            gcloud run jobs create "$JOB_NAME" "${COMMON_ARGS[@]}"
+          }
+
+      - name: Execute job once
+        if: ${{ inputs.run_after_deploy }}
+        run: |
+          gcloud run jobs execute "$JOB_NAME" \
+            --region "$REGION" \
+            --project "$GCP_PROJECT" \
+            --wait
