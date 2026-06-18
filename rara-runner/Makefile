@@ -47,7 +47,7 @@ test-race:
 lint:
 	@echo "Running linters..."
 	go vet ./...
-	@which staticcheck > /dev/null || (echo "Installing staticcheck..." && go install honnef.co/go/tools/cmd/staticcheck@v0.4.7)
+	@which staticcheck > /dev/null || (echo "Installing staticcheck..." && go install honnef.co/go/tools/cmd/staticcheck@latest)
 	staticcheck ./...
 
 fmt:

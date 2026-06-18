@@ -65,7 +65,7 @@ jobs:
         run: |
           cd rara-runner
           go vet ./...
-          go install honnef.co/go/tools/cmd/staticcheck@v0.4.7
+          go install honnef.co/go/tools/cmd/staticcheck@latest
           "$(go env GOPATH)/bin/staticcheck" ./...
           echo "✅ Vet + staticcheck passed"
 
@@ -102,7 +102,7 @@ jobs:
       - name: Vulnerability scan (govulncheck)
         run: |
           cd rara-runner
-          go install golang.org/x/vuln/cmd/govulncheck@v1.0.4
+          go install golang.org/x/vuln/cmd/govulncheck@latest
           "$(go env GOPATH)/bin/govulncheck" ./...
 
       - name: Secret scan (gitleaks)
