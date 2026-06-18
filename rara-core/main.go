@@ -679,6 +679,21 @@ func jsonOrEmpty(raw json.RawMessage, def string) string {
 	return string(raw)
 }
 
+// isJSONObject reports whether raw is empty (defaults to '{}') or a JSON object. providers.env
+// must be an object — the dispatcher injects it key=value when waking a worker, so an array,
+// scalar or null would break the wake. The DB enforces this with a CHECK (migration 011); this
+// fails fast before the round-trip and lets MockDatabase mirror the constraint.
+func isJSONObject(raw json.RawMessage) bool {
+	if len(raw) == 0 {
+		return true
+	}
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return false
+	}
+	return obj != nil // a JSON null unmarshals to a nil map — reject it
+}
+
 func (d *pgxDatabase) UpsertCapability(ctx context.Context, c Capability) error {
 	const q = `
 		INSERT INTO capabilities (name, io_contract, description)
@@ -696,6 +711,9 @@ func (d *pgxDatabase) UpsertProvider(ctx context.Context, p Provider) error {
 	}
 	if !isValidActivation(p.Activation) {
 		return fmt.Errorf("invalid activation %q", p.Activation)
+	}
+	if !isJSONObject(p.Env) {
+		return fmt.Errorf("env must be a JSON object")
 	}
 	const q = `
 		INSERT INTO providers
