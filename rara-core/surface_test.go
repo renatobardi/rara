@@ -966,13 +966,7 @@ func TestHTTPUsage(t *testing.T) {
 // TestHTTPGetStepHostsReturnsAvailableAndCurrent: GET hosts returns the list of providers
 // for that capability (available) and the current step-level priority list (providers).
 func TestHTTPGetStepHostsReturnsAvailableAndCurrent(t *testing.T) {
-	ctx := context.Background()
-	core, db, _ := newTestCore(t)
-	if err := SeedYouTubeLane(ctx, db); err != nil {
-		t.Fatal(err)
-	}
-	fid := db.flows[youtubeFlowName].ID
-	h := NewSurfaceMux(core, testToken)
+	h, _, fid := seededStepHostsFixture(t)
 
 	// transcrever is seq 3 in the youtube flow; asr-youtube is its provider.
 	rec := do(t, h, http.MethodGet, fmt.Sprintf("/v1/flows/%d/steps/3/hosts", fid), "")
@@ -1004,13 +998,7 @@ func TestHTTPGetStepHostsUnknownFlowIs404(t *testing.T) {
 
 // TestHTTPGetStepHostsUnknownSeqIs404: a seq that has no matching step returns 404.
 func TestHTTPGetStepHostsUnknownSeqIs404(t *testing.T) {
-	ctx := context.Background()
-	core, db, _ := newTestCore(t)
-	if err := SeedYouTubeLane(ctx, db); err != nil {
-		t.Fatal(err)
-	}
-	fid := db.flows[youtubeFlowName].ID
-	h := NewSurfaceMux(core, testToken)
+	h, _, fid := seededStepHostsFixture(t)
 	rec := do(t, h, http.MethodGet, fmt.Sprintf("/v1/flows/%d/steps/99/hosts", fid), "")
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("unknown seq should be 404, got %d", rec.Code)
@@ -1021,12 +1009,7 @@ func TestHTTPGetStepHostsUnknownSeqIs404(t *testing.T) {
 // reflects it.
 func TestHTTPPutStepHostsSavesProviders(t *testing.T) {
 	ctx := context.Background()
-	core, db, _ := newTestCore(t)
-	if err := SeedYouTubeLane(ctx, db); err != nil {
-		t.Fatal(err)
-	}
-	fid := db.flows[youtubeFlowName].ID
-	h := NewSurfaceMux(core, testToken)
+	h, db, fid := seededStepHostsFixture(t)
 
 	body := `{"providers":["asr-youtube"]}`
 	rec := do(t, h, http.MethodPut, fmt.Sprintf("/v1/flows/%d/steps/3/hosts", fid), body)
@@ -1064,13 +1047,7 @@ func TestHTTPPutStepHostsSavesProviders(t *testing.T) {
 
 // TestHTTPPutStepHostsRejectsUnknownProvider: a provider name that does not exist returns 400.
 func TestHTTPPutStepHostsRejectsUnknownProvider(t *testing.T) {
-	ctx := context.Background()
-	core, db, _ := newTestCore(t)
-	if err := SeedYouTubeLane(ctx, db); err != nil {
-		t.Fatal(err)
-	}
-	fid := db.flows[youtubeFlowName].ID
-	h := NewSurfaceMux(core, testToken)
+	h, _, fid := seededStepHostsFixture(t)
 	rec := do(t, h, http.MethodPut, fmt.Sprintf("/v1/flows/%d/steps/3/hosts", fid),
 		`{"providers":["no-such-provider"]}`)
 	if rec.Code != http.StatusBadRequest {
@@ -1082,10 +1059,7 @@ func TestHTTPPutStepHostsRejectsUnknownProvider(t *testing.T) {
 // capability than the step's returns 400.
 func TestHTTPPutStepHostsRejectsWrongCapability(t *testing.T) {
 	ctx := context.Background()
-	core, db, _ := newTestCore(t)
-	if err := SeedYouTubeLane(ctx, db); err != nil {
-		t.Fatal(err)
-	}
+	h, db, fid := seededStepHostsFixture(t)
 	// Register a provider for a different capability.
 	if err := db.UpsertProvider(ctx, Provider{
 		Name: "wrong-cap", Capability: capDestilar, Runtime: runtimeCloudRun,
@@ -1093,8 +1067,6 @@ func TestHTTPPutStepHostsRejectsWrongCapability(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	fid := db.flows[youtubeFlowName].ID
-	h := NewSurfaceMux(core, testToken)
 	rec := do(t, h, http.MethodPut, fmt.Sprintf("/v1/flows/%d/steps/3/hosts", fid),
 		`{"providers":["wrong-cap"]}`)
 	if rec.Code != http.StatusBadRequest {
@@ -1104,13 +1076,7 @@ func TestHTTPPutStepHostsRejectsWrongCapability(t *testing.T) {
 
 // TestHTTPPutStepHostsRejectsDuplicates: duplicate names in the list returns 400.
 func TestHTTPPutStepHostsRejectsDuplicates(t *testing.T) {
-	ctx := context.Background()
-	core, db, _ := newTestCore(t)
-	if err := SeedYouTubeLane(ctx, db); err != nil {
-		t.Fatal(err)
-	}
-	fid := db.flows[youtubeFlowName].ID
-	h := NewSurfaceMux(core, testToken)
+	h, _, fid := seededStepHostsFixture(t)
 	rec := do(t, h, http.MethodPut, fmt.Sprintf("/v1/flows/%d/steps/3/hosts", fid),
 		`{"providers":["asr-youtube","asr-youtube"]}`)
 	if rec.Code != http.StatusBadRequest {
@@ -1121,12 +1087,7 @@ func TestHTTPPutStepHostsRejectsDuplicates(t *testing.T) {
 // TestHTTPPutStepHostsClearsProviders: an empty providers list clears the override.
 func TestHTTPPutStepHostsClearsProviders(t *testing.T) {
 	ctx := context.Background()
-	core, db, _ := newTestCore(t)
-	if err := SeedYouTubeLane(ctx, db); err != nil {
-		t.Fatal(err)
-	}
-	fid := db.flows[youtubeFlowName].ID
-	h := NewSurfaceMux(core, testToken)
+	h, db, fid := seededStepHostsFixture(t)
 
 	// First set providers.
 	first := do(t, h, http.MethodPut, fmt.Sprintf("/v1/flows/%d/steps/3/hosts", fid), `{"providers":["asr-youtube"]}`)
@@ -1164,10 +1125,7 @@ func TestHTTPPutStepHostsClearsProviders(t *testing.T) {
 // TestHTTPPutStepHostsRejectsDisabledProvider: a disabled provider returns 400.
 func TestHTTPPutStepHostsRejectsDisabledProvider(t *testing.T) {
 	ctx := context.Background()
-	core, db, _ := newTestCore(t)
-	if err := SeedYouTubeLane(ctx, db); err != nil {
-		t.Fatal(err)
-	}
+	h, db, fid := seededStepHostsFixture(t)
 	// Disable asr-youtube.
 	if err := db.UpsertProvider(ctx, Provider{
 		Name: "asr-youtube", Capability: capTranscrever, Runtime: runtimeLocal,
@@ -1175,8 +1133,6 @@ func TestHTTPPutStepHostsRejectsDisabledProvider(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	fid := db.flows[youtubeFlowName].ID
-	h := NewSurfaceMux(core, testToken)
 	rec := do(t, h, http.MethodPut, fmt.Sprintf("/v1/flows/%d/steps/3/hosts", fid),
 		`{"providers":["asr-youtube"]}`)
 	if rec.Code != http.StatusBadRequest {
@@ -1186,13 +1142,7 @@ func TestHTTPPutStepHostsRejectsDisabledProvider(t *testing.T) {
 
 // TestHTTPPutStepHostsRequiresProvidersField: a body without the providers key returns 400.
 func TestHTTPPutStepHostsRequiresProvidersField(t *testing.T) {
-	ctx := context.Background()
-	core, db, _ := newTestCore(t)
-	if err := SeedYouTubeLane(ctx, db); err != nil {
-		t.Fatal(err)
-	}
-	fid := db.flows[youtubeFlowName].ID
-	h := NewSurfaceMux(core, testToken)
+	h, _, fid := seededStepHostsFixture(t)
 	rec := do(t, h, http.MethodPut, fmt.Sprintf("/v1/flows/%d/steps/3/hosts", fid), `{}`)
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("missing providers field should be 400, got %d: %s", rec.Code, rec.Body.String())
@@ -1200,6 +1150,18 @@ func TestHTTPPutStepHostsRequiresProvidersField(t *testing.T) {
 }
 
 // --- small helpers --------------------------------------------------------
+
+// seededStepHostsFixture creates a test core with the YouTube lane seeded and returns
+// the surface mux, the mock database, and the YouTube flow ID.
+func seededStepHostsFixture(t *testing.T) (http.Handler, *MockDatabase, int) {
+	t.Helper()
+	ctx := context.Background()
+	core, db, _ := newTestCore(t)
+	if err := SeedYouTubeLane(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	return NewSurfaceMux(core, testToken), db, db.flows[youtubeFlowName].ID
+}
 
 func mustItem(t *testing.T, db *MockDatabase, lane, ref string, flowID int, status string) int {
 	t.Helper()

@@ -541,17 +541,27 @@ func (s *server) handleUpsertFlowStep(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(body)
 }
 
-// handleStepHosts proxies GET /v1/flows/{flow_id}/steps/{seq}/hosts — per-step host priority.
-// Core 4xx/404 responses are propagated as-is; transport failures become 502.
-func (s *server) handleStepHosts(w http.ResponseWriter, r *http.Request) {
-	flowID := r.PathValue("flow_id")
-	seq := r.PathValue("seq")
+// parseFlowStepIDs extracts and validates the flow_id and seq path values.
+// Writes 400 and returns ok=false when either value is non-numeric.
+func parseFlowStepIDs(w http.ResponseWriter, r *http.Request) (flowID, seq string, ok bool) {
+	flowID = r.PathValue("flow_id")
+	seq = r.PathValue("seq")
 	if !isNumericID(flowID) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid flow_id"})
-		return
+		return "", "", false
 	}
 	if !isNumericID(seq) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid seq"})
+		return "", "", false
+	}
+	return flowID, seq, true
+}
+
+// handleStepHosts proxies GET /v1/flows/{flow_id}/steps/{seq}/hosts — per-step host priority.
+// Core 4xx/404 responses are propagated as-is; transport failures become 502.
+func (s *server) handleStepHosts(w http.ResponseWriter, r *http.Request) {
+	flowID, seq, ok := parseFlowStepIDs(w, r)
+	if !ok {
 		return
 	}
 	status, body, err := s.fetchCoreWithStatus(r.Context(), "/v1/flows/"+flowID+"/steps/"+seq+"/hosts")
@@ -566,14 +576,8 @@ func (s *server) handleStepHosts(w http.ResponseWriter, r *http.Request) {
 
 // handleSetStepHosts proxies PUT /v1/flows/{flow_id}/steps/{seq}/hosts. Core 4xx propagates.
 func (s *server) handleSetStepHosts(w http.ResponseWriter, r *http.Request) {
-	flowID := r.PathValue("flow_id")
-	seq := r.PathValue("seq")
-	if !isNumericID(flowID) {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid flow_id"})
-		return
-	}
-	if !isNumericID(seq) {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid seq"})
+	flowID, seq, ok := parseFlowStepIDs(w, r)
+	if !ok {
 		return
 	}
 	status, body, err := s.putCore(r.Context(), "/v1/flows/"+flowID+"/steps/"+seq+"/hosts", r.Body)

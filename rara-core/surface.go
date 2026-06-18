@@ -174,24 +174,26 @@ type StepHostsResponse struct {
 	Available []AvailableProvider `json:"available"` // all enabled providers for the step's capability
 }
 
+// findFlowStep returns the FlowStep with the given seq inside a flow, or errNotFound.
+func (c *Core) findFlowStep(ctx context.Context, flowID, seq int) (FlowStep, error) {
+	steps, err := c.db.ListFlowSteps(ctx, flowID)
+	if err != nil {
+		return FlowStep{}, err
+	}
+	for _, s := range steps {
+		if s.Seq == seq {
+			return s, nil
+		}
+	}
+	return FlowStep{}, errNotFound
+}
+
 // StepHosts returns the per-step host priority list and the full set of available providers
 // for a step's capability. Returns badInput when the flow or seq cannot be resolved.
 func (c *Core) StepHosts(ctx context.Context, flowID, seq int) (StepHostsResponse, error) {
-	steps, err := c.db.ListFlowSteps(ctx, flowID)
+	fs, err := c.findFlowStep(ctx, flowID, seq)
 	if err != nil {
 		return StepHostsResponse{}, err
-	}
-	var fs FlowStep
-	found := false
-	for _, s := range steps {
-		if s.Seq == seq {
-			fs = s
-			found = true
-			break
-		}
-	}
-	if !found {
-		return StepHostsResponse{}, errNotFound
 	}
 	raw, err := c.db.ListProvidersForCapability(ctx, fs.Capability)
 	if err != nil {
@@ -244,21 +246,9 @@ func (c *Core) validateStepProviders(ctx context.Context, capability string, pro
 // Validates: flow+seq must exist; each provider must exist, be enabled, and match the
 // step's capability; no duplicates. An empty list clears the override.
 func (c *Core) SetStepHosts(ctx context.Context, flowID, seq int, providers []string) error {
-	steps, err := c.db.ListFlowSteps(ctx, flowID)
+	fs, err := c.findFlowStep(ctx, flowID, seq)
 	if err != nil {
 		return err
-	}
-	var fs FlowStep
-	found := false
-	for _, s := range steps {
-		if s.Seq == seq {
-			fs = s
-			found = true
-			break
-		}
-	}
-	if !found {
-		return errNotFound
 	}
 
 	if err := c.validateStepProviders(ctx, fs.Capability, providers); err != nil {
