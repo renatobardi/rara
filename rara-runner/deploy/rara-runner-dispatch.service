@@ -1,0 +1,25 @@
+[Unit]
+Description=rara-runner dispatch (2.0 control plane: wakes assigned providers from Neon)
+After=network.target
+
+[Service]
+Type=exec
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/rara-runner
+ExecStart=/opt/rara-runner/bin/rara-runner dispatch
+Restart=on-failure
+RestartSec=5s
+EnvironmentFile=/etc/rara-runner/env
+
+# Hardening: dispatch only reads its env + the SA key and makes outbound connections — it writes
+# nothing to disk, so the whole filesystem can be read-only.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+
+[Install]
+WantedBy=multi-user.target
