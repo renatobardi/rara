@@ -54,7 +54,9 @@ func newAgentServer(token string, allowed map[string]string, runner ContainerRun
 
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("ok"))
+		if _, err := w.Write([]byte("ok")); err != nil {
+			log.Printf("healthz write: %v", err)
+		}
 	})
 
 	mux.HandleFunc("/run", func(w http.ResponseWriter, r *http.Request) {
@@ -162,19 +164,41 @@ func (d dockerRunner) Run(ctx context.Context, image string, env map[string]stri
 	return nil
 }
 
-// validateListenAddr refuses a bind that would expose the runner beyond the tailnet. A wildcard host
-// (0.0.0.0, ::) or an empty host (":port" binds every interface) is rejected; an explicit address is
-// required so RUNNER_ADDR can only ever be a tailnet (or loopback) IP.
+// tailscale4 and tailscale6 are the two address ranges Tailscale uses for its mesh IPs
+// (CGNAT 100.64.0.0/10 and the Tailscale ULA prefix fd7a:115c:a1e0::/48). validateListenAddr
+// accepts only loopback and these two ranges so RUNNER_ADDR can never be a LAN or public IP.
+var (
+	tailscale4 = mustParseCIDR("100.64.0.0/10")
+	tailscale6 = mustParseCIDR("fd7a:115c:a1e0::/48")
+)
+
+func mustParseCIDR(s string) *net.IPNet {
+	_, n, err := net.ParseCIDR(s)
+	if err != nil {
+		panic(err)
+	}
+	return n
+}
+
+// validateListenAddr refuses any bind that would expose the runner outside the tailnet. Wildcards
+// (0.0.0.0/::/empty host) and non-IP hostnames are rejected outright; an explicit IP must be
+// loopback or inside one of the two Tailscale address ranges (100.64.0.0/10 or fd7a:115c:a1e0::/48).
 func validateListenAddr(addr string) error {
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil {
 		return fmt.Errorf("RUNNER_ADDR %q: %w", addr, err)
 	}
-	switch host {
-	case "", "0.0.0.0", "::":
+	if host == "" || host == "0.0.0.0" || host == "::" {
 		return fmt.Errorf("RUNNER_ADDR %q binds all interfaces; use an explicit tailnet IP", addr)
 	}
-	return nil
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return fmt.Errorf("RUNNER_ADDR %q: host must be an explicit IP, not a hostname", addr)
+	}
+	if ip.IsLoopback() || tailscale4.Contains(ip) || tailscale6.Contains(ip) {
+		return nil
+	}
+	return fmt.Errorf("RUNNER_ADDR %q: must be a loopback or Tailscale address (100.64.0.0/10 or fd7a:115c:a1e0::/48)", addr)
 }
 
 // parseAllowlist parses RUNNER_ALLOWED_IMAGES — comma-separated "app=image" pairs — into the app->image

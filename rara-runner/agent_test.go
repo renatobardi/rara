@@ -179,12 +179,28 @@ func TestRunRejectsMissingApp(t *testing.T) {
 }
 
 func TestValidateListenAddrRejectsWildcard(t *testing.T) {
-	for _, bad := range []string{"0.0.0.0:8473", ":8473", "[::]:8473", ""} {
+	for _, bad := range []string{
+		"0.0.0.0:8473",     // IPv4 wildcard
+		":8473",            // bare port = all interfaces
+		"[::]:8473",        // IPv6 wildcard
+		"",                 // empty
+		"192.168.1.1:8473", // LAN — not tailnet
+		"10.0.0.1:8473",    // private RFC-1918 — not tailnet
+		"8.8.8.8:8473",     // public IP
+		"[fd7a::1]:8473",   // fd7a:: but outside Tailscale /48
+		"notanip:8473",     // hostname (not an IP literal)
+	} {
 		if err := validateListenAddr(bad); err == nil {
-			t.Errorf("validateListenAddr(%q): want error (wildcard/empty bind), got nil", bad)
+			t.Errorf("validateListenAddr(%q): want error, got nil", bad)
 		}
 	}
-	for _, ok := range []string{"100.64.0.1:8473", "127.0.0.1:8473", "[fd7a::1]:8473"} {
+	for _, ok := range []string{
+		"100.64.0.1:8473",          // Tailscale CGNAT (100.64.0.0/10)
+		"100.127.255.254:8473",     // top of Tailscale CGNAT range
+		"127.0.0.1:8473",           // loopback (dev/test)
+		"[::1]:8473",               // IPv6 loopback
+		"[fd7a:115c:a1e0::1]:8473", // Tailscale IPv6 (fd7a:115c:a1e0::/48)
+	} {
 		if err := validateListenAddr(ok); err != nil {
 			t.Errorf("validateListenAddr(%q): want nil, got %v", ok, err)
 		}
