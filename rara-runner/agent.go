@@ -83,11 +83,9 @@ func newAgentServer(token string, allowed map[string]string, runner ContainerRun
 		}
 		// Env reaches `docker run -e KEY=VAL`; reject a malformed name at the boundary so a bad
 		// request is a clear 400, not an opaque docker failure after we've already answered 202.
-		for k := range req.Env {
-			if !isValidEnvKey(k) {
-				http.Error(w, "invalid env key", http.StatusBadRequest)
-				return
-			}
+		if err := validateEnvKeys(req.Env); err != nil {
+			http.Error(w, "invalid env key", http.StatusBadRequest)
+			return
 		}
 
 		if err := runner.Run(image, req.Env); err != nil {
@@ -100,6 +98,17 @@ func newAgentServer(token string, allowed map[string]string, runner ContainerRun
 	})
 
 	return mux
+}
+
+// validateEnvKeys returns an error if any key in env is not a valid POSIX env var name. Called from
+// the /run handler to validate body-supplied keys before they reach `docker run -e`.
+func validateEnvKeys(env map[string]string) error {
+	for k := range env {
+		if !isValidEnvKey(k) {
+			return fmt.Errorf("invalid env key %q", k)
+		}
+	}
+	return nil
 }
 
 // isValidEnvKey reports whether k is a POSIX-shaped env var name ([A-Za-z_][A-Za-z0-9_]*). Used to
