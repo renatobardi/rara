@@ -25,10 +25,6 @@ on:
         default: false
         type: boolean
 
-permissions:
-  contents: read
-  id-token: write
-
 env:
   IMAGE: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/rara/rara-sift:${{ github.sha }}
 
@@ -36,6 +32,9 @@ jobs:
   build:
     name: Build multi-arch image (amd64 + arm64)
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
     env:
       GCP_REGION: ${{ vars.GCP_REGION }}
     steps:
@@ -94,6 +93,9 @@ jobs:
     name: Deploy Cloud Run Job
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
     strategy:
       matrix:
         include:
