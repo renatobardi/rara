@@ -86,25 +86,39 @@ func seedCapabilities(ctx context.Context, db Database) error {
 // reconciler — the item already exists — so no coletar provider is needed for routing.)
 func seedSharedProviders(ctx context.Context, db Database) error {
 	thirdParty := []byte(`{"sensitivity":"third_party"}`)
+	// env = the per-run NON-secret config each worker IMAGE reads from its environment (confirmed
+	// against the worker main.go + the Cloud Run deploy YAML). Identity keys: sift reads
+	// SIFT_GATE + SIFT_PROVIDER, distill reads DISTILL_PROVIDER (so it claims only its own steps).
+	// The cloud variants also pin LITELLM_MODEL (the exact value baked in deploy-sift.yml /
+	// deploy-distill.yml today: groq-fast for gates, groq-llama for distill). The self-host
+	// (-local, VPC) variants carry identity only — their model/endpoint comes from the host's own
+	// LiteLLM/ollama config, not a constant we can seed here. NO secrets (DATABASE_URL, API keys,
+	// LITELLM_BASE_URL is a deploy-resolved endpoint) — the host/agent resolves those (§7).
 	providers := []Provider{
 		// destilar: the priciest step (model tokens), high quality. Cloud is on_demand (woken
 		// via Cloud Run Jobs `run`); the self-host variant is resident on the always-on VPC, so
 		// the reconciler never tries to "wake" it (and the router's health gate applies, with
 		// bootstrap grace until its first heartbeat — the asr-youtube model).
 		{Name: provDistill, Capability: capDestilar, Runtime: runtimeCloudRun, Activation: activationOnDemand,
-			Cost: 2.00, Quality: 0.92, LatencyMs: 30000, Constraints: thirdParty, Enabled: true},
+			Cost: 2.00, Quality: 0.92, LatencyMs: 30000, Constraints: thirdParty, Enabled: true,
+			Env: []byte(`{"DISTILL_PROVIDER":"distill","LITELLM_MODEL":"groq-llama"}`)},
 		{Name: provDistillLocal, Capability: capDestilar, Runtime: runtimeVPC, Activation: activationResident,
-			Cost: 3.00, Quality: 0.84, LatencyMs: 60000, Enabled: true},
+			Cost: 3.00, Quality: 0.84, LatencyMs: 60000, Enabled: true,
+			Env: []byte(`{"DISTILL_PROVIDER":"distill-local"}`)},
 		// gate_barato / gate_rico: the cascade gates (rules -> profile -> LLM-judge). Cheap on
 		// average (only the borderline middle pays the LLM call).
 		{Name: provGateBarato, Capability: capGateBarato, Runtime: runtimeCloudRun, Activation: activationOnDemand,
-			Cost: 0.50, Quality: 0.88, LatencyMs: 5000, Constraints: thirdParty, Enabled: true},
+			Cost: 0.50, Quality: 0.88, LatencyMs: 5000, Constraints: thirdParty, Enabled: true,
+			Env: []byte(`{"SIFT_GATE":"gate_barato","SIFT_PROVIDER":"gate-barato","LITELLM_MODEL":"groq-fast"}`)},
 		{Name: provGateBaratoLocal, Capability: capGateBarato, Runtime: runtimeVPC, Activation: activationResident,
-			Cost: 0.90, Quality: 0.80, LatencyMs: 9000, Enabled: true},
+			Cost: 0.90, Quality: 0.80, LatencyMs: 9000, Enabled: true,
+			Env: []byte(`{"SIFT_GATE":"gate_barato","SIFT_PROVIDER":"gate-barato-local"}`)},
 		{Name: provGateRico, Capability: capGateRico, Runtime: runtimeCloudRun, Activation: activationOnDemand,
-			Cost: 0.60, Quality: 0.90, LatencyMs: 8000, Constraints: thirdParty, Enabled: true},
+			Cost: 0.60, Quality: 0.90, LatencyMs: 8000, Constraints: thirdParty, Enabled: true,
+			Env: []byte(`{"SIFT_GATE":"gate_rico","SIFT_PROVIDER":"gate-rico","LITELLM_MODEL":"groq-fast"}`)},
 		{Name: provGateRicoLocal, Capability: capGateRico, Runtime: runtimeVPC, Activation: activationResident,
-			Cost: 1.00, Quality: 0.82, LatencyMs: 14000, Enabled: true},
+			Cost: 1.00, Quality: 0.82, LatencyMs: 14000, Enabled: true,
+			Env: []byte(`{"SIFT_GATE":"gate_rico","SIFT_PROVIDER":"gate-rico-local"}`)},
 	}
 	for _, p := range providers {
 		if err := db.UpsertProvider(ctx, p); err != nil {

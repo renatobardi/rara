@@ -270,6 +270,12 @@ type Provider struct {
 	// docker run. Distinct from PokeURL (which is the worker's own poke listener).
 	// Empty for cloudrun providers (woken via Cloud Run Jobs `run`) and poll-only residents.
 	RunnerURL string `json:"runner_url,omitempty"`
+	// Env is the per-run NON-secret config the worker image reads from its environment (its
+	// claim identity — SIFT_GATE+SIFT_PROVIDER, DISTILL_PROVIDER — plus policy knobs like
+	// LITELLM_MODEL). The dispatcher injects this on wake (jobs:run / docker run). Secrets
+	// (DATABASE_URL, API keys) are NOT here — the host/agent resolves them. "" => '{}' on write;
+	// the round-trip preserves unknown keys verbatim.
+	Env json.RawMessage `json:"env,omitempty"`
 }
 
 // Flow is one declarative pipeline per source lane.
@@ -693,8 +699,8 @@ func (d *pgxDatabase) UpsertProvider(ctx context.Context, p Provider) error {
 	}
 	const q = `
 		INSERT INTO providers
-			(name, capability, runtime, activation, cost, quality, latency_ms, constraints, enabled, heartbeat_at, poke_url, runner_url)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11, $12)
+			(name, capability, runtime, activation, cost, quality, latency_ms, constraints, enabled, heartbeat_at, poke_url, runner_url, env)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11, $12, $13::jsonb)
 		ON CONFLICT (name) DO UPDATE SET
 			capability   = EXCLUDED.capability,
 			runtime      = EXCLUDED.runtime,
@@ -706,10 +712,12 @@ func (d *pgxDatabase) UpsertProvider(ctx context.Context, p Provider) error {
 			enabled      = EXCLUDED.enabled,
 			heartbeat_at = EXCLUDED.heartbeat_at,
 			poke_url     = EXCLUDED.poke_url,
-			runner_url   = EXCLUDED.runner_url`
+			runner_url   = EXCLUDED.runner_url,
+			env          = EXCLUDED.env`
 	_, err := d.conn.Exec(ctx, q,
 		p.Name, p.Capability, p.Runtime, p.Activation, p.Cost, p.Quality, p.LatencyMs,
-		jsonOrEmpty(p.Constraints, "{}"), p.Enabled, p.HeartbeatAt, nullStr(p.PokeURL), nullStr(p.RunnerURL))
+		jsonOrEmpty(p.Constraints, "{}"), p.Enabled, p.HeartbeatAt, nullStr(p.PokeURL), nullStr(p.RunnerURL),
+		jsonOrEmpty(p.Env, "{}"))
 	return err
 }
 

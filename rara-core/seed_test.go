@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -91,6 +92,41 @@ func TestSeedYouTubeLane(t *testing.T) {
 	var topics []string
 	if err := json.Unmarshal(p.Topics, &topics); err != nil || len(topics) == 0 {
 		t.Errorf("profile v1 should seed starter topics (err=%v, topics=%v)", err, topics)
+	}
+}
+
+// TestSeedSharedProviderEnv asserts the shared work providers carry the per-run NON-secret
+// config their worker image reads from the environment (the dispatcher injects this on wake).
+// Identity keys mirror what each main.go reads: sift -> SIFT_GATE+SIFT_PROVIDER, distill ->
+// DISTILL_PROVIDER; the cloud variants also pin LITELLM_MODEL (the value baked in the deploy
+// YAML today). No secrets (DATABASE_URL, API keys) — those are resolved by the host/agent.
+func TestSeedSharedProviderEnv(t *testing.T) {
+	ctx := context.Background()
+	db := newMockDatabase()
+	if err := SeedYouTubeLane(ctx, db); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	want := map[string]string{
+		provGateBarato:      `{"SIFT_GATE":"gate_barato","SIFT_PROVIDER":"gate-barato","LITELLM_MODEL":"groq-fast"}`,
+		provGateBaratoLocal: `{"SIFT_GATE":"gate_barato","SIFT_PROVIDER":"gate-barato-local"}`,
+		provGateRico:        `{"SIFT_GATE":"gate_rico","SIFT_PROVIDER":"gate-rico","LITELLM_MODEL":"groq-fast"}`,
+		provGateRicoLocal:   `{"SIFT_GATE":"gate_rico","SIFT_PROVIDER":"gate-rico-local"}`,
+		provDistill:         `{"DISTILL_PROVIDER":"distill","LITELLM_MODEL":"groq-llama"}`,
+		provDistillLocal:    `{"DISTILL_PROVIDER":"distill-local"}`,
+	}
+	for name, wantEnv := range want {
+		if got := string(db.providers[name].Env); got != wantEnv {
+			t.Errorf("provider %q env = %q, want %q", name, got, wantEnv)
+		}
+	}
+	// No secret ever leaks into env (the host/agent resolves DATABASE_URL and API keys).
+	for name, p := range db.providers {
+		envUpper := strings.ToUpper(string(p.Env))
+		for _, secret := range []string{"DATABASE_URL", "API_KEY", "_KEY", "PASSWORD", "TOKEN"} {
+			if strings.Contains(envUpper, secret) {
+				t.Errorf("provider %q env leaks a secret-shaped key %q: %s", name, secret, p.Env)
+			}
+		}
 	}
 }
 

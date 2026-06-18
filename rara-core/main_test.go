@@ -1266,6 +1266,30 @@ func TestProviderRunnerURL(t *testing.T) {
 	}
 }
 
+func TestProviderEnv(t *testing.T) {
+	ctx := context.Background()
+	db := newMockDatabase()
+	_ = db.UpsertCapability(ctx, Capability{Name: capDestilar})
+	// env carries per-run NON-secret config the worker reads (DISTILL_PROVIDER) plus an unknown
+	// key the editor must not drop — the round-trip preserves bytes verbatim.
+	p := Provider{
+		Name: "distill", Capability: capDestilar,
+		Runtime: runtimeCloudRun, Activation: activationOnDemand,
+		Cost: 1, Quality: 1, Enabled: true,
+		Env: []byte(`{"DISTILL_PROVIDER":"distill","FUTURE_KNOB":"x"}`),
+	}
+	if err := db.UpsertProvider(ctx, p); err != nil {
+		t.Fatalf("UpsertProvider: %v", err)
+	}
+	got, ok, err := db.GetProvider(ctx, "distill")
+	if err != nil || !ok {
+		t.Fatalf("GetProvider: ok=%v err=%v", ok, err)
+	}
+	if string(got.Env) != `{"DISTILL_PROVIDER":"distill","FUTURE_KNOB":"x"}` {
+		t.Errorf("Env not round-tripped (unknown keys must survive), got %q", got.Env)
+	}
+}
+
 func TestActivateInterestProfileSwap(t *testing.T) {
 	ctx := context.Background()
 	db := newMockDatabase()
