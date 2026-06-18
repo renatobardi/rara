@@ -15,7 +15,7 @@ help:
 	@echo ""
 	@echo "Build:"
 	@echo "  make build             Build binary for current OS"
-	@echo "  make build-arm64       Build ARM64 binary for cloud"
+	@echo "  make build-arm64       Build ARM64 binary (VPC/Mac runner hosts; Cloud Run runs amd64)"
 	@echo "  make docker-build      Build Docker image"
 	@echo ""
 	@echo "Maintenance:"
@@ -61,6 +61,9 @@ build:
 	go build -ldflags="-w -s" -o sift-job .
 	@echo "Built: sift-job"
 
+# ARM64 = the VPC Oracle (Ampere) and Mac (Apple Silicon) runner hosts. Cloud Run runs amd64
+# (the default `make build` / the buildx amd64 leaf). The shipped image is multi-arch — see
+# ../DOCKER-MULTIMODULE.md; this target is just a local arm64 smoke build.
 build-arm64:
 	@echo "Building ARM64 binary..."
 	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags="-w -s" -o sift-job-arm64 .

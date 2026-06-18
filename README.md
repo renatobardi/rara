@@ -113,7 +113,7 @@ make test-race           # go test -race
 make test-coverage       # coverage.out + func summary
 make lint                # go vet + staticcheck (auto-installs staticcheck if missing)
 make build               # local binary
-make build-arm64         # CGO_ENABLED=0 GOOS=linux GOARCH=arm64 — the Cloud Run image arch
+make build-arm64         # CGO_ENABLED=0 GOOS=linux GOARCH=arm64 — the VPC/Mac arch (Ampere/Apple Silicon); Cloud Run runs amd64
 make all                 # clean + lint + test + build
 ```
 
@@ -132,9 +132,11 @@ changes:
 - `database-<agent>.yml` — applies that agent's `migrations/` to Neon on merge to `main`; on a PR it
   validates inside `BEGIN; … ROLLBACK;` (never commits). Migrations apply regardless of where the
   binary runs (even local scribe).
-- `deploy-<agent>.yml` — builds the arm64 image and deploys the Cloud Run Job. SDK claim-workers
-  share `_reusable-deploy-worker.yml`; `deploy-litellm.yml` ships the inference router. No deploy for
-  scribe when it runs locally.
+- `deploy-<agent>.yml` — builds the image and deploys the Cloud Run Job (Cloud Run runs **amd64**).
+  Most SDK claim-workers share `_reusable-deploy-worker.yml` (single-arch via Cloud Build);
+  `rara-sift` is the first on a single **multi-arch** image (amd64 for Cloud Run + arm64 for the
+  VPC/Mac runner hosts) built with `docker buildx` — see `DOCKER-MULTIMODULE.md`.
+  `deploy-litellm.yml` ships the inference router. No deploy for scribe when it runs locally.
 
 Auth to GCP is **Workload Identity Federation** (no SA key files); secrets live in **GCP Secret
 Manager** (except scribe, which reads `~/.rara-scribe/.env`). When adding an agent, copy an existing
