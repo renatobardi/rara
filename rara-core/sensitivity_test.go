@@ -54,7 +54,7 @@ func TestReconcileEmailRoutesSelfHost(t *testing.T) {
 		t.Fatal(err)
 	}
 	itemID := db.items[itemKey(laneEmail, "msg1")].ID
-	r := NewReconciler(db, &fakeActivator{})
+	r := NewReconciler(db)
 
 	// gate_barato: third-party excluded for a private item -> self-host.
 	if err := r.ReconcileOnce(ctx); err != nil {
@@ -99,7 +99,7 @@ func TestReconcilePublicPrefersThirdParty(t *testing.T) {
 	ctx := context.Background()
 	db := newMockDatabase()
 	itemID := seedAndIngestOne(t, db, "vid1") // youtube, public
-	r := NewReconciler(db, &fakeActivator{})
+	r := NewReconciler(db)
 
 	if err := r.ReconcileOnce(ctx); err != nil {
 		t.Fatal(err)

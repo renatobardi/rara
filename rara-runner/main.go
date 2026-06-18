@@ -15,7 +15,11 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 const usage = `rara-runner — activation arm of the 2.0 control plane
@@ -23,7 +27,8 @@ const usage = `rara-runner — activation arm of the 2.0 control plane
 usage: rara-runner <command>
 
 commands:
-  agent    resident per-host daemon: POST /run (tailnet, Bearer) -> docker run
+  agent     resident per-host daemon: POST /run (tailnet, Bearer) -> docker run
+  dispatch  perennial VPC service: reads Neon assigned steps -> wakes providers
 `
 
 func main() {
@@ -34,6 +39,8 @@ func main() {
 	switch os.Args[1] {
 	case "agent":
 		runAgent()
+	case "dispatch":
+		runDispatch()
 	default:
 		fmt.Print(usage)
 		os.Exit(2)
@@ -75,5 +82,56 @@ func runAgent() {
 	h := newAgentServer(token, allowed, dockerRunner{bin: bin})
 	if err := serveAgent(ctx, addr, h); err != nil {
 		log.Fatalf("agent: %v", err)
+	}
+}
+
+// runDispatch reads desired state from Neon and wakes providers in a loop.
+// Required env: DATABASE_URL (Neon pgx DSN).
+// Optional: DISPATCH_INTERVAL_SECONDS (default 5).
+func runDispatch() {
+	dbURL := os.Getenv("DATABASE_URL")
+	if dbURL == "" {
+		log.Fatalf("DATABASE_URL is required")
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	cfg, err := pgxpool.ParseConfig(dbURL)
+	if err != nil {
+		log.Fatalf("dispatch: invalid DATABASE_URL") // don't echo err — may contain DSN credentials
+	}
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		log.Fatalf("dispatch: db connect failed") // same: omit err to avoid leaking host/port
+	}
+	defer pool.Close()
+
+	interval := 5 * time.Second
+	if v := os.Getenv("DISPATCH_INTERVAL_SECONDS"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n <= 0 {
+			log.Fatalf("DISPATCH_INTERVAL_SECONDS must be a positive integer, got %q", v)
+		}
+		interval = time.Duration(n) * time.Second
+	}
+
+	db := &pgxDispatchDB{pool: pool}
+	runner := newDispatchRunnerFromEnv()
+	d := &Dispatcher{db: db, runner: runner}
+
+	log.Printf("rara-runner dispatch: starting (interval=%s)", interval)
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		if err := d.DispatchOnce(ctx); err != nil {
+			log.Printf("dispatch: %v", err)
+		}
+		select {
+		case <-ctx.Done():
+			log.Printf("rara-runner dispatch: shutting down")
+			return
+		case <-ticker.C:
+		}
 	}
 }

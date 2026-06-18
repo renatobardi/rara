@@ -147,7 +147,7 @@ func TestReconcileEmailUsesExtrairAndReachesToText(t *testing.T) {
 		t.Fatal(err)
 	}
 	itemID := db.items[itemKey(laneEmail, "msg1")].ID
-	r := NewReconciler(db, &fakeActivator{})
+	r := NewReconciler(db)
 
 	if err := r.ReconcileOnce(ctx); err != nil { // assign gate_barato
 		t.Fatal(err)

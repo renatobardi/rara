@@ -2,20 +2,9 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"testing"
 	"time"
 )
-
-// fakeActivator records every provider the reconciler tried to activate. Under symmetric
-// activation the reconciler calls Run for ALL assignments (on_demand and resident); the
-// real Runner dispatches by provider shape (Cloud Run `run` vs tailnet poke).
-type fakeActivator struct{ woken []string }
-
-func (f *fakeActivator) Run(_ context.Context, req RunRequest) error {
-	f.woken = append(f.woken, req.Provider.Name)
-	return nil
-}
 
 // seedAndIngestOne seeds the lane and ingests a single video, returning the item id. It
 // also marks the resident scribe (asr-youtube) "known alive" with a fresh heartbeat — the
@@ -96,8 +85,7 @@ func TestReconcileFirstPass(t *testing.T) {
 	ctx := context.Background()
 	db := newMockDatabase()
 	itemID := seedAndIngestOne(t, db, "vid1")
-	act := &fakeActivator{}
-	r := NewReconciler(db, act)
+	r := NewReconciler(db)
 
 	if err := r.ReconcileOnce(ctx); err != nil {
 		t.Fatalf("reconcile: %v", err)
@@ -116,10 +104,6 @@ func TestReconcileFirstPass(t *testing.T) {
 	if _, ok := stepBySeq(db, itemID, 3); ok {
 		t.Error("transcrever should not be materialized before gate_barato decides")
 	}
-	// on_demand gate -> activation fired exactly once.
-	if len(act.woken) != 1 || act.woken[0] != provGateBarato {
-		t.Errorf("expected gate-barato activation, got %v", act.woken)
-	}
 	// The reconciler records NO gate decision — the worker writes it.
 	if len(db.gateDecisions) != 0 {
 		t.Errorf("reconciler must not record gate decisions, got %+v", db.gateDecisions)
@@ -136,7 +120,7 @@ func TestReconcileGateKeepAdvances(t *testing.T) {
 	ctx := context.Background()
 	db := newMockDatabase()
 	itemID := seedAndIngestOne(t, db, "vid1")
-	r := NewReconciler(db, &fakeActivator{})
+	r := NewReconciler(db)
 
 	if err := r.ReconcileOnce(ctx); err != nil { // assign gate_barato
 		t.Fatal(err)
@@ -154,71 +138,13 @@ func TestReconcileGateKeepAdvances(t *testing.T) {
 	}
 }
 
-// TestReconcileActivatesResidentOnAssign: symmetric activation (P1b). When the reconciler assigns a
-// step to a RESIDENT provider (the Mac scribe), it calls Activate for it too — no longer special-
-// casing on_demand. The real Activator turns that into a tailnet poke; here the fake just records it.
-func TestReconcileActivatesResidentOnAssign(t *testing.T) {
-	ctx := context.Background()
-	db := newMockDatabase()
-	itemID := seedAndIngestOne(t, db, "vid1")
-	act := &fakeActivator{}
-	r := NewReconciler(db, act)
-
-	if err := r.ReconcileOnce(ctx); err != nil { // assign gate_barato (on_demand)
-		t.Fatal(err)
-	}
-	runGate(t, db, itemID, 2, gateBarato, decisionKeep)
-	if err := r.ReconcileOnce(ctx); err != nil { // route keep -> assign transcrever (resident)
-		t.Fatal(err)
-	}
-
-	if s, ok := stepBySeq(db, itemID, 3); !ok || s.AssignedProvider != provASRYouTube {
-		t.Fatalf("transcrever step = %+v, want assigned to asr-youtube", s)
-	}
-	var residentWoken bool
-	for _, n := range act.woken {
-		if n == provASRYouTube {
-			residentWoken = true
-		}
-	}
-	if !residentWoken {
-		t.Errorf("resident scribe must be activated on assign (symmetric activation), got %v", act.woken)
-	}
-}
-
-// TestReconcileCoalescesActivationPerPass: when several items are assigned to the SAME provider in
-// one pass, the reconciler wakes it ONCE — one wake drains the whole queue, so it must not fan out
-// into N Cloud Run executions / N pokes. Two fresh items both assign gate-barato on the first pass.
-func TestReconcileCoalescesActivationPerPass(t *testing.T) {
-	ctx := context.Background()
-	db := newMockDatabase()
-	_ = seedAndIngestOne(t, db, "vid1")
-	_ = seedAndIngestOne(t, db, "vid2")
-	act := &fakeActivator{}
-	r := NewReconciler(db, act)
-
-	if err := r.ReconcileOnce(ctx); err != nil { // both items assign gate-barato
-		t.Fatal(err)
-	}
-
-	var n int
-	for _, name := range act.woken {
-		if name == provGateBarato {
-			n++
-		}
-	}
-	if n != 1 {
-		t.Errorf("gate-barato activated %d times in one pass, want 1 (coalesced), woken=%v", n, act.woken)
-	}
-}
-
 // TestReconcileGateDropFilters: a dropped gate_barato terminates the item as `filtered` —
 // transcrever is never materialized, and the item leaves the active set.
 func TestReconcileGateDropFilters(t *testing.T) {
 	ctx := context.Background()
 	db := newMockDatabase()
 	itemID := seedAndIngestOne(t, db, "vid1")
-	r := NewReconciler(db, &fakeActivator{})
+	r := NewReconciler(db)
 
 	if err := r.ReconcileOnce(ctx); err != nil { // assign gate_barato
 		t.Fatal(err)
@@ -246,7 +172,7 @@ func TestReconcileGateDeferQuarantines(t *testing.T) {
 	ctx := context.Background()
 	db := newMockDatabase()
 	itemID := seedAndIngestOne(t, db, "vid1")
-	r := NewReconciler(db, &fakeActivator{})
+	r := NewReconciler(db)
 
 	if err := r.ReconcileOnce(ctx); err != nil { // assign gate_barato
 		t.Fatal(err)
@@ -271,7 +197,7 @@ func TestReconcileGateRicoDropAfterTranscribe(t *testing.T) {
 	ctx := context.Background()
 	db := newMockDatabase()
 	itemID := seedAndIngestOne(t, db, "vid1")
-	r := NewReconciler(db, &fakeActivator{})
+	r := NewReconciler(db)
 
 	if err := r.ReconcileOnce(ctx); err != nil { // assign gate_barato
 		t.Fatal(err)
@@ -306,7 +232,7 @@ func TestReconcileIdempotentWhileInFlight(t *testing.T) {
 	ctx := context.Background()
 	db := newMockDatabase()
 	itemID := seedAndIngestOne(t, db, "vid1")
-	r := NewReconciler(db, &fakeActivator{})
+	r := NewReconciler(db)
 
 	if err := r.ReconcileOnce(ctx); err != nil {
 		t.Fatal(err)
@@ -330,8 +256,7 @@ func TestReconcileAfterTranscrever(t *testing.T) {
 	ctx := context.Background()
 	db := newMockDatabase()
 	itemID := seedAndIngestOne(t, db, "vid1")
-	act := &fakeActivator{}
-	r := NewReconciler(db, act)
+	r := NewReconciler(db)
 
 	if err := r.ReconcileOnce(ctx); err != nil { // assign gate_barato
 		t.Fatal(err)
@@ -359,10 +284,6 @@ func TestReconcileAfterTranscrever(t *testing.T) {
 	if s, ok := stepBySeq(db, itemID, 5); !ok || s.Status != stepPending || s.AssignedProvider != provDistill {
 		t.Errorf("destilar step = %+v, want pending+distill", s)
 	}
-	// on_demand distill woken (gate-barato + gate-rico were woken on their own passes too).
-	if len(act.woken) == 0 || act.woken[len(act.woken)-1] != provDistill {
-		t.Errorf("expected distill activation last, got %v", act.woken)
-	}
 }
 
 // TestReconcileCompletes: once destilar finishes (both gates kept), the item becomes
@@ -371,7 +292,7 @@ func TestReconcileCompletes(t *testing.T) {
 	ctx := context.Background()
 	db := newMockDatabase()
 	itemID := seedAndIngestOne(t, db, "vid1")
-	r := NewReconciler(db, &fakeActivator{})
+	r := NewReconciler(db)
 
 	if err := r.ReconcileOnce(ctx); err != nil { // assign gate_barato
 		t.Fatal(err)
@@ -408,7 +329,7 @@ func TestReconcileFailPropagates(t *testing.T) {
 	ctx := context.Background()
 	db := newMockDatabase()
 	itemID := seedAndIngestOne(t, db, "vid1")
-	r := NewReconciler(db, &fakeActivator{})
+	r := NewReconciler(db)
 
 	if err := r.ReconcileOnce(ctx); err != nil { // assign gate_barato
 		t.Fatal(err)
@@ -443,7 +364,7 @@ func TestReconcileNoProviderErrors(t *testing.T) {
 		db.providers[name] = p
 	}
 
-	r := NewReconciler(db, &fakeActivator{})
+	r := NewReconciler(db)
 	it := db.itemByID[itemID]
 	if err := r.reconcileItem(ctx, it); err == nil {
 		t.Fatal("reconcile should error when no provider serves gate_barato")
@@ -466,7 +387,7 @@ func TestReconcileRequeuesStaleRunningStep(t *testing.T) {
 	runWithHeartbeat := func(heartbeat time.Time) ItemStep {
 		db := newMockDatabase()
 		itemID := seedAndIngestOne(t, db, "vid1")
-		r := NewReconciler(db, &fakeActivator{})
+		r := NewReconciler(db)
 		if err := r.ReconcileOnce(ctx); err != nil { // assigns gate_barato (pending)
 			t.Fatal(err)
 		}
@@ -521,7 +442,7 @@ func TestReconcileTimeoutFallsBackToNextProvider(t *testing.T) {
 	setProviderHeartbeat(db, provASRYouTube, base.Add(-1*time.Minute)) // both alive at base
 	setProviderHeartbeat(db, "asr-backup", base.Add(-1*time.Minute))
 
-	r := NewReconciler(db, &fakeActivator{})
+	r := NewReconciler(db)
 	r.now = func() time.Time { return base }
 	r.staleAfter = 10 * time.Minute
 	r.healthTTL = 5 * time.Minute
@@ -557,193 +478,29 @@ func TestReconcileTimeoutFallsBackToNextProvider(t *testing.T) {
 	}
 }
 
-// countingActivator records per-provider Activate calls and can be scripted to fail the first
-// `failFirst` calls (a cold-start timeout / a SA still missing run.invoker) before succeeding. It
-// is the fake for the A2 self-healing tests: the call counter proves a re-activation fired (or did
-// NOT, under the anti-stampede backoff) without any real Cloud Run `run`.
-type countingActivator struct {
-	calls     map[string]int
-	total     int
-	failFirst int
-}
-
-func (c *countingActivator) Run(_ context.Context, req RunRequest) error {
-	if c.calls == nil {
-		c.calls = map[string]int{}
-	}
-	c.total++
-	c.calls[req.Provider.Name]++
-	if c.total <= c.failFirst {
-		return fmt.Errorf("simulated activation failure for %s", req.Provider.Name)
-	}
-	return nil
-}
-
-// TestReactivateRecoversAfterFailedActivation (#4): an on_demand cloudrun assignment whose
-// activation FAILS on the first pass (cold-start timeout) is left pending with no poll safety net.
-// The next pass's self-healing re-fires the activation — no manual `gcloud run jobs execute`. Once
-// that wake lands the worker can claim and finish the step; we simulate that to show it advances.
-func TestReactivateRecoversAfterFailedActivation(t *testing.T) {
+// TestReconcileNeverCallsRunner: F3 contract. The reconciler only assigns (persists desired state);
+// the rara-runner dispatch loop does the waking. The reconciler has no runner field — waking is
+// structurally impossible at this layer.
+func TestReconcileNeverCallsRunner(t *testing.T) {
 	ctx := context.Background()
-	base := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
 	db := newMockDatabase()
 	itemID := seedAndIngestOne(t, db, "vid1")
-	act := &countingActivator{failFirst: 1} // the first activation (gate_barato assign) fails
-	r := NewReconciler(db, act)
-	r.now = func() time.Time { return base }
+	r := NewReconciler(db)
 
-	// Pass 1: assigns gate_barato (on_demand cloudrun) and tries to wake it — that wake fails.
-	if err := r.ReconcileOnce(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if s, ok := stepBySeq(db, itemID, 2); !ok || s.Status != stepPending || s.AssignedProvider != provGateBarato {
-		t.Fatalf("gate_barato step = %+v, want pending+gate-barato", s)
-	}
-	if got := act.calls[provGateBarato]; got != 1 {
-		t.Fatalf("after the failed first pass, gate-barato activations = %d, want 1", got)
-	}
-
-	// Pass 2: the step is still pending with no worker — self-healing re-fires the wake (success).
-	if err := r.ReconcileOnce(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if got := act.calls[provGateBarato]; got != 2 {
-		t.Fatalf("self-healing did not re-activate: gate-barato activations = %d, want 2", got)
-	}
-
-	// With the worker now awake it claims and finishes the gate; the item advances without any
-	// manual intervention.
-	runGate(t, db, itemID, 2, gateBarato, decisionKeep)
-	if err := r.ReconcileOnce(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if s, ok := stepBySeq(db, itemID, 3); !ok || s.AssignedProvider != provASRYouTube {
-		t.Errorf("transcrever step = %+v, want assigned after the recovered gate", s)
-	}
-}
-
-// TestReactivateRespectsBackoffAfterSuccess (#4, the anti-stampede proof): once an on_demand
-// provider has been activated SUCCESSFULLY, the woken worker drains the queue, so while the
-// pending step persists WITHIN reactivateBackoff the reconciler must NOT re-fire — re-firing would
-// spawn concurrent executions (the swarm bug). Several passes inside the window keep the count at 1.
-func TestReactivateRespectsBackoffAfterSuccess(t *testing.T) {
-	ctx := context.Background()
-	base := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
-	db := newMockDatabase()
-	itemID := seedAndIngestOne(t, db, "vid1")
-	act := &countingActivator{} // every activation succeeds
-	r := NewReconciler(db, act)
-	r.reactivateBackoff = 3 * time.Minute
-	now := base
-	r.now = func() time.Time { return now }
-
-	// Pass 1: assign gate_barato and wake it (success) — anchors the backoff.
-	if err := r.ReconcileOnce(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if got := act.calls[provGateBarato]; got != 1 {
-		t.Fatalf("first pass activations = %d, want 1", got)
-	}
-
-	// Several more passes, all still WITHIN the backoff, with the step deliberately left pending
-	// (the worker is "draining"). None may re-fire.
-	for _, dt := range []time.Duration{30 * time.Second, 90 * time.Second, 150 * time.Second} {
-		now = base.Add(dt)
-		if err := r.ReconcileOnce(ctx); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if got := act.calls[provGateBarato]; got != 1 {
-		t.Errorf("re-activated within backoff: gate-barato activations = %d, want 1 (anti-stampede)", got)
-	}
-	if s, ok := stepBySeq(db, itemID, 2); !ok || s.Status != stepPending {
-		t.Errorf("gate_barato step = %+v, want still pending for this scenario", s)
-	}
-
-	// Step once PAST the backoff with the same still-pending step: now it MUST re-fire. This pins
-	// the guard to the window itself — a reactivateStalled that simply never fired would also have
-	// held the count at 1 above, so without this the test could not tell "blocked by backoff" from
-	// "does nothing".
-	now = base.Add(4 * time.Minute)
-	if err := r.ReconcileOnce(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if got := act.calls[provGateBarato]; got != 2 {
-		t.Errorf("did not re-activate once past backoff: gate-barato activations = %d, want 2", got)
-	}
-}
-
-// TestReactivateAfterBackoffElapses (#4): a step still pending BEYOND reactivateBackoff means the
-// woken worker likely died without claiming — so the reconciler re-fires the activation. This is
-// the recovery half of the backoff: quiet while draining, then a fresh wake once the window passes.
-func TestReactivateAfterBackoffElapses(t *testing.T) {
-	ctx := context.Background()
-	base := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
-	db := newMockDatabase()
-	_ = seedAndIngestOne(t, db, "vid1")
-	act := &countingActivator{}
-	r := NewReconciler(db, act)
-	r.reactivateBackoff = 3 * time.Minute
-	now := base
-	r.now = func() time.Time { return now }
-
-	if err := r.ReconcileOnce(ctx); err != nil { // assign + wake gate_barato (anchors at base)
-		t.Fatal(err)
-	}
-	if got := act.calls[provGateBarato]; got != 1 {
-		t.Fatalf("first pass activations = %d, want 1", got)
-	}
-
-	now = base.Add(5 * time.Minute) // past the 3m backoff, step still pending
-	if err := r.ReconcileOnce(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if got := act.calls[provGateBarato]; got != 2 {
-		t.Errorf("did not re-activate past backoff: gate-barato activations = %d, want 2", got)
-	}
-}
-
-// TestReactivateSkipsResidentProvider (#4): the self-healing re-activation is ONLY for on_demand
-// cloudrun providers with no poll safety net. A resident (the Mac scribe) already has poll + poke,
-// so a persistently pending resident step — even well beyond the backoff — must NOT be re-fired
-// (turning a resident into a swarm is exactly what we avoid). It keeps its single assignment-time
-// poke and nothing more.
-func TestReactivateSkipsResidentProvider(t *testing.T) {
-	ctx := context.Background()
-	base := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
-	db := newMockDatabase()
-	itemID := seedAndIngestOne(t, db, "vid1")
-	setProviderHeartbeat(db, provASRYouTube, base) // resident known-alive at base
-	act := &countingActivator{}
-	r := NewReconciler(db, act)
-	r.reactivateBackoff = 3 * time.Minute
-	r.healthTTL = time.Hour // keep the resident eligible regardless of clock drift below
-	now := base
-	r.now = func() time.Time { return now }
-
-	if err := r.ReconcileOnce(ctx); err != nil { // assign gate_barato (on_demand)
+	if err := r.ReconcileOnce(ctx); err != nil { // assign gate_barato
 		t.Fatal(err)
 	}
 	runGate(t, db, itemID, 2, gateBarato, decisionKeep)
-	if err := r.ReconcileOnce(ctx); err != nil { // assign transcrever -> resident asr-youtube
+	if err := r.ReconcileOnce(ctx); err != nil { // assign transcrever
 		t.Fatal(err)
+	}
+
+	// Both assignments are recorded; no runner was called (structurally impossible).
+	if s, ok := stepBySeq(db, itemID, 2); !ok || s.Status != stepDone {
+		t.Errorf("gate_barato step = %+v, want done after runGate", s)
 	}
 	if s, ok := stepBySeq(db, itemID, 3); !ok || s.Status != stepPending || s.AssignedProvider != provASRYouTube {
-		t.Fatalf("transcrever step = %+v, want pending+asr-youtube", s)
-	}
-	wokenAfterAssign := act.calls[provASRYouTube]
-	if wokenAfterAssign != 1 {
-		t.Fatalf("resident assignment-time pokes = %d, want 1", wokenAfterAssign)
-	}
-
-	// Well beyond the backoff, with transcrever still pending: the resident must NOT be re-fired
-	// through the on_demand self-healing path.
-	now = base.Add(30 * time.Minute)
-	if err := r.ReconcileOnce(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if got := act.calls[provASRYouTube]; got != 1 {
-		t.Errorf("resident was re-activated by on_demand self-healing: pokes = %d, want 1", got)
+		t.Errorf("transcrever step = %+v, want pending+asr-youtube", s)
 	}
 }
 
