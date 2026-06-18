@@ -8,12 +8,12 @@ import (
 )
 
 // fakeActivator records every provider the reconciler tried to activate. Under symmetric
-// activation the reconciler calls Activate for ALL assignments (on_demand and resident); the
-// real Activator dispatches by provider shape (Cloud Run `run` vs tailnet poke).
+// activation the reconciler calls Run for ALL assignments (on_demand and resident); the
+// real Runner dispatches by provider shape (Cloud Run `run` vs tailnet poke).
 type fakeActivator struct{ woken []string }
 
-func (f *fakeActivator) Activate(_ context.Context, p Provider) error {
-	f.woken = append(f.woken, p.Name)
+func (f *fakeActivator) Run(_ context.Context, req RunRequest) error {
+	f.woken = append(f.woken, req.Provider.Name)
 	return nil
 }
 
@@ -567,14 +567,14 @@ type countingActivator struct {
 	failFirst int
 }
 
-func (c *countingActivator) Activate(_ context.Context, p Provider) error {
+func (c *countingActivator) Run(_ context.Context, req RunRequest) error {
 	if c.calls == nil {
 		c.calls = map[string]int{}
 	}
 	c.total++
-	c.calls[p.Name]++
+	c.calls[req.Provider.Name]++
 	if c.total <= c.failFirst {
-		return fmt.Errorf("simulated activation failure for %s", p.Name)
+		return fmt.Errorf("simulated activation failure for %s", req.Provider.Name)
 	}
 	return nil
 }
