@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -45,17 +46,45 @@ func (d *pgxDispatchDB) ListAssignedSteps(ctx context.Context) ([]AssignedStep, 
 }
 
 func (d *pgxDispatchDB) GetProvider(ctx context.Context, name string) (DispatchProvider, bool, error) {
+	// env is JSONB; cast to text so we deserialize it ourselves (parseProviderEnv) — keeps the
+	// empty/'{}'/populated handling in one tested seam. COALESCE guards a NULL column.
 	const q = `
-		SELECT name, runtime, activation, COALESCE(runner_url, '')
+		SELECT name, runtime, activation, COALESCE(runner_url, ''), COALESCE(env::text, '{}')
 		FROM providers
 		WHERE name = $1`
 	var p DispatchProvider
-	err := d.pool.QueryRow(ctx, q, name).Scan(&p.Name, &p.Runtime, &p.Activation, &p.RunnerURL)
+	var envJSON string
+	err := d.pool.QueryRow(ctx, q, name).Scan(&p.Name, &p.Runtime, &p.Activation, &p.RunnerURL, &envJSON)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return DispatchProvider{}, false, nil
 		}
 		return DispatchProvider{}, false, fmt.Errorf("get provider %q: %w", name, err)
 	}
+	p.Env, err = parseProviderEnv(envJSON)
+	if err != nil {
+		return DispatchProvider{}, false, fmt.Errorf("get provider %q env: %w", name, err)
+	}
 	return p, true, nil
 }
+
+// parseProviderEnv deserializes the providers.env JSONB (as text) into a non-nil map. Empty input
+// or '{}' yields an empty map so the dispatcher and transports never nil-panic on a config-less
+// provider. providers.env is constrained to a JSON object upstream (CodeRabbit #133).
+func parseProviderEnv(raw string) (map[string]string, error) {
+	env := map[string]string{}
+	if raw == "" || raw == "{}" {
+		return env, nil
+	}
+	if len(raw) > maxProviderEnvBytes {
+		return nil, fmt.Errorf("provider env too large: %d bytes (max %d)", len(raw), maxProviderEnvBytes)
+	}
+	if err := json.Unmarshal([]byte(raw), &env); err != nil {
+		return nil, fmt.Errorf("parse provider env JSON: %w", err)
+	}
+	return env, nil
+}
+
+// maxProviderEnvBytes caps the JSONB we deserialize — defense-in-depth against a runaway env blob,
+// independent of the upstream JSON-object constraint. Per-run config is a handful of small vars.
+const maxProviderEnvBytes = 10240

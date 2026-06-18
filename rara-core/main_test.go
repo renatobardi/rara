@@ -1303,7 +1303,7 @@ func TestProviderEnvMustBeObject(t *testing.T) {
 		t.Fatalf("setup: %v", err)
 	}
 	base := Provider{Name: "p", Capability: capDestilar, Runtime: runtimeCloudRun, Activation: activationOnDemand, Enabled: true}
-	for _, bad := range []string{`["a"]`, `"x"`, `42`, `null`} {
+	for _, bad := range []string{`["a"]`, `"x"`, `42`, `null`, `{"K":1}`, `{"K":true}`, `{"K":null}`} {
 		p := base
 		p.Env = []byte(bad)
 		if err := db.UpsertProvider(ctx, p); !errors.Is(err, errCheckViolation) {
