@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -21,7 +22,7 @@ type fakeRunner struct {
 	err      error
 }
 
-func (f *fakeRunner) Run(image string, env map[string]string) error {
+func (f *fakeRunner) Run(_ context.Context, image string, env map[string]string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls++

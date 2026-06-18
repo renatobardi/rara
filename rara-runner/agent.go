@@ -28,9 +28,10 @@ import (
 )
 
 // ContainerRunner starts the worker container for a resolved (already-allowlisted) image with the
-// given per-run env. Implemented by dockerRunner; faked in tests.
+// given per-run env. ctx carries the request deadline so a stalled docker binary doesn't hold the
+// handler goroutine open indefinitely. Implemented by dockerRunner; faked in tests.
 type ContainerRunner interface {
-	Run(image string, env map[string]string) error
+	Run(ctx context.Context, image string, env map[string]string) error
 }
 
 // runRequest is the POST /run body — the wire form of the control plane's RunRequest (rara-core F0).
@@ -88,7 +89,7 @@ func newAgentServer(token string, allowed map[string]string, runner ContainerRun
 			return
 		}
 
-		if err := runner.Run(image, req.Env); err != nil {
+		if err := runner.Run(r.Context(), image, req.Env); err != nil {
 			log.Printf("run %s (%s): %v", req.App, image, err)
 			http.Error(w, "failed to start container", http.StatusInternalServerError)
 			return
@@ -149,13 +150,13 @@ type dockerRunner struct {
 	bin string // RUNNER_DOCKER_BIN; default "docker" (e.g. "podman" for rootless on the Mac)
 }
 
-func (d dockerRunner) Run(image string, env map[string]string) error {
+func (d dockerRunner) Run(ctx context.Context, image string, env map[string]string) error {
 	args := []string{"run", "-d", "--rm"}
 	for k, v := range env {
 		args = append(args, "-e", k+"="+v) // exec passes argv directly — no shell, no injection
 	}
 	args = append(args, image)
-	if out, err := exec.Command(d.bin, args...).CombinedOutput(); err != nil {
+	if out, err := exec.CommandContext(ctx, d.bin, args...).CombinedOutput(); err != nil {
 		return fmt.Errorf("%s run: %w: %s", d.bin, err, strings.TrimSpace(string(out)))
 	}
 	return nil
@@ -222,7 +223,9 @@ func serveAgent(ctx context.Context, addr string, h http.Handler) error {
 		<-ctx.Done()
 		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		_ = srv.Shutdown(shutCtx)
+		if err := srv.Shutdown(shutCtx); err != nil {
+			log.Printf("rara-runner agent shutdown: %v", err)
+		}
 	}()
 	log.Printf("rara-runner agent listening on %s", addr)
 	err := srv.ListenAndServe()

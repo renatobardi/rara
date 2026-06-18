@@ -1,3 +1,5 @@
+go.work
+go.work.sum
 rara-runner
 rara-runner-arm64
 coverage.out

@@ -17,7 +17,7 @@ The wake contract the GCP `jobs:run` serves natively, replicated on hosts that r
 (VPC Oracle + Mac): an authenticated `POST /run` starts the worker's container locally. The worker
 then pulls its own work from Neon and exits — the agent only *starts* it.
 
-```
+```text
 POST /run   {"app":"rara-distill","env":{"DISTILL_RECIPE":"opus"}}   →  202 Accepted
 GET  /healthz                                                        →  200 (no auth)
 ```
