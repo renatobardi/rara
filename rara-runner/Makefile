@@ -47,7 +47,7 @@ test-race:
 lint:
 	@echo "Running linters..."
 	go vet ./...
-	@which staticcheck > /dev/null || (echo "Installing staticcheck..." && go install honnef.co/go/tools/cmd/staticcheck@latest)
+	@which staticcheck > /dev/null || (echo "Installing staticcheck..." && go install honnef.co/go/tools/cmd/staticcheck@latest) # ponytail: @latest intentional — pinned v0.4.7 breaks on Go 1.26 (reverted in ca4a8e6)
 	staticcheck ./...
 
 fmt:

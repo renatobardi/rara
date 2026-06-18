@@ -9,7 +9,7 @@ One binary, role subcommands — the same shape as `core-job reconcile|surface|.
 | `dispatch` | Perennial VPC service: reads desired state from Neon and wakes providers via the `Runner`. | F3 (not built) |
 
 `rara-runner` is the piece that *runs* containers; `rara-addon` stays the contract workers *import*.
-This module has **no database and no `rara-addon` dependency** — it is pure stdlib.
+This module has **no `rara-addon` dependency**. The `dispatch` subcommand uses `pgx/v5` for Neon reads; the `agent` subcommand is stdlib-only.
 
 ## `rara-runner agent`
 

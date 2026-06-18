@@ -147,8 +147,11 @@ type hostRunnerTransport struct {
 
 func (tr *hostRunnerTransport) Run(ctx context.Context, req RunRequest) error {
 	endpoint := strings.TrimRight(req.RunnerURL, "/") + "/run"
-	// runner_url is operator config but carries the shared bearer token — reject scheme-confused or
-	// hostless endpoints before the token is ever sent (same guard as pokeActivator in rara-core).
+	// runner_url is operator config, but it carries the shared RUNNER_TOKEN bearer — so guard the
+	// trust boundary: only POST to a well-formed http(s) endpoint with a host. A scheme-confused
+	// (file://, gopher://) or hostless url would leak the token, so reject it before sending.
+	// (A host allowlist — e.g. restricting to the tailnet CIDR — is the upgrade path if runner_url
+	// ever stops being operator-curated data entered into the providers table by an admin.)
 	if u, err := url.Parse(endpoint); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 		return fmt.Errorf("host runner %s: invalid runner_url %q", req.App, req.RunnerURL)
 	}
@@ -206,5 +209,8 @@ func newDispatchRunnerFromEnv() Runner {
 		d.host = &hostRunnerTransport{token: tok, http: client}
 	}
 
+	if d.cloudRun == nil && d.host == nil {
+		log.Fatalf("dispatch: no transport configured (set CLOUD_RUN_PROJECT/REGION/TOKEN or RUNNER_TOKEN)")
+	}
 	return d
 }

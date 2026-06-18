@@ -632,10 +632,9 @@ func (m *MockDatabase) ListAssignedSteps(_ context.Context) ([]ItemStep, error) 
 		}
 	}
 	sort.Slice(out, func(i, j int) bool {
-		if out[i].ItemID != out[j].ItemID {
-			return out[i].ItemID < out[j].ItemID
-		}
-		return out[i].Seq < out[j].Seq
+		ki := itemStepKey{out[i].ItemID, out[i].Seq}
+		kj := itemStepKey{out[j].ItemID, out[j].Seq}
+		return m.stepOrder[ki] < m.stepOrder[kj]
 	})
 	return out, nil
 }
@@ -1214,6 +1213,34 @@ func TestListAssignedSteps(t *testing.T) {
 	}
 	if got[0].AssignedProvider != "p1" {
 		t.Errorf("want provider p1, got %q", got[0].AssignedProvider)
+	}
+}
+
+func TestListAssignedStepsInsertionOrder(t *testing.T) {
+	// The real DB uses ORDER BY id (FIFO). The mock must mirror that, not sort by (ItemID, Seq).
+	ctx := context.Background()
+	db := newMockDatabase()
+	_ = db.UpsertCapability(ctx, Capability{Name: capTranscrever})
+	_ = db.UpsertProvider(ctx, Provider{Name: "p1", Capability: capTranscrever, Runtime: runtimeCloudRun, Activation: activationOnDemand, Cost: 1, Quality: 1, Enabled: true})
+	flowID, _ := db.UpsertFlow(ctx, Flow{Name: "test", SourceType: "youtube", Enabled: true})
+	id1, _ := db.UpsertItem(ctx, Item{Lane: "youtube", SourceRef: "v1", FlowID: flowID, Status: itemDiscovered})
+	id2, _ := db.UpsertItem(ctx, Item{Lane: "youtube", SourceRef: "v2", FlowID: flowID, Status: itemDiscovered})
+
+	// Insert step for id2 (higher ItemID) FIRST → insertion order 1.
+	_ = db.UpsertItemStep(ctx, ItemStep{ItemID: id2, Seq: 1, Capability: capTranscrever, Status: stepPending, AssignedProvider: "p1"})
+	// Insert step for id1 (lower ItemID) SECOND → insertion order 2.
+	_ = db.UpsertItemStep(ctx, ItemStep{ItemID: id1, Seq: 1, Capability: capTranscrever, Status: stepPending, AssignedProvider: "p1"})
+
+	got, err := db.ListAssignedSteps(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("want 2 steps, got %d", len(got))
+	}
+	// id2's step was inserted first → must be got[0] (FIFO).
+	if got[0].ItemID != id2 {
+		t.Errorf("ListAssignedSteps[0].ItemID = %d, want %d (insertion order, not ItemID sort)", got[0].ItemID, id2)
 	}
 }
 

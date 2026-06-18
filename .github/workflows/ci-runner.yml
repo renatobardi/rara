@@ -20,6 +20,9 @@ concurrency:
   group: ci-rara-runner-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
   code-quality:
     name: Code Quality & Tests

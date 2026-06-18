@@ -97,17 +97,23 @@ func runDispatch() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	pool, err := pgxpool.New(ctx, dbURL)
+	cfg, err := pgxpool.ParseConfig(dbURL)
 	if err != nil {
-		log.Fatalf("dispatch: db connect: %v", err)
+		log.Fatalf("dispatch: invalid DATABASE_URL") // don't echo err — may contain DSN credentials
+	}
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		log.Fatalf("dispatch: db connect failed") // same: omit err to avoid leaking host/port
 	}
 	defer pool.Close()
 
 	interval := 5 * time.Second
 	if v := os.Getenv("DISPATCH_INTERVAL_SECONDS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			interval = time.Duration(n) * time.Second
+		n, err := strconv.Atoi(v)
+		if err != nil || n <= 0 {
+			log.Fatalf("DISPATCH_INTERVAL_SECONDS must be a positive integer, got %q", v)
 		}
+		interval = time.Duration(n) * time.Second
 	}
 
 	db := &pgxDispatchDB{pool: pool}

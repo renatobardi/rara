@@ -152,6 +152,15 @@ func TestDispatchOnceRunnerErrorIsLogged(t *testing.T) {
 	}
 }
 
+func TestDispatchOnceDBErrorPropagates(t *testing.T) {
+	// A DB error on ListAssignedSteps is fatal for the pass — returned, not swallowed.
+	db := &mockDispatchDB{listErr: errBoom{}}
+	d := Dispatcher{db: db, runner: &fakeTransport{}}
+	if err := d.DispatchOnce(context.Background()); err == nil {
+		t.Error("want error when db.ListAssignedSteps fails, got nil")
+	}
+}
+
 type errBoom struct{}
 
 func (errBoom) Error() string { return "boom" }
