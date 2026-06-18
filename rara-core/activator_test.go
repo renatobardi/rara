@@ -146,6 +146,32 @@ func TestCloudRunActivatorJobPrefix(t *testing.T) {
 	}
 }
 
+// TestCloudRunActivatorEscapesAppInPath: a job name with a path separator must be percent-escaped
+// so it cannot inject extra URL segments and redirect the authenticated call to another endpoint.
+func TestCloudRunActivatorEscapesAppInPath(t *testing.T) {
+	doer := &fakeDoer{}
+	a := &cloudRunActivator{project: "p", region: "r", http: doer, token: staticToken("t")}
+	if err := a.Run(context.Background(), RunRequest{App: "evil/../../jobs"}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := doer.gotReq.URL.String(); strings.Contains(got, "evil/") {
+		t.Errorf("app name not escaped in url: %s", got)
+	}
+}
+
+// TestCloudRunActivatorRejectsEmptyApp: an empty app would POST to .../jobs/:run — reject it
+// before issuing the authenticated request.
+func TestCloudRunActivatorRejectsEmptyApp(t *testing.T) {
+	doer := &fakeDoer{}
+	a := &cloudRunActivator{project: "p", region: "r", http: doer, token: staticToken("t")}
+	if err := a.Run(context.Background(), RunRequest{App: ""}); err == nil {
+		t.Fatal("expected error for empty app")
+	}
+	if doer.calls != 0 {
+		t.Errorf("must not issue a request with an empty app, got %d calls", doer.calls)
+	}
+}
+
 func TestCloudRunActivatorErrorOnNon2xx(t *testing.T) {
 	doer := &fakeDoer{status: http.StatusForbidden, body: "PERMISSION_DENIED"}
 	a := &cloudRunActivator{project: "p", region: "r", http: doer, token: staticToken("t")}
@@ -204,7 +230,9 @@ func TestPokeActivatorPostsPoke(t *testing.T) {
 func TestPokeActivatorTrimsTrailingSlash(t *testing.T) {
 	doer := &fakeDoer{}
 	a := &pokeActivator{token: "t", http: doer}
-	_ = a.Run(context.Background(), rr(Provider{Name: "x", PokeURL: "http://host:7700/"}))
+	if err := a.Run(context.Background(), rr(Provider{Name: "x", PokeURL: "http://host:7700/"})); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
 	if doer.gotReq.URL.String() != "http://host:7700/poke" {
 		t.Errorf("url = %s, want single /poke", doer.gotReq.URL.String())
 	}

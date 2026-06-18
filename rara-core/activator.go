@@ -115,8 +115,13 @@ type cloudRunActivator struct {
 
 func (a *cloudRunActivator) Run(ctx context.Context, req RunRequest) error {
 	job := a.jobPrefix + req.App
-	url := fmt.Sprintf("https://run.googleapis.com/v2/projects/%s/locations/%s/jobs/%s:run",
-		a.project, a.region, job)
+	if strings.TrimSpace(job) == "" {
+		return fmt.Errorf("cloud run run: empty app")
+	}
+	// Escape the job into the path: a name with a separator must not inject extra URL segments and
+	// redirect the authenticated call to another endpoint (trust-boundary guard, like poke_url).
+	endpoint := fmt.Sprintf("https://run.googleapis.com/v2/projects/%s/locations/%s/jobs/%s:run",
+		a.project, a.region, url.PathEscape(job))
 
 	tok, err := a.token(ctx)
 	if err != nil {
@@ -124,7 +129,7 @@ func (a *cloudRunActivator) Run(ctx context.Context, req RunRequest) error {
 	}
 	// An empty body runs the job with its deployed defaults (the `--provider` arg the addon needs is
 	// baked into the job at deploy, not passed per run).
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader("{}"))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader("{}"))
 	if err != nil {
 		return fmt.Errorf("cloud run new request for %s: %w", job, err)
 	}
