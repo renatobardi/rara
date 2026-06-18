@@ -223,12 +223,12 @@ func TestParseAllowlist(t *testing.T) {
 		t.Fatalf("parsed wrong: %v", got)
 	}
 	for _, bad := range []string{
-		"",                            // empty allowlist
-		"no-equals-sign",              // not app=image
-		"app=",                        // empty image
-		"app=img:latest",              // not pinned by digest
-		"app=img@sha256:abc123",       // digest too short (not 64 hex)
-		"a=" + imgA + ",a=" + imgC,   // duplicate app
+		"",                         // empty allowlist
+		"no-equals-sign",           // not app=image
+		"app=",                     // empty image
+		"app=img:latest",           // not pinned by digest
+		"app=img@sha256:abc123",    // digest too short (not 64 hex)
+		"a=" + imgA + ",a=" + imgC, // duplicate app
 	} {
 		if _, err := parseAllowlist(bad); err == nil {
 			t.Errorf("parseAllowlist(%q): want error, got nil", bad)
