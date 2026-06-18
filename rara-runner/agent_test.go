@@ -388,14 +388,32 @@ func TestLoadEnvFileMissingFileReturnsEmpty(t *testing.T) {
 	}
 }
 
-func TestLoadEnvFileRejectsWorldReadable(t *testing.T) {
-	f := writeTempEnvFile(t, "KEY=val\n")
-	if err := os.Chmod(f, 0644); err != nil {
-		t.Fatal(err)
+func TestLoadEnvFilePermissionMatrix(t *testing.T) {
+	tests := []struct {
+		name    string
+		mode    os.FileMode
+		wantErr bool
+	}{
+		{"allow_0600", 0o600, false},
+		{"allow_0640", 0o640, false},
+		{"reject_0644_world_readable", 0o644, true},
+		{"reject_0602_world_writable", 0o602, true},
+		{"reject_0620_group_writable", 0o620, true},
 	}
-	_, err := loadEnvFile(f)
-	if err == nil {
-		t.Fatal("want error for world-readable env file, got nil")
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			f := writeTempEnvFile(t, "KEY=val\n")
+			if err := os.Chmod(f, tc.mode); err != nil {
+				t.Fatal(err)
+			}
+			_, err := loadEnvFile(f)
+			if tc.wantErr && err == nil {
+				t.Fatalf("mode %04o: want error, got nil", tc.mode)
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("mode %04o: want nil, got %v", tc.mode, err)
+			}
+		})
 	}
 }
 

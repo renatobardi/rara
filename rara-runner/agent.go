@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -58,7 +59,8 @@ func loadEnvFile(path string) (map[string]string, error) {
 	if path == "" {
 		return map[string]string{}, nil
 	}
-	info, err := os.Stat(path)
+	// Open first, then stat and read on the same fd — eliminates the Stat→ReadFile TOCTOU window.
+	f, err := os.Open(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			log.Printf("RUNNER_WORKER_ENV_FILE %q not found; starting with empty base env", path)
@@ -66,12 +68,18 @@ func loadEnvFile(path string) (map[string]string, error) {
 		}
 		return nil, fmt.Errorf("loadEnvFile %q: %w", path, err)
 	}
-	// Reject world-readable files: the env file contains secrets (DATABASE_URL, API keys, etc.).
-	// chmod 600 or 640 are the only acceptable permissions.
-	if info.Mode().Perm()&0o004 != 0 {
-		return nil, fmt.Errorf("loadEnvFile %q: file is world-readable (perm %04o); chmod 600 or 640", path, info.Mode().Perm())
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("loadEnvFile %q: %w", path, err)
 	}
-	data, err := os.ReadFile(path)
+	// Reject world-readable, group-writable, and world-writable: the file contains secrets.
+	// Only 0600 (owner-only) and 0640 (owner + group-read) are acceptable.
+	perm := info.Mode().Perm()
+	if perm&0o004 != 0 || perm&0o022 != 0 {
+		return nil, fmt.Errorf("loadEnvFile %q: insecure permissions (%04o); use 0600 or 0640", path, perm)
+	}
+	data, err := io.ReadAll(f)
 	if err != nil {
 		return nil, fmt.Errorf("loadEnvFile %q: %w", path, err)
 	}
@@ -81,7 +89,10 @@ func loadEnvFile(path string) (map[string]string, error) {
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		k, v, _ := strings.Cut(line, "=")
+		k, v, ok := strings.Cut(line, "=")
+		if !ok {
+			return nil, fmt.Errorf("loadEnvFile %q: malformed line %q (expected KEY=VAL)", path, line)
+		}
 		if k != "" {
 			if !isValidEnvKey(k) {
 				return nil, fmt.Errorf("loadEnvFile %q: invalid env key %q", path, k)

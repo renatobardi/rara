@@ -49,13 +49,14 @@ jobs:
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
         run: |
-          ssh "${DEPLOY_USER}@${DEPLOY_HOST}" "mkdir -p /opt/rara-runner/bin"
+          # staging is ubuntu-owned — avoids /tmp which is world-writable (TOCTOU risk).
+          ssh "${DEPLOY_USER}@${DEPLOY_HOST}" "mkdir -p /opt/rara-runner/bin /opt/rara-runner/staging"
           rsync -az rara-runner/rara-runner \
             "${DEPLOY_USER}@${DEPLOY_HOST}:/opt/rara-runner/bin/rara-runner"
           rsync -az rara-runner/deploy/rara-runner-dispatch.service \
-            "${DEPLOY_USER}@${DEPLOY_HOST}:/tmp/rara-runner-dispatch.service"
+            "${DEPLOY_USER}@${DEPLOY_HOST}:/opt/rara-runner/staging/rara-runner-dispatch.service"
           rsync -az rara-runner/deploy/rara-runner-agent.service \
-            "${DEPLOY_USER}@${DEPLOY_HOST}:/tmp/rara-runner-agent.service"
+            "${DEPLOY_USER}@${DEPLOY_HOST}:/opt/rara-runner/staging/rara-runner-agent.service"
 
       - name: Install services and restart
         env:
@@ -65,11 +66,13 @@ jobs:
           ssh "${DEPLOY_USER}@${DEPLOY_HOST}" bash <<'EOF'
             set -euo pipefail
 
-            # dispatch
-            sudo mv /tmp/rara-runner-dispatch.service /etc/systemd/system/rara-runner-dispatch.service
-
-            # agent
-            sudo mv /tmp/rara-runner-agent.service /etc/systemd/system/rara-runner-agent.service
+            # install sets root ownership and 0644 atomically — safer than mv from staging.
+            sudo install -o root -g root -m 0644 \
+              /opt/rara-runner/staging/rara-runner-dispatch.service \
+              /etc/systemd/system/rara-runner-dispatch.service
+            sudo install -o root -g root -m 0644 \
+              /opt/rara-runner/staging/rara-runner-agent.service \
+              /etc/systemd/system/rara-runner-agent.service
 
             sudo systemctl daemon-reload
 
