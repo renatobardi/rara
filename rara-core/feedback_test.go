@@ -44,7 +44,7 @@ func quarantineOne(t *testing.T, db *MockDatabase) int {
 	t.Helper()
 	ctx := context.Background()
 	itemID := seedAndIngestOne(t, db, "vid1")
-	r := NewReconciler(db, &fakeActivator{})
+	r := NewReconciler(db)
 	if err := r.ReconcileOnce(ctx); err != nil { // assign gate_barato
 		t.Fatal(err)
 	}
@@ -118,7 +118,7 @@ func TestReviewQuarantineUpRescues(t *testing.T) {
 
 	// And the reconciler resumes it: the next pass advances past the now-kept gate and
 	// assigns transcrever.
-	if err := NewReconciler(db, &fakeActivator{}).ReconcileOnce(ctx); err != nil {
+	if err := NewReconciler(db).ReconcileOnce(ctx); err != nil {
 		t.Fatal(err)
 	}
 	if s, ok := stepBySeq(db, itemID, 3); !ok || s.Status != stepPending || s.AssignedProvider != provASRYouTube {

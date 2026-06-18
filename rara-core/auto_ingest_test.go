@@ -15,7 +15,7 @@ func TestAutoIngestRunsOnFirstPass(t *testing.T) {
 		t.Fatal(err)
 	}
 	enableYouTubeFlow(t, db)
-	r := NewReconciler(db, nil)
+	r := NewReconciler(db)
 	r.yt = fakeSpineSource{videos: []YouTubeVideo{{VideoID: "vid1"}}}
 	r.ingestEveryN = 1
 
@@ -35,7 +35,7 @@ func TestAutoIngestIdempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 	enableYouTubeFlow(t, db)
-	r := NewReconciler(db, nil)
+	r := NewReconciler(db)
 	r.yt = fakeSpineSource{videos: []YouTubeVideo{{VideoID: "vid1"}}}
 	r.ingestEveryN = 1
 
@@ -55,7 +55,7 @@ func TestAutoIngestSkipsLaneWithoutFlow(t *testing.T) {
 	ctx := context.Background()
 	db := newMockDatabase()
 	// No seeds — no flows exist.
-	r := NewReconciler(db, nil)
+	r := NewReconciler(db)
 	r.yt = fakeSpineSource{videos: []YouTubeVideo{{VideoID: "vid1"}}}
 	r.pod = fakePodcastSource{episodes: []PodcastEpisode{{GUID: "ep1"}}}
 	r.ingestEveryN = 1
@@ -79,7 +79,7 @@ func TestAutoIngestLaneErrorDoesNotBlockOthers(t *testing.T) {
 	if err := SeedPodcastLane(ctx, db); err != nil {
 		t.Fatal(err)
 	}
-	r := NewReconciler(db, nil)
+	r := NewReconciler(db)
 	r.yt = fakeSpineSource{err: errors.New("youtube source boom")}
 	r.pod = fakePodcastSource{episodes: []PodcastEpisode{{GUID: "ep1"}}}
 	r.ingestEveryN = 1
@@ -101,7 +101,7 @@ func TestAutoIngestEveryNPasses(t *testing.T) {
 		t.Fatal(err)
 	}
 	enableYouTubeFlow(t, db)
-	r := NewReconciler(db, nil)
+	r := NewReconciler(db)
 	r.yt = fakeSpineSource{videos: []YouTubeVideo{{VideoID: "vid1"}}}
 	r.ingestEveryN = 3
 
@@ -137,7 +137,7 @@ func TestAutoIngestSkipsDisabledLane(t *testing.T) {
 	if _, err := db.UpsertFlow(ctx, f); err != nil {
 		t.Fatal(err)
 	}
-	r := NewReconciler(db, nil)
+	r := NewReconciler(db)
 	r.yt = fakeSpineSource{videos: []YouTubeVideo{{VideoID: "vid1"}}}
 	r.ingestEveryN = 1
 

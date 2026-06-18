@@ -1,19 +1,17 @@
-// activator.go — the real Activators: the orchestrator side of symmetric activation (P1b).
+// activator.go — Runner transports: the wire layer for waking providers (F3 dispatch; previously
+// also used by the reconciler, now activation is the rara-runner dispatcher's responsibility).
 //
-// Trabalho = pull always; ativação = symmetric. The reconciler writes an assignment (a pending
-// item_step with a chosen provider) and then ASKS that provider to start now instead of waiting for
-// its next poll tick. How you "ask" depends on the provider's shape:
+// How you wake a provider depends on its shape:
 //
 //   - runtime=cloudrun (on_demand, scale-to-zero) -> Cloud Run Jobs `run`: an authenticated POST that
 //     starts a new execution of the job that serves the provider. The job is named after the provider
-//     (one deployable unit per provider; an optional CLOUD_RUN_JOB_PREFIX namespaces them).
+//     (one deployable unit per provider; an optional CLOUD_RUN_JOB_PREFIX namespaces them). Per-run
+//     env overrides are sent in the body (containerOverrides) so the worker reads its assignment.
 //   - activation=resident (the Mac scribe, a VPC worker) -> a tailnet poke: POST <poke_url>/poke with
 //     a Bearer token, which the worker's poke listener (rara-addon/poke.go) turns into a drain.
 //
-// Both are BEST-EFFORT by design (the architecture's §4): a failed activation is logged, never fatal.
-// The pending row stands and the worker's own poll — the safety net — drains it on the next tick. A
-// poke cannot wake a sleeping Mac; the Cloud Run call can fail on a transient API error. Neither must
-// stall the reconciler, so Activate errors only bubble up to a log line (reconciler.activate).
+// Both are BEST-EFFORT by design (architecture §4): a failed activation is logged, never fatal. The
+// pending row stands and the worker's own poll — the safety net — drains it on the next tick.
 //
 // Everything that touches the network is injected (httpDoer, tokenSource) so the TDD fakes assert the
 // dispatch + the wire shape without a real HTTP call or a real GCP credential.
@@ -21,19 +19,18 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strings"
-	"time"
 
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
-
-	addon "rara-addon"
 )
 
 // RunRequest is the unit of work a Runner acts on: wake App (the deployable unit — a Cloud Run job
@@ -127,9 +124,8 @@ func (a *cloudRunActivator) Run(ctx context.Context, req RunRequest) error {
 	if err != nil {
 		return fmt.Errorf("cloud run token: %w", err)
 	}
-	// An empty body runs the job with its deployed defaults (the `--provider` arg the addon needs is
-	// baked into the job at deploy, not passed per run).
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader("{}"))
+	body := cloudRunBody(req.Env)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("cloud run new request for %s: %w", job, err)
 	}
@@ -147,6 +143,30 @@ func (a *cloudRunActivator) Run(ctx context.Context, req RunRequest) error {
 	}
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<16)) // drain so the connection can be reused
 	return nil
+}
+
+// cloudRunBody returns the request body for a Cloud Run Jobs v2 `run` call. With no env vars the
+// body is `{}` (use the job's deployed defaults). With env vars it injects per-execution overrides
+// so the worker can read the assignment without a separate round-trip to the DB.
+func cloudRunBody(env map[string]string) string {
+	if len(env) == 0 {
+		return "{}"
+	}
+	type envVar struct {
+		Name  string `json:"name"`
+		Value string `json:"value"`
+	}
+	vars := make([]envVar, 0, len(env))
+	for k, v := range env {
+		vars = append(vars, envVar{Name: k, Value: v})
+	}
+	sort.Slice(vars, func(i, j int) bool { return vars[i].Name < vars[j].Name })
+	b, _ := json.Marshal(map[string]any{
+		"overrides": map[string]any{
+			"containerOverrides": []map[string]any{{"env": vars}},
+		},
+	})
+	return string(b)
 }
 
 // pokeActivator wakes a resident provider by POSTing to its tailnet poke endpoint (the worker side is
@@ -188,39 +208,6 @@ func (a *pokeActivator) Run(ctx context.Context, req RunRequest) error {
 	}
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<12))
 	return nil
-}
-
-// newRunnerFromEnv builds the production Runner from env config. Cloud Run activation needs
-// CLOUD_RUN_PROJECT + CLOUD_RUN_REGION and a token source: CLOUD_RUN_OAUTH_TOKEN (static, dev/test)
-// or Application Default Credentials via GOOGLE_APPLICATION_CREDENTIALS (SA key file, production).
-// Poke activation needs POKE_AUTH_TOKEN. With NOTHING configured it returns logActivator so the
-// reconciler still runs (worker poll drains the queue).
-func newRunnerFromEnv() Runner {
-	// 30s default (was 10s): a Cloud Run Job `run` on a scale-to-zero service routinely passes 10s
-	// on a cold start, and there is no poll safety net for an on_demand job — a timed-out activation
-	// would leave the step pending until the reconciler's self-healing re-activation (reconciler.go)
-	// retries. A longer client timeout absorbs the cold start so the first attempt usually lands.
-	client := &http.Client{Timeout: addon.EnvDuration("ACTIVATE_TIMEOUT_SECONDS", 30*time.Second)}
-	d := dispatchActivator{}
-
-	if project, region := os.Getenv("CLOUD_RUN_PROJECT"), os.Getenv("CLOUD_RUN_REGION"); project != "" && region != "" {
-		d.cloudRun = &cloudRunActivator{
-			project:   project,
-			region:    region,
-			jobPrefix: os.Getenv("CLOUD_RUN_JOB_PREFIX"),
-			http:      client,
-			token:     cloudRunTokenSource(nil),
-		}
-	}
-	if tok := os.Getenv("POKE_AUTH_TOKEN"); tok != "" {
-		d.poke = &pokeActivator{token: tok, http: client}
-	}
-
-	if d.cloudRun == nil && d.poke == nil {
-		log.Printf("activator: no activation configured (CLOUD_RUN_* / POKE_AUTH_TOKEN unset); pull-only (poll is the safety net)")
-		return logActivator{}
-	}
-	return d
 }
 
 // cloudRunTokenSource returns a tokenSource for the Cloud Run Jobs API.

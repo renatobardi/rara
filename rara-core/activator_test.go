@@ -172,6 +172,39 @@ func TestCloudRunActivatorRejectsEmptyApp(t *testing.T) {
 	}
 }
 
+// TestCloudRunActivatorSendsEnvOverrides: when the RunRequest carries a non-empty Env map the
+// body must include the Cloud Run v2 container override format so the job can read per-run config.
+func TestCloudRunActivatorSendsEnvOverrides(t *testing.T) {
+	doer := &fakeDoer{status: http.StatusOK, body: `{"name":"op"}`}
+	a := &cloudRunActivator{project: "p", region: "r", http: doer, token: staticToken("t")}
+	req := RunRequest{
+		App:      "gate-barato",
+		Provider: Provider{Name: "gate-barato", Runtime: runtimeCloudRun},
+		Env:      map[string]string{"ITEM_STEP_ID": "42"},
+	}
+	if err := a.Run(context.Background(), req); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !strings.Contains(doer.gotBody, `"overrides"`) {
+		t.Errorf("body = %q, want overrides block", doer.gotBody)
+	}
+	if !strings.Contains(doer.gotBody, `"ITEM_STEP_ID"`) || !strings.Contains(doer.gotBody, `"42"`) {
+		t.Errorf("body = %q, want ITEM_STEP_ID=42 in env overrides", doer.gotBody)
+	}
+}
+
+// TestCloudRunActivatorEmptyEnvUsesDefaultBody: no Env → body is `{}` (deployed defaults only).
+func TestCloudRunActivatorEmptyEnvUsesDefaultBody(t *testing.T) {
+	doer := &fakeDoer{status: http.StatusOK}
+	a := &cloudRunActivator{project: "p", region: "r", http: doer, token: staticToken("t")}
+	if err := a.Run(context.Background(), rr(Provider{Name: "gate-barato", Runtime: runtimeCloudRun})); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if doer.gotBody != "{}" {
+		t.Errorf("empty env body = %q, want {}", doer.gotBody)
+	}
+}
+
 func TestCloudRunActivatorErrorOnNon2xx(t *testing.T) {
 	doer := &fakeDoer{status: http.StatusForbidden, body: "PERMISSION_DENIED"}
 	a := &cloudRunActivator{project: "p", region: "r", http: doer, token: staticToken("t")}

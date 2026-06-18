@@ -393,7 +393,7 @@ func TestAutoIngestLinkedIn(t *testing.T) {
 	if _, err := db.UpsertFlow(ctx, f); err != nil {
 		t.Fatal(err)
 	}
-	r := NewReconciler(db, nil)
+	r := NewReconciler(db)
 	r.li = fakeLinkedInSource{posts: []LinkedInPost{{URL: "https://linkedin.com/posts/1"}}}
 	r.ingestEveryN = 1
 
@@ -443,7 +443,7 @@ func TestReconcileLinkedInRoutesToExtrairLinkedin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r := NewReconciler(db, &fakeActivator{})
+	r := NewReconciler(db)
 
 	if err := r.ReconcileOnce(ctx); err != nil { // coletar auto-done, assign gate_barato
 		t.Fatal(err)

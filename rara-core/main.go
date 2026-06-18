@@ -265,6 +265,11 @@ type Provider struct {
 	// POSTs <PokeURL>/poke (Bearer) to make it drain now. Empty for on_demand cloudrun providers
 	// (woken via Cloud Run Jobs `run` instead) and for residents that rely on the slow poll alone.
 	PokeURL string `json:"poke_url,omitempty"`
+	// RunnerURL is the tailnet endpoint of the rara-runner agent on this host (VPC or Mac).
+	// The dispatcher POSTs <RunnerURL>/run (Bearer RUNNER_AUTH_TOKEN) to wake the worker via
+	// docker run. Distinct from PokeURL (which is the worker's own poke listener).
+	// Empty for cloudrun providers (woken via Cloud Run Jobs `run`) and poll-only residents.
+	RunnerURL string `json:"runner_url,omitempty"`
 }
 
 // Flow is one declarative pipeline per source lane.
@@ -616,6 +621,12 @@ type Database interface {
 	// asr-direct-audio on Cloud Run): each worker pulls only the steps the reconciler routed
 	// to it, never the other provider's. Returns (nil, nil) when the queue is empty.
 	ClaimPendingStep(ctx context.Context, capability, provider string) (*ItemStep, error)
+
+	// ListAssignedSteps returns item_steps that have been assigned to a provider but not yet
+	// claimed (status='pending' AND assigned_provider IS NOT NULL). The dispatcher reads this
+	// to decide which providers need waking — one RunRequest per unique provider per pass.
+	// Ordered by id (FIFO); does NOT include running/done/failed steps.
+	ListAssignedSteps(ctx context.Context) ([]ItemStep, error)
 }
 
 // ---------------------------------------------------------------------------
@@ -662,8 +673,8 @@ func (d *pgxDatabase) UpsertProvider(ctx context.Context, p Provider) error {
 	}
 	const q = `
 		INSERT INTO providers
-			(name, capability, runtime, activation, cost, quality, latency_ms, constraints, enabled, heartbeat_at, poke_url)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11)
+			(name, capability, runtime, activation, cost, quality, latency_ms, constraints, enabled, heartbeat_at, poke_url, runner_url)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11, $12)
 		ON CONFLICT (name) DO UPDATE SET
 			capability   = EXCLUDED.capability,
 			runtime      = EXCLUDED.runtime,
@@ -674,10 +685,11 @@ func (d *pgxDatabase) UpsertProvider(ctx context.Context, p Provider) error {
 			constraints  = EXCLUDED.constraints,
 			enabled      = EXCLUDED.enabled,
 			heartbeat_at = EXCLUDED.heartbeat_at,
-			poke_url     = EXCLUDED.poke_url`
+			poke_url     = EXCLUDED.poke_url,
+			runner_url   = EXCLUDED.runner_url`
 	_, err := d.conn.Exec(ctx, q,
 		p.Name, p.Capability, p.Runtime, p.Activation, p.Cost, p.Quality, p.LatencyMs,
-		jsonOrEmpty(p.Constraints, "{}"), p.Enabled, p.HeartbeatAt, nullStr(p.PokeURL))
+		jsonOrEmpty(p.Constraints, "{}"), p.Enabled, p.HeartbeatAt, nullStr(p.PokeURL), nullStr(p.RunnerURL))
 	return err
 }
 
@@ -1053,7 +1065,7 @@ func runReconcile(ctx context.Context, db Database, conn *pgx.Conn, dbURL string
 		}
 	}
 
-	r := NewReconciler(db, newRunnerFromEnv()) // real Cloud Run `run` + tailnet poke (P1b)
+	r := NewReconciler(db) // assignment-only; waking is the dispatcher's job (F3)
 	if v := os.Getenv("RECONCILE_STALE_SECONDS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			r.staleAfter = time.Duration(n) * time.Second
@@ -1062,11 +1074,6 @@ func runReconcile(ctx context.Context, db Database, conn *pgx.Conn, dbURL string
 	if v := os.Getenv("ROUTE_HEALTH_SECONDS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			r.healthTTL = time.Duration(n) * time.Second
-		}
-	}
-	if v := os.Getenv("REACTIVATE_BACKOFF_SECONDS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			r.reactivateBackoff = time.Duration(n) * time.Second
 		}
 	}
 	if *loop {

@@ -133,7 +133,7 @@ func TestAutoIngestNews(t *testing.T) {
 	if _, err := db.UpsertFlow(ctx, f); err != nil {
 		t.Fatal(err)
 	}
-	r := NewReconciler(db, nil)
+	r := NewReconciler(db)
 	r.news = fakeNewsSource{articles: []NewsItem{{URL: "https://a.example/1"}}}
 	r.ingestEveryN = 1
 

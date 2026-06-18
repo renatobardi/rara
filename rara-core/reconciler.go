@@ -40,48 +40,18 @@ import (
 // handleStaleStep). A conservative default; tunable via RECONCILE_STALE_SECONDS.
 const defaultStaleAfter = 10 * time.Minute
 
-// defaultReactivateBackoff is the anti-stampede window for self-healing re-activation
-// (reactivateStalled). After a SUCCESSFUL activation, a single woken on_demand worker claims
-// until its queue drains (one Cloud Run execution pulling via SKIP LOCKED), so the reconciler
-// must NOT re-fire activation while pending work remains within this window — doing so would
-// spawn concurrent executions (the "swarm" bug). Tunable via REACTIVATE_BACKOFF_SECONDS.
-const defaultReactivateBackoff = 3 * time.Minute
-
-// The Runner contract (the reconciler's wake mechanism) lives in activator.go: the reconciler
-// calls Run for EVERY assignment and the concrete Runner dispatches by provider shape — see there.
-
-// Reconciler is the control loop. now, staleAfter, healthTTL and reactivateBackoff are
-// injectable so the heartbeat-liveness backstop, the router's health gate and the
-// anti-stampede re-activation window are deterministic in tests.
+// Reconciler is the control loop. Its only job is to observe desired state (flows + items) and
+// persist assignments (item_steps with an assigned_provider). It does NOT wake providers — that
+// belongs to the rara-runner dispatch loop (F3). Coupling = the table.
+//
+// now, staleAfter, healthTTL are injectable for deterministic tests.
 type Reconciler struct {
-	db                Database
-	runner            Runner
-	router            *Router
-	now               func() time.Time
-	staleAfter        time.Duration
-	healthTTL         time.Duration
-	reactivateBackoff time.Duration
+	db     Database
+	router *Router
+	now    func() time.Time
 
-	// activatedThisPass coalesces wakes WITHIN a single ReconcileOnce: a provider is activated at
-	// most once per pass, however many items were assigned to it this pass. One wake drains the
-	// whole queue for that provider (a poke coalesces on the worker; a Cloud Run `run` execution
-	// drains via SKIP LOCKED), so N items assigning the same provider must not fan out into N job
-	// executions / N pokes to a sleeping Mac. It is reset at the start of every pass — no state is
-	// carried BETWEEN passes (ReconcileOnce is never called concurrently on one Reconciler).
-	activatedThisPass map[string]bool
-
-	// pendingThisPass is the set of providers that still hold a pending (assigned-but-unclaimed)
-	// step at the frontier this pass. It feeds the self-healing re-activation (reactivateStalled):
-	// an on_demand cloudrun provider with pending work that did not wake (its activation failed or
-	// timed out) has no poll safety net, so the reconciler re-fires its activation. Reset every pass.
-	pendingThisPass map[string]bool
-
-	// lastActivatedAt records the wall time of each provider's last SUCCESSFUL activation and,
-	// unlike activatedThisPass, PERSISTS BETWEEN passes. It anchors the anti-stampede backoff: a
-	// recently-woken on_demand worker is still draining, so reactivateStalled must not re-fire
-	// within reactivateBackoff of the recorded success. A FAILED activation never writes here, so
-	// the next pass retries it (no execution was started -> no swarm, just a legitimate retry).
-	lastActivatedAt map[string]time.Time
+	staleAfter time.Duration
+	healthTTL  time.Duration
 
 	// Auto-ingest: sources are injected at wiring time; ingestEveryN controls cadence.
 	// 0 = disabled (single-pass mode and tests that don't set sources).
@@ -95,18 +65,14 @@ type Reconciler struct {
 	passCount    int
 }
 
-// NewReconciler wires a reconciler. A nil runner falls back to a logging no-op. now,
-// staleAfter and healthTTL default to wall-clock, defaultStaleAfter and defaultHealthTTL;
-// tests overwrite them directly.
-func NewReconciler(db Database, runner Runner) *Reconciler {
-	if runner == nil {
-		runner = logActivator{}
-	}
+// NewReconciler wires a reconciler. now, staleAfter and healthTTL default to wall-clock,
+// defaultStaleAfter and defaultHealthTTL; tests overwrite them directly.
+// The Runner parameter has been removed in F3: activation belongs to the rara-runner
+// dispatch loop — the reconciler only persists assignments.
+func NewReconciler(db Database) *Reconciler {
 	return &Reconciler{
-		db: db, runner: runner, router: NewRouter(db),
+		db: db, router: NewRouter(db),
 		now: time.Now, staleAfter: defaultStaleAfter, healthTTL: defaultHealthTTL,
-		reactivateBackoff: defaultReactivateBackoff,
-		lastActivatedAt:   make(map[string]time.Time),
 	}
 }
 
@@ -182,8 +148,6 @@ func (r *Reconciler) ReconcileOnce(ctx context.Context) error {
 			r.ingestOnce(ctx)
 		}
 	}
-	r.activatedThisPass = make(map[string]bool) // coalesce wakes within this pass (see activate)
-	r.pendingThisPass = make(map[string]bool)   // providers with pending work this pass (see reactivateStalled)
 	items, err := r.db.ListActiveItems(ctx)
 	if err != nil {
 		return err
@@ -193,9 +157,6 @@ func (r *Reconciler) ReconcileOnce(ctx context.Context) error {
 			log.Printf("reconcile item %d (%s/%s): %v", it.ID, it.Lane, it.SourceRef, err)
 		}
 	}
-	// Self-healing backstop: re-fire activation for on_demand cloudrun providers whose pending
-	// work never woke (assignment-time activation failed/timed out). Best-effort, anti-stampede.
-	r.reactivateStalled(ctx)
 	return nil
 }
 
@@ -251,16 +212,10 @@ func (r *Reconciler) reconcileItem(ctx context.Context, item Item) error {
 			// running but its heartbeat has gone stale, the worker likely died: re-route it
 			// (timeout->fallback), then continue.
 			st := bySeq[fs.Seq]
-			switch {
-			case st.Status == stepRunning && r.isStale(st):
+			if st.Status == stepRunning && r.isStale(st) {
 				if err := r.handleStaleStep(ctx, item, st); err != nil {
 					return err
 				}
-			case st.Status == stepPending && st.AssignedProvider != "":
-				// Pending-but-unclaimed: the assignment is on the frontier but no worker has
-				// picked it up. Note the provider so reactivateStalled can re-fire its wake if
-				// it is an on_demand cloudrun job with no poll safety net (self-healing, A2).
-				r.pendingThisPass[st.AssignedProvider] = true
 			}
 			// Keep the item's status in sync with what has completed and return.
 			return r.syncItemStatus(ctx, item, flowSteps, bySeq)
@@ -338,19 +293,16 @@ func (r *Reconciler) materialize(ctx context.Context, item Item, fs FlowStep) (d
 		}); err != nil {
 			return false, err
 		}
-		r.activate(ctx, item, prov)
 		return false, nil
 	}
 }
 
 // handleStaleStep recovers a running step whose worker has gone silent (heartbeat older
-// than staleAfter -> the worker likely died). Per the architecture's timeout policy it
-// "re-fire[s] activation OR fall[s] back to the next provider": it asks the router for the
-// next eligible provider EXCLUDING the dead one (so it honours constraints + health and
-// never picks the same dead worker). If an alternative exists the step fails over to it; if
-// none does, the step is re-queued on the same provider to be re-claimed should it revive.
-// Either way the step returns to the pending frontier (heartbeat cleared) and, when the
-// chosen provider is on_demand, activation is re-fired.
+// than staleAfter -> the worker likely died). It asks the router for the next eligible provider
+// EXCLUDING the dead one. If an alternative exists the step fails over to it; if none does,
+// the step is re-queued on the same provider to be re-claimed should it revive. Either way the
+// step returns to the pending frontier (heartbeat cleared). Waking the new provider is the
+// dispatcher's responsibility — the reconciler only updates the assignment row.
 func (r *Reconciler) handleStaleStep(ctx context.Context, item Item, st ItemStep) error {
 	dead := st.AssignedProvider
 	next, ok, err := r.router.Select(ctx, st.Capability, item, r.now(), r.healthTTL, dead)
@@ -358,13 +310,13 @@ func (r *Reconciler) handleStaleStep(ctx context.Context, item Item, st ItemStep
 		return err
 	}
 
-	chosen := next
+	var chosen Provider
 	if ok {
 		log.Printf("reconcile item %d seq %d: stale heartbeat, failing over %s -> %s", item.ID, st.Seq, dead, next.Name)
+		chosen = next
 	} else {
-		// No alternative provider: re-queue on the same one (it may come back). Read it to
-		// decide whether to re-fire activation; if it vanished from config, re-queue
-		// unassigned and let a later pass route the step afresh.
+		// No alternative provider: re-queue on the same one (it may come back). If it vanished
+		// from config, re-queue unassigned so a later pass routes the step afresh.
 		log.Printf("reconcile item %d seq %d: stale heartbeat, no fallback, re-queuing %s", item.ID, st.Seq, dead)
 		p, found, gerr := r.db.GetProvider(ctx, dead)
 		if gerr != nil {
@@ -372,90 +324,14 @@ func (r *Reconciler) handleStaleStep(ctx context.Context, item Item, st ItemStep
 		}
 		if found {
 			chosen = p
-		} else {
-			chosen = Provider{} // empty name -> NULL assigned_provider; re-route next pass
 		}
+		// chosen stays zero-value if not found: empty name -> NULL assigned_provider; re-route next pass
 	}
 
 	st.Status = stepPending
 	st.HeartbeatAt = nil
 	st.AssignedProvider = chosen.Name
-	if err := r.db.UpsertItemStep(ctx, st); err != nil {
-		return err
-	}
-	r.activate(ctx, item, chosen)
-	return nil
-}
-
-// activate wakes the provider an assignment was just routed to (symmetric activation): it is called
-// for EVERY assignment, and the Activator decides per provider HOW to wake it (Cloud Run `run` for
-// cloudrun, tailnet poke for residents, no-op otherwise — see activator.go). Only the empty
-// (unassigned) provider is skipped, there being nothing to wake. Best-effort: a failed wake is
-// logged, not fatal — the pending assignment stands and the worker's own poll still drains it.
-// wakeRequest builds the RunRequest that wakes a chosen provider. App == provider name (the
-// provider IS the deployable unit today); Env/ItemStepID stay zero — reserved for the F2/F3
-// agent transport + dispatcher, ignored by the current GCP/poke transports.
-func wakeRequest(p Provider) RunRequest {
-	return RunRequest{App: p.Name, Provider: p, Capability: p.Capability}
-}
-
-func (r *Reconciler) activate(ctx context.Context, item Item, prov Provider) {
-	if prov.Name == "" || r.activatedThisPass[prov.Name] {
-		return // nothing to wake, or already woken this pass (one wake drains the whole queue)
-	}
-	r.activatedThisPass[prov.Name] = true
-	if err := r.runner.Run(ctx, wakeRequest(prov)); err != nil {
-		log.Printf("activate %s for item %d: %v", prov.Name, item.ID, err)
-		return // a failed wake does NOT anchor the backoff — self-healing retries next pass
-	}
-	// A successful wake anchors the anti-stampede window: the woken worker now drains the queue,
-	// so reactivateStalled must not re-fire within reactivateBackoff (see reactivateStalled).
-	r.lastActivatedAt[prov.Name] = r.now()
-}
-
-// reactivateStalled is the self-healing backstop for on_demand cloudrun providers (A2). After the
-// per-item pass, it re-fires activation for every provider that still holds pending work but did
-// NOT wake — the typical cause being an assignment-time activation that failed or timed out on a
-// cold start. A scale-to-zero Cloud Run Job has no poll safety net, so without this a stuck step
-// stays pending forever until someone runs `gcloud run jobs execute` by hand.
-//
-// The anti-stampede invariant is the whole point:
-//   - A SUCCESSFUL activation anchors lastActivatedAt; while now-lastActivatedAt < reactivateBackoff
-//     we do NOT re-fire. One woken on_demand worker claims until its queue drains (one execution
-//     pulling via SKIP LOCKED), so re-firing would spawn CONCURRENT executions — the swarm bug.
-//   - A FAILED activation leaves lastActivatedAt untouched, so the next pass retries it. No
-//     execution was started on a failure, so a retry cannot swarm; it is legitimate recovery.
-//   - First-ever activation (no recorded timestamp) fires immediately.
-//
-// Scope: only on_demand cloudrun providers. Residents (Mac/VPC) already have a poll + poke safety
-// net and must NOT be turned into a swarm, so they are skipped. Best-effort throughout: a failure
-// is logged, never fatal, and never stalls the reconciler.
-func (r *Reconciler) reactivateStalled(ctx context.Context) {
-	for name := range r.pendingThisPass {
-		if r.activatedThisPass[name] {
-			continue // already woken this pass (assignment-time) — one wake drains the queue
-		}
-		p, found, err := r.db.GetProvider(ctx, name)
-		if err != nil {
-			log.Printf("reactivate %s: get provider: %v", name, err)
-			continue
-		}
-		// Only on_demand cloudrun has no poll safety net. Residents (and a provider since removed
-		// from config) are out of scope — re-firing them risks the very swarm we are avoiding.
-		if !found || p.Runtime != runtimeCloudRun || p.Activation != activationOnDemand {
-			continue
-		}
-		if last, seen := r.lastActivatedAt[name]; seen && r.now().Sub(last) < r.reactivateBackoff {
-			continue // a recent success is still draining — re-firing now would swarm
-		}
-		r.activatedThisPass[name] = true
-		if err := r.runner.Run(ctx, wakeRequest(p)); err != nil {
-			log.Printf("reactivate %s: %v", name, err) // failure: do not anchor; retry next pass
-			continue
-		}
-		log.Printf("reactivate %s: re-fired activation for stuck pending work (self-healing)", name)
-		r.lastActivatedAt[name] = r.now() // success anchors the anti-stampede backoff
-	}
+	return r.db.UpsertItemStep(ctx, st)
 }
 
 // syncItemStatus recomputes the item's status from its completed steps and persists it if
@@ -572,13 +448,3 @@ func (r *Reconciler) gateTerminalStatus(ctx context.Context, item Item, flowStep
 	return "", false, nil
 }
 
-// logActivator is the default Runner: it records the wake intent without calling any
-// cloud API. The real Cloud Run Jobs `run` client is wired at deploy (it needs
-// run.jobs.run on the reconciler's service account); until then this keeps the loop
-// runnable and the tests pure.
-type logActivator struct{}
-
-func (logActivator) Run(_ context.Context, req RunRequest) error {
-	log.Printf("activate (noop): would wake on_demand provider %q (runtime=%s)", req.Provider.Name, req.Provider.Runtime)
-	return nil
-}

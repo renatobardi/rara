@@ -134,7 +134,7 @@ func TestReconcilePodcastRoutesDirectAudio(t *testing.T) {
 	podID := db.items[itemKey(lanePodcast, "ep1")].ID
 	ytID := db.items[itemKey(laneYouTube, "vid1")].ID
 
-	r := NewReconciler(db, &fakeActivator{})
+	r := NewReconciler(db)
 	// Pass 1 assigns gate_barato to both; keep both; pass 2 assigns transcrever to each.
 	if err := r.ReconcileOnce(ctx); err != nil {
 		t.Fatal(err)

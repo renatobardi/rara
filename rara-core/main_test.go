@@ -624,6 +624,22 @@ func (m *MockDatabase) ClaimPendingStep(_ context.Context, capability, provider 
 	return &s, nil
 }
 
+func (m *MockDatabase) ListAssignedSteps(_ context.Context) ([]ItemStep, error) {
+	var out []ItemStep
+	for _, s := range m.itemSteps {
+		if s.Status == stepPending && s.AssignedProvider != "" {
+			out = append(out, s)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].ItemID != out[j].ItemID {
+			return out[i].ItemID < out[j].ItemID
+		}
+		return out[i].Seq < out[j].Seq
+	})
+	return out, nil
+}
+
 func (m *MockDatabase) ListRecentDistillations(_ context.Context, limit int) ([]DistillationSummary, error) {
 	out := make([]DistillationSummary, 0)
 	for i := len(m.distillations) - 1; i >= 0 && len(out) < limit; i-- {
@@ -1168,6 +1184,58 @@ func TestInterestProfileOneActiveInvariant(t *testing.T) {
 	// A proposed row is fine.
 	if err := db.InsertInterestProfile(ctx, InterestProfile{Version: 2, Status: profileProposed}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestListAssignedSteps(t *testing.T) {
+	ctx := context.Background()
+	db := newMockDatabase()
+
+	_ = db.UpsertCapability(ctx, Capability{Name: capTranscrever})
+	_ = db.UpsertCapability(ctx, Capability{Name: capDestilar})
+	_ = db.UpsertProvider(ctx, Provider{Name: "p1", Capability: capTranscrever, Runtime: runtimeCloudRun, Activation: activationOnDemand, Cost: 1, Quality: 1, Enabled: true})
+	_ = db.UpsertProvider(ctx, Provider{Name: "p2", Capability: capTranscrever, Runtime: runtimeVPC, Activation: activationResident, Cost: 1, Quality: 1, Enabled: true})
+	flowID, _ := db.UpsertFlow(ctx, Flow{Name: "test", SourceType: "youtube", Enabled: true})
+	itemID, _ := db.UpsertItem(ctx, Item{Lane: "youtube", SourceRef: "v1", FlowID: flowID, Status: itemDiscovered})
+
+	// Assigned step: pending + has assigned_provider.
+	_ = db.UpsertItemStep(ctx, ItemStep{ItemID: itemID, Seq: 1, Capability: capTranscrever, Status: stepPending, AssignedProvider: "p1"})
+	// Unassigned step: pending but no provider.
+	_ = db.UpsertItemStep(ctx, ItemStep{ItemID: itemID, Seq: 2, Capability: capDestilar, Status: stepPending})
+	// Running step: already claimed — not a dispatch target.
+	_ = db.UpsertItemStep(ctx, ItemStep{ItemID: itemID, Seq: 3, Capability: capTranscrever, Status: stepRunning, AssignedProvider: "p2"})
+
+	got, err := db.ListAssignedSteps(ctx)
+	if err != nil {
+		t.Fatalf("ListAssignedSteps: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("want 1 assigned step, got %d", len(got))
+	}
+	if got[0].AssignedProvider != "p1" {
+		t.Errorf("want provider p1, got %q", got[0].AssignedProvider)
+	}
+}
+
+func TestProviderRunnerURL(t *testing.T) {
+	ctx := context.Background()
+	db := newMockDatabase()
+	_ = db.UpsertCapability(ctx, Capability{Name: capTranscrever})
+	p := Provider{
+		Name: "vpc-scribe", Capability: capTranscrever,
+		Runtime: runtimeVPC, Activation: activationResident,
+		Cost: 1, Quality: 1, Enabled: true,
+		RunnerURL: "http://100.64.1.1:7800",
+	}
+	if err := db.UpsertProvider(ctx, p); err != nil {
+		t.Fatalf("UpsertProvider: %v", err)
+	}
+	got, ok, err := db.GetProvider(ctx, "vpc-scribe")
+	if err != nil || !ok {
+		t.Fatalf("GetProvider: ok=%v err=%v", ok, err)
+	}
+	if got.RunnerURL != "http://100.64.1.1:7800" {
+		t.Errorf("RunnerURL not round-tripped, got %q", got.RunnerURL)
 	}
 }
 

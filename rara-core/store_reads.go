@@ -121,7 +121,7 @@ func (d *pgxDatabase) ListProvidersForCapability(ctx context.Context, capability
 	// idx_providers_capability (partial, enabled=true) backs this lookup.
 	const q = `
 		SELECT name, capability, runtime, activation, cost, quality, latency_ms,
-		       constraints, enabled, heartbeat_at, COALESCE(poke_url, '')
+		       constraints, enabled, heartbeat_at, COALESCE(poke_url, ''), COALESCE(runner_url, '')
 		FROM providers
 		WHERE capability = $1 AND enabled = true
 		ORDER BY name`
@@ -134,7 +134,7 @@ func (d *pgxDatabase) ListProvidersForCapability(ctx context.Context, capability
 	for rows.Next() {
 		var p Provider
 		if err := rows.Scan(&p.Name, &p.Capability, &p.Runtime, &p.Activation, &p.Cost,
-			&p.Quality, &p.LatencyMs, &p.Constraints, &p.Enabled, &p.HeartbeatAt, &p.PokeURL); err != nil {
+			&p.Quality, &p.LatencyMs, &p.Constraints, &p.Enabled, &p.HeartbeatAt, &p.PokeURL, &p.RunnerURL); err != nil {
 			return nil, err
 		}
 		out = append(out, p)
@@ -145,12 +145,12 @@ func (d *pgxDatabase) ListProvidersForCapability(ctx context.Context, capability
 func (d *pgxDatabase) GetProvider(ctx context.Context, name string) (Provider, bool, error) {
 	const q = `
 		SELECT name, capability, runtime, activation, cost, quality, latency_ms,
-		       constraints, enabled, heartbeat_at, COALESCE(poke_url, '')
+		       constraints, enabled, heartbeat_at, COALESCE(poke_url, ''), COALESCE(runner_url, '')
 		FROM providers
 		WHERE name = $1`
 	var p Provider
 	err := d.conn.QueryRow(ctx, q, name).Scan(&p.Name, &p.Capability, &p.Runtime, &p.Activation,
-		&p.Cost, &p.Quality, &p.LatencyMs, &p.Constraints, &p.Enabled, &p.HeartbeatAt, &p.PokeURL)
+		&p.Cost, &p.Quality, &p.LatencyMs, &p.Constraints, &p.Enabled, &p.HeartbeatAt, &p.PokeURL, &p.RunnerURL)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Provider{}, false, nil
 	}
@@ -542,7 +542,7 @@ func (d *pgxDatabase) ListPodcastFeeds(ctx context.Context) ([]PodcastFeed, erro
 func (d *pgxDatabase) ListProviders(ctx context.Context) ([]Provider, error) {
 	const q = `
 		SELECT name, capability, runtime, activation, cost, quality, latency_ms,
-		       constraints, enabled, heartbeat_at, COALESCE(poke_url, '')
+		       constraints, enabled, heartbeat_at, COALESCE(poke_url, ''), COALESCE(runner_url, '')
 		FROM providers ORDER BY name`
 	rows, err := d.conn.Query(ctx, q)
 	if err != nil {
@@ -553,7 +553,7 @@ func (d *pgxDatabase) ListProviders(ctx context.Context) ([]Provider, error) {
 	for rows.Next() {
 		var p Provider
 		if err := rows.Scan(&p.Name, &p.Capability, &p.Runtime, &p.Activation, &p.Cost,
-			&p.Quality, &p.LatencyMs, &p.Constraints, &p.Enabled, &p.HeartbeatAt, &p.PokeURL); err != nil {
+			&p.Quality, &p.LatencyMs, &p.Constraints, &p.Enabled, &p.HeartbeatAt, &p.PokeURL, &p.RunnerURL); err != nil {
 			return nil, err
 		}
 		out = append(out, p)
@@ -794,4 +794,31 @@ func (d *pgxDatabase) ClaimPendingStep(ctx context.Context, capability, provider
 		return nil, err
 	}
 	return &s, nil
+}
+
+// ListAssignedSteps returns item_steps with status='pending' AND assigned_provider IS NOT NULL —
+// the set the dispatcher observes to decide which providers need waking. Ordered by id (FIFO).
+func (d *pgxDatabase) ListAssignedSteps(ctx context.Context) ([]ItemStep, error) {
+	const q = `
+		SELECT item_id, seq, capability, status,
+		       COALESCE(assigned_provider, ''), attempt,
+		       heartbeat_at, COALESCE(output_ref, ''), COALESCE(error, '')
+		FROM item_steps
+		WHERE status = 'pending' AND assigned_provider IS NOT NULL
+		ORDER BY id`
+	rows, err := d.conn.Query(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ItemStep
+	for rows.Next() {
+		var s ItemStep
+		if err := rows.Scan(&s.ItemID, &s.Seq, &s.Capability, &s.Status,
+			&s.AssignedProvider, &s.Attempt, &s.HeartbeatAt, &s.OutputRef, &s.Error); err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
 }

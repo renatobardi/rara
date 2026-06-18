@@ -92,13 +92,13 @@ func mustStep(t *testing.T, db *MockDatabase, s ItemStep) {
 // now runs out of process on the SDK (rara-scribe, rara-distill, rara-sift); here the to-text and
 // distill workers are simulated by completeStep (the external app writes its domain row and marks the
 // step done) and the curation gates by runGate (rara-sift writes its gate_decision and marks the step
-// done). The only seams are the simulators and a fake activator; the reconciler under test is real.
+// done). The only seams are the simulators; the reconciler under test is real.
 func TestEndToEndYouTubeFlow(t *testing.T) {
 	ctx := context.Background()
 	db := newMockDatabase()
 	itemID := seedAndIngestOne(t, db, "vid1")
-	act := &fakeActivator{}
-	r := NewReconciler(db, act)
+	
+	r := NewReconciler(db)
 	// The work steps (transcrever seq 3, destilar seq 5) are completed by their out-of-process apps;
 	// we simulate each finishing its claimed step with its domain row id.
 	work := []struct {
@@ -153,18 +153,5 @@ func TestEndToEndYouTubeFlow(t *testing.T) {
 	// Both gates kept (the handlers recorded the decisions).
 	if len(db.gateDecisions) != 2 {
 		t.Errorf("expected 2 keep decisions, got %d", len(db.gateDecisions))
-	}
-	// Symmetric activation (P1b): the reconciler activates EVERY assigned provider — on_demand
-	// (gate-barato, gate-rico, distill, woken via Cloud Run `run`) AND the resident scribe
-	// (asr-youtube, poked over the tailnet). The Activator dispatches by provider shape; the
-	// reconciler no longer special-cases on_demand.
-	woken := map[string]bool{}
-	for _, n := range act.woken {
-		woken[n] = true
-	}
-	for _, n := range []string{provGateBarato, provGateRico, provDistill, provASRYouTube} {
-		if !woken[n] {
-			t.Errorf("expected %s to be activated, got %v", n, act.woken)
-		}
 	}
 }
