@@ -134,7 +134,13 @@ func (m *MockDatabase) ActiveFeeds(_ context.Context) ([]Feed, error) {
 	if m.err != nil {
 		return nil, m.err
 	}
-	return m.feeds, nil
+	var out []Feed
+	for _, f := range m.feeds {
+		if f.Active {
+			out = append(out, f)
+		}
+	}
+	return out, nil
 }
 
 func (m *MockDatabase) UpsertEpisode(_ context.Context, feedID int, e Episode) error {
@@ -176,7 +182,7 @@ func run(ctx context.Context, db Database, fetch Fetcher) (int, error) {
 func TestRunCollectsEpisodes(t *testing.T) {
 	ctx := context.Background()
 	db := newMockDatabase()
-	db.feeds = []Feed{{ID: 1, FeedURL: "https://example.com/feed.xml"}}
+	db.feeds = []Feed{{ID: 1, FeedURL: "https://example.com/feed.xml", Active: true}}
 
 	n, err := run(ctx, db, staticFetcher(sampleFeed))
 	if err != nil {
@@ -200,7 +206,7 @@ func TestRunCollectsEpisodes(t *testing.T) {
 func TestRunIdempotent(t *testing.T) {
 	ctx := context.Background()
 	db := newMockDatabase()
-	db.feeds = []Feed{{ID: 1, FeedURL: "https://example.com/feed.xml"}}
+	db.feeds = []Feed{{ID: 1, FeedURL: "https://example.com/feed.xml", Active: true}}
 	fetch := staticFetcher(sampleFeed)
 
 	if _, err := run(ctx, db, fetch); err != nil {
@@ -220,8 +226,8 @@ func TestRunSkipsBadFeed(t *testing.T) {
 	ctx := context.Background()
 	db := newMockDatabase()
 	db.feeds = []Feed{
-		{ID: 1, FeedURL: "https://bad.example.com/feed.xml"},
-		{ID: 2, FeedURL: "https://good.example.com/feed.xml"},
+		{ID: 1, FeedURL: "https://bad.example.com/feed.xml", Active: true},
+		{ID: 2, FeedURL: "https://good.example.com/feed.xml", Active: true},
 	}
 	fetch := func(_ context.Context, url string) ([]byte, error) {
 		if url == "https://bad.example.com/feed.xml" {
@@ -280,7 +286,7 @@ func TestParseRSSPrefersItunesSummary(t *testing.T) {
 func TestRunStoresEpisodeDescription(t *testing.T) {
 	ctx := context.Background()
 	db := newMockDatabase()
-	db.feeds = []Feed{{ID: 1, FeedURL: "https://example.com/feed.xml"}}
+	db.feeds = []Feed{{ID: 1, FeedURL: "https://example.com/feed.xml", Active: true}}
 
 	_, err := run(ctx, db, staticFetcher(sampleFeedWithDescription))
 	if err != nil {
@@ -340,7 +346,7 @@ func TestPublishedFloorFiltersOldEpisodes(t *testing.T) {
 
 	ctx := context.Background()
 	db := newMockDatabase()
-	db.feeds = []Feed{{ID: 1, FeedURL: "https://example.com/feed.xml"}}
+	db.feeds = []Feed{{ID: 1, FeedURL: "https://example.com/feed.xml", Active: true}}
 
 	floor, _ := parsePublishedFloor("2025-07-01")
 	n, err := runWithFloor(ctx, db, staticFetcher(feed), floor)
@@ -380,7 +386,7 @@ func TestPublishedFloorKeepsEpisodesWithoutDate(t *testing.T) {
 
 	ctx := context.Background()
 	db := newMockDatabase()
-	db.feeds = []Feed{{ID: 1, FeedURL: "https://example.com/feed.xml"}}
+	db.feeds = []Feed{{ID: 1, FeedURL: "https://example.com/feed.xml", Active: true}}
 
 	floor, _ := parsePublishedFloor("2025-07-01")
 	n, err := runWithFloor(ctx, db, staticFetcher(feed), floor)
@@ -398,11 +404,38 @@ func TestPublishedFloorKeepsEpisodesWithoutDate(t *testing.T) {
 	}
 }
 
+// TestRunIgnoresDisabledFeed: a feed with active=false must never be fetched or catalogued.
+// This mirrors the SQL "WHERE active = true" contract in MockDatabase — the Runner wakes dial
+// and dial pulls ONLY its enabled sources, leaving disabled feeds untouched.
+func TestRunIgnoresDisabledFeed(t *testing.T) {
+	ctx := context.Background()
+	db := newMockDatabase()
+	db.feeds = []Feed{
+		{ID: 1, FeedURL: "https://active.example.com/feed.xml", Active: true},
+		{ID: 2, FeedURL: "https://inactive.example.com/feed.xml", Active: false},
+	}
+	var fetched []string
+	fetch := func(_ context.Context, url string) ([]byte, error) {
+		fetched = append(fetched, url)
+		return []byte(sampleFeed), nil
+	}
+	n, err := run(ctx, db, fetch)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if len(fetched) != 1 || fetched[0] != "https://active.example.com/feed.xml" {
+		t.Errorf("fetched %v, want only active feed", fetched)
+	}
+	if n != 2 {
+		t.Errorf("catalogued %d, want 2 (active feed only)", n)
+	}
+}
+
 // TestPublishedFloorDisabledWhenEmpty: no floor (empty string) catalogs all episodes.
 func TestPublishedFloorDisabledWhenEmpty(t *testing.T) {
 	ctx := context.Background()
 	db := newMockDatabase()
-	db.feeds = []Feed{{ID: 1, FeedURL: "https://example.com/feed.xml"}}
+	db.feeds = []Feed{{ID: 1, FeedURL: "https://example.com/feed.xml", Active: true}}
 
 	n, err := runWithFloor(ctx, db, staticFetcher(sampleFeed), nil)
 	if err != nil {

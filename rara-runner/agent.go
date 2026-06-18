@@ -23,9 +23,13 @@ import (
 	"net/http"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 )
+
+// digestRE matches a properly-formatted digest-only image reference: registry/image@sha256:<64 hex>.
+var digestRE = regexp.MustCompile(`^[^:@]+@sha256:[a-f0-9]{64}$`)
 
 // ContainerRunner starts the worker container for a resolved (already-allowlisted) image with the
 // given per-run env. ctx carries the request deadline so a stalled docker binary doesn't hold the
@@ -217,8 +221,8 @@ func parseAllowlist(s string) (map[string]string, error) {
 		if !ok || app == "" || image == "" {
 			return nil, fmt.Errorf("RUNNER_ALLOWED_IMAGES entry %q: want app=image", pair)
 		}
-		if !strings.Contains(image, "@sha256:") {
-			return nil, fmt.Errorf("RUNNER_ALLOWED_IMAGES %q: image must be pinned by digest (@sha256:)", app)
+		if !digestRE.MatchString(image) {
+			return nil, fmt.Errorf("RUNNER_ALLOWED_IMAGES %q: image must be digest-pinned (registry/image@sha256:<64hex>)", app)
 		}
 		if _, dup := out[app]; dup {
 			return nil, fmt.Errorf("RUNNER_ALLOWED_IMAGES: duplicate app %q", app)

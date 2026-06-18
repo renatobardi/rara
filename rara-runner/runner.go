@@ -207,6 +207,8 @@ func newDispatchRunnerFromEnv() Runner {
 	}
 	if tok := os.Getenv("RUNNER_TOKEN"); tok != "" {
 		d.host = &hostRunnerTransport{token: tok, http: client}
+	} else {
+		log.Printf("dispatch: RUNNER_TOKEN unset; host runner transport disabled")
 	}
 
 	if d.cloudRun == nil && d.host == nil {

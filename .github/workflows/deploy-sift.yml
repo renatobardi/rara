@@ -129,32 +129,15 @@ jobs:
           # (groq-llama/70b). vars.LITELLM_MODEL=gemini-flash is spend-capped → ignored.
           SECRETS="DATABASE_URL=database-url:latest,LITELLM_API_KEY=litellm-api-key:latest"
           ENV_VARS="SIFT_GATE=$SIFT_GATE,SIFT_PROVIDER=$SIFT_PROVIDER,LITELLM_BASE_URL=$LITELLM_BASE_URL,LITELLM_MODEL=groq-fast"
+          COMMON_ARGS="--image $IMAGE --region $REGION --project $GCP_PROJECT --set-secrets $SECRETS --set-env-vars $ENV_VARS --max-retries 0 --task-timeout 3600s --memory 512Mi --cpu 1"
 
-          UPDATE_ERR=$(gcloud run jobs update "$JOB_NAME" \
-               --image "$IMAGE" \
-               --region "$REGION" \
-               --project "$GCP_PROJECT" \
-               --set-secrets "$SECRETS" \
-               --set-env-vars "$ENV_VARS" \
-               --max-retries 0 \
-               --task-timeout 3600s \
-               --memory 512Mi \
-               --cpu 1 2>&1) && echo "$UPDATE_ERR" || {
+          UPDATE_ERR=$(gcloud run jobs update "$JOB_NAME" $COMMON_ARGS 2>&1) && echo "$UPDATE_ERR" || {
             # Surface the error; only proceed to create if the job genuinely doesn't exist yet.
             echo "$UPDATE_ERR"
             echo "$UPDATE_ERR" | grep -qi "not found\|does not exist\|cannot be found" || \
               { echo "❌ update failed for unexpected reason (not 'not found')"; exit 1; }
             echo "Job not found — creating for the first time..."
-            gcloud run jobs create "$JOB_NAME" \
-              --image "$IMAGE" \
-              --region "$REGION" \
-              --project "$GCP_PROJECT" \
-              --set-secrets "$SECRETS" \
-              --set-env-vars "$ENV_VARS" \
-              --max-retries 0 \
-              --task-timeout 3600s \
-              --memory 512Mi \
-              --cpu 1
+            gcloud run jobs create "$JOB_NAME" $COMMON_ARGS
           }
 
       - name: Execute job once

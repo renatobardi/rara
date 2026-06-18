@@ -32,6 +32,7 @@ type Feed struct {
 	ID      int
 	FeedURL string
 	Title   string
+	Active  bool // mirrors podcast_feeds.active; ActiveFeeds returns only true rows
 }
 
 // Episode is one collected podcast episode (an RSS item with an audio enclosure).
@@ -272,7 +273,7 @@ func httpFetch(ctx context.Context, url string) ([]byte, error) {
 type pgxDatabase struct{ conn *pgx.Conn }
 
 func (d *pgxDatabase) ActiveFeeds(ctx context.Context) ([]Feed, error) {
-	const q = `SELECT id, feed_url, COALESCE(title, '') FROM podcast_feeds WHERE active = true ORDER BY id`
+	const q = `SELECT id, feed_url, COALESCE(title, ''), active FROM podcast_feeds WHERE active = true ORDER BY id`
 	rows, err := d.conn.Query(ctx, q)
 	if err != nil {
 		return nil, err
@@ -281,7 +282,7 @@ func (d *pgxDatabase) ActiveFeeds(ctx context.Context) ([]Feed, error) {
 	var out []Feed
 	for rows.Next() {
 		var f Feed
-		if err := rows.Scan(&f.ID, &f.FeedURL, &f.Title); err != nil {
+		if err := rows.Scan(&f.ID, &f.FeedURL, &f.Title, &f.Active); err != nil {
 			return nil, err
 		}
 		out = append(out, f)

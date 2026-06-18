@@ -176,7 +176,10 @@ func cloudRunBody(env map[string]string) string {
 	body.Overrides.ContainerOverrides = []struct {
 		Env []cloudRunEnvPair `json:"env"`
 	}{{Env: pairs}}
-	b, _ := json.Marshal(body)
+	b, err := json.Marshal(body)
+	if err != nil {
+		return "{}"
+	}
 	return string(b)
 }
 

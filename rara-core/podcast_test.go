@@ -26,6 +26,14 @@ func TestSeedPodcastLane(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 
+	// rara-dial: the podcast coletar provider — registered so the F3 Runner dispatch can wake it.
+	if dial, ok := db.providers[provDial]; !ok {
+		t.Fatalf("provider %q not seeded — rara-dial must be coletar so the Runner dispatch can wake it", provDial)
+	} else if dial.Capability != capColetar || dial.Runtime != runtimeCloudRun || dial.Activation != activationOnDemand || !dial.Enabled {
+		t.Errorf("rara-dial = {cap:%s rt:%s act:%s enabled:%v}, want {coletar,cloudrun,on_demand,true}",
+			dial.Capability, dial.Runtime, dial.Activation, dial.Enabled)
+	}
+
 	// asr-direct-audio provider: transcrever, cloudrun, on_demand, accepts podcast, no residential.
 	p, ok := db.providers[provASRDirectAudio]
 	if !ok {

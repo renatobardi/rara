@@ -206,8 +206,7 @@ func (c *Core) StepHosts(ctx context.Context, flowID, seq int) (StepHostsRespons
 	var names []string
 	if fb := stepFallbackFromOptions(fs.Options); len(fb) > 0 {
 		if err := json.Unmarshal(fb, &names); err != nil {
-			log.Printf("stepHosts: malformed providers in flow %d step %d: %v", flowID, seq, err)
-			names = nil
+			return StepHostsResponse{}, fmt.Errorf("flow %d step %d: malformed providers in options: %w", flowID, seq, err)
 		}
 	}
 	if names == nil {
@@ -890,7 +889,7 @@ func pathID(w http.ResponseWriter, r *http.Request) (int, bool) {
 func pathIntParam(w http.ResponseWriter, r *http.Request, name string) (int, bool) {
 	v, err := strconv.Atoi(r.PathValue(name))
 	if err != nil || v <= 0 {
-		http.Error(w, `{"error":"invalid `+name+` in path"}`, http.StatusBadRequest)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid " + name + " in path"})
 		return 0, false
 	}
 	return v, true
