@@ -36,6 +36,8 @@ jobs:
   build:
     name: Build multi-arch image (amd64 + arm64)
     runs-on: ubuntu-latest
+    env:
+      GCP_REGION: ${{ vars.GCP_REGION }}
     steps:
       - name: Checkout code
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
@@ -53,7 +55,7 @@ jobs:
       # buildx forwards the gcloud credential helper's token over the build session, so no separate
       # docker login action is needed.
       - name: Configure Docker for Artifact Registry
-        run: gcloud auth configure-docker "${{ vars.GCP_REGION }}-docker.pkg.dev" --quiet
+        run: gcloud auth configure-docker "$GCP_REGION-docker.pkg.dev" --quiet
 
       # QEMU only emulates the tiny final alpine stage; the Go compile cross-builds natively.
       - name: Set up QEMU
@@ -73,14 +75,20 @@ jobs:
           push: true
           tags: ${{ env.IMAGE }}
 
+      # Acceptance check: the manifest list MUST carry exactly linux/amd64 + linux/arm64.
+      # build-push-action v6 also emits attestation entries (platform: unknown/unknown); filter
+      # those out before counting so the check stays exact without disabling provenance.
       - name: Verify manifest list has both arches
         run: |
-          docker buildx imagetools inspect "${{ env.IMAGE }}"
-          ARCHES=$(docker buildx imagetools inspect "${{ env.IMAGE }}" --format '{{range .Manifest.Manifests}}{{.Platform.Architecture}} {{end}}')
-          echo "Arches in manifest list: $ARCHES"
-          echo "$ARCHES" | grep -qw amd64 || { echo "❌ missing amd64"; exit 1; }
-          echo "$ARCHES" | grep -qw arm64 || { echo "❌ missing arm64"; exit 1; }
-          echo "✅ manifest list has amd64 + arm64"
+          docker buildx imagetools inspect "$IMAGE"
+          PLATFORMS=$(docker buildx imagetools inspect "$IMAGE" \
+            --format '{{range .Manifest.Manifests}}{{if ne .Platform.OS "unknown"}}{{.Platform.OS}}/{{.Platform.Architecture}} {{end}}{{end}}')
+          echo "Platforms in manifest list: $PLATFORMS"
+          echo "$PLATFORMS" | grep -qw "linux/amd64" || { echo "❌ missing linux/amd64"; exit 1; }
+          echo "$PLATFORMS" | grep -qw "linux/arm64" || { echo "❌ missing linux/arm64"; exit 1; }
+          COUNT=$(echo "$PLATFORMS" | wc -w)
+          [ "$COUNT" -eq 2 ] || { echo "❌ expected exactly 2 real platforms, found $COUNT: $PLATFORMS"; exit 1; }
+          echo "✅ manifest list has exactly linux/amd64 + linux/arm64"
 
   deploy:
     name: Deploy Cloud Run Job
@@ -94,6 +102,7 @@ jobs:
     env:
       REGION: ${{ vars.GCP_REGION }}
       JOB_NAME: rara-${{ matrix.provider }}
+      GCP_PROJECT: ${{ vars.GCP_PROJECT_ID }}
     steps:
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
@@ -106,6 +115,10 @@ jobs:
         uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
 
       - name: Deploy Cloud Run Job
+        env:
+          SIFT_GATE: ${{ matrix.gate }}
+          SIFT_PROVIDER: ${{ matrix.provider }}
+          LITELLM_BASE_URL: ${{ vars.LITELLM_BASE_URL }}
         run: |
           # Update first, create if absent (avoids a describe→create/update TOCTOU race).
           # DATABASE_URL is the shared contract DB; LITELLM_API_KEY is sift-specific.
@@ -113,12 +126,12 @@ jobs:
           # don't need the 70b; keeping them on groq-fast avoids quota contention with distill
           # (groq-llama/70b). vars.LITELLM_MODEL=gemini-flash is spend-capped → ignored.
           SECRETS="DATABASE_URL=database-url:latest,LITELLM_API_KEY=litellm-api-key:latest"
-          ENV_VARS="SIFT_GATE=${{ matrix.gate }},SIFT_PROVIDER=${{ matrix.provider }},LITELLM_BASE_URL=${{ vars.LITELLM_BASE_URL }},LITELLM_MODEL=groq-fast"
+          ENV_VARS="SIFT_GATE=$SIFT_GATE,SIFT_PROVIDER=$SIFT_PROVIDER,LITELLM_BASE_URL=$LITELLM_BASE_URL,LITELLM_MODEL=groq-fast"
 
           UPDATE_ERR=$(gcloud run jobs update "$JOB_NAME" \
                --image "$IMAGE" \
                --region "$REGION" \
-               --project "${{ vars.GCP_PROJECT_ID }}" \
+               --project "$GCP_PROJECT" \
                --set-secrets "$SECRETS" \
                --set-env-vars "$ENV_VARS" \
                --max-retries 0 \
@@ -133,7 +146,7 @@ jobs:
             gcloud run jobs create "$JOB_NAME" \
               --image "$IMAGE" \
               --region "$REGION" \
-              --project "${{ vars.GCP_PROJECT_ID }}" \
+              --project "$GCP_PROJECT" \
               --set-secrets "$SECRETS" \
               --set-env-vars "$ENV_VARS" \
               --max-retries 0 \
@@ -147,5 +160,5 @@ jobs:
         run: |
           gcloud run jobs execute "$JOB_NAME" \
             --region "$REGION" \
-            --project "${{ vars.GCP_PROJECT_ID }}" \
+            --project "$GCP_PROJECT" \
             --wait

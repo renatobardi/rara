@@ -144,13 +144,16 @@ jobs:
           cache-to: type=gha,mode=max
 
       # Acceptance check: the manifest list MUST carry EXACTLY linux/amd64 + linux/arm64.
+      # build-push-action v6 also emits attestation entries (platform: unknown/unknown); filter
+      # those out before counting so the check stays exact without disabling provenance.
       - name: Verify manifest list has both arches
         run: |
           docker buildx imagetools inspect localhost:5000/rara-sift:ci
-          PLATFORMS=$(docker buildx imagetools inspect localhost:5000/rara-sift:ci --format '{{range .Manifest.Manifests}}{{.Platform.OS}}/{{.Platform.Architecture}} {{end}}')
+          PLATFORMS=$(docker buildx imagetools inspect localhost:5000/rara-sift:ci \
+            --format '{{range .Manifest.Manifests}}{{if ne .Platform.OS "unknown"}}{{.Platform.OS}}/{{.Platform.Architecture}} {{end}}{{end}}')
           echo "Platforms in manifest list: $PLATFORMS"
           echo "$PLATFORMS" | grep -qw "linux/amd64" || { echo "❌ missing linux/amd64"; exit 1; }
           echo "$PLATFORMS" | grep -qw "linux/arm64" || { echo "❌ missing linux/arm64"; exit 1; }
           COUNT=$(echo "$PLATFORMS" | wc -w)
-          [ "$COUNT" -eq 2 ] || { echo "❌ expected exactly 2 platforms, found $COUNT: $PLATFORMS"; exit 1; }
+          [ "$COUNT" -eq 2 ] || { echo "❌ expected exactly 2 real platforms, found $COUNT: $PLATFORMS"; exit 1; }
           echo "✅ manifest list has exactly linux/amd64 + linux/arm64"
