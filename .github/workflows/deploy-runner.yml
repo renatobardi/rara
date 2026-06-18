@@ -1,12 +1,13 @@
-name: Deploy rara-runner dispatch
+name: Deploy rara-runner (dispatch + agent)
 
-# Deploys `rara-runner dispatch` as an always-on systemd service on the Oracle VM — the piece that
-# re-arms on_demand workers (reads assigned steps from Neon, wakes the GCP Cloud Run jobs via
-# jobs:run). Native linux/arm64 binary + rsync + systemd, no Docker on the VPC (mirrors deploy-core).
+# Deploys both rara-runner subcommands as always-on systemd services on the Oracle VM:
+#   - `dispatch`: re-arms on_demand workers (reads Neon, wakes Cloud Run jobs via jobs:run)
+#   - `agent`:    resident HTTP daemon (POST /run → docker run) for VPC-local workers
+# Native linux/arm64 binary + rsync + systemd, no Docker required for dispatch itself.
 #
-# workflow_dispatch ONLY: the first bring-up must be deliberate, after the VM has /etc/rara-runner/env
-# (DATABASE_URL, CLOUD_RUN_PROJECT/REGION, GOOGLE_APPLICATION_CREDENTIALS). A push trigger can be
-# added later. The install path /opt/rara-runner is fixed here (DEPLOY_PATH points at the core).
+# workflow_dispatch ONLY: the first bring-up must be deliberate, after the VM has both
+# /etc/rara-runner/env (dispatch) and /etc/rara-runner/agent.env (agent). A push trigger
+# can be added later. The install path /opt/rara-runner is fixed here.
 on:
   workflow_dispatch:
 
@@ -43,7 +44,7 @@ jobs:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
         run: ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
 
-      - name: Upload binary and service file
+      - name: Upload binary and service files
         env:
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
@@ -53,22 +54,40 @@ jobs:
             "${DEPLOY_USER}@${DEPLOY_HOST}:/opt/rara-runner/bin/rara-runner"
           rsync -az rara-runner/deploy/rara-runner-dispatch.service \
             "${DEPLOY_USER}@${DEPLOY_HOST}:/tmp/rara-runner-dispatch.service"
+          rsync -az rara-runner/deploy/rara-runner-agent.service \
+            "${DEPLOY_USER}@${DEPLOY_HOST}:/tmp/rara-runner-agent.service"
 
-      - name: Install service and restart
+      - name: Install services and restart
         env:
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
         run: |
           ssh "${DEPLOY_USER}@${DEPLOY_HOST}" bash <<'EOF'
             set -euo pipefail
+
+            # dispatch
             sudo mv /tmp/rara-runner-dispatch.service /etc/systemd/system/rara-runner-dispatch.service
+
+            # agent
+            sudo mv /tmp/rara-runner-agent.service /etc/systemd/system/rara-runner-agent.service
+
             sudo systemctl daemon-reload
+
             sudo systemctl enable rara-runner-dispatch
             if sudo systemctl is-active --quiet rara-runner-dispatch; then
               sudo systemctl restart rara-runner-dispatch
             else
               sudo systemctl start rara-runner-dispatch
             fi
+
+            sudo systemctl enable rara-runner-agent
+            if sudo systemctl is-active --quiet rara-runner-agent; then
+              sudo systemctl restart rara-runner-agent
+            else
+              sudo systemctl start rara-runner-agent
+            fi
+
             sleep 3
             sudo systemctl status rara-runner-dispatch --no-pager -l | head -20
+            sudo systemctl status rara-runner-agent --no-pager -l | head -20
           EOF

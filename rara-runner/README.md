@@ -63,39 +63,68 @@ RUNNER_ADDR=100.x.x.x:8473 RUNNER_TOKEN=… RUNNER_ALLOWED_IMAGES=rara-distill=�
 
 There is **no `database-runner.yml`** (no tables / migrations).
 
-### `dispatch` on the VPC (systemd)
-
-`deploy-runner.yml` ships `rara-runner dispatch` as an always-on systemd service on the Oracle VM —
-the same native-binary + rsync + systemd pattern as `rara-core` (no Docker on the VPC). It re-arms the
-`on_demand` workers: the reconciler is assignment-only, so without this nothing wakes the Cloud Run
-jobs.
+`deploy-runner.yml` ships **both** subcommands as always-on systemd services on the Oracle VM —
+the same native-binary + rsync + systemd pattern as `rara-core`.
 
 | Detail | Value |
 |---|---|
 | Binary | `rara-runner` (`CGO_ENABLED=0 GOOS=linux GOARCH=arm64`, cross-compiled on `ubuntu-latest`) |
 | Install path | `/opt/rara-runner/bin/rara-runner` (fixed in the workflow) |
-| Config | `/etc/rara-runner/env` (chmod 640, gitignored) — see [deploy/env.example](deploy/env.example) |
-| Service | `/etc/systemd/system/rara-runner-dispatch.service` ([deploy/](deploy/rara-runner-dispatch.service); Type=exec, Restart=on-failure) |
-| Trigger | `workflow_dispatch` only — the first bring-up must be deliberate, after the VM has `/etc/rara-runner/env` |
+| Trigger | `workflow_dispatch` only — bring-up must be deliberate, after env files are in place |
 | Auth | SSH key (`SSH_PRIVATE_KEY`); reuses `DEPLOY_HOST`/`DEPLOY_USER` (same VM as core) |
+
+### `dispatch` (reads Neon, wakes Cloud Run)
+
+| Detail | Value |
+|---|---|
+| Config | `/etc/rara-runner/env` (chmod 640, gitignored) — see [deploy/env.example](deploy/env.example) |
+| Service | `/etc/systemd/system/rara-runner-dispatch.service` — Type=exec, Restart=on-failure |
 
 Prod state is **cloud-run-only**: `dispatch` wakes GCP Cloud Run jobs via `jobs:run`, authenticating
 with ADC through `GOOGLE_APPLICATION_CREDENTIALS=/etc/rara-core/sa-key.json` (the SA key `rara-core`
 already uses — its `rara-core-activator` holds `run.invoker`). `RUNNER_TOKEN` is intentionally unset
 (no host transport yet), so no `agent` is required.
 
-First bring-up (on the VM, once — same env convention as `rara-core`, so the `ubuntu`-run
-service can read it):
+First bring-up (on the VM, once):
 
 ```bash
 sudo mkdir -p /etc/rara-runner && sudo chown ubuntu:ubuntu /etc/rara-runner && sudo chmod 750 /etc/rara-runner
-cp env.example /etc/rara-runner/env && chmod 640 /etc/rara-runner/env
-nano /etc/rara-runner/env   # fill in REAL values before deploying — required vars fail fast at startup:
-                            #   DATABASE_URL, CLOUD_RUN_PROJECT, CLOUD_RUN_REGION, and an existing
-                            #   GOOGLE_APPLICATION_CREDENTIALS file (reuse /etc/rara-core/sa-key.json).
+cp deploy/env.example /etc/rara-runner/env && chmod 640 /etc/rara-runner/env
+nano /etc/rara-runner/env   # DATABASE_URL, CLOUD_RUN_PROJECT, CLOUD_RUN_REGION,
+                            # GOOGLE_APPLICATION_CREDENTIALS (reuse /etc/rara-core/sa-key.json)
+```
+
+### `agent` (receives POST /run, executes docker run)
+
+| Detail | Value |
+|---|---|
+| Config | `/etc/rara-runner/agent.env` (chmod 640, gitignored) — see [deploy/agent.env.example](deploy/agent.env.example) |
+| Service | `/etc/systemd/system/rara-runner-agent.service` — Type=exec, Restart=on-failure, SupplementaryGroups=docker |
+
+The `agent` service runs as `ubuntu` with docker group access (via `SupplementaryGroups=docker`).
+Hardening is lighter than `dispatch` — `ProtectSystem=strict` and `ProtectControlGroups` are omitted
+because `docker run` needs `/var/run/docker.sock` and cgroup writes.
+
+First bring-up (on the VM, once):
+
+```bash
+# 1. Add ubuntu to the docker group (once per VM).
+# WARNING: docker group = root-equivalent privilege via /var/run/docker.sock.
+# Accept this on a dedicated VPC host; consider RUNNER_DOCKER_BIN=podman (rootless) otherwise.
+sudo usermod -aG docker ubuntu
+
+# 2. Provision the worker env file (secrets injected into every container)
+sudo touch /etc/rara-runner/worker.env
+sudo chown ubuntu:ubuntu /etc/rara-runner/worker.env
+sudo chmod 600 /etc/rara-runner/worker.env
+nano /etc/rara-runner/worker.env   # DATABASE_URL, LITELLM_BASE_URL, API keys, etc.
+
+# 3. Provision the agent config
+cp deploy/agent.env.example /etc/rara-runner/agent.env && chmod 640 /etc/rara-runner/agent.env
+nano /etc/rara-runner/agent.env   # RUNNER_ADDR (tailnet IP), RUNNER_TOKEN, RUNNER_ALLOWED_IMAGES
 ```
 
 Then run the workflow: `gh workflow run deploy-runner.yml`.
 
-The `agent` daemon (VPC/Mac, `docker run`) has no deploy workflow yet — it lands with the multi-arch
-image work.
+The workflow deploys dispatch and agent in one step — both services are enabled and started (or
+restarted if already running).

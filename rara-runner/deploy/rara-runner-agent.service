@@ -1,0 +1,31 @@
+[Unit]
+Description=rara-runner agent (2.0 control plane: executes worker containers via docker run)
+After=network.target docker.service
+
+[Service]
+Type=exec
+User=ubuntu
+Group=ubuntu
+SupplementaryGroups=docker
+WorkingDirectory=/opt/rara-runner
+ExecStart=/opt/rara-runner/bin/rara-runner agent
+Restart=on-failure
+RestartSec=5s
+EnvironmentFile=/etc/rara-runner/agent.env
+
+# Hardening: lighter than dispatch because the agent shells out to docker (needs /var/run/docker.sock
+# and cgroup writes). ProtectSystem=strict and ProtectControlGroups are intentionally omitted.
+# SupplementaryGroups=docker grants root-equivalent privilege via the socket — accepted trade-off for
+# VPC use where the attack surface is already bounded by Bearer auth + tailnet + image allowlist.
+# Consider switching RUNNER_DOCKER_BIN=podman (rootless) to reduce blast radius if ubuntu runs
+# other untrusted workloads on the same VM.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectKernelTunables=true
+PrivateDevices=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallFilter=@system-service
+
+[Install]
+WantedBy=multi-user.target

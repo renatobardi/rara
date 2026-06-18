@@ -58,12 +58,21 @@ func loadEnvFile(path string) (map[string]string, error) {
 	if path == "" {
 		return map[string]string{}, nil
 	}
-	data, err := os.ReadFile(path)
+	info, err := os.Stat(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			log.Printf("RUNNER_WORKER_ENV_FILE %q not found; starting with empty base env", path)
 			return map[string]string{}, nil
 		}
+		return nil, fmt.Errorf("loadEnvFile %q: %w", path, err)
+	}
+	// Reject world-readable files: the env file contains secrets (DATABASE_URL, API keys, etc.).
+	// chmod 600 or 640 are the only acceptable permissions.
+	if info.Mode().Perm()&0o004 != 0 {
+		return nil, fmt.Errorf("loadEnvFile %q: file is world-readable (perm %04o); chmod 600 or 640", path, info.Mode().Perm())
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
 		return nil, fmt.Errorf("loadEnvFile %q: %w", path, err)
 	}
 	out := map[string]string{}

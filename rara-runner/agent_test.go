@@ -388,6 +388,17 @@ func TestLoadEnvFileMissingFileReturnsEmpty(t *testing.T) {
 	}
 }
 
+func TestLoadEnvFileRejectsWorldReadable(t *testing.T) {
+	f := writeTempEnvFile(t, "KEY=val\n")
+	if err := os.Chmod(f, 0644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := loadEnvFile(f)
+	if err == nil {
+		t.Fatal("want error for world-readable env file, got nil")
+	}
+}
+
 func TestLoadEnvFileRejectsInvalidKey(t *testing.T) {
 	f := writeTempEnvFile(t, "VALID=ok\nBAD-KEY=x\n")
 	_, err := loadEnvFile(f)
