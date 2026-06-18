@@ -1053,7 +1053,7 @@ func runReconcile(ctx context.Context, db Database, conn *pgx.Conn, dbURL string
 		}
 	}
 
-	r := NewReconciler(db, newActivatorFromEnv()) // real Cloud Run `run` + tailnet poke (P1b)
+	r := NewReconciler(db, newRunnerFromEnv()) // real Cloud Run `run` + tailnet poke (P1b)
 	if v := os.Getenv("RECONCILE_STALE_SECONDS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			r.staleAfter = time.Duration(n) * time.Second
