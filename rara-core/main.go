@@ -687,11 +687,24 @@ func isJSONObject(raw json.RawMessage) bool {
 	if len(raw) == 0 {
 		return true
 	}
+	// Two-phase: first confirm it's an object (rejects arrays, scalars, null); then confirm every
+	// value is a JSON string. The dispatcher injects env as key=value pairs, so non-string values
+	// (numbers, booleans, null) would cause a runtime failure in GetProvider's map[string]string
+	// unmarshal. json.Unmarshal into map[string]string silently accepts null as "", so we must
+	// inspect the raw tokens — a JSON string always starts with '"'.
 	var obj map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &obj); err != nil {
 		return false
 	}
-	return obj != nil // a JSON null unmarshals to a nil map — reject it
+	if obj == nil { // JSON null unmarshals to nil map
+		return false
+	}
+	for _, v := range obj {
+		if len(v) == 0 || v[0] != '"' {
+			return false
+		}
+	}
+	return true
 }
 
 func (d *pgxDatabase) UpsertCapability(ctx context.Context, c Capability) error {
