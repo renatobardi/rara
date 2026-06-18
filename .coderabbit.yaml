@@ -82,7 +82,9 @@ reviews:
   # Linters que o CodeRabbit roda automaticamente (sem config local necessária)
   tools:
     golangci-lint:
-      enabled: true
+      enabled: false  # monorepo: each rara-* is an independent go module; golangci-lint
+                      # runs from the repo root (no go.mod there) and always fails.
+                      # go vet + staticcheck are already enforced per-agent in ci-*.yml.
     eslint:
       enabled: true
     gitleaks:
