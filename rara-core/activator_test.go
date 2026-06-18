@@ -237,6 +237,21 @@ func TestPokeActivatorErrorOnTransport(t *testing.T) {
 	}
 }
 
+// TestPokeActivatorRejectsNonHTTPURL: poke_url is operator config but carries the shared bearer, so
+// a scheme-confused or hostless endpoint must be rejected BEFORE the token is ever sent (no request).
+func TestPokeActivatorRejectsNonHTTPURL(t *testing.T) {
+	for _, bad := range []string{"file:///etc/passwd", "gopher://internal:70", "ftp://host", "://nohost", "http://"} {
+		doer := &fakeDoer{}
+		a := &pokeActivator{token: "secret", http: doer}
+		if err := a.Run(context.Background(), rr(Provider{Name: "x", PokeURL: bad})); err == nil {
+			t.Errorf("poke_url %q: want error (untrusted/malformed endpoint), got nil", bad)
+		}
+		if doer.calls != 0 {
+			t.Errorf("poke_url %q: must not send the bearer token, got %d calls", bad, doer.calls)
+		}
+	}
+}
+
 // --- dispatchActivator --------------------------------------------------------
 
 func TestDispatchRoutesCloudRun(t *testing.T) {

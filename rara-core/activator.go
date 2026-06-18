@@ -25,6 +25,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -157,8 +158,15 @@ func (a *pokeActivator) Run(ctx context.Context, req RunRequest) error {
 	if p.PokeURL == "" {
 		return nil // resident relying on the slow poll alone; nothing to poke
 	}
-	url := strings.TrimRight(p.PokeURL, "/") + "/poke"
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
+	// poke_url is operator config, but it carries the shared POKE_AUTH_TOKEN bearer — so guard the
+	// trust boundary: only POST to a well-formed http(s) endpoint with a host. A scheme-confused
+	// (file://, gopher://) or hostless url would leak the token, so reject it before sending.
+	// (A host allowlist is the upgrade path if poke_url ever stops being operator-curated.)
+	endpoint := strings.TrimRight(p.PokeURL, "/") + "/poke"
+	if u, err := url.Parse(endpoint); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return fmt.Errorf("poke %s: invalid poke_url %q", p.Name, p.PokeURL)
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, nil)
 	if err != nil {
 		return fmt.Errorf("poke new request for %s: %w", p.Name, err)
 	}
