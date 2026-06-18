@@ -145,6 +145,21 @@ func (a *cloudRunActivator) Run(ctx context.Context, req RunRequest) error {
 	return nil
 }
 
+// cloudRunEnvPair is a single env var in the Cloud Run Jobs v2 containerOverrides body.
+type cloudRunEnvPair struct {
+	Name  string `json:"name"`
+	Value string `json:"value"`
+}
+
+// cloudRunOverridesBody is the typed envelope for a Cloud Run Jobs v2 `run` body with env overrides.
+type cloudRunOverridesBody struct {
+	Overrides struct {
+		ContainerOverrides []struct {
+			Env []cloudRunEnvPair `json:"env"`
+		} `json:"containerOverrides"`
+	} `json:"overrides"`
+}
+
 // cloudRunBody returns the request body for a Cloud Run Jobs v2 `run` call. With no env vars the
 // body is `{}` (use the job's deployed defaults). With env vars it injects per-execution overrides
 // so the worker can read the assignment without a separate round-trip to the DB.
@@ -152,20 +167,16 @@ func cloudRunBody(env map[string]string) string {
 	if len(env) == 0 {
 		return "{}"
 	}
-	type envVar struct {
-		Name  string `json:"name"`
-		Value string `json:"value"`
-	}
-	vars := make([]envVar, 0, len(env))
+	pairs := make([]cloudRunEnvPair, 0, len(env))
 	for k, v := range env {
-		vars = append(vars, envVar{Name: k, Value: v})
+		pairs = append(pairs, cloudRunEnvPair{Name: k, Value: v})
 	}
-	sort.Slice(vars, func(i, j int) bool { return vars[i].Name < vars[j].Name })
-	b, _ := json.Marshal(map[string]any{
-		"overrides": map[string]any{
-			"containerOverrides": []map[string]any{{"env": vars}},
-		},
-	})
+	sort.Slice(pairs, func(i, j int) bool { return pairs[i].Name < pairs[j].Name })
+	var body cloudRunOverridesBody
+	body.Overrides.ContainerOverrides = []struct {
+		Env []cloudRunEnvPair `json:"env"`
+	}{{Env: pairs}}
+	b, _ := json.Marshal(body)
 	return string(b)
 }
 
