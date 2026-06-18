@@ -75,6 +75,31 @@ func TestDispatchOncePassesProviderEnv(t *testing.T) {
 	}
 }
 
+func TestDispatchOnceEnvWithSpecialChars(t *testing.T) {
+	// Dispatcher must copy Env values verbatim — no escaping, quoting, or stripping.
+	// The transport layer (Cloud Run / docker -e) owns injection safety; the Dispatcher
+	// must not mangle the values it receives.
+	env := map[string]string{
+		"QUOTED":   `va"lue`,
+		"NEWLINE":  "val\nue",
+		"METACHAR": "val$ue;|`",
+	}
+	db := &mockDispatchDB{
+		steps:     []AssignedStep{{ItemID: 1, Seq: 2, AssignedProvider: "gate-barato"}},
+		providers: map[string]DispatchProvider{"gate-barato": {Name: "gate-barato", Runtime: runtimeCloudRun, Env: env}},
+	}
+	tr := runOnce(t, db)
+	if len(tr.called) != 1 {
+		t.Fatalf("runner called %d times, want 1", len(tr.called))
+	}
+	got := tr.called[0].Env
+	for k, want := range env {
+		if got[k] != want {
+			t.Errorf("Env[%q] = %q, want %q", k, got[k], want)
+		}
+	}
+}
+
 func TestDispatchOnceEmptyEnvStillWakes(t *testing.T) {
 	// Both nil Env and explicit empty map must wake normally — no panic, no env injected.
 	for _, provEnv := range []map[string]string{nil, {}} {

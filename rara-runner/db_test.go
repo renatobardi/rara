@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // parseProviderEnv is the JSONB-text -> map seam GetProvider uses. Testing it directly keeps the
 // suite zero-I/O (no pgx pool, no fake driver dep) while covering the empty/populated/garbage paths.
@@ -17,7 +20,7 @@ func TestParseProviderEnv(t *testing.T) {
 			want: map[string]string{"DISTILL_RECIPE": "opus", "LITELLM_MODEL": "gemini-flash"}},
 		{name: "garbage", raw: "not json", wantErr: true},
 		{name: "non-string value", raw: `{"num":123}`, wantErr: true},
-		{name: "oversized", raw: `{"K":"` + string(make([]byte, maxProviderEnvBytes)) + `"}`, wantErr: true},
+		{name: "oversized", raw: `{"K":"` + strings.Repeat("x", maxProviderEnvBytes) + `"}`, wantErr: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

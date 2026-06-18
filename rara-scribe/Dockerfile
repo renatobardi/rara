@@ -1,12 +1,21 @@
-# Multi-module build (see ../DOCKER-MULTIMODULE.md). Build context is the MONOREPO ROOT,
-# not this dir, so the `replace rara-addon => ../rara-addon` in go.mod resolves inside the
-# container. Invoke from the root: docker build -f rara-scribe/Dockerfile .
+# Multi-module, multi-arch build (see ../DOCKER-MULTIMODULE.md). Build context is the MONOREPO
+# ROOT, not this dir, so the `replace rara-addon => ../rara-addon` in go.mod resolves inside the
+# container. ONE image, two arches: amd64 (Cloud Run) + arm64 (VPC Oracle Ampere + Mac).
+# Build with buildx from the root:
+#   docker buildx build --platform linux/amd64,linux/arm64 -f rara-scribe/Dockerfile .
 #
-# This image is for the CLOUD provider only — SCRIBE_PROVIDER=asr-direct, which fetches the
+# `--platform=$BUILDPLATFORM` pins the builder stage to the native runner arch and Go cross-compiles
+# via GOARCH=$TARGETARCH — no QEMU for the (slow) compile; only the tiny final alpine stage runs
+# emulated for the foreign arch.
+#
+# This image is for the CLOUD provider only — SCRIBE_PROVIDER=asr-direct-audio, which fetches the
 # enclosure over plain HTTP and transcribes via an API engine (Groq/Gemini). The asr-youtube
 # provider runs natively on the Mac (residential IP, yt-dlp) via `make build` + launchd and
 # does NOT use this Dockerfile.
-FROM golang:1.26-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.26-alpine@sha256:3ad57304ad93bbec8548a0437ad9e06a455660655d9af011d58b993f6f615648 AS builder
+
+ARG TARGETOS
+ARG TARGETARCH
 
 WORKDIR /build
 
@@ -22,10 +31,10 @@ RUN go mod download
 # Go sources only — rara-scribe has no go:embed assets.
 COPY rara-scribe/*.go ./
 
-# Static binary for the build platform (amd64 on Cloud Build), which is what Cloud Run runs.
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o /scribe-job .
+# Static, cross-compiled binary for the target arch (set by buildx per --platform entry).
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -ldflags="-w -s" -o /scribe-job .
 
-FROM alpine:3.21
+FROM alpine:3.21@sha256:48b0309ca019d89d40f670aa1bc06e426dc0931948452e8491e3d65087abc07d
 
 # ffmpeg: used by asr-direct-audio to chunk audio before sending to Groq/Gemini.
 # yt-dlp is intentionally absent — it is only used by the asr-youtube provider,
