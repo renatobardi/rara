@@ -22,15 +22,17 @@ on:
 
 concurrency:
   group: deploy-glean
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 env:
   IMAGE: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/rara/rara-glean:${{ github.sha }}
 
 jobs:
   build:
+    if: github.ref_name == github.event.repository.default_branch
     name: Build multi-arch image (amd64 + arm64)
     runs-on: ubuntu-latest
+    environment: production
     permissions:
       contents: read
       id-token: write
@@ -91,13 +93,16 @@ jobs:
           echo "✅ manifest list has exactly linux/amd64 + linux/arm64"
 
   deploy:
+    if: github.ref_name == github.event.repository.default_branch
     name: Deploy Cloud Run Job
     needs: build
     runs-on: ubuntu-latest
+    environment: production
     permissions:
       contents: read
       id-token: write
     strategy:
+      fail-fast: false
       matrix:
         provider: [extrair-email, extrair-linkedin, extrair-news]
     env:
@@ -118,7 +123,9 @@ jobs:
       - name: Deploy Cloud Run Job
         env:
           GLEAN_PROVIDER: ${{ matrix.provider }}
+          GLEAN_RUNTIME_SERVICE_ACCOUNT: ${{ vars.GLEAN_RUNTIME_SERVICE_ACCOUNT }}
         run: |
+          : "${GLEAN_RUNTIME_SERVICE_ACCOUNT:?GLEAN_RUNTIME_SERVICE_ACCOUNT var must be set in the repository}"
           # Update first, create if absent (avoids a describe→create/update TOCTOU race).
           # DATABASE_URL is the shared contract DB. Extraction is deterministic (no LLM),
           # so no model key or extra secrets — only GLEAN_PROVIDER distinguishes the jobs.
@@ -130,6 +137,7 @@ jobs:
             --project "$GCP_PROJECT"
             --set-secrets "$SECRETS"
             --set-env-vars "$ENV_VARS"
+            --service-account "$GLEAN_RUNTIME_SERVICE_ACCOUNT"
             --max-retries 0
             --task-timeout 3600s
             --memory 512Mi

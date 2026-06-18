@@ -17,10 +17,13 @@ import (
 	"context"
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
@@ -49,10 +52,75 @@ type runRequest struct {
 	Env map[string]string `json:"env"`
 }
 
+// loadEnvFile reads KEY=VAL pairs from path (one per line). Empty path or a missing file returns an
+// empty map without error — the base env is optional host-side config. Comments (#) and blank lines
+// are skipped; values may contain '=' (split on the first '=' only).
+func loadEnvFile(path string) (map[string]string, error) {
+	if path == "" {
+		return map[string]string{}, nil
+	}
+	// Open first, then stat and read on the same fd — eliminates the Stat→ReadFile TOCTOU window.
+	f, err := os.Open(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			log.Printf("RUNNER_WORKER_ENV_FILE %q not found; starting with empty base env", path)
+			return map[string]string{}, nil
+		}
+		return nil, fmt.Errorf("loadEnvFile %q: %w", path, err)
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("loadEnvFile %q: %w", path, err)
+	}
+	// Reject world-readable, group-writable, and world-writable: the file contains secrets.
+	// Only 0600 (owner-only) and 0640 (owner + group-read) are acceptable.
+	perm := info.Mode().Perm()
+	if perm&0o004 != 0 || perm&0o022 != 0 {
+		return nil, fmt.Errorf("loadEnvFile %q: insecure permissions (%04o); use 0600 or 0640", path, perm)
+	}
+	data, err := io.ReadAll(f)
+	if err != nil {
+		return nil, fmt.Errorf("loadEnvFile %q: %w", path, err)
+	}
+	out := map[string]string{}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		k, v, ok := strings.Cut(line, "=")
+		if !ok {
+			return nil, fmt.Errorf("loadEnvFile %q: malformed line %q (expected KEY=VAL)", path, line)
+		}
+		if k != "" {
+			if !isValidEnvKey(k) {
+				return nil, fmt.Errorf("loadEnvFile %q: invalid env key %q", path, k)
+			}
+			out[k] = v
+		}
+	}
+	return out, nil
+}
+
+// mergeEnv returns a new map with all entries from base followed by all entries from override;
+// when a key appears in both, the override value wins (body env > base env).
+func mergeEnv(base, override map[string]string) map[string]string {
+	out := make(map[string]string, len(base)+len(override))
+	for k, v := range base {
+		out[k] = v
+	}
+	for k, v := range override {
+		out[k] = v
+	}
+	return out
+}
+
 // newAgentServer builds the HTTP handler: GET /healthz (no auth) and POST /run (Bearer + allowlist).
 // token is the shared tailnet bearer (empty => everything is rejected, fail-closed). allowed maps an
-// app name to its digest-pinned image.
-func newAgentServer(token string, allowed map[string]string, runner ContainerRunner) http.Handler {
+// app name to its digest-pinned image. baseEnv is host-side config (secrets, DATABASE_URL, etc.)
+// injected into every container; the body env is merged on top (body wins on conflict).
+func newAgentServer(token string, allowed map[string]string, baseEnv map[string]string, runner ContainerRunner) http.Handler {
 	want := []byte(token)
 	mux := http.NewServeMux()
 
@@ -95,12 +163,16 @@ func newAgentServer(token string, allowed map[string]string, runner ContainerRun
 			return
 		}
 
-		if err := runner.Run(r.Context(), image, req.Env); err != nil {
+		// baseEnv (host secrets) is injected first; body env (per-run config) is merged on top so
+		// the caller can override non-secret config but can never supply secrets — those only live
+		// in the host file loaded at startup.
+		merged := mergeEnv(baseEnv, req.Env)
+		if err := runner.Run(r.Context(), image, merged); err != nil {
 			log.Printf("run %s (%s): %v", req.App, image, err)
 			http.Error(w, "failed to start container", http.StatusInternalServerError)
 			return
 		}
-		log.Printf("run %s -> %s (%d env)", req.App, image, len(req.Env))
+		log.Printf("run %s -> %s (%d base+%d body env)", req.App, image, len(baseEnv), len(req.Env))
 		w.WriteHeader(http.StatusAccepted)
 	})
 
