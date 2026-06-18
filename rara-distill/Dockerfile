@@ -7,7 +7,7 @@
 # `--platform=$BUILDPLATFORM` pins the builder stage to the native runner arch and Go cross-compiles
 # via GOARCH=$TARGETARCH — no QEMU for the (slow) compile; only the tiny final alpine stage runs
 # emulated for the foreign arch.
-FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.26-alpine@sha256:3ad57304ad93bbec8548a0437ad9e06a455660655d9af011d58b993f6f615648 AS builder
 
 ARG TARGETOS
 ARG TARGETARCH
@@ -32,7 +32,7 @@ COPY rara-distill/strategies ./strategies
 # Static, cross-compiled binary for the target arch (set by buildx per --platform entry).
 RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -ldflags="-w -s" -o /distill-job .
 
-FROM alpine:3.21
+FROM alpine:3.21@sha256:48b0309ca019d89d40f670aa1bc06e426dc0931948452e8491e3d65087abc07d
 
 RUN apk add --no-cache ca-certificates
 
