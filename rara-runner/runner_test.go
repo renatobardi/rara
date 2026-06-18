@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -101,7 +102,7 @@ func TestDispatchRunnerPropagatesSubError(t *testing.T) {
 
 func TestCloudRunTransportFiresJobsRun(t *testing.T) {
 	doer := &fakeHTTPDoer{status: http.StatusOK}
-	tr := &cloudRunTransport{project: "proj", region: "us-central1", http: doer, token: "tok123"}
+	tr := &cloudRunTransport{project: "proj", region: "us-central1", http: doer, token: staticToken("tok123")}
 
 	req := RunRequest{App: "gate-barato", Runtime: runtimeCloudRun}
 	if err := tr.Run(context.Background(), req); err != nil {
@@ -118,7 +119,7 @@ func TestCloudRunTransportFiresJobsRun(t *testing.T) {
 
 func TestCloudRunTransportJobPrefix(t *testing.T) {
 	doer := &fakeHTTPDoer{}
-	tr := &cloudRunTransport{project: "p", region: "r", jobPrefix: "rara-", http: doer, token: "t"}
+	tr := &cloudRunTransport{project: "p", region: "r", jobPrefix: "rara-", http: doer, token: staticToken("t")}
 	if err := tr.Run(context.Background(), RunRequest{App: "gate-barato", Runtime: runtimeCloudRun}); err != nil {
 		t.Fatal(err)
 	}
@@ -129,7 +130,7 @@ func TestCloudRunTransportJobPrefix(t *testing.T) {
 
 func TestCloudRunTransportSendsEnvOverrides(t *testing.T) {
 	doer := &fakeHTTPDoer{status: http.StatusOK}
-	tr := &cloudRunTransport{project: "p", region: "r", http: doer, token: "t"}
+	tr := &cloudRunTransport{project: "p", region: "r", http: doer, token: staticToken("t")}
 	req := RunRequest{App: "gate-barato", Runtime: runtimeCloudRun, Env: map[string]string{"ITEM_STEP_ID": "42"}}
 	if err := tr.Run(context.Background(), req); err != nil {
 		t.Fatal(err)
@@ -144,7 +145,7 @@ func TestCloudRunTransportSendsEnvOverrides(t *testing.T) {
 
 func TestCloudRunTransportEmptyEnvUsesDefaultBody(t *testing.T) {
 	doer := &fakeHTTPDoer{status: http.StatusOK}
-	tr := &cloudRunTransport{project: "p", region: "r", http: doer, token: "t"}
+	tr := &cloudRunTransport{project: "p", region: "r", http: doer, token: staticToken("t")}
 	if err := tr.Run(context.Background(), RunRequest{App: "gate-barato", Runtime: runtimeCloudRun}); err != nil {
 		t.Fatal(err)
 	}
@@ -155,7 +156,7 @@ func TestCloudRunTransportEmptyEnvUsesDefaultBody(t *testing.T) {
 
 func TestCloudRunTransportErrorOnNon2xx(t *testing.T) {
 	doer := &fakeHTTPDoer{status: http.StatusForbidden}
-	tr := &cloudRunTransport{project: "p", region: "r", http: doer, token: "t"}
+	tr := &cloudRunTransport{project: "p", region: "r", http: doer, token: staticToken("t")}
 	if err := tr.Run(context.Background(), RunRequest{App: "x", Runtime: runtimeCloudRun}); err == nil {
 		t.Fatal("expected error on 403")
 	}
@@ -163,7 +164,7 @@ func TestCloudRunTransportErrorOnNon2xx(t *testing.T) {
 
 func TestCloudRunTransportErrorOnTransport(t *testing.T) {
 	doer := &fakeHTTPDoer{err: errors.New("dial timeout")}
-	tr := &cloudRunTransport{project: "p", region: "r", http: doer, token: "t"}
+	tr := &cloudRunTransport{project: "p", region: "r", http: doer, token: staticToken("t")}
 	if err := tr.Run(context.Background(), RunRequest{App: "x", Runtime: runtimeCloudRun}); err == nil {
 		t.Fatal("expected error on transport failure")
 	}
@@ -227,6 +228,87 @@ func TestHostRunnerTransportErrorOnTransport(t *testing.T) {
 	tr := &hostRunnerTransport{token: "t", http: doer}
 	if err := tr.Run(context.Background(), RunRequest{App: "x", RunnerURL: "http://h:1"}); err == nil {
 		t.Fatal("expected error on transport failure")
+	}
+}
+
+// --- cloudRunTransport tokenSource seam --------------------------------------
+
+// staticToken is a test helper that returns a fixed token without any I/O.
+func staticToken(tok string) tokenSource {
+	return func(_ context.Context) (string, error) { return tok, nil }
+}
+
+// tokenTransport builds a cloudRunTransport wired to a given tokenSource for the seam tests below.
+func tokenTransport(doer *fakeHTTPDoer, ts tokenSource) *cloudRunTransport {
+	return &cloudRunTransport{project: "p", region: "r", http: doer, token: ts}
+}
+
+// runAuthHeader runs the transport once and returns the Authorization header it sent, failing the
+// test on a Run error.
+func runAuthHeader(t *testing.T, tr *cloudRunTransport, doer *fakeHTTPDoer) string {
+	t.Helper()
+	if err := tr.Run(context.Background(), RunRequest{App: "x"}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	return doer.gotReq.Header.Get("Authorization")
+}
+
+// TestCloudRunTransportFetchesFreshTokenPerRun: tokenSource is called on every Run call and the
+// resulting token is placed in the Authorization header — no stale cached value.
+func TestCloudRunTransportFetchesFreshTokenPerRun(t *testing.T) {
+	var calls atomic.Int32
+	doer := &fakeHTTPDoer{status: http.StatusOK}
+	tr := tokenTransport(doer, func(_ context.Context) (string, error) {
+		calls.Add(1)
+		return "fresh-token", nil
+	})
+
+	if got := runAuthHeader(t, tr, doer); got != "Bearer fresh-token" {
+		t.Errorf("authorization = %q, want Bearer fresh-token", got)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Errorf("tokenSource called %d times after one Run, want 1", got)
+	}
+}
+
+// TestCloudRunTransportTokenRotatesAcrossRuns: the tokenSource is called anew on each Run so a
+// freshly-renewed token (e.g. an expiring ADC token) is used on every call.
+func TestCloudRunTransportTokenRotatesAcrossRuns(t *testing.T) {
+	remaining := []string{"token-A", "token-B"}
+	doer := &fakeHTTPDoer{status: http.StatusOK}
+	tr := tokenTransport(doer, func(_ context.Context) (string, error) {
+		if len(remaining) == 0 {
+			return "", errors.New("tokenSource called more times than expected")
+		}
+		tok := remaining[0]
+		remaining = remaining[1:]
+		return tok, nil
+	})
+
+	firstAuth := runAuthHeader(t, tr, doer)
+	secondAuth := runAuthHeader(t, tr, doer)
+
+	if firstAuth == secondAuth {
+		t.Errorf("both runs used same token %q; want distinct tokens per call (renewal)", firstAuth)
+	}
+	if firstAuth != "Bearer token-A" || secondAuth != "Bearer token-B" {
+		t.Errorf("tokens = %q, %q; want Bearer token-A then Bearer token-B", firstAuth, secondAuth)
+	}
+}
+
+// TestCloudRunTransportTokenSourceErrorAbortsRun: if tokenSource returns an error, Run must
+// return an error immediately and must NOT send any HTTP request (no partial auth leak).
+func TestCloudRunTransportTokenSourceErrorAbortsRun(t *testing.T) {
+	doer := &fakeHTTPDoer{}
+	tr := tokenTransport(doer, func(_ context.Context) (string, error) {
+		return "", errors.New("no credential configured")
+	})
+
+	if err := tr.Run(context.Background(), RunRequest{App: "x"}); err == nil {
+		t.Fatal("want error when tokenSource fails, got nil")
+	}
+	if doer.gotReq != nil {
+		t.Error("HTTP request must not be sent when tokenSource errors")
 	}
 }
 
