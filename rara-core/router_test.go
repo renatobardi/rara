@@ -334,6 +334,27 @@ func TestRouterSelectForStepInvalidFallbackJSON(t *testing.T) {
 	}
 }
 
+// TestRouterSelectForStepEmptyArrayFallback: an empty JSON array must not override the global
+// policy's fallback — the len(check) > 0 guard in router.go prevents it.
+func TestRouterSelectForStepEmptyArrayFallback(t *testing.T) {
+	ctx := context.Background()
+	db := newMockDatabase()
+	_ = db.UpsertCapability(ctx, Capability{Name: capTranscrever})
+	mustProvider(t, db, onDemand("cheap", 1, 0.5))
+	mustProvider(t, db, onDemand("premium", 10, 0.95))
+	_ = db.UpsertRoutingPolicy(ctx, RoutingPolicy{Scope: policyScopeGlobal, CostWeight: 1, QualityWeight: 0})
+
+	rt := NewRouter(db)
+	// Empty array should fall through to the global policy (cost-heavy keeps cheap first).
+	p, ok, err := rt.SelectForStep(ctx, capTranscrever, routerItem, routerClock, routerHealthTTL, json.RawMessage(`[]`))
+	if err != nil || !ok {
+		t.Fatalf("empty stepFallback: ok=%v err=%v", ok, err)
+	}
+	if p.Name != "cheap" {
+		t.Errorf("empty stepFallback should not override policy, got %q want cheap", p.Name)
+	}
+}
+
 // mustProvider upserts a provider into the mock or fails the test.
 func mustProvider(t *testing.T, db *MockDatabase, p Provider) {
 	t.Helper()

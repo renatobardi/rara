@@ -41,6 +41,7 @@ const (
 	provDistill        = "distill"          // destilar — distill on Cloud Run (third-party LLM)
 	provGateBarato     = "gate-barato"      // gate_barato — metadata cascade worker (third-party LLM)
 	provGateRico       = "gate-rico"        // gate_rico — full-text cascade worker (third-party LLM)
+	provDial           = "rara-dial"        // coletar — podcast RSS collector (Cloud Run, F5 wake+pull)
 	provExtrairEmail   = "extrair-email"    // extrair — email HTML/quote/signature cleaner (Cloud Run)
 	provExtrairNews    = "extrair-news"     // extrair — feed-article HTML/boilerplate cleaner (Cloud Run)
 	// Self-host variants (VPC) of the LLM steps — the ONLY route for private content. Strictly
@@ -231,6 +232,14 @@ func SeedPodcastLane(ctx context.Context, db Database) error {
 		return err
 	}
 	if err := seedSharedProviders(ctx, db); err != nil {
+		return err
+	}
+	// coletar: rara-dial — woken by the Runner dispatch (F3) like any worker; reads enabled
+	// podcast_feeds from the DB on each wake (wake+pull pattern, F5).
+	if err := db.UpsertProvider(ctx, Provider{
+		Name: provDial, Capability: capColetar, Runtime: runtimeCloudRun, Activation: activationOnDemand,
+		Cost: 0.05, Quality: 0.99, LatencyMs: 30000, Enabled: true,
+	}); err != nil {
 		return err
 	}
 	// transcrever: direct-audio ASR — any runtime (no residential), accepts only podcast.

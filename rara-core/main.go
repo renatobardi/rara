@@ -316,6 +316,7 @@ func stepFallbackFromOptions(options json.RawMessage) json.RawMessage {
 	}
 	var o stepOptions
 	if err := json.Unmarshal(options, &o); err != nil {
+		log.Printf("warning: stepFallbackFromOptions: invalid JSON in flow_steps.options, ignoring: %v", err)
 		return nil
 	}
 	return o.Providers

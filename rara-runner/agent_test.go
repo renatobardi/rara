@@ -34,7 +34,9 @@ func (f *fakeRunner) Run(_ context.Context, image string, env map[string]string)
 const (
 	testToken = "s3cret-tailnet-token"
 	testApp   = "rara-distill"
-	testImage = "us-docker.pkg.dev/p/r/rara-distill@sha256:deadbeef"
+	// testDigest is a fake but properly-formatted 64-hex SHA256 so parseAllowlist validation passes.
+	testDigest = "us-docker.pkg.dev/p/r/rara-distill@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	testImage  = testDigest
 )
 
 func newTestServer(t *testing.T, token string, runner ContainerRunner) http.Handler {
@@ -208,19 +210,25 @@ func TestValidateListenAddrRejectsWildcard(t *testing.T) {
 }
 
 func TestParseAllowlist(t *testing.T) {
-	got, err := parseAllowlist("rara-distill=img-a@sha256:aa, rara-sift=img-b@sha256:bb")
+	const (
+		imgA = "img-a@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+		imgB = "img-b@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+		imgC = "img-c@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+	)
+	got, err := parseAllowlist("rara-distill=" + imgA + ", rara-sift=" + imgB)
 	if err != nil {
 		t.Fatalf("parseAllowlist: %v", err)
 	}
-	if got["rara-distill"] != "img-a@sha256:aa" || got["rara-sift"] != "img-b@sha256:bb" {
+	if got["rara-distill"] != imgA || got["rara-sift"] != imgB {
 		t.Fatalf("parsed wrong: %v", got)
 	}
 	for _, bad := range []string{
-		"",                                // empty allowlist
-		"no-equals-sign",                  // not app=image
-		"app=",                            // empty image
-		"app=img:latest",                  // not pinned by digest
-		"a=img@sha256:1,a=other@sha256:2", // duplicate app
+		"",                            // empty allowlist
+		"no-equals-sign",              // not app=image
+		"app=",                        // empty image
+		"app=img:latest",              // not pinned by digest
+		"app=img@sha256:abc123",       // digest too short (not 64 hex)
+		"a=" + imgA + ",a=" + imgC,   // duplicate app
 	} {
 		if _, err := parseAllowlist(bad); err == nil {
 			t.Errorf("parseAllowlist(%q): want error, got nil", bad)
