@@ -16,6 +16,9 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"golang.org/x/oauth2"
+	"golang.org/x/oauth2/google"
 )
 
 // Provider shape constants, mirroring rara-core — no import, separate modules.
@@ -42,6 +45,10 @@ type RunRequest struct {
 type Runner interface {
 	Run(ctx context.Context, req RunRequest) error
 }
+
+// tokenSource yields a fresh OAuth2 bearer on every call. It is the injectable seam: production
+// uses cloudRunTokenSource (ADC-backed, auto-renewing); tests inject a fake to avoid I/O.
+type tokenSource func(ctx context.Context) (string, error)
 
 // httpDoer is the HTTP client seam, injectable for tests.
 type httpDoer interface {
@@ -85,7 +92,7 @@ type cloudRunTransport struct {
 	region    string
 	jobPrefix string
 	http      httpDoer
-	token     string // ponytail: static token; add ADC via tokenSource seam if long-lived TTL matters
+	token     tokenSource
 }
 
 func (tr *cloudRunTransport) Run(ctx context.Context, req RunRequest) error {
@@ -93,12 +100,17 @@ func (tr *cloudRunTransport) Run(ctx context.Context, req RunRequest) error {
 	endpoint := fmt.Sprintf("https://run.googleapis.com/v2/projects/%s/locations/%s/jobs/%s:run",
 		tr.project, tr.region, url.PathEscape(job))
 
+	tok, err := tr.token(ctx)
+	if err != nil {
+		return fmt.Errorf("cloud run token for %s: %w", job, err)
+	}
+
 	body := dispatchRunBody(req.Env)
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("cloud run request for %s: %w", job, err)
 	}
-	httpReq.Header.Set("Authorization", "Bearer "+tr.token)
+	httpReq.Header.Set("Authorization", "Bearer "+tok)
 	httpReq.Header.Set("Content-Type", "application/json")
 
 	resp, err := tr.http.Do(httpReq)
@@ -184,25 +196,61 @@ func (tr *hostRunnerTransport) Run(ctx context.Context, req RunRequest) error {
 	return nil
 }
 
+// cloudRunTokenSource returns a tokenSource backed by ADC for long-lived services.
+//
+// Prefers CLOUD_RUN_OAUTH_TOKEN (static override for dev/manual testing). Otherwise uses adc: when
+// nil, google.DefaultTokenSource resolves Application Default Credentials — on Cloud Run / GCE this
+// is the metadata server of the attached SA. The oauth2.TokenSource caches and auto-renews so each
+// Run call gets a fresh bearer without a metadata round-trip every time. Tests inject a fake
+// oauth2.TokenSource via adc to avoid I/O.
+func cloudRunTokenSource(adc oauth2.TokenSource) tokenSource {
+	if tok := os.Getenv("CLOUD_RUN_OAUTH_TOKEN"); tok != "" {
+		return func(_ context.Context) (string, error) { return tok, nil }
+	}
+	if adc == nil {
+		var err error
+		adc, err = google.DefaultTokenSource(context.Background(),
+			"https://www.googleapis.com/auth/cloud-platform")
+		if err != nil {
+			log.Printf("dispatch: ADC unavailable (set CLOUD_RUN_OAUTH_TOKEN or attach a SA); cloud run wakes will fail: %v", err)
+			return func(_ context.Context) (string, error) {
+				return "", fmt.Errorf("cloud run token: no credential (set CLOUD_RUN_OAUTH_TOKEN or attach a SA): %w", err)
+			}
+		}
+	}
+	return func(ctx context.Context) (string, error) {
+		// oauth2.TokenSource.Token() takes no context, so honour caller cancellation here.
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		tok, err := adc.Token()
+		if err != nil {
+			return "", fmt.Errorf("cloud run ADC token: %w", err)
+		}
+		return tok.AccessToken, nil
+	}
+}
+
 // newDispatchRunnerFromEnv builds the production dispatchRunner from env config.
-// CLOUD_RUN_PROJECT + CLOUD_RUN_REGION + CLOUD_RUN_OAUTH_TOKEN → cloudRunTransport.
+// CLOUD_RUN_PROJECT + CLOUD_RUN_REGION → cloudRunTransport with ADC (CLOUD_RUN_OAUTH_TOKEN overrides for dev).
 // RUNNER_TOKEN → hostRunnerTransport (shared tailnet bearer, same as agent).
 func newDispatchRunnerFromEnv() Runner {
 	client := &http.Client{Timeout: 30 * time.Second}
 	d := dispatchRunner{}
 
-	if project, region := os.Getenv("CLOUD_RUN_PROJECT"), os.Getenv("CLOUD_RUN_REGION"); project != "" && region != "" {
-		tok := os.Getenv("CLOUD_RUN_OAUTH_TOKEN")
-		if tok == "" {
-			log.Printf("dispatch: CLOUD_RUN_OAUTH_TOKEN unset; cloud run transport disabled")
-		} else {
-			d.cloudRun = &cloudRunTransport{
-				project:   project,
-				region:    region,
-				jobPrefix: os.Getenv("CLOUD_RUN_JOB_PREFIX"),
-				http:      client,
-				token:     tok,
-			}
+	project, region := os.Getenv("CLOUD_RUN_PROJECT"), os.Getenv("CLOUD_RUN_REGION")
+	if (project == "") != (region == "") {
+		// Partial config silently disables the cloud run transport and masks an operator mistake;
+		// the pair is all-or-nothing, so fail fast (config is env-only, per CLAUDE.md).
+		log.Fatalf("dispatch: CLOUD_RUN_PROJECT and CLOUD_RUN_REGION must be set together")
+	}
+	if project != "" {
+		d.cloudRun = &cloudRunTransport{
+			project:   project,
+			region:    region,
+			jobPrefix: os.Getenv("CLOUD_RUN_JOB_PREFIX"),
+			http:      client,
+			token:     cloudRunTokenSource(nil),
 		}
 	}
 	if tok := os.Getenv("RUNNER_TOKEN"); tok != "" {
@@ -212,7 +260,7 @@ func newDispatchRunnerFromEnv() Runner {
 	}
 
 	if d.cloudRun == nil && d.host == nil {
-		log.Fatalf("dispatch: no transport configured (set CLOUD_RUN_PROJECT/REGION/TOKEN or RUNNER_TOKEN)")
+		log.Fatalf("dispatch: no transport configured (set CLOUD_RUN_PROJECT/REGION or RUNNER_TOKEN)")
 	}
 	return d
 }
