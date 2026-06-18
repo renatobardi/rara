@@ -213,7 +213,7 @@ func (r *Reconciler) reconcileItem(ctx context.Context, item Item) error {
 			// (timeout->fallback), then continue.
 			st := bySeq[fs.Seq]
 			if st.Status == stepRunning && r.isStale(st) {
-				if err := r.handleStaleStep(ctx, item, st); err != nil {
+				if err := r.handleStaleStep(ctx, item, fs, st); err != nil {
 					return err
 				}
 			}
@@ -253,6 +253,12 @@ func nextAction(flowSteps []FlowStep, bySeq map[int]ItemStep) (stepAction, FlowS
 		case stepFailed:
 			return actFail, fs
 		default: // pending | assigned | running
+			// stepPending with no provider means the previous pass found no eligible
+			// provider and left the step unassigned; workers require assigned_provider
+			// to claim, so re-route immediately rather than waiting indefinitely.
+			if s.Status == stepPending && s.AssignedProvider == "" {
+				return actMaterialize, fs
+			}
 			return actWait, fs
 		}
 	}
@@ -276,10 +282,11 @@ func (r *Reconciler) materialize(ctx context.Context, item Item, fs FlowStep) (d
 		// A real work step — transcrever, destilar, OR a curation gate (gate_barato /
 		// gate_rico are workers now, no longer pass-through). Route to a provider by policy
 		// (cost<->quality + constraints + health + fallback) and write a pending assignment
-		// for the worker to pull; wake on_demand providers.
-		prov, ok, err := r.router.Select(ctx, fs.Capability, item, r.now(), r.healthTTL)
+		// for the worker to pull. A per-step providers list in flow_steps.options overrides
+		// the policy fallback for this step.
+		prov, ok, err := r.router.SelectForStep(ctx, fs.Capability, item, r.now(), r.healthTTL, stepFallbackFromOptions(fs.Options))
 		if err != nil {
-			return false, err
+			return false, fmt.Errorf("select provider for item %d seq %d: %w", item.ID, fs.Seq, err)
 		}
 		if !ok {
 			// No eligible provider (none registered, all constraint-violating, or all
@@ -291,7 +298,7 @@ func (r *Reconciler) materialize(ctx context.Context, item Item, fs FlowStep) (d
 			ItemID: item.ID, Seq: fs.Seq, Capability: fs.Capability,
 			Status: stepPending, AssignedProvider: prov.Name,
 		}); err != nil {
-			return false, err
+			return false, fmt.Errorf("upsert item step for item %d seq %d: %w", item.ID, fs.Seq, err)
 		}
 		return false, nil
 	}
@@ -303,11 +310,11 @@ func (r *Reconciler) materialize(ctx context.Context, item Item, fs FlowStep) (d
 // the step is re-queued on the same provider to be re-claimed should it revive. Either way the
 // step returns to the pending frontier (heartbeat cleared). Waking the new provider is the
 // dispatcher's responsibility — the reconciler only updates the assignment row.
-func (r *Reconciler) handleStaleStep(ctx context.Context, item Item, st ItemStep) error {
+func (r *Reconciler) handleStaleStep(ctx context.Context, item Item, fs FlowStep, st ItemStep) error {
 	dead := st.AssignedProvider
-	next, ok, err := r.router.Select(ctx, st.Capability, item, r.now(), r.healthTTL, dead)
+	next, ok, err := r.router.SelectForStep(ctx, st.Capability, item, r.now(), r.healthTTL, stepFallbackFromOptions(fs.Options), dead)
 	if err != nil {
-		return err
+		return fmt.Errorf("select fallback for stale item %d seq %d: %w", item.ID, st.Seq, err)
 	}
 
 	var chosen Provider
@@ -320,7 +327,7 @@ func (r *Reconciler) handleStaleStep(ctx context.Context, item Item, st ItemStep
 		log.Printf("reconcile item %d seq %d: stale heartbeat, no fallback, re-queuing %s", item.ID, st.Seq, dead)
 		p, found, gerr := r.db.GetProvider(ctx, dead)
 		if gerr != nil {
-			return gerr
+			return fmt.Errorf("get stale provider %q: %w", dead, gerr)
 		}
 		if found {
 			chosen = p
@@ -331,7 +338,10 @@ func (r *Reconciler) handleStaleStep(ctx context.Context, item Item, st ItemStep
 	st.Status = stepPending
 	st.HeartbeatAt = nil
 	st.AssignedProvider = chosen.Name
-	return r.db.UpsertItemStep(ctx, st)
+	if err := r.db.UpsertItemStep(ctx, st); err != nil {
+		return fmt.Errorf("requeue stale item %d seq %d: %w", item.ID, st.Seq, err)
+	}
+	return nil
 }
 
 // syncItemStatus recomputes the item's status from its completed steps and persists it if

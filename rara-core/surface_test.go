@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -958,7 +959,209 @@ func TestHTTPUsage(t *testing.T) {
 	_ = ctx
 }
 
+// ---------------------------------------------------------------------------
+// Step hosts — GET + PUT /v1/flows/{id}/steps/{seq}/hosts
+// ---------------------------------------------------------------------------
+
+// TestHTTPGetStepHostsReturnsAvailableAndCurrent: GET hosts returns the list of providers
+// for that capability (available) and the current step-level priority list (providers).
+func TestHTTPGetStepHostsReturnsAvailableAndCurrent(t *testing.T) {
+	h, _, fid := seededStepHostsFixture(t)
+
+	// transcrever is seq 3 in the youtube flow; asr-youtube is its provider.
+	rec := do(t, h, http.MethodGet, fmt.Sprintf("/v1/flows/%d/steps/3/hosts", fid), "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp StepHostsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Available) == 0 {
+		t.Error("available should list at least asr-youtube")
+	}
+	// No per-step override seeded: providers list is empty/nil.
+	if len(resp.Providers) != 0 {
+		t.Errorf("want empty providers, got %v", resp.Providers)
+	}
+}
+
+// TestHTTPGetStepHostsUnknownFlowIs404: a flow_id that does not exist returns 404.
+func TestHTTPGetStepHostsUnknownFlowIs404(t *testing.T) {
+	core, _, _ := newTestCore(t)
+	h := NewSurfaceMux(core, testToken)
+	rec := do(t, h, http.MethodGet, "/v1/flows/9999/steps/1/hosts", "")
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("unknown flow should be 404, got %d", rec.Code)
+	}
+}
+
+// TestHTTPGetStepHostsUnknownSeqIs404: a seq that has no matching step returns 404.
+func TestHTTPGetStepHostsUnknownSeqIs404(t *testing.T) {
+	h, _, fid := seededStepHostsFixture(t)
+	rec := do(t, h, http.MethodGet, fmt.Sprintf("/v1/flows/%d/steps/99/hosts", fid), "")
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("unknown seq should be 404, got %d", rec.Code)
+	}
+}
+
+// TestHTTPPutStepHostsSavesProviders: PUT saves a per-step priority list; subsequent GET
+// reflects it.
+func TestHTTPPutStepHostsSavesProviders(t *testing.T) {
+	ctx := context.Background()
+	h, db, fid := seededStepHostsFixture(t)
+
+	body := `{"providers":["asr-youtube"]}`
+	rec := do(t, h, http.MethodPut, fmt.Sprintf("/v1/flows/%d/steps/3/hosts", fid), body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("put hosts: got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// Verify the step options were updated.
+	steps, err := db.ListFlowSteps(ctx, fid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ts FlowStep
+	for _, s := range steps {
+		if s.Seq == 3 {
+			ts = s
+			break
+		}
+	}
+	if len(ts.Options) == 0 {
+		t.Fatal("options should be set after PUT hosts")
+	}
+	var o stepOptions
+	if err := json.Unmarshal(ts.Options, &o); err != nil {
+		t.Fatalf("unmarshal options: %v", err)
+	}
+	var got []string
+	if err := json.Unmarshal(o.Providers, &got); err != nil {
+		t.Fatalf("unmarshal providers: %v", err)
+	}
+	if len(got) != 1 || got[0] != "asr-youtube" {
+		t.Errorf("options.providers = %v, want [asr-youtube]", got)
+	}
+}
+
+// TestHTTPPutStepHostsRejectsUnknownProvider: a provider name that does not exist returns 400.
+func TestHTTPPutStepHostsRejectsUnknownProvider(t *testing.T) {
+	h, _, fid := seededStepHostsFixture(t)
+	rec := do(t, h, http.MethodPut, fmt.Sprintf("/v1/flows/%d/steps/3/hosts", fid),
+		`{"providers":["no-such-provider"]}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("unknown provider should be 400, got %d", rec.Code)
+	}
+}
+
+// TestHTTPPutStepHostsRejectsWrongCapability: a provider that exists but serves a different
+// capability than the step's returns 400.
+func TestHTTPPutStepHostsRejectsWrongCapability(t *testing.T) {
+	ctx := context.Background()
+	h, db, fid := seededStepHostsFixture(t)
+	// Register a provider for a different capability.
+	if err := db.UpsertProvider(ctx, Provider{
+		Name: "wrong-cap", Capability: capDestilar, Runtime: runtimeCloudRun,
+		Activation: activationOnDemand, Enabled: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rec := do(t, h, http.MethodPut, fmt.Sprintf("/v1/flows/%d/steps/3/hosts", fid),
+		`{"providers":["wrong-cap"]}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("wrong-capability provider should be 400, got %d", rec.Code)
+	}
+}
+
+// TestHTTPPutStepHostsRejectsDuplicates: duplicate names in the list returns 400.
+func TestHTTPPutStepHostsRejectsDuplicates(t *testing.T) {
+	h, _, fid := seededStepHostsFixture(t)
+	rec := do(t, h, http.MethodPut, fmt.Sprintf("/v1/flows/%d/steps/3/hosts", fid),
+		`{"providers":["asr-youtube","asr-youtube"]}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("duplicate providers should be 400, got %d", rec.Code)
+	}
+}
+
+// TestHTTPPutStepHostsClearsProviders: an empty providers list clears the override.
+func TestHTTPPutStepHostsClearsProviders(t *testing.T) {
+	ctx := context.Background()
+	h, db, fid := seededStepHostsFixture(t)
+
+	// First set providers.
+	first := do(t, h, http.MethodPut, fmt.Sprintf("/v1/flows/%d/steps/3/hosts", fid), `{"providers":["asr-youtube"]}`)
+	if first.Code != http.StatusOK {
+		t.Fatalf("first put: got %d: %s", first.Code, first.Body.String())
+	}
+	// Then clear.
+	rec := do(t, h, http.MethodPut, fmt.Sprintf("/v1/flows/%d/steps/3/hosts", fid), `{"providers":[]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("clear: got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	steps, err := db.ListFlowSteps(ctx, fid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range steps {
+		if s.Seq == 3 {
+			if len(s.Options) == 0 {
+				break // no options = no providers override; cleared correctly
+			}
+			var o stepOptions
+			if err := json.Unmarshal(s.Options, &o); err != nil {
+				t.Fatalf("unmarshal options: %v", err)
+			}
+			var providers []string
+			_ = json.Unmarshal(o.Providers, &providers) // nil/empty both mean cleared
+			if len(providers) != 0 {
+				t.Errorf("providers not cleared, got %v", providers)
+			}
+		}
+	}
+}
+
+// TestHTTPPutStepHostsRejectsDisabledProvider: a disabled provider returns 400.
+func TestHTTPPutStepHostsRejectsDisabledProvider(t *testing.T) {
+	ctx := context.Background()
+	h, db, fid := seededStepHostsFixture(t)
+	// Disable asr-youtube.
+	if err := db.UpsertProvider(ctx, Provider{
+		Name: "asr-youtube", Capability: capTranscrever, Runtime: runtimeLocal,
+		Activation: activationResident, Enabled: false,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rec := do(t, h, http.MethodPut, fmt.Sprintf("/v1/flows/%d/steps/3/hosts", fid),
+		`{"providers":["asr-youtube"]}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("disabled provider should be 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestHTTPPutStepHostsRequiresProvidersField: a body without the providers key returns 400.
+func TestHTTPPutStepHostsRequiresProvidersField(t *testing.T) {
+	h, _, fid := seededStepHostsFixture(t)
+	rec := do(t, h, http.MethodPut, fmt.Sprintf("/v1/flows/%d/steps/3/hosts", fid), `{}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("missing providers field should be 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
 // --- small helpers --------------------------------------------------------
+
+// seededStepHostsFixture creates a test core with the YouTube lane seeded and returns
+// the surface mux, the mock database, and the YouTube flow ID.
+func seededStepHostsFixture(t *testing.T) (http.Handler, *MockDatabase, int) {
+	t.Helper()
+	ctx := context.Background()
+	core, db, _ := newTestCore(t)
+	if err := SeedYouTubeLane(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	return NewSurfaceMux(core, testToken), db, db.flows[youtubeFlowName].ID
+}
 
 func mustItem(t *testing.T, db *MockDatabase, lane, ref string, flowID int, status string) int {
 	t.Helper()

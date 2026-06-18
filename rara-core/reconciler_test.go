@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 )
@@ -501,6 +502,59 @@ func TestReconcileNeverCallsRunner(t *testing.T) {
 	}
 	if s, ok := stepBySeq(db, itemID, 3); !ok || s.Status != stepPending || s.AssignedProvider != provASRYouTube {
 		t.Errorf("transcrever step = %+v, want pending+asr-youtube", s)
+	}
+}
+
+// TestReconcileUsesStepProviders: when a flow_step carries options.providers, the reconciler
+// honours that per-step priority list over the global routing policy. A second scribe is
+// registered and the flow step is patched to pin it first; after reconcile the transcrever
+// step must be assigned to the override provider, not the default asr-youtube.
+func TestReconcileUsesStepProviders(t *testing.T) {
+	ctx := context.Background()
+	db := newMockDatabase()
+	itemID := seedAndIngestOne(t, db, "vid1")
+
+	// Register an alternative local scribe — expensive + low quality so the balanced global
+	// policy (0.5/0.5) scores asr-youtube far higher; only the per-step override can pin it.
+	altScribe := "alt-scribe"
+	if err := db.UpsertProvider(ctx, Provider{
+		Name: altScribe, Capability: capTranscrever, Runtime: runtimeLocal,
+		Activation: activationResident, Cost: 5.0, Quality: 0.1, Enabled: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	markProviderAlive(t, db, altScribe)
+
+	// Patch the transcrever flow step (seq 3) to pin alt-scribe first.
+	optBytes, err := json.Marshal(struct {
+		Providers []string `json:"providers"`
+	}{Providers: []string{altScribe}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fid := db.flows[youtubeFlowName].ID
+	if err := db.UpsertFlowStep(ctx, FlowStep{
+		FlowID: fid, Seq: 3, Capability: capTranscrever, Enabled: true,
+		Options: json.RawMessage(optBytes),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	r := NewReconciler(db)
+	if err := r.ReconcileOnce(ctx); err != nil { // assigns gate_barato
+		t.Fatal(err)
+	}
+	runGate(t, db, itemID, 2, gateBarato, decisionKeep)
+	if err := r.ReconcileOnce(ctx); err != nil { // assigns transcrever
+		t.Fatal(err)
+	}
+
+	s, ok := stepBySeq(db, itemID, 3)
+	if !ok {
+		t.Fatal("transcrever step not materialized")
+	}
+	if s.AssignedProvider != altScribe {
+		t.Errorf("transcrever assigned to %q, want %q (step-level override)", s.AssignedProvider, altScribe)
 	}
 }
 
