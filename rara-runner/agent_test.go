@@ -5,6 +5,8 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -41,7 +43,12 @@ const (
 
 func newTestServer(t *testing.T, token string, runner ContainerRunner) http.Handler {
 	t.Helper()
-	return newAgentServer(token, map[string]string{testApp: testImage}, runner)
+	return newAgentServer(token, map[string]string{testApp: testImage}, nil, runner)
+}
+
+func newTestServerWithBase(t *testing.T, base map[string]string, runner ContainerRunner) http.Handler {
+	t.Helper()
+	return newAgentServer(testToken, map[string]string{testApp: testImage}, base, runner)
 }
 
 func post(t *testing.T, h http.Handler, bearer, body string) *httptest.ResponseRecorder {
@@ -307,5 +314,148 @@ func TestValidateDockerBin(t *testing.T) {
 		if err := validateDockerBin(bad); err == nil {
 			t.Errorf("validateDockerBin(%q): want error, got nil", bad)
 		}
+	}
+}
+
+// --- loadEnvFile ---
+
+func writeTempEnvFile(t *testing.T, content string) string {
+	t.Helper()
+	f, err := os.CreateTemp(t.TempDir(), "worker*.env")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if _, err := f.WriteString(content); err != nil {
+		t.Fatal(err)
+	}
+	return f.Name()
+}
+
+func TestLoadEnvFileEmptyPathReturnsEmpty(t *testing.T) {
+	got, err := loadEnvFile("")
+	if err != nil {
+		t.Fatalf("empty path: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("empty path: want empty map, got %v", got)
+	}
+}
+
+func TestLoadEnvFileParsesKeyValue(t *testing.T) {
+	f := writeTempEnvFile(t, "DATABASE_URL=postgres://localhost/db\nLITELLM_BASE_URL=http://localhost:4000\n")
+	got, err := loadEnvFile(f)
+	if err != nil {
+		t.Fatalf("loadEnvFile: %v", err)
+	}
+	if got["DATABASE_URL"] != "postgres://localhost/db" {
+		t.Fatalf("DATABASE_URL: got %q", got["DATABASE_URL"])
+	}
+	if got["LITELLM_BASE_URL"] != "http://localhost:4000" {
+		t.Fatalf("LITELLM_BASE_URL: got %q", got["LITELLM_BASE_URL"])
+	}
+}
+
+func TestLoadEnvFileSkipsCommentsAndBlanks(t *testing.T) {
+	f := writeTempEnvFile(t, "# comment\n\nKEY=val\n  # another\n")
+	got, err := loadEnvFile(f)
+	if err != nil {
+		t.Fatalf("loadEnvFile: %v", err)
+	}
+	if len(got) != 1 || got["KEY"] != "val" {
+		t.Fatalf("want {KEY:val}, got %v", got)
+	}
+}
+
+func TestLoadEnvFileValueWithEqualsSign(t *testing.T) {
+	f := writeTempEnvFile(t, "URL=postgres://host/db?key=val\n")
+	got, err := loadEnvFile(f)
+	if err != nil {
+		t.Fatalf("loadEnvFile: %v", err)
+	}
+	if got["URL"] != "postgres://host/db?key=val" {
+		t.Fatalf("URL: got %q", got["URL"])
+	}
+}
+
+func TestLoadEnvFileMissingFileReturnsEmpty(t *testing.T) {
+	got, err := loadEnvFile(filepath.Join(t.TempDir(), "nonexistent.env"))
+	if err != nil {
+		t.Fatalf("missing file: want nil error, got %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("missing file: want empty map, got %v", got)
+	}
+}
+
+func TestLoadEnvFileRejectsInvalidKey(t *testing.T) {
+	f := writeTempEnvFile(t, "VALID=ok\nBAD-KEY=x\n")
+	_, err := loadEnvFile(f)
+	if err == nil {
+		t.Fatal("want error for invalid env key, got nil")
+	}
+}
+
+// --- mergeEnv ---
+
+func TestMergeEnvCombinesBothMaps(t *testing.T) {
+	got := mergeEnv(map[string]string{"A": "1", "B": "2"}, map[string]string{"C": "3"})
+	if got["A"] != "1" || got["B"] != "2" || got["C"] != "3" {
+		t.Fatalf("merge: got %v", got)
+	}
+}
+
+func TestMergeEnvOverrideWins(t *testing.T) {
+	got := mergeEnv(map[string]string{"FOO": "base"}, map[string]string{"FOO": "body"})
+	if got["FOO"] != "body" {
+		t.Fatalf("override: got %q, want %q", got["FOO"], "body")
+	}
+}
+
+func TestMergeEnvNilBaseIsNoop(t *testing.T) {
+	got := mergeEnv(nil, map[string]string{"X": "y"})
+	if got["X"] != "y" || len(got) != 1 {
+		t.Fatalf("nil base: got %v", got)
+	}
+}
+
+// --- HTTP integration: base env injected into docker run ---
+
+func TestRunInjectsBaseEnvIntoContainer(t *testing.T) {
+	f := &fakeRunner{}
+	rr := post(t, newTestServerWithBase(t, map[string]string{"DATABASE_URL": "postgres://secret"}, f),
+		testToken, `{"app":"rara-distill","env":{"DISTILL_RECIPE":"opus"}}`)
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("got %d, want 202", rr.Code)
+	}
+	if f.gotEnv["DATABASE_URL"] != "postgres://secret" {
+		t.Fatalf("base env not injected: DATABASE_URL=%q", f.gotEnv["DATABASE_URL"])
+	}
+	if f.gotEnv["DISTILL_RECIPE"] != "opus" {
+		t.Fatalf("body env missing: DISTILL_RECIPE=%q", f.gotEnv["DISTILL_RECIPE"])
+	}
+}
+
+func TestRunBodyEnvOverridesBaseEnv(t *testing.T) {
+	f := &fakeRunner{}
+	rr := post(t, newTestServerWithBase(t, map[string]string{"FOO": "from-base"}, f),
+		testToken, `{"app":"rara-distill","env":{"FOO":"from-body"}}`)
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("got %d, want 202", rr.Code)
+	}
+	if f.gotEnv["FOO"] != "from-body" {
+		t.Fatalf("body should override base: FOO=%q", f.gotEnv["FOO"])
+	}
+}
+
+func TestRunNilBaseEnvDoesNotBreak(t *testing.T) {
+	f := &fakeRunner{}
+	rr := post(t, newTestServerWithBase(t, nil, f),
+		testToken, `{"app":"rara-distill","env":{"KEY":"val"}}`)
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("nil base: got %d, want 202", rr.Code)
+	}
+	if f.gotEnv["KEY"] != "val" {
+		t.Fatalf("body env: KEY=%q", f.gotEnv["KEY"])
 	}
 }

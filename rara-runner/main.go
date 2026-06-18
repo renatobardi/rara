@@ -74,12 +74,18 @@ func runAgent() {
 		log.Fatalf("invalid RUNNER_DOCKER_BIN: %v", err)
 	}
 
+	baseEnv, err := loadEnvFile(os.Getenv("RUNNER_WORKER_ENV_FILE"))
+	if err != nil {
+		// loadEnvFile errors contain only the file path and an invalid key name — no secret values.
+		log.Fatalf("RUNNER_WORKER_ENV_FILE: %v", err)
+	}
+
 	// Signal-aware context: SIGINT/SIGTERM (systemd/launchd lifecycle) cancel it so the listener
 	// drains in-flight requests and exits cleanly — mirrors rara-core's main.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	h := newAgentServer(token, allowed, dockerRunner{bin: bin})
+	h := newAgentServer(token, allowed, baseEnv, dockerRunner{bin: bin})
 	if err := serveAgent(ctx, addr, h); err != nil {
 		log.Fatalf("agent: %v", err)
 	}

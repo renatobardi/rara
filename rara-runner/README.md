@@ -44,6 +44,7 @@ This runs containers on a personal machine (the Mac), so the trust boundary is t
 | `RUNNER_TOKEN` | ✅ | Shared tailnet Bearer; empty ⇒ all requests rejected. |
 | `RUNNER_ALLOWED_IMAGES` | ✅ | `app=image,app2=image2`; each image **must** be pinned by digest (`@sha256:`). A duplicate app or an unpinned image fails startup. |
 | `RUNNER_DOCKER_BIN` | — | Launcher binary; default `docker`. Must be `docker`, `podman`, or an absolute path (a relative name is refused so PATH can't be hijacked). `podman` is rootless — a container escape stays in the user namespace instead of reaching the host as root. |
+| `RUNNER_WORKER_ENV_FILE` | — | Path to a `KEY=VAL` file with host-side secrets and config (e.g. `DATABASE_URL`, `LITELLM_BASE_URL`) injected into **every** container started by this agent. **Must have restrictive permissions (`chmod 600` or `640`)** — the file contains secrets. The body's `env` is merged on top — body wins on conflict, so the caller can override non-secret config but secrets only live on the host. Missing file or empty var → no base env (doesn't fail). Format: one `KEY=VAL` per line; `#` comments and blank lines are ignored; values may contain `=`. |
 
 See [.env.example](.env.example).
 
