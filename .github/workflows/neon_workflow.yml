@@ -1,0 +1,93 @@
+name: Neon · DB branch por PR
+
+# Cria um branch Neon efêmero por Pull Request, aplica as migrations (golang-migrate),
+# comenta o schema diff no PR e destrói o branch quando o PR fecha.
+#
+# Pré-requisitos (a Neon GitHub Integration já criou os 2 primeiros):
+#   - secret  NEON_API_KEY      (Settings > Secrets and variables > Actions > Secrets)
+#   - var     NEON_PROJECT_ID   (Settings > Secrets and variables > Actions > Variables)
+#   - migrations em db/migrations/  (formato golang-migrate: NNNN_nome.up.sql / .down.sql)
+#
+# Ajuste os campos marcados com  # <-- AJUSTE  conforme o seu projeto.
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, closed]
+
+# Garante a mesma nomenclatura de branch em todos os jobs.
+env:
+  NEON_BRANCH_NAME: preview/pr-${{ github.event.number }}
+  MIGRATE_VERSION: v4.18.1
+  MIGRATIONS_PATH: db/migrations   # <-- AJUSTE se suas migrations ficam em outro lugar
+
+# Evita rodar duas vezes em pushes rápidos no mesmo PR.
+concurrency:
+  group: neon-${{ github.event.number }}
+  cancel-in-progress: true
+
+jobs:
+  # ───────────────────────────────────────────────────────────────────
+  # PR aberto / reaberto / atualizado → cria branch, migra, comenta diff
+  # ───────────────────────────────────────────────────────────────────
+  setup-branch:
+    if: github.event.action != 'closed'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      pull-requests: write   # necessário para o schema-diff comentar no PR
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Expiração de segurança (7 dias) caso o evento de close falhe
+        id: expiry
+        run: echo "EXPIRES_AT=$(date -u --date '+7 days' +'%Y-%m-%dT%H:%M:%SZ')" >> "$GITHUB_ENV"
+
+      - name: Criar branch Neon do PR
+        id: create-branch
+        uses: neondatabase/create-branch-action@v6
+        with:
+          project_id: ${{ vars.NEON_PROJECT_ID }}
+          branch_name: ${{ env.NEON_BRANCH_NAME }}
+          # parent_branch: production   # <-- AJUSTE se quiser ramificar de um branch != primary
+          role: neondb_owner            # <-- AJUSTE se o seu role for outro
+          database: neondb              # <-- AJUSTE se o seu database for outro
+          api_key: ${{ secrets.NEON_API_KEY }}
+          expires_at: ${{ env.EXPIRES_AT }}
+
+      - name: Instalar golang-migrate
+        run: |
+          curl -fsSL "https://github.com/golang-migrate/migrate/releases/download/${MIGRATE_VERSION}/migrate.linux-amd64.tar.gz" \
+            | tar xz
+          sudo mv migrate /usr/local/bin/migrate
+          migrate -version
+
+      - name: Aplicar migrations no branch do PR
+        env:
+          DB_URL: ${{ steps.create-branch.outputs.db_url }}
+        run: |
+          # golang-migrate espera o scheme postgres:// ; a Neon devolve postgresql://
+          NORMALIZED_URL=$(printf '%s' "$DB_URL" | sed 's#^postgresql://#postgres://#')
+          migrate -path "$MIGRATIONS_PATH" -database "$NORMALIZED_URL" up
+
+      - name: Comentar o schema diff no PR
+        uses: neondatabase/schema-diff-action@v1
+        with:
+          project_id: ${{ vars.NEON_PROJECT_ID }}
+          compare_branch: ${{ env.NEON_BRANCH_NAME }}
+          database: neondb              # <-- AJUSTE se necessário (igual ao create-branch)
+          api_key: ${{ secrets.NEON_API_KEY }}
+
+  # ───────────────────────────────────────────────────────────────────
+  # PR fechado (merge ou descartado) → destrói o branch efêmero
+  # ───────────────────────────────────────────────────────────────────
+  cleanup-branch:
+    if: github.event.action == 'closed'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Deletar branch Neon do PR
+        uses: neondatabase/delete-branch-action@v3
+        with:
+          project_id: ${{ vars.NEON_PROJECT_ID }}
+          branch: ${{ env.NEON_BRANCH_NAME }}
+          api_key: ${{ secrets.NEON_API_KEY }}
