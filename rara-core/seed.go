@@ -146,13 +146,15 @@ func seedSharedConfig(ctx context.Context, db Database) error {
 	// The fallback list pins the ordering so the router prefers the VPC provider regardless
 	// of cost/quality score (the *-local variants are seeded worse on both axes intentionally,
 	// as that controls private-vs-public routing — the fallback list overrides score for public).
+	// ponytail: string slice of known-safe ASCII names never errors in json.Marshal
+	fallbackJSON := func(names ...string) json.RawMessage { b, _ := json.Marshal(names); return b }
 	vpcFirst := []struct {
 		scope    string
 		fallback json.RawMessage
 	}{
-		{capGateBarato, json.RawMessage(`["gate-barato-local","gate-barato"]`)},
-		{capGateRico, json.RawMessage(`["gate-rico-local","gate-rico"]`)},
-		{capDestilar, json.RawMessage(`["distill-local","distill"]`)},
+		{capGateBarato, fallbackJSON(provGateBaratoLocal, provGateBarato)},
+		{capGateRico, fallbackJSON(provGateRicoLocal, provGateRico)},
+		{capDestilar, fallbackJSON(provDistillLocal, provDistill)},
 	}
 	for _, p := range vpcFirst {
 		if err := db.UpsertRoutingPolicy(ctx, RoutingPolicy{Scope: p.scope, CostWeight: 0.5, QualityWeight: 0.5, Fallback: p.fallback}); err != nil {
