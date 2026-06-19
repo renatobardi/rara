@@ -13,7 +13,10 @@
 // and its flow.
 package main
 
-import "context"
+import (
+	"context"
+	"encoding/json"
+)
 
 // Flow names — the canonical name of each lane's flow. ingest stamps items with the flow id +
 // version; the source_type column mirrors the lane.
@@ -128,14 +131,35 @@ func seedSharedProviders(ctx context.Context, db Database) error {
 	return nil
 }
 
-// seedSharedConfig upserts the global routing policy and the v1 interest_profile (the gate
-// cascade's profile-layer document). The policy is a balanced cost<->quality weighting with no
-// explicit fallback. The profile is seeded ONCE (idempotent): a revision is a NEW version
-// (Phase 6's learning loop), never an overwrite.
+// seedSharedConfig upserts the global routing policy, per-capability VPC-first policies, and
+// the v1 interest_profile. The global policy is a balanced cost<->quality weighting with no
+// explicit fallback. Each LLM capability gets its own policy that pins the resident VPC provider
+// first (local → cloud fallback), so public items are routed to the VPC worker when healthy and
+// fall through to the cloud on_demand provider when the resident is down or unassigned.
+// The profile is seeded ONCE (idempotent): a revision is a NEW version (Phase 6's learning
+// loop), never an overwrite.
 func seedSharedConfig(ctx context.Context, db Database) error {
 	if err := db.UpsertRoutingPolicy(ctx, RoutingPolicy{Scope: policyScopeGlobal, CostWeight: 0.5, QualityWeight: 0.5}); err != nil {
 		return err
 	}
+	// VPC-first per-capability policies: resident local → cloud on_demand fallback.
+	// The fallback list pins the ordering so the router prefers the VPC provider regardless
+	// of cost/quality score (the *-local variants are seeded worse on both axes intentionally,
+	// as that controls private-vs-public routing — the fallback list overrides score for public).
+	vpcFirst := []struct {
+		scope    string
+		fallback json.RawMessage
+	}{
+		{capGateBarato, json.RawMessage(`["gate-barato-local","gate-barato"]`)},
+		{capGateRico, json.RawMessage(`["gate-rico-local","gate-rico"]`)},
+		{capDestilar, json.RawMessage(`["distill-local","distill"]`)},
+	}
+	for _, p := range vpcFirst {
+		if err := db.UpsertRoutingPolicy(ctx, RoutingPolicy{Scope: p.scope, CostWeight: 0.5, QualityWeight: 0.5, Fallback: p.fallback}); err != nil {
+			return err
+		}
+	}
+
 	if _, found, err := db.GetLatestInterestProfile(ctx); err != nil {
 		return err
 	} else if !found {

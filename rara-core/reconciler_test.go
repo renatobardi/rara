@@ -96,10 +96,10 @@ func TestReconcileFirstPass(t *testing.T) {
 	if s, ok := stepBySeq(db, itemID, 1); !ok || s.Status != stepDone || s.OutputRef != "vid1" {
 		t.Errorf("coletar step = %+v, want done with output_ref=vid1", s)
 	}
-	// gate_barato assigned to the gate worker, pending (a real work step now, on metadata).
+	// gate_barato assigned to the VPC-first gate worker (local before cloud), pending.
 	s, ok := stepBySeq(db, itemID, 2)
-	if !ok || s.Status != stepPending || s.AssignedProvider != provGateBarato {
-		t.Errorf("gate_barato step = %+v, want pending+gate-barato", s)
+	if !ok || s.Status != stepPending || s.AssignedProvider != provGateBaratoLocal {
+		t.Errorf("gate_barato step = %+v, want pending+gate-barato-local (VPC-first)", s)
 	}
 	// transcrever NOT materialized — it waits behind the metadata gate.
 	if _, ok := stepBySeq(db, itemID, 3); ok {
@@ -211,8 +211,8 @@ func TestReconcileGateRicoDropAfterTranscribe(t *testing.T) {
 	if err := r.ReconcileOnce(ctx); err != nil { // assign gate_rico
 		t.Fatal(err)
 	}
-	if s, ok := stepBySeq(db, itemID, 4); !ok || s.Status != stepPending || s.AssignedProvider != provGateRico {
-		t.Fatalf("gate_rico step = %+v, want pending+gate-rico", s)
+	if s, ok := stepBySeq(db, itemID, 4); !ok || s.Status != stepPending || s.AssignedProvider != provGateRicoLocal {
+		t.Fatalf("gate_rico step = %+v, want pending+gate-rico-local (VPC-first)", s)
 	}
 	runGate(t, db, itemID, 4, gateRico, decisionDrop)
 	if err := r.ReconcileOnce(ctx); err != nil { // route drop -> filtered
@@ -274,16 +274,16 @@ func TestReconcileAfterTranscrever(t *testing.T) {
 	if got := db.itemByID[itemID].Status; got != itemToText {
 		t.Errorf("item status = %q, want to_text", got)
 	}
-	if s, ok := stepBySeq(db, itemID, 4); !ok || s.Status != stepPending || s.AssignedProvider != provGateRico {
-		t.Errorf("gate_rico step = %+v, want pending+gate-rico", s)
+	if s, ok := stepBySeq(db, itemID, 4); !ok || s.Status != stepPending || s.AssignedProvider != provGateRicoLocal {
+		t.Errorf("gate_rico step = %+v, want pending+gate-rico-local (VPC-first)", s)
 	}
 
 	runGate(t, db, itemID, 4, gateRico, decisionKeep)
 	if err := r.ReconcileOnce(ctx); err != nil { // route keep -> assign destilar
 		t.Fatal(err)
 	}
-	if s, ok := stepBySeq(db, itemID, 5); !ok || s.Status != stepPending || s.AssignedProvider != provDistill {
-		t.Errorf("destilar step = %+v, want pending+distill", s)
+	if s, ok := stepBySeq(db, itemID, 5); !ok || s.Status != stepPending || s.AssignedProvider != provDistillLocal {
+		t.Errorf("destilar step = %+v, want pending+distill-local (VPC-first)", s)
 	}
 }
 

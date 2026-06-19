@@ -35,9 +35,9 @@ func TestSeedSharedProvidersSensitivityTags(t *testing.T) {
 
 // TestReconcileEmailRoutesSelfHost is the slice (c) payoff: a PRIVATE email item is kept off
 // the third-party LLM providers — every LLM step (gate_barato, gate_rico, destilar) routes to
-// the self-host variant, while the deterministic extrair step (no third-party model) routes
-// normally. Public lanes are unaffected (the existing youtube/podcast tests still assert the
-// cloud providers, which dominate the score for public items).
+// the self-host variant. For public items, the self-host variant is also chosen first (VPC-first
+// policy), but for different reasons: fallback ordering, not sensitivity exclusion. The extrair
+// step (deterministic, no third-party model) routes to its provider regardless of sensitivity.
 func TestReconcileEmailRoutesSelfHost(t *testing.T) {
 	ctx := context.Background()
 	db := newMockDatabase()
@@ -92,10 +92,11 @@ func TestReconcileEmailRoutesSelfHost(t *testing.T) {
 	}
 }
 
-// TestReconcilePublicPrefersThirdParty: a PUBLIC item (youtube) routes its LLM steps to the
-// cloud third-party providers — the self-host variants exist but are dominated on score, so
-// adding them never diverts public traffic.
-func TestReconcilePublicPrefersThirdParty(t *testing.T) {
+// TestReconcilePublicPrefersVPCFirst: a PUBLIC item (youtube) routes its LLM steps to the
+// VPC-resident providers first (gate-barato-local, gate-rico-local, distill-local). The
+// per-capability routing_policies pin the local-before-cloud fallback order, overriding the
+// cost/quality score that would otherwise prefer the cloud variants.
+func TestReconcilePublicPrefersVPCFirst(t *testing.T) {
 	ctx := context.Background()
 	db := newMockDatabase()
 	itemID := seedAndIngestOne(t, db, "vid1") // youtube, public
@@ -104,7 +105,7 @@ func TestReconcilePublicPrefersThirdParty(t *testing.T) {
 	if err := r.ReconcileOnce(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if s := db.itemSteps[itemStepKey{itemID, 2}]; s.AssignedProvider != provGateBarato {
-		t.Errorf("public gate_barato = %q, want the cloud %s", s.AssignedProvider, provGateBarato)
+	if s := db.itemSteps[itemStepKey{itemID, 2}]; s.AssignedProvider != provGateBaratoLocal {
+		t.Errorf("public gate_barato = %q, want the VPC-first %s", s.AssignedProvider, provGateBaratoLocal)
 	}
 }
