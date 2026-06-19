@@ -14,6 +14,8 @@
 --   "brightdata-linkedin" -> "clip"              (Cloud Run job = "rara-" + "clip" = rara-clip)
 -- IF NOT EXISTS makes both ALTERs re-runnable (already applied manually on primary).
 
+BEGIN;
+
 ALTER TABLE providers
     ADD COLUMN IF NOT EXISTS collect_cadence_seconds INT,
     ADD COLUMN IF NOT EXISTS last_collect_at TIMESTAMPTZ;
@@ -25,3 +27,5 @@ UPDATE providers SET name = 'dial' WHERE name = 'rara-dial';
 -- Rename provider "brightdata-linkedin" -> "clip" so the dispatcher constructs job "rara-clip".
 -- No-op if already renamed.
 UPDATE providers SET name = 'clip' WHERE name = 'brightdata-linkedin';
+
+COMMIT;

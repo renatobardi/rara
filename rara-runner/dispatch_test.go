@@ -8,14 +8,14 @@ import (
 
 // mockDispatchDB is the in-memory fake for DispatchOnce tests.
 type mockDispatchDB struct {
-	steps          []AssignedStep
-	providers      map[string]DispatchProvider
-	dueCollectors  []DispatchProvider
-	touched        []string // names passed to TouchCollectorDispatched
-	listErr        error
-	getErr         error
-	collectErr     error
-	touchErr       error
+	steps         []AssignedStep
+	providers     map[string]DispatchProvider
+	dueCollectors []DispatchProvider
+	touched       map[string]int // name -> call count; detects double-touch bugs
+	listErr       error
+	getErr        error
+	collectErr    error
+	touchErr      error
 }
 
 func (m *mockDispatchDB) ListAssignedSteps(_ context.Context) ([]AssignedStep, error) {
@@ -35,7 +35,10 @@ func (m *mockDispatchDB) ListDueCollectors(_ context.Context) ([]DispatchProvide
 }
 
 func (m *mockDispatchDB) TouchCollectorDispatched(_ context.Context, name string) error {
-	m.touched = append(m.touched, name)
+	if m.touched == nil {
+		m.touched = make(map[string]int)
+	}
+	m.touched[name]++
 	return m.touchErr
 }
 
@@ -228,8 +231,8 @@ func TestDispatchOnceTouchesCollectorAfterWake(t *testing.T) {
 		dueCollectors: []DispatchProvider{{Name: "harvest", Runtime: runtimeCloudRun}},
 	}
 	runOnce(t, db)
-	if len(db.touched) != 1 || db.touched[0] != "harvest" {
-		t.Errorf("touched = %v, want [harvest]", db.touched)
+	if db.touched["harvest"] != 1 {
+		t.Errorf("touched[harvest] = %d, want 1; full map: %v", db.touched["harvest"], db.touched)
 	}
 }
 
@@ -244,7 +247,7 @@ func TestDispatchOnceCollectorNotTouchedOnRunnerError(t *testing.T) {
 		t.Fatalf("DispatchOnce: %v", err)
 	}
 	if len(db.touched) != 0 {
-		t.Errorf("touched after runner error: %v, want []", db.touched)
+		t.Errorf("touched after runner error: %v, want empty map", db.touched)
 	}
 }
 

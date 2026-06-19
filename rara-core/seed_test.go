@@ -240,12 +240,16 @@ func TestSeedYouTubeLanePreservesEnabled(t *testing.T) {
 }
 
 // TestCollectorCadencesSeeded verifies every scheduled collector provider has
-// collect_cadence_seconds set after each lane seed. The dispatcher relies on this to know
-// when to wake each collector; a zero/nil cadence means the dispatcher never wakes it.
+// collect_cadence_seconds set and is enabled after each lane seed. The dispatcher relies on
+// both: a nil cadence means never woken; disabled means skipped by ListDueCollectors.
 func TestCollectorCadencesSeeded(t *testing.T) {
+	const (
+		cadenceDaily = 86400 // harvest, shelf, dial
+		cadence6h    = 21600 // feed, courier, clip
+	)
+
 	ctx := context.Background()
 	db := newMockDatabase()
-	// Seed all lanes so all collector providers are present.
 	for _, fn := range []func(context.Context, Database) error{
 		SeedYouTubeLane, SeedPodcastLane, SeedEmailLane, SeedNewsLane, SeedLinkedInLane,
 	} {
@@ -254,19 +258,22 @@ func TestCollectorCadencesSeeded(t *testing.T) {
 		}
 	}
 
-	collectors := map[string]int{ // name -> expected cadence seconds
-		provHarvest:        86400,
-		provShelf:          86400,
-		provDial:           86400,
-		provFeed:           21600,
-		provCourier:        21600,
-		provBrightDataLinked: 21600, // "clip" — rara-clip job
+	collectors := map[string]int{ // provider name -> expected cadence seconds
+		provHarvest:          cadenceDaily,
+		provShelf:            cadenceDaily,
+		provDial:             cadenceDaily,
+		provFeed:             cadence6h,
+		provCourier:          cadence6h,
+		provBrightDataLinked: cadence6h, // "clip" — rara-clip job
 	}
 	for name, wantCadence := range collectors {
 		p, ok := db.providers[name]
 		if !ok {
 			t.Errorf("collector provider %q not seeded", name)
 			continue
+		}
+		if !p.Enabled {
+			t.Errorf("provider %q: Enabled = false, want true", name)
 		}
 		if p.CollectCadenceSeconds == nil {
 			t.Errorf("provider %q: CollectCadenceSeconds is nil, want %d", name, wantCadence)
