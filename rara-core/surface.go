@@ -159,7 +159,7 @@ func (c *Core) FlowSteps(ctx context.Context, flowID int) ([]FlowStep, error) {
 func (c *Core) Providers(ctx context.Context) ([]Provider, error) { return c.db.ListProviders(ctx) }
 
 // AvailableProvider is the restricted view of a Provider sent to the hosts editor.
-// Internal fields (poke_url, runner_url, heartbeat_at, constraints, env) are intentionally omitted.
+// Internal fields (runner_url, heartbeat_at, constraints, env) are intentionally omitted.
 type AvailableProvider struct {
 	Name       string `json:"name"`
 	Capability string `json:"capability"`
