@@ -284,3 +284,53 @@ func TestCollectorCadencesSeeded(t *testing.T) {
 		}
 	}
 }
+
+// TestSeedPreservesHeartbeatAtOnReseed guards against re-seed wiping the heartbeat that
+// TouchProviderHeartbeat stamps. The runner touches providers.heartbeat_at on each wake
+// (proof of life); seed must never zero it, or the router's health gate will exclude a
+// healthy provider until it next wakes.
+func TestSeedPreservesHeartbeatAtOnReseed(t *testing.T) {
+	ctx := context.Background()
+	db := newMockDatabase()
+	if err := SeedYouTubeLane(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	// Simulate runner stamping heartbeat on distill-local after first seed.
+	if err := db.TouchProviderHeartbeat(ctx, provDistillLocal); err != nil {
+		t.Fatal(err)
+	}
+	if db.providers[provDistillLocal].HeartbeatAt == nil {
+		t.Fatal("precondition: HeartbeatAt should be set after TouchProviderHeartbeat")
+	}
+	// Re-seed must NOT zero heartbeat_at.
+	if err := SeedYouTubeLane(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	if db.providers[provDistillLocal].HeartbeatAt == nil {
+		t.Error("re-seed zeroed HeartbeatAt on distill-local; TouchProviderHeartbeat's stamp must survive re-seed")
+	}
+}
+
+// TestSeedVPCLocalProvidersGetRunnerURLFromEnv guards against re-seed zeroing runner_url on
+// the three VPC on_demand providers. runner_url is the tailnet endpoint the dispatcher POSTs
+// to wake a worker; zeroing it causes "no transport path" dispatch failures.
+func TestSeedVPCLocalProvidersGetRunnerURLFromEnv(t *testing.T) {
+	const wantURL = "http://100.66.254.24:9000"
+	t.Setenv("RUNNER_LOCAL_URL", wantURL)
+
+	ctx := context.Background()
+	db := newMockDatabase()
+	if err := SeedYouTubeLane(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{provDistillLocal, provGateBaratoLocal, provGateRicoLocal} {
+		p, ok := db.providers[name]
+		if !ok {
+			t.Errorf("provider %q not seeded", name)
+			continue
+		}
+		if p.RunnerURL != wantURL {
+			t.Errorf("provider %q: RunnerURL = %q, want %q (from RUNNER_LOCAL_URL)", name, p.RunnerURL, wantURL)
+		}
+	}
+}

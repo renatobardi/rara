@@ -731,8 +731,8 @@ func (d *pgxDatabase) UpsertProvider(ctx context.Context, p Provider) error {
 	const q = `
 		INSERT INTO providers
 			(name, capability, runtime, activation, cost, quality, latency_ms, constraints, enabled,
-			 heartbeat_at, runner_url, env, collect_cadence_seconds)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11, $12::jsonb, $13)
+			 runner_url, env, collect_cadence_seconds)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11::jsonb, $12)
 		ON CONFLICT (name) DO UPDATE SET
 			capability             = EXCLUDED.capability,
 			runtime                = EXCLUDED.runtime,
@@ -742,16 +742,17 @@ func (d *pgxDatabase) UpsertProvider(ctx context.Context, p Provider) error {
 			latency_ms             = EXCLUDED.latency_ms,
 			constraints            = EXCLUDED.constraints,
 			enabled                = EXCLUDED.enabled,
-			heartbeat_at           = EXCLUDED.heartbeat_at,
 			runner_url             = EXCLUDED.runner_url,
 			env                    = EXCLUDED.env,
 			collect_cadence_seconds = EXCLUDED.collect_cadence_seconds`
-	// last_collect_at is intentionally excluded from the upsert: it is owned by the dispatcher
-	// (rara-runner stamps it after each successful wake). Overwriting it on every seed would reset
-	// the cadence clock and re-trigger collection on every core-job seed run.
+	// heartbeat_at: owned by TouchProviderHeartbeat (runner proof-of-life). Excluded from INSERT
+	// and SET so seed never clobbers it — a re-seed must not evict a healthy provider from the
+	// router's health gate.
+	// last_collect_at: owned by the dispatcher (stamped after each successful wake). Excluded so
+	// seed never resets the cadence clock.
 	_, err := d.conn.Exec(ctx, q,
 		p.Name, p.Capability, p.Runtime, p.Activation, p.Cost, p.Quality, p.LatencyMs,
-		jsonOrEmpty(p.Constraints, "{}"), p.Enabled, p.HeartbeatAt, nullStr(p.RunnerURL),
+		jsonOrEmpty(p.Constraints, "{}"), p.Enabled, nullStr(p.RunnerURL),
 		jsonOrEmpty(p.Env, "{}"), p.CollectCadenceSeconds)
 	if err != nil {
 		return fmt.Errorf("upsert provider %q: %w", p.Name, err)
@@ -1034,6 +1035,9 @@ func main() {
 
 	switch cmd {
 	case "seed":
+		if os.Getenv("RUNNER_LOCAL_URL") == "" {
+			log.Fatalf("RUNNER_LOCAL_URL not set — required for VPC on_demand providers (distill-local, gate-barato-local, gate-rico-local); set it to the tailnet runner endpoint before seeding")
+		}
 		for _, seed := range []struct {
 			name string
 			fn   func(context.Context, Database) error

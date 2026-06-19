@@ -16,6 +16,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"os"
 )
 
 // Flow names — the canonical name of each lane's flow. ingest stamps items with the flow id +
@@ -112,7 +113,8 @@ func seedSharedProviders(ctx context.Context, db Database) error {
 		// ponytail: cost 1.50 < 2.00 (cloud) → VPC wins the score; quality parity: same model
 		{Name: provDistillLocal, Capability: capDestilar, Runtime: runtimeVPC, Activation: activationOnDemand,
 			Cost: 1.50, Quality: 0.92, LatencyMs: 60000, Enabled: true,
-			Env: []byte(`{"DISTILL_PROVIDER":"distill-local"}`)},
+			RunnerURL: os.Getenv("RUNNER_LOCAL_URL"),
+			Env:       []byte(`{"DISTILL_PROVIDER":"distill-local"}`)},
 		// gate_barato / gate_rico: the cascade gates (rules -> profile -> LLM-judge). Cheap on
 		// average (only the borderline middle pays the LLM call).
 		{Name: provGateBarato, Capability: capGateBarato, Runtime: runtimeCloudRun, Activation: activationOnDemand,
@@ -121,14 +123,16 @@ func seedSharedProviders(ctx context.Context, db Database) error {
 		// ponytail: cost 0.30 < 0.50 (cloud) → VPC wins the score; quality parity: same model
 		{Name: provGateBaratoLocal, Capability: capGateBarato, Runtime: runtimeVPC, Activation: activationOnDemand,
 			Cost: 0.30, Quality: 0.88, LatencyMs: 9000, Enabled: true,
-			Env: []byte(`{"SIFT_GATE":"gate_barato","SIFT_PROVIDER":"gate-barato-local"}`)},
+			RunnerURL: os.Getenv("RUNNER_LOCAL_URL"),
+			Env:       []byte(`{"SIFT_GATE":"gate_barato","SIFT_PROVIDER":"gate-barato-local"}`)},
 		{Name: provGateRico, Capability: capGateRico, Runtime: runtimeCloudRun, Activation: activationOnDemand,
 			Cost: 0.60, Quality: 0.90, LatencyMs: 8000, Constraints: thirdParty, Enabled: true,
 			Env: []byte(`{"SIFT_GATE":"gate_rico","SIFT_PROVIDER":"gate-rico","LITELLM_MODEL":"groq-fast"}`)},
 		// ponytail: cost 0.40 < 0.60 (cloud) → VPC wins the score; quality parity: same model
 		{Name: provGateRicoLocal, Capability: capGateRico, Runtime: runtimeVPC, Activation: activationOnDemand,
 			Cost: 0.40, Quality: 0.90, LatencyMs: 14000, Enabled: true,
-			Env: []byte(`{"SIFT_GATE":"gate_rico","SIFT_PROVIDER":"gate-rico-local"}`)},
+			RunnerURL: os.Getenv("RUNNER_LOCAL_URL"),
+			Env:       []byte(`{"SIFT_GATE":"gate_rico","SIFT_PROVIDER":"gate-rico-local"}`)},
 	}
 	for _, p := range providers {
 		if err := db.UpsertProvider(ctx, p); err != nil {
