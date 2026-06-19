@@ -135,14 +135,14 @@ func (d *pgxDatabase) ListProvidersForCapability(ctx context.Context, capability
 	const q = `SELECT ` + providerColumns + ` FROM providers WHERE capability = $1 AND enabled = true ORDER BY name`
 	rows, err := d.conn.Query(ctx, q, capability)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("list providers for capability %q: %w", capability, err)
 	}
 	defer rows.Close()
 	var out []Provider
 	for rows.Next() {
 		p, err := scanProvider(rows.Scan)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("list providers for capability %q: scan: %w", capability, err)
 		}
 		out = append(out, p)
 	}
@@ -156,7 +156,7 @@ func (d *pgxDatabase) GetProvider(ctx context.Context, name string) (Provider, b
 		return Provider{}, false, nil
 	}
 	if err != nil {
-		return Provider{}, false, err
+		return Provider{}, false, fmt.Errorf("get provider %q: %w", name, err)
 	}
 	return p, true, nil
 }
@@ -544,14 +544,14 @@ func (d *pgxDatabase) ListProviders(ctx context.Context) ([]Provider, error) {
 	const q = `SELECT ` + providerColumns + ` FROM providers ORDER BY name`
 	rows, err := d.conn.Query(ctx, q)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("list providers: %w", err)
 	}
 	defer rows.Close()
 	var out []Provider
 	for rows.Next() {
 		p, err := scanProvider(rows.Scan)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("list providers: scan: %w", err)
 		}
 		out = append(out, p)
 	}
