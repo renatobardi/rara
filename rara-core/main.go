@@ -271,6 +271,11 @@ type Provider struct {
 	// (DATABASE_URL, API keys) are NOT here — the host/agent resolves them. "" => '{}' on write;
 	// the round-trip preserves unknown keys verbatim.
 	Env json.RawMessage `json:"env,omitempty"`
+	// CollectCadenceSeconds is set only for collector providers (coletar capability). The
+	// dispatcher (rara-runner) wakes the collector every N seconds regardless of item_steps —
+	// collectors create items and are never assigned via item_steps (coletar is auto-satisfied).
+	// NULL / 0 = not a scheduled collector.
+	CollectCadenceSeconds *int `json:"collect_cadence_seconds,omitempty"`
 }
 
 // Flow is one declarative pipeline per source lane.
@@ -725,24 +730,29 @@ func (d *pgxDatabase) UpsertProvider(ctx context.Context, p Provider) error {
 	}
 	const q = `
 		INSERT INTO providers
-			(name, capability, runtime, activation, cost, quality, latency_ms, constraints, enabled, heartbeat_at, runner_url, env)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11, $12::jsonb)
+			(name, capability, runtime, activation, cost, quality, latency_ms, constraints, enabled,
+			 heartbeat_at, runner_url, env, collect_cadence_seconds)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11, $12::jsonb, $13)
 		ON CONFLICT (name) DO UPDATE SET
-			capability   = EXCLUDED.capability,
-			runtime      = EXCLUDED.runtime,
-			activation   = EXCLUDED.activation,
-			cost         = EXCLUDED.cost,
-			quality      = EXCLUDED.quality,
-			latency_ms   = EXCLUDED.latency_ms,
-			constraints  = EXCLUDED.constraints,
-			enabled      = EXCLUDED.enabled,
-			heartbeat_at = EXCLUDED.heartbeat_at,
-			runner_url   = EXCLUDED.runner_url,
-			env          = EXCLUDED.env`
+			capability             = EXCLUDED.capability,
+			runtime                = EXCLUDED.runtime,
+			activation             = EXCLUDED.activation,
+			cost                   = EXCLUDED.cost,
+			quality                = EXCLUDED.quality,
+			latency_ms             = EXCLUDED.latency_ms,
+			constraints            = EXCLUDED.constraints,
+			enabled                = EXCLUDED.enabled,
+			heartbeat_at           = EXCLUDED.heartbeat_at,
+			runner_url             = EXCLUDED.runner_url,
+			env                    = EXCLUDED.env,
+			collect_cadence_seconds = EXCLUDED.collect_cadence_seconds`
+	// last_collect_at is intentionally excluded from the upsert: it is owned by the dispatcher
+	// (rara-runner stamps it after each successful wake). Overwriting it on every seed would reset
+	// the cadence clock and re-trigger collection on every core-job seed run.
 	_, err := d.conn.Exec(ctx, q,
 		p.Name, p.Capability, p.Runtime, p.Activation, p.Cost, p.Quality, p.LatencyMs,
 		jsonOrEmpty(p.Constraints, "{}"), p.Enabled, p.HeartbeatAt, nullStr(p.RunnerURL),
-		jsonOrEmpty(p.Env, "{}"))
+		jsonOrEmpty(p.Env, "{}"), p.CollectCadenceSeconds)
 	if err != nil {
 		return fmt.Errorf("upsert provider %q: %w", p.Name, err)
 	}
@@ -950,6 +960,8 @@ func nullStr(s string) *string {
 	}
 	return &s
 }
+
+func intPtr(n int) *int { return &n }
 
 // sensitivityOr defaults an empty sensitivity to `public`, mirroring the items.sensitivity
 // SQL DEFAULT so a write that omits it never violates the NOT NULL / CHECK.

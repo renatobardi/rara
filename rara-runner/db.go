@@ -85,6 +85,48 @@ func parseProviderEnv(raw string) (map[string]string, error) {
 	return env, nil
 }
 
+func (d *pgxDispatchDB) ListDueCollectors(ctx context.Context) ([]DispatchProvider, error) {
+	const q = `
+		SELECT name, runtime, activation, COALESCE(runner_url, ''), COALESCE(env::text, '{}')
+		FROM providers
+		WHERE collect_cadence_seconds IS NOT NULL
+		  AND enabled = true
+		  AND (last_collect_at IS NULL
+		       OR now() - last_collect_at > collect_cadence_seconds * interval '1 second')
+		ORDER BY name`
+	rows, err := d.pool.Query(ctx, q)
+	if err != nil {
+		return nil, fmt.Errorf("list due collectors query: %w", err)
+	}
+	defer rows.Close()
+	var out []DispatchProvider
+	for rows.Next() {
+		var p DispatchProvider
+		var envJSON string
+		if err := rows.Scan(&p.Name, &p.Runtime, &p.Activation, &p.RunnerURL, &envJSON); err != nil {
+			return nil, fmt.Errorf("list due collectors scan: %w", err)
+		}
+		p.Env, err = parseProviderEnv(envJSON)
+		if err != nil {
+			return nil, fmt.Errorf("list due collectors env %q: %w", p.Name, err)
+		}
+		out = append(out, p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list due collectors rows: %w", err)
+	}
+	return out, nil
+}
+
+func (d *pgxDispatchDB) TouchCollectorDispatched(ctx context.Context, name string) error {
+	const q = `UPDATE providers SET last_collect_at = now() WHERE name = $1`
+	_, err := d.pool.Exec(ctx, q, name)
+	if err != nil {
+		return fmt.Errorf("touch collector %q: %w", name, err)
+	}
+	return nil
+}
+
 // maxProviderEnvBytes caps the JSONB we deserialize — defense-in-depth against a runaway env blob,
 // independent of the upstream JSON-object constraint. Per-run config is a handful of small vars.
 const maxProviderEnvBytes = 10240

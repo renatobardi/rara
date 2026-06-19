@@ -469,9 +469,9 @@ func TestReconcileLinkedInRoutesToExtrairLinkedin(t *testing.T) {
 }
 
 // The LinkedIn lane seeds BOTH collectors as config-as-data: the manual inbox (the surface's
-// fallback) and the automated brightdata-linkedin crawl (now its own app, rara-clip). Both
-// coletar, both accept only linkedin, so neither competes with another lane. The provider rows
-// describe the lane's collectors; the automated collector's CODE lives in rara-clip.
+// fallback) and the automated clip crawl (rara-clip, provider name "clip"). Both are coletar,
+// both accept only linkedin, so neither competes with another lane. The provider rows describe
+// the lane's collectors; the automated collector's CODE lives in rara-clip.
 func TestSeedLinkedInLaneSeedsBrightDataCollector(t *testing.T) {
 	ctx := context.Background()
 	db := newMockDatabase()
