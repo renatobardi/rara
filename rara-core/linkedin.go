@@ -35,9 +35,9 @@ import (
 const (
 	laneLinkedIn         = "linkedin"
 	linkedinFlowName     = "linkedin"
-	provManualInbox      = "manual-inbox" // coletar — manual post submission via surface (fallback)
-	provBrightDataLinked = "clip"         // coletar — Bright Data crawl via rara-clip; job rara-clip
-	provExtrairLinked    = "extrair-linkedin"    // extrair — LinkedIn post normalizer (accepts linkedin)
+	provManualInbox      = "manual-inbox"     // coletar — manual post submission via surface (fallback)
+	provBrightDataLinked = "clip"             // coletar — Bright Data crawl via rara-clip; job rara-clip
+	provExtrairLinked    = "extrair-linkedin" // extrair — LinkedIn post normalizer (accepts linkedin)
 )
 
 // LinkedInPost is one manually-submitted post: its canonical URL (the spine's natural key)
@@ -201,7 +201,7 @@ func SeedLinkedInLane(ctx context.Context, db Database) error {
 	if err := db.UpsertProvider(ctx, Provider{
 		Name: provBrightDataLinked, Capability: capColetar, Runtime: runtimeCloudRun, Activation: activationOnDemand,
 		Cost: 0.30, Quality: 0.90, LatencyMs: 5000,
-		Constraints:           []byte(`{"accepts":["linkedin"]}`), Enabled: true,
+		Constraints: []byte(`{"accepts":["linkedin"]}`), Enabled: true,
 		CollectCadenceSeconds: intPtr(21600), // 6h — mirrors rara-clip-6h scheduler
 	}); err != nil {
 		return err
