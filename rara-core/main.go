@@ -1035,6 +1035,9 @@ func main() {
 
 	switch cmd {
 	case "seed":
+		if os.Getenv("RUNNER_LOCAL_URL") == "" {
+			log.Fatalf("RUNNER_LOCAL_URL not set — required for VPC on_demand providers (distill-local, gate-barato-local, gate-rico-local); set it to the tailnet runner endpoint before seeding")
+		}
 		for _, seed := range []struct {
 			name string
 			fn   func(context.Context, Database) error
