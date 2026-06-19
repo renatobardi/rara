@@ -5,8 +5,8 @@ nos três hosts (GCP Cloud Run, VPC Oracle, Mac), por **um contrato único de at
 [ARCHITECTURE-2.0.pt-BR.md](./ARCHITECTURE-2.0.pt-BR.md), [ADDON-CONTRACT.pt-BR.md](./ADDON-CONTRACT.pt-BR.md)
 e [PIECES.mermaid.md](./PIECES.mermaid.md).
 
-> **Status:** design aprovado, implementação não iniciada. Não é greenfield — evolui o que já existe
-> (`rara-core/activator.go`, `rara-addon/addon.go` + `poke.go`, tabela `providers`).
+> **Status:** F0–F5 live (VPC + Cloud Run). F6 em andamento — poke-only aposentado; launchd/Schedulers
+> bloqueados (ver §8).
 
 ## 1. A virada
 
@@ -152,8 +152,13 @@ Cada fase é um slice no fluxo Claude Code + TDD (harness fluente sobre `MockDat
   first-class (providers por host + `routing_policy` ordenada já são a base).
 - **F5 — Unificar coletores.** harvest/shelf/dial/courier/clip/feed também acordados pelo `Runner`,
   lendo seu alvo (fontes habilitadas) do Neon — voláteis e idênticos como os workers.
-- **F6 — Aposentar o legado.** `launchd` batch do `scribe`, Cloud Schedulers ad-hoc (viram cadência
-  configurada disparada pelo dispatcher), `poke`-only.
+- **F6 — Aposentar o legado.**
+  - ✅ **poke-only removido** — `activator.go` saiu no F4; `PokeURL` removido do struct/queries/env.example
+    de `rara-core` (nenhum provider tinha `poke_url` preenchido; coluna nullable fica como tombstone no DB).
+  - 🔒 **launchd batch do Mac** (`asr-youtube` daily 02:00) — bloqueado até Mac agent up
+    (Docker/Colima + `rara-runner` no Mac). `asr-youtube` tem `runner_url=null`; poll é o único caminho.
+  - 🔒 **Cloud Schedulers ad-hoc** (7× harvest/shelf/dial/courier/clip/feed/hone via `jobs:run` direto)
+    — bloqueado por F5 (coletores pelo dispatcher).
 
 ## 9. Riscos e pontos físicos
 

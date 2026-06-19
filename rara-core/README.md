@@ -181,20 +181,20 @@ gateway for the LLM-judge.
 
 ### Symmetric activation (P1b)
 
-Trabalho = pull always; ativação = symmetric. On every assignment the reconciler calls the
-**Activator**, which dispatches by provider shape ([activator.go](activator.go)):
+Trabalho = pull always; ativação = symmetric. On every assignment the reconciler persists the
+desired state; `rara-runner dispatch` reads it and calls `Runner.Run`, routing by provider shape:
 
 - **runtime=cloudrun** → **Cloud Run Jobs `run`**: an authenticated `POST .../jobs/<job>:run`
   starts a fresh execution. The job is named after the provider (`CLOUD_RUN_JOB_PREFIX` + name);
   `CLOUD_RUN_PROJECT`/`CLOUD_RUN_REGION` and a token (`CLOUD_RUN_OAUTH_TOKEN`, a seam for a
   service-account source with `run.jobs.run`) come from env.
-- **activation=resident** → a **tailnet poke**: `POST <providers.poke_url>/poke` (Bearer
-  `POKE_AUTH_TOKEN`), which the worker's poke listener turns into a drain.
+- **runtime=vpc / local with `runner_url`** → **tailnet POST to `rara-runner agent`**: the
+  dispatcher (`rara-runner dispatch`) POSTs `<providers.runner_url>/run` (Bearer `RUNNER_TOKEN`),
+  and the agent does `docker run` of the worker image.
 
-Both are **best-effort**: a failed activation is logged, never fatal — a poke cannot wake a
-sleeping Mac, and the Cloud Run call may hit a transient error. The worker's own slow poll is the
-safety net, so the queue always drains regardless. With no activation env configured the reconciler
-is pull-only (a logged no-op), which is the correct posture on a box without activation credentials.
+Both are **best-effort**: a failed activation is logged, never fatal. The worker's own slow poll is
+the safety net, so the queue always drains regardless. With no activation env configured the
+dispatcher is a no-op (logged), which is the correct posture on a box without activation credentials.
 
 #### Self-healing re-activation (anti-stampede)
 
@@ -207,4 +207,4 @@ of concurrent executions running the wrong model: a single woken worker claims u
 (one execution pulling via `SKIP LOCKED`). So a **successful** wake anchors a per-provider timestamp
 and the reconciler stays quiet for `REACTIVATE_BACKOFF_SECONDS` (default **180s**); a **failed** wake
 anchors nothing and is retried next pass (no execution started → nothing to swarm). Residents are
-excluded — they already have poll + poke.
+excluded — they already have poll (and optional on-demand wakes via `rara-runner`).

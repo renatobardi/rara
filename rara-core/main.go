@@ -261,14 +261,9 @@ type Provider struct {
 	Constraints json.RawMessage `json:"constraints,omitempty"` // "" => '{}'
 	Enabled     bool            `json:"enabled"`
 	HeartbeatAt *time.Time      `json:"heartbeat_at,omitempty"`
-	// PokeURL is a resident worker's tailnet endpoint for symmetric activation; the reconciler
-	// POSTs <PokeURL>/poke (Bearer) to make it drain now. Empty for on_demand cloudrun providers
-	// (woken via Cloud Run Jobs `run` instead) and for residents that rely on the slow poll alone.
-	PokeURL string `json:"poke_url,omitempty"`
 	// RunnerURL is the tailnet endpoint of the rara-runner agent on this host (VPC or Mac).
 	// The dispatcher POSTs <RunnerURL>/run (Bearer RUNNER_AUTH_TOKEN) to wake the worker via
-	// docker run. Distinct from PokeURL (which is the worker's own poke listener).
-	// Empty for cloudrun providers (woken via Cloud Run Jobs `run`) and poll-only residents.
+	// docker run. Empty for cloudrun providers (woken via Cloud Run Jobs `run`) and poll-only residents.
 	RunnerURL string `json:"runner_url,omitempty"`
 	// Env is the per-run NON-secret config the worker image reads from its environment (its
 	// claim identity — SIFT_GATE+SIFT_PROVIDER, DISTILL_PROVIDER — plus policy knobs like
@@ -730,8 +725,8 @@ func (d *pgxDatabase) UpsertProvider(ctx context.Context, p Provider) error {
 	}
 	const q = `
 		INSERT INTO providers
-			(name, capability, runtime, activation, cost, quality, latency_ms, constraints, enabled, heartbeat_at, poke_url, runner_url, env)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11, $12, $13::jsonb)
+			(name, capability, runtime, activation, cost, quality, latency_ms, constraints, enabled, heartbeat_at, runner_url, env)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11, $12::jsonb)
 		ON CONFLICT (name) DO UPDATE SET
 			capability   = EXCLUDED.capability,
 			runtime      = EXCLUDED.runtime,
@@ -742,14 +737,16 @@ func (d *pgxDatabase) UpsertProvider(ctx context.Context, p Provider) error {
 			constraints  = EXCLUDED.constraints,
 			enabled      = EXCLUDED.enabled,
 			heartbeat_at = EXCLUDED.heartbeat_at,
-			poke_url     = EXCLUDED.poke_url,
 			runner_url   = EXCLUDED.runner_url,
 			env          = EXCLUDED.env`
 	_, err := d.conn.Exec(ctx, q,
 		p.Name, p.Capability, p.Runtime, p.Activation, p.Cost, p.Quality, p.LatencyMs,
-		jsonOrEmpty(p.Constraints, "{}"), p.Enabled, p.HeartbeatAt, nullStr(p.PokeURL), nullStr(p.RunnerURL),
+		jsonOrEmpty(p.Constraints, "{}"), p.Enabled, p.HeartbeatAt, nullStr(p.RunnerURL),
 		jsonOrEmpty(p.Env, "{}"))
-	return err
+	if err != nil {
+		return fmt.Errorf("upsert provider %q: %w", p.Name, err)
+	}
+	return nil
 }
 
 func (d *pgxDatabase) UpsertFlow(ctx context.Context, f Flow) (int, error) {
