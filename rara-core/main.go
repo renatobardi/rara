@@ -743,7 +743,10 @@ func (d *pgxDatabase) UpsertProvider(ctx context.Context, p Provider) error {
 		p.Name, p.Capability, p.Runtime, p.Activation, p.Cost, p.Quality, p.LatencyMs,
 		jsonOrEmpty(p.Constraints, "{}"), p.Enabled, p.HeartbeatAt, nullStr(p.RunnerURL),
 		jsonOrEmpty(p.Env, "{}"))
-	return err
+	if err != nil {
+		return fmt.Errorf("upsert provider %q: %w", p.Name, err)
+	}
+	return nil
 }
 
 func (d *pgxDatabase) UpsertFlow(ctx context.Context, f Flow) (int, error) {
