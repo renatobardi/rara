@@ -330,6 +330,9 @@ func TestSeedPreservesLastCollectAtOnReseed(t *testing.T) {
 	now := time.Now()
 	collectors := []string{provHarvest, provShelf, provDial, provFeed, provCourier}
 	for _, name := range collectors {
+		if _, ok := db.providers[name]; !ok {
+			t.Fatalf("precondition: provider %q not seeded", name)
+		}
 		p := db.providers[name]
 		p.LastCollectAt = &now
 		db.providers[name] = p
