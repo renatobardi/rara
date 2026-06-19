@@ -186,6 +186,28 @@ func TestVPCFirstCostQuality(t *testing.T) {
 	}
 }
 
+// TestLocalProvidersAreOnDemand asserts the three VPC-local shared providers (gate-barato-local,
+// gate-rico-local, distill-local) are seeded as on_demand, not resident. They follow the
+// spawn-and-exit model: woken per-item by rara-runner, not polling continuously. The router
+// exempts on_demand from the heartbeat health gate, so a stale timestamp never excludes them.
+func TestLocalProvidersAreOnDemand(t *testing.T) {
+	ctx := context.Background()
+	db := newMockDatabase()
+	if err := SeedYouTubeLane(ctx, db); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	for _, name := range []string{provDistillLocal, provGateBaratoLocal, provGateRicoLocal} {
+		p, ok := db.providers[name]
+		if !ok {
+			t.Errorf("provider %q not seeded", name)
+			continue
+		}
+		if p.Activation != activationOnDemand {
+			t.Errorf("provider %q activation = %q, want on_demand (spawn-and-exit model; resident would stale-exclude on aged heartbeat)", name, p.Activation)
+		}
+	}
+}
+
 // TestSeedYouTubeLanePreservesEnabled ensures a re-seed never silently disables a lane the
 // operator already enabled (the opt-in contract).
 func TestSeedYouTubeLanePreservesEnabled(t *testing.T) {

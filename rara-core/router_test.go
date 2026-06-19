@@ -279,6 +279,31 @@ func TestRouterSelectReadsPolicyAndProviders(t *testing.T) {
 	}
 }
 
+// TestOnDemandVPCStaleHeartbeatFallover: the VPC-local scenario after activation=on_demand.
+// An on_demand VPC provider with an 8-hour-old heartbeat must still be selected first (health-
+// exempt by design); when its host is down the caller excludes it and the cloud fallback takes
+// over — no stall.
+func TestOnDemandVPCStaleHeartbeatFallover(t *testing.T) {
+	staleHB := ptime(routerClock.Add(-8 * time.Hour))
+	vpc := Provider{Name: provDistillLocal, Capability: capDestilar, Runtime: runtimeVPC,
+		Activation: activationOnDemand, HeartbeatAt: staleHB, Enabled: true, Quality: 0.92, Cost: 1.50}
+	cloud := Provider{Name: provDistill, Capability: capDestilar, Runtime: runtimeCloudRun,
+		Activation: activationOnDemand, HeartbeatAt: nil, Enabled: true, Quality: 0.92, Cost: 2.00}
+	policy := RoutingPolicy{CostWeight: 0.5, QualityWeight: 0.5, Fallback: json.RawMessage(`["distill-local","distill"]`)}
+
+	// Round 1: VPC on_demand with stale heartbeat must be eligible (health-exempt).
+	r1 := names(rankProviders([]Provider{vpc, cloud}, policy, routerItem, routerClock, routerHealthTTL, nil))
+	if len(r1) == 0 || r1[0] != provDistillLocal {
+		t.Fatalf("round 1: want distill-local first (on_demand health-exempt despite stale heartbeat), got %v", r1)
+	}
+
+	// Round 2: agent down — exclude distill-local; cloud fallback must be returned, no stall.
+	r2 := names(rankProviders([]Provider{vpc, cloud}, policy, routerItem, routerClock, routerHealthTTL, map[string]bool{provDistillLocal: true}))
+	if len(r2) != 1 || r2[0] != provDistill {
+		t.Fatalf("round 2: want distill after excluding dead vpc, got %v", r2)
+	}
+}
+
 // TestRouterSelectNoneEligible: when every candidate is filtered out (here: the only
 // transcrever provider is an offline resident), Select reports ok=false.
 func TestRouterSelectNoneEligible(t *testing.T) {

@@ -84,9 +84,12 @@ func seedCapabilities(ctx context.Context, db Database) error {
 // quality is equal. VPC cost is seeded LOWER than cloud, which makes the score-based router
 // select VPC first for public content and fall through to Cloud Run only when VPC is unhealthy.
 // Private content (email) is additionally excluded from third-party cloud providers by the
-// sensitivity constraint, so it always stays on the VPC variant. Cloud providers are on_demand
-// (woken via Cloud Run Jobs `run`); the VPC ones are always-on residents. (coletar is
-// auto-satisfied by the reconciler — no coletar provider is needed for routing.)
+// sensitivity constraint, so it always stays on the VPC variant. Both cloud and VPC variants
+// are on_demand: the cloud ones are woken via Cloud Run Jobs `run`; the VPC ones are woken by
+// rara-runner (POST /run on the tailnet). on_demand is health-exempt at selection time — a
+// stale heartbeat never excludes a VPC provider, preventing the heartbeat ovo-galinha where a
+// spawn-and-exit worker can never refresh its heartbeat without being selected first. (coletar
+// is auto-satisfied by the reconciler — no coletar provider is needed for routing.)
 func seedSharedProviders(ctx context.Context, db Database) error {
 	thirdParty := []byte(`{"sensitivity":"third_party"}`)
 	// env = the per-run NON-secret config each worker IMAGE reads from its environment (confirmed
@@ -98,15 +101,14 @@ func seedSharedProviders(ctx context.Context, db Database) error {
 	// LiteLLM/ollama config, not a constant we can seed here. NO secrets (DATABASE_URL, API keys,
 	// LITELLM_BASE_URL is a deploy-resolved endpoint) — the host/agent resolves those (§7).
 	providers := []Provider{
-		// destilar: the priciest step (model tokens), high quality. Cloud is on_demand (woken
-		// via Cloud Run Jobs `run`); the self-host variant is resident on the always-on VPC, so
-		// the reconciler never tries to "wake" it (and the router's health gate applies, with
-		// bootstrap grace until its first heartbeat — the asr-youtube model).
+		// destilar: the priciest step (model tokens), high quality. Both cloud and self-host
+		// variants are on_demand: cloud woken via Cloud Run Jobs `run`; self-host woken by
+		// rara-runner (POST /run on the tailnet, spawn-and-exit per item).
 		{Name: provDistill, Capability: capDestilar, Runtime: runtimeCloudRun, Activation: activationOnDemand,
 			Cost: 2.00, Quality: 0.92, LatencyMs: 30000, Constraints: thirdParty, Enabled: true,
 			Env: []byte(`{"DISTILL_PROVIDER":"distill","LITELLM_MODEL":"groq-llama"}`)},
 		// ponytail: cost 1.50 < 2.00 (cloud) → VPC wins the score; quality parity: same model
-		{Name: provDistillLocal, Capability: capDestilar, Runtime: runtimeVPC, Activation: activationResident,
+		{Name: provDistillLocal, Capability: capDestilar, Runtime: runtimeVPC, Activation: activationOnDemand,
 			Cost: 1.50, Quality: 0.92, LatencyMs: 60000, Enabled: true,
 			Env: []byte(`{"DISTILL_PROVIDER":"distill-local"}`)},
 		// gate_barato / gate_rico: the cascade gates (rules -> profile -> LLM-judge). Cheap on
@@ -115,14 +117,14 @@ func seedSharedProviders(ctx context.Context, db Database) error {
 			Cost: 0.50, Quality: 0.88, LatencyMs: 5000, Constraints: thirdParty, Enabled: true,
 			Env: []byte(`{"SIFT_GATE":"gate_barato","SIFT_PROVIDER":"gate-barato","LITELLM_MODEL":"groq-fast"}`)},
 		// ponytail: cost 0.30 < 0.50 (cloud) → VPC wins the score; quality parity: same model
-		{Name: provGateBaratoLocal, Capability: capGateBarato, Runtime: runtimeVPC, Activation: activationResident,
+		{Name: provGateBaratoLocal, Capability: capGateBarato, Runtime: runtimeVPC, Activation: activationOnDemand,
 			Cost: 0.30, Quality: 0.88, LatencyMs: 9000, Enabled: true,
 			Env: []byte(`{"SIFT_GATE":"gate_barato","SIFT_PROVIDER":"gate-barato-local"}`)},
 		{Name: provGateRico, Capability: capGateRico, Runtime: runtimeCloudRun, Activation: activationOnDemand,
 			Cost: 0.60, Quality: 0.90, LatencyMs: 8000, Constraints: thirdParty, Enabled: true,
 			Env: []byte(`{"SIFT_GATE":"gate_rico","SIFT_PROVIDER":"gate-rico","LITELLM_MODEL":"groq-fast"}`)},
 		// ponytail: cost 0.40 < 0.60 (cloud) → VPC wins the score; quality parity: same model
-		{Name: provGateRicoLocal, Capability: capGateRico, Runtime: runtimeVPC, Activation: activationResident,
+		{Name: provGateRicoLocal, Capability: capGateRico, Runtime: runtimeVPC, Activation: activationOnDemand,
 			Cost: 0.40, Quality: 0.90, LatencyMs: 14000, Enabled: true,
 			Env: []byte(`{"SIFT_GATE":"gate_rico","SIFT_PROVIDER":"gate-rico-local"}`)},
 	}
