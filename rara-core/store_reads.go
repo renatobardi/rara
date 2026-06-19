@@ -117,25 +117,32 @@ func (d *pgxDatabase) ListItemSteps(ctx context.Context, itemID int) ([]ItemStep
 	return out, rows.Err()
 }
 
+// providerColumns is the shared SELECT list for a providers row (mirrors Provider struct fields).
+const providerColumns = `name, capability, runtime, activation, cost, quality, latency_ms,
+       constraints, enabled, heartbeat_at, last_collect_at, COALESCE(runner_url, ''), env`
+
+// scanProvider scans a single providers row using the caller's Scan function (works for both
+// pgx.Row.Scan and pgx.Rows.Scan — both accept ...any and return error).
+func scanProvider(scan func(dest ...any) error) (Provider, error) {
+	var p Provider
+	err := scan(&p.Name, &p.Capability, &p.Runtime, &p.Activation, &p.Cost,
+		&p.Quality, &p.LatencyMs, &p.Constraints, &p.Enabled, &p.HeartbeatAt, &p.LastCollectAt, &p.RunnerURL, &p.Env)
+	return p, err
+}
+
 func (d *pgxDatabase) ListProvidersForCapability(ctx context.Context, capability string) ([]Provider, error) {
 	// idx_providers_capability (partial, enabled=true) backs this lookup.
-	const q = `
-		SELECT name, capability, runtime, activation, cost, quality, latency_ms,
-		       constraints, enabled, heartbeat_at, COALESCE(runner_url, ''), env
-		FROM providers
-		WHERE capability = $1 AND enabled = true
-		ORDER BY name`
+	const q = `SELECT ` + providerColumns + ` FROM providers WHERE capability = $1 AND enabled = true ORDER BY name`
 	rows, err := d.conn.Query(ctx, q, capability)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("list providers for capability %q: %w", capability, err)
 	}
 	defer rows.Close()
 	var out []Provider
 	for rows.Next() {
-		var p Provider
-		if err := rows.Scan(&p.Name, &p.Capability, &p.Runtime, &p.Activation, &p.Cost,
-			&p.Quality, &p.LatencyMs, &p.Constraints, &p.Enabled, &p.HeartbeatAt, &p.RunnerURL, &p.Env); err != nil {
-			return nil, err
+		p, err := scanProvider(rows.Scan)
+		if err != nil {
+			return nil, fmt.Errorf("list providers for capability %q: scan: %w", capability, err)
 		}
 		out = append(out, p)
 	}
@@ -143,19 +150,13 @@ func (d *pgxDatabase) ListProvidersForCapability(ctx context.Context, capability
 }
 
 func (d *pgxDatabase) GetProvider(ctx context.Context, name string) (Provider, bool, error) {
-	const q = `
-		SELECT name, capability, runtime, activation, cost, quality, latency_ms,
-		       constraints, enabled, heartbeat_at, COALESCE(runner_url, ''), env
-		FROM providers
-		WHERE name = $1`
-	var p Provider
-	err := d.conn.QueryRow(ctx, q, name).Scan(&p.Name, &p.Capability, &p.Runtime, &p.Activation,
-		&p.Cost, &p.Quality, &p.LatencyMs, &p.Constraints, &p.Enabled, &p.HeartbeatAt, &p.RunnerURL, &p.Env)
+	const q = `SELECT ` + providerColumns + ` FROM providers WHERE name = $1`
+	p, err := scanProvider(d.conn.QueryRow(ctx, q, name).Scan)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Provider{}, false, nil
 	}
 	if err != nil {
-		return Provider{}, false, err
+		return Provider{}, false, fmt.Errorf("get provider %q: %w", name, err)
 	}
 	return p, true, nil
 }
@@ -540,21 +541,17 @@ func (d *pgxDatabase) ListPodcastFeeds(ctx context.Context) ([]PodcastFeed, erro
 
 // ListProviders returns every provider (enabled or not), ordered by name.
 func (d *pgxDatabase) ListProviders(ctx context.Context) ([]Provider, error) {
-	const q = `
-		SELECT name, capability, runtime, activation, cost, quality, latency_ms,
-		       constraints, enabled, heartbeat_at, COALESCE(runner_url, ''), env
-		FROM providers ORDER BY name`
+	const q = `SELECT ` + providerColumns + ` FROM providers ORDER BY name`
 	rows, err := d.conn.Query(ctx, q)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("list providers: %w", err)
 	}
 	defer rows.Close()
 	var out []Provider
 	for rows.Next() {
-		var p Provider
-		if err := rows.Scan(&p.Name, &p.Capability, &p.Runtime, &p.Activation, &p.Cost,
-			&p.Quality, &p.LatencyMs, &p.Constraints, &p.Enabled, &p.HeartbeatAt, &p.RunnerURL, &p.Env); err != nil {
-			return nil, err
+		p, err := scanProvider(rows.Scan)
+		if err != nil {
+			return nil, fmt.Errorf("list providers: scan: %w", err)
 		}
 		out = append(out, p)
 	}

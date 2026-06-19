@@ -251,16 +251,17 @@ type Capability struct {
 
 // Provider is a concrete implementation of a capability.
 type Provider struct {
-	Name        string          `json:"name"`
-	Capability  string          `json:"capability"` // must reference an existing capability (FK)
-	Runtime     string          `json:"runtime"`    // local | cloudrun | vpc
-	Activation  string          `json:"activation"` // resident | on_demand
-	Cost        float64         `json:"cost"`
-	Quality     float64         `json:"quality"` // 0..1
-	LatencyMs   int             `json:"latency_ms"`
-	Constraints json.RawMessage `json:"constraints,omitempty"` // "" => '{}'
-	Enabled     bool            `json:"enabled"`
-	HeartbeatAt *time.Time      `json:"heartbeat_at,omitempty"`
+	Name          string          `json:"name"`
+	Capability    string          `json:"capability"` // must reference an existing capability (FK)
+	Runtime       string          `json:"runtime"`    // local | cloudrun | vpc
+	Activation    string          `json:"activation"` // resident | on_demand
+	Cost          float64         `json:"cost"`
+	Quality       float64         `json:"quality"` // 0..1
+	LatencyMs     int             `json:"latency_ms"`
+	Constraints   json.RawMessage `json:"constraints,omitempty"` // "" => '{}'
+	Enabled       bool            `json:"enabled"`
+	HeartbeatAt   *time.Time      `json:"heartbeat_at,omitempty"`
+	LastCollectAt *time.Time      `json:"last_collect_at,omitempty"`
 	// RunnerURL is the tailnet endpoint of the rara-runner agent on this host (VPC or Mac).
 	// The dispatcher POSTs <RunnerURL>/run (Bearer RUNNER_AUTH_TOKEN) to wake the worker via
 	// docker run. Empty for cloudrun providers (woken via Cloud Run Jobs `run`) and poll-only residents.
