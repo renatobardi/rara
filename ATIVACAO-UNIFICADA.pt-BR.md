@@ -152,6 +152,7 @@ Cada fase é um slice no fluxo Claude Code + TDD (harness fluente sobre `MockDat
   first-class (providers por host + `routing_policy` ordenada já são a base).
 - **F5 — Unificar coletores.** harvest/shelf/dial/courier/clip/feed também acordados pelo `Runner`,
   lendo seu alvo (fontes habilitadas) do Neon — voláteis e idênticos como os workers.
+<<<<<<< HEAD
 - **F6 — Aposentar o legado.**
   - ✅ **poke-only removido** — `activator.go` saiu no F4; `PokeURL` removido do struct/queries/env.example
     de `rara-core` (nenhum provider tinha `poke_url` preenchido; coluna nullable fica como tombstone no DB).
@@ -159,6 +160,10 @@ Cada fase é um slice no fluxo Claude Code + TDD (harness fluente sobre `MockDat
     (Docker/Colima + `rara-runner` no Mac). `asr-youtube` tem `runner_url=null`; poll é o único caminho.
   - 🔒 **Cloud Schedulers ad-hoc** (7× harvest/shelf/dial/courier/clip/feed/hone via `jobs:run` direto)
     — bloqueado por F5 (coletores pelo dispatcher).
+=======
+- **F6 — Aposentar o legado.** `launchd` batch do `scribe`, Cloud Schedulers ad-hoc (viram cadência
+  configurada disparada pelo dispatcher), `poke`-only.
+>>>>>>> origin/main
 
 ## 9. Riscos e pontos físicos
 
