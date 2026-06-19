@@ -161,6 +161,30 @@ func TestRankExcludeForFallover(t *testing.T) {
 	}
 }
 
+// TestNeverRunResidentFalloverToCloud: the bootstrap-grace + timeout-fallback round trip.
+// A never-run resident (heartbeat_at IS NULL) is eligible via bootstrap grace and comes
+// first (VPC-first). When its host is actually down the caller excludes it and the cloud
+// fallback is returned — confirming the ovo-galinha fix does not stall the pipeline.
+func TestNeverRunResidentFalloverToCloud(t *testing.T) {
+	vpc := Provider{Name: "distill-local", Capability: "destilar", Runtime: runtimeLocal,
+		Activation: activationResident, HeartbeatAt: nil, Enabled: true, Quality: 0.9, Cost: 0}
+	cloud := Provider{Name: "distill-cloud", Capability: "destilar", Runtime: runtimeCloudRun,
+		Activation: activationOnDemand, HeartbeatAt: nil, Enabled: true, Quality: 0.8, Cost: 1}
+	policy := RoutingPolicy{QualityWeight: 1, Fallback: json.RawMessage(`["distill-local","distill-cloud"]`)}
+
+	// Round 1: never-run resident is eligible (bootstrap grace).
+	r1 := names(rankProviders([]Provider{vpc, cloud}, policy, routerItem, routerClock, routerHealthTTL, nil))
+	if len(r1) == 0 || r1[0] != "distill-local" {
+		t.Fatalf("round 1: want distill-local first (bootstrap grace), got %v", r1)
+	}
+
+	// Round 2: host was down — exclude the never-run resident; cloud must be returned.
+	r2 := names(rankProviders([]Provider{vpc, cloud}, policy, routerItem, routerClock, routerHealthTTL, map[string]bool{"distill-local": true}))
+	if len(r2) != 1 || r2[0] != "distill-cloud" {
+		t.Fatalf("round 2: want only distill-cloud after excluding dead resident, got %v", r2)
+	}
+}
+
 // TestRankNoEligible: an empty candidate set (or one fully filtered out) ranks to nothing,
 // so Select returns ok=false and the item waits.
 func TestRankNoEligible(t *testing.T) {
