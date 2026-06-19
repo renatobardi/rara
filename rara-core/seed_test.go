@@ -159,6 +159,33 @@ func TestSeedIdempotent(t *testing.T) {
 	}
 }
 
+// TestVPCFirstCostQuality asserts that VPC providers (gate-barato-local, gate-rico-local,
+// distill-local) are cheaper than AND equal quality to their cloud peers after seeding.
+// Same model runs on both tiers, so quality parity is mandatory; lower cost is the lever
+// that makes the score-based router select VPC-first for public content.
+func TestVPCFirstCostQuality(t *testing.T) {
+	ctx := context.Background()
+	db := newMockDatabase()
+	if err := SeedYouTubeLane(ctx, db); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	pairs := []struct{ vpc, cloud string }{
+		{provGateBaratoLocal, provGateBarato},
+		{provGateRicoLocal, provGateRico},
+		{provDistillLocal, provDistill},
+	}
+	for _, tt := range pairs {
+		vpc := db.providers[tt.vpc]
+		cloud := db.providers[tt.cloud]
+		if vpc.Cost >= cloud.Cost {
+			t.Errorf("%s cost %.2f >= cloud %s cost %.2f: VPC must be cheaper", tt.vpc, vpc.Cost, tt.cloud, cloud.Cost)
+		}
+		if vpc.Quality != cloud.Quality {
+			t.Errorf("%s quality %.2f != %s quality %.2f: same model → same quality", tt.vpc, vpc.Quality, tt.cloud, cloud.Quality)
+		}
+	}
+}
+
 // TestSeedYouTubeLanePreservesEnabled ensures a re-seed never silently disables a lane the
 // operator already enabled (the opt-in contract).
 func TestSeedYouTubeLanePreservesEnabled(t *testing.T) {

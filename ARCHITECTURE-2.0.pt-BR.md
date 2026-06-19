@@ -118,14 +118,32 @@ orquestrador + dono do contrato/SDK. Detalhe completo em [ADDON-CONTRACT](./ADDO
 Duas camadas (detalhe em [INFERENCE-ROUTING](./INFERENCE-ROUTING.pt-BR.md)):
 
 - **Router do rara = ONDE** (host): pros workers de LLM (`sift`, `distill`), a cadeia de custo é
-  **Mac (assinatura CLI, ~grátis) → VPC (Ollama) → Cloud Run (API paga)**. Config no console.
+  **VPC → (Mac futuro) → Cloud Run**. Os `*-local` (VPC) têm custo menor e qualidade igual ao
+  cloud (mesmo modelo), então o router os escolhe primeiro; Cloud Run entra só quando o VPC está
+  offline. O slot do Mac entrará no meio quando o agente Mac for provisionado.
 - **LiteLLM = QUAL modelo** (por host): cada worker aponta pra um LiteLLM e escolhe o modelo.
-- **Assinatura CLI** entra via shim (CLI → endpoint local OpenAI-compatible), só funciona **no Mac**.
-  Postura: **best-effort + API fallback** — tier barato, nunca o que sustenta; cai pra Ollama/API
-  quando limita.
 - **Privacidade do email: relaxada** — email pode usar CLI/API. A constraint de sensibilidade vira
   **opcional** (o mecanismo fica disponível pra blindar algo pontual; `*-local` viram *tier de
   custo*, não obrigação).
+
+### Restrição residencial — coletores diretos
+
+Coletores que fazem **scraping direto** de sites com bot-detection (Akamai, anti-scraping) são
+**Mac-exclusivos por constraint hard**, sem fallback pra datacenter:
+
+- **`asr-youtube`** (`requires: residential`): yt-dlp baixa o áudio do YouTube — bloqueado em IPs
+  de datacenter. Roda só no Mac (`runtime=local`). O router é **fail-closed**: se o Mac estiver
+  offline, o item aguarda em vez de cair pro Cloud Run/VPC (que tomariam bloqueio de qualquer forma).
+  Não modelar como "preferir local + fallback cloud".
+- **LinkedIn via Bright Data** (`brightdata-linkedin`, `rara-clip`): a coleta passa pelos proxies
+  residenciais do Bright Data, que fazem o unblock. O IP do host não importa → **sem constraint
+  residencial**; roteia normal (VPC → Mac → Cloud Run). **Não marcar como Mac-only por engano.**
+- **YouTube metadata** (`harvest`, `shelf`): usa a YouTube Data API (só API key, sem scraping) →
+  sem constraint de IP, prefência normal.
+
+Regra geral: se o worker faz download direto de um site protegido, a constraint é **residencial
+hard** (elimina VPC+GCP). Se passa por um proxy/API intermediária (Bright Data, CDN público), sem
+constraint.
 
 ## 8. Hosts & deploy
 

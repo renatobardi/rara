@@ -77,16 +77,16 @@ func seedCapabilities(ctx context.Context, db Database) error {
 
 // seedSharedProviders upserts the work providers every lane reuses: the two curation gates and
 // distill, each in TWO variants — a default cloud provider that calls a third-party model
-// (tagged {"sensitivity":"third_party"}) and a self-host VPC provider for private content.
+// (tagged {"sensitivity":"third_party"}) and a self-host VPC provider.
 // cost (relative weight), quality (0..1) and latency_ms feed the router's cost<->quality score.
 //
-// Sensitivity routing (the slice-c payoff): the cloud variant is excluded for a `private` item
-// (email), so private content reaches ONLY the self-host variant. The self-host variants are
-// deliberately pricier and lower quality than their cloud siblings, so for PUBLIC items the
-// cloud provider dominates the score and is chosen — the self-host route exists purely so
-// private content has somewhere to go. Cloud providers are on_demand (woken via Cloud Run Jobs
-// `run`); the self-host ones run on the always-on VPC. (coletar is auto-satisfied by the
-// reconciler — the item already exists — so no coletar provider is needed for routing.)
+// VPC-first routing: the VPC (*-local) variants run the same model as the cloud variants, so
+// quality is equal. VPC cost is seeded LOWER than cloud, which makes the score-based router
+// select VPC first for public content and fall through to Cloud Run only when VPC is unhealthy.
+// Private content (email) is additionally excluded from third-party cloud providers by the
+// sensitivity constraint, so it always stays on the VPC variant. Cloud providers are on_demand
+// (woken via Cloud Run Jobs `run`); the VPC ones are always-on residents. (coletar is
+// auto-satisfied by the reconciler — no coletar provider is needed for routing.)
 func seedSharedProviders(ctx context.Context, db Database) error {
 	thirdParty := []byte(`{"sensitivity":"third_party"}`)
 	// env = the per-run NON-secret config each worker IMAGE reads from its environment (confirmed
@@ -105,22 +105,25 @@ func seedSharedProviders(ctx context.Context, db Database) error {
 		{Name: provDistill, Capability: capDestilar, Runtime: runtimeCloudRun, Activation: activationOnDemand,
 			Cost: 2.00, Quality: 0.92, LatencyMs: 30000, Constraints: thirdParty, Enabled: true,
 			Env: []byte(`{"DISTILL_PROVIDER":"distill","LITELLM_MODEL":"groq-llama"}`)},
+		// ponytail: cost 1.50 < 2.00 (cloud) → VPC wins the score; quality parity: same model
 		{Name: provDistillLocal, Capability: capDestilar, Runtime: runtimeVPC, Activation: activationResident,
-			Cost: 3.00, Quality: 0.84, LatencyMs: 60000, Enabled: true,
+			Cost: 1.50, Quality: 0.92, LatencyMs: 60000, Enabled: true,
 			Env: []byte(`{"DISTILL_PROVIDER":"distill-local"}`)},
 		// gate_barato / gate_rico: the cascade gates (rules -> profile -> LLM-judge). Cheap on
 		// average (only the borderline middle pays the LLM call).
 		{Name: provGateBarato, Capability: capGateBarato, Runtime: runtimeCloudRun, Activation: activationOnDemand,
 			Cost: 0.50, Quality: 0.88, LatencyMs: 5000, Constraints: thirdParty, Enabled: true,
 			Env: []byte(`{"SIFT_GATE":"gate_barato","SIFT_PROVIDER":"gate-barato","LITELLM_MODEL":"groq-fast"}`)},
+		// ponytail: cost 0.30 < 0.50 (cloud) → VPC wins the score; quality parity: same model
 		{Name: provGateBaratoLocal, Capability: capGateBarato, Runtime: runtimeVPC, Activation: activationResident,
-			Cost: 0.90, Quality: 0.80, LatencyMs: 9000, Enabled: true,
+			Cost: 0.30, Quality: 0.88, LatencyMs: 9000, Enabled: true,
 			Env: []byte(`{"SIFT_GATE":"gate_barato","SIFT_PROVIDER":"gate-barato-local"}`)},
 		{Name: provGateRico, Capability: capGateRico, Runtime: runtimeCloudRun, Activation: activationOnDemand,
 			Cost: 0.60, Quality: 0.90, LatencyMs: 8000, Constraints: thirdParty, Enabled: true,
 			Env: []byte(`{"SIFT_GATE":"gate_rico","SIFT_PROVIDER":"gate-rico","LITELLM_MODEL":"groq-fast"}`)},
+		// ponytail: cost 0.40 < 0.60 (cloud) → VPC wins the score; quality parity: same model
 		{Name: provGateRicoLocal, Capability: capGateRico, Runtime: runtimeVPC, Activation: activationResident,
-			Cost: 1.00, Quality: 0.82, LatencyMs: 14000, Enabled: true,
+			Cost: 0.40, Quality: 0.90, LatencyMs: 14000, Enabled: true,
 			Env: []byte(`{"SIFT_GATE":"gate_rico","SIFT_PROVIDER":"gate-rico-local"}`)},
 	}
 	for _, p := range providers {
@@ -142,10 +145,11 @@ func seedSharedConfig(ctx context.Context, db Database) error {
 	if err := db.UpsertRoutingPolicy(ctx, RoutingPolicy{Scope: policyScopeGlobal, CostWeight: 0.5, QualityWeight: 0.5}); err != nil {
 		return err
 	}
-	// VPC-first per-capability policies: resident local → cloud on_demand fallback.
-	// The fallback list pins the ordering so the router prefers the VPC provider regardless
-	// of cost/quality score (the *-local variants are seeded worse on both axes intentionally,
-	// as that controls private-vs-public routing — the fallback list overrides score for public).
+	// VPC-first per-capability policies: resident VPC → cloud on_demand fallback.
+	// The fallback list pins the ordering so the router places the VPC provider first among
+	// healthy candidates (overrides score). The cost/quality values in seedSharedProviders back
+	// this up: VPC cost < cloud cost, quality equal (same model) — double guarantee that VPC
+	// wins. When the Mac tier is added, the fallback list becomes [vpc, mac, cloud].
 	// ponytail: string slice of known-safe ASCII names never errors in json.Marshal
 	fallbackJSON := func(names ...string) json.RawMessage { b, _ := json.Marshal(names); return b }
 	vpcFirst := []struct {
@@ -243,6 +247,10 @@ func SeedYouTubeLane(ctx context.Context, db Database) error {
 		// transcrever: scribe (local Whisper) is resident on the Mac. YouTube blocks audio
 		// download from datacenter IPs, hence the residential constraint; `accepts` pins it to
 		// youtube items so it never competes for a podcast (which a datacenter ASR handles).
+		// Routing rule: this is a HARD residential constraint with NO datacenter fallback —
+		// fail-closed (item waits) is correct; falling back to Cloud Run/VPC would just hit the
+		// same block. Contrast with brightdata-linkedin (Bright Data proxies do the unblock,
+		// so the host IP doesn't matter → no residential constraint on that provider).
 		{Name: provASRYouTube, Capability: capTranscrever, Runtime: runtimeLocal, Activation: activationResident,
 			Cost: 1.00, Quality: 0.90, LatencyMs: 120000,
 			Constraints: []byte(`{"requires":"residential","accepts":["youtube"]}`), Enabled: true},
