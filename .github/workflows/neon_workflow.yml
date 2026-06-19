@@ -78,10 +78,9 @@ jobs:
         with:
           project_id: ${{ vars.NEON_PROJECT_ID }}
           compare_branch: preview/pr-${{ github.event.number }}
-          base_branch: main
           api_key: ${{ secrets.NEON_API_KEY }}
           database: ${{ secrets.NEON_DATABASE }}
-          github_token: ${{ secrets.GITHUB_TOKEN }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
 
   cleanup-branch:
     name: Delete Neon branch
