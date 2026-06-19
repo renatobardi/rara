@@ -37,14 +37,16 @@ const (
 
 // Provider names (mirror the architecture's naming).
 const (
-	provHarvest        = "harvest"          // coletar — channels collector (Data API key)
-	provShelf          = "shelf"            // coletar — playlists collector (OAuth)
+	provHarvest        = "harvest"          // coletar — channels collector (Data API key); job rara-harvest
+	provShelf          = "shelf"            // coletar — playlists collector (OAuth); job rara-shelf
+	provDial           = "dial"             // coletar — podcast RSS collector; job rara-dial (F5 wake+pull)
+	provFeed           = "feed"             // coletar — news RSS/HN/HTML collector; job rara-feed
+	provCourier        = "courier"          // coletar — Gmail email collector; job rara-courier
 	provASRYouTube     = "asr-youtube"      // transcrever — scribe on the Mac (residential IP)
 	provASRDirectAudio = "asr-direct-audio" // transcrever — direct-audio ASR on Cloud Run (podcast)
 	provDistill        = "distill"          // destilar — distill on Cloud Run (third-party LLM)
 	provGateBarato     = "gate-barato"      // gate_barato — metadata cascade worker (third-party LLM)
 	provGateRico       = "gate-rico"        // gate_rico — full-text cascade worker (third-party LLM)
-	provDial           = "rara-dial"        // coletar — podcast RSS collector (Cloud Run, F5 wake+pull)
 	provExtrairEmail   = "extrair-email"    // extrair — email HTML/quote/signature cleaner (Cloud Run)
 	provExtrairNews    = "extrair-news"     // extrair — feed-article HTML/boilerplate cleaner (Cloud Run)
 	// Self-host variants (VPC) of the LLM steps — the ONLY route for private content. Strictly
@@ -240,18 +242,20 @@ func SeedYouTubeLane(ctx context.Context, db Database) error {
 	// YouTube-specific providers.
 	providers := []Provider{
 		// coletar: YouTube Data API (key) and OAuth playlists — cheap, fast metadata reads.
-		// (coletar is auto-satisfied by the reconciler, never actually routed; values seeded
-		// for completeness and future per-collector routing.)
+		// Woken by the dispatcher (rara-runner) on the cadence below; reads target_channels /
+		// discovers playlists via API on each wake (sources already in Neon for harvest).
 		{Name: provHarvest, Capability: capColetar, Runtime: runtimeCloudRun, Activation: activationOnDemand,
-			Cost: 0.10, Quality: 0.95, LatencyMs: 500, Enabled: true},
+			Cost: 0.10, Quality: 0.95, LatencyMs: 500, Enabled: true,
+			CollectCadenceSeconds: intPtr(86400)}, // daily — mirrors rara-harvest-daily scheduler
 		{Name: provShelf, Capability: capColetar, Runtime: runtimeCloudRun, Activation: activationOnDemand,
-			Cost: 0.10, Quality: 0.95, LatencyMs: 800, Enabled: true},
+			Cost: 0.10, Quality: 0.95, LatencyMs: 800, Enabled: true,
+			CollectCadenceSeconds: intPtr(86400)}, // daily — mirrors rara-shelf-daily scheduler
 		// transcrever: scribe (local Whisper) is resident on the Mac. YouTube blocks audio
 		// download from datacenter IPs, hence the residential constraint; `accepts` pins it to
 		// youtube items so it never competes for a podcast (which a datacenter ASR handles).
 		// Routing rule: this is a HARD residential constraint with NO datacenter fallback —
 		// fail-closed (item waits) is correct; falling back to Cloud Run/VPC would just hit the
-		// same block. Contrast with brightdata-linkedin (Bright Data proxies do the unblock,
+		// same block. Contrast with clip/rara-clip (Bright Data proxies do the unblock,
 		// so the host IP doesn't matter → no residential constraint on that provider).
 		{Name: provASRYouTube, Capability: capTranscrever, Runtime: runtimeLocal, Activation: activationResident,
 			Cost: 1.00, Quality: 0.90, LatencyMs: 120000,
@@ -284,11 +288,13 @@ func SeedPodcastLane(ctx context.Context, db Database) error {
 	if err := seedSharedProviders(ctx, db); err != nil {
 		return err
 	}
-	// coletar: rara-dial — woken by the Runner dispatch (F3) like any worker; reads enabled
-	// podcast_feeds from the DB on each wake (wake+pull pattern, F5).
+	// coletar: rara-dial — woken by the dispatcher on cadence; reads enabled podcast_feeds
+	// from the DB on each wake (wake+pull pattern, F5). Provider name "dial" + job prefix
+	// "rara-" = Cloud Run job "rara-dial".
 	if err := db.UpsertProvider(ctx, Provider{
 		Name: provDial, Capability: capColetar, Runtime: runtimeCloudRun, Activation: activationOnDemand,
 		Cost: 0.05, Quality: 0.99, LatencyMs: 30000, Enabled: true,
+		CollectCadenceSeconds: intPtr(86400), // daily — mirrors rara-dial-daily scheduler
 	}); err != nil {
 		return err
 	}
@@ -319,6 +325,16 @@ func SeedEmailLane(ctx context.Context, db Database) error {
 		return err
 	}
 	if err := seedSharedProviders(ctx, db); err != nil {
+		return err
+	}
+	// coletar: rara-courier — woken by the dispatcher on cadence; Gmail OAuth credentials
+	// stay in env (Secret Manager) — no "sources" to pull from Neon for this one. Provider
+	// name "courier" + job prefix "rara-" = Cloud Run job "rara-courier".
+	if err := db.UpsertProvider(ctx, Provider{
+		Name: provCourier, Capability: capColetar, Runtime: runtimeCloudRun, Activation: activationOnDemand,
+		Cost: 0.05, Quality: 0.99, LatencyMs: 30000, Enabled: true,
+		CollectCadenceSeconds: intPtr(21600), // 6h — mirrors rara-courier-schedule cadence
+	}); err != nil {
 		return err
 	}
 	// extrair: deterministic HTML/quote/signature cleaning — any runtime, accepts only email.
@@ -352,6 +368,16 @@ func SeedNewsLane(ctx context.Context, db Database) error {
 		return err
 	}
 	if err := seedSharedProviders(ctx, db); err != nil {
+		return err
+	}
+	// coletar: rara-feed — woken by the dispatcher on cadence; reads enabled feed_sources
+	// from the DB on each wake (already reads Neon, pull already done). Provider name "feed"
+	// + job prefix "rara-" = Cloud Run job "rara-feed".
+	if err := db.UpsertProvider(ctx, Provider{
+		Name: provFeed, Capability: capColetar, Runtime: runtimeCloudRun, Activation: activationOnDemand,
+		Cost: 0.05, Quality: 0.99, LatencyMs: 60000, Enabled: true,
+		CollectCadenceSeconds: intPtr(21600), // 6h — mirrors rara-feed-6h scheduler
+	}); err != nil {
 		return err
 	}
 	// extrair: deterministic HTML/boilerplate cleaning — any runtime, accepts only news.

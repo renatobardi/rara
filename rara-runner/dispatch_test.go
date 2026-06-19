@@ -8,10 +8,14 @@ import (
 
 // mockDispatchDB is the in-memory fake for DispatchOnce tests.
 type mockDispatchDB struct {
-	steps     []AssignedStep
-	providers map[string]DispatchProvider
-	listErr   error
-	getErr    error
+	steps          []AssignedStep
+	providers      map[string]DispatchProvider
+	dueCollectors  []DispatchProvider
+	touched        []string // names passed to TouchCollectorDispatched
+	listErr        error
+	getErr         error
+	collectErr     error
+	touchErr       error
 }
 
 func (m *mockDispatchDB) ListAssignedSteps(_ context.Context) ([]AssignedStep, error) {
@@ -24,6 +28,15 @@ func (m *mockDispatchDB) GetProvider(_ context.Context, name string) (DispatchPr
 	}
 	p, ok := m.providers[name]
 	return p, ok, nil
+}
+
+func (m *mockDispatchDB) ListDueCollectors(_ context.Context) ([]DispatchProvider, error) {
+	return m.dueCollectors, m.collectErr
+}
+
+func (m *mockDispatchDB) TouchCollectorDispatched(_ context.Context, name string) error {
+	m.touched = append(m.touched, name)
+	return m.touchErr
 }
 
 // runOnce is a test helper that wires up a Dispatcher and calls DispatchOnce once.
@@ -192,6 +205,82 @@ func TestDispatchOnceDBErrorPropagates(t *testing.T) {
 	db := &mockDispatchDB{listErr: errBoom{}}
 	if err := (&Dispatcher{db: db, runner: &fakeTransport{}}).DispatchOnce(context.Background()); err == nil {
 		t.Error("want error when db.ListAssignedSteps fails, got nil")
+	}
+}
+
+// --- Collector dispatch (ListDueCollectors + TouchCollectorDispatched) ----------
+
+func TestDispatchOnceDueCollectorIsWoken(t *testing.T) {
+	db := &mockDispatchDB{
+		dueCollectors: []DispatchProvider{{Name: "dial", Runtime: runtimeCloudRun}},
+	}
+	tr := runOnce(t, db)
+	if len(tr.called) != 1 {
+		t.Fatalf("runner called %d times, want 1", len(tr.called))
+	}
+	if tr.called[0].App != "dial" {
+		t.Errorf("app = %q, want dial", tr.called[0].App)
+	}
+}
+
+func TestDispatchOnceTouchesCollectorAfterWake(t *testing.T) {
+	db := &mockDispatchDB{
+		dueCollectors: []DispatchProvider{{Name: "harvest", Runtime: runtimeCloudRun}},
+	}
+	runOnce(t, db)
+	if len(db.touched) != 1 || db.touched[0] != "harvest" {
+		t.Errorf("touched = %v, want [harvest]", db.touched)
+	}
+}
+
+func TestDispatchOnceCollectorNotTouchedOnRunnerError(t *testing.T) {
+	// A runner error (e.g. Cloud Run API down) must NOT stamp last_collect_at — the collector
+	// was never actually woken, so the next dispatch pass should retry it.
+	db := &mockDispatchDB{
+		dueCollectors: []DispatchProvider{{Name: "dial", Runtime: runtimeCloudRun}},
+	}
+	tr := &fakeTransport{err: errBoom{}}
+	if err := (&Dispatcher{db: db, runner: tr}).DispatchOnce(context.Background()); err != nil {
+		t.Fatalf("DispatchOnce: %v", err)
+	}
+	if len(db.touched) != 0 {
+		t.Errorf("touched after runner error: %v, want []", db.touched)
+	}
+}
+
+func TestDispatchOnceCollectorsAndWorkersInSamePass(t *testing.T) {
+	// Collectors and assigned workers are both dispatched in the same DispatchOnce pass.
+	db := &mockDispatchDB{
+		steps:         []AssignedStep{{ItemID: 1, Seq: 2, AssignedProvider: "gate-barato"}},
+		providers:     map[string]DispatchProvider{"gate-barato": {Name: "gate-barato", Runtime: runtimeCloudRun}},
+		dueCollectors: []DispatchProvider{{Name: "harvest", Runtime: runtimeCloudRun}},
+	}
+	tr := runOnce(t, db)
+	if len(tr.called) != 2 {
+		t.Errorf("runner called %d times, want 2 (1 worker + 1 collector)", len(tr.called))
+	}
+	woken := make([]string, len(tr.called))
+	for i, r := range tr.called {
+		woken[i] = r.App
+	}
+	sort.Strings(woken)
+	if woken[0] != "gate-barato" || woken[1] != "harvest" {
+		t.Errorf("woken = %v, want [gate-barato harvest]", woken)
+	}
+}
+
+func TestDispatchOnceCollectorListErrorPropagates(t *testing.T) {
+	db := &mockDispatchDB{collectErr: errBoom{}}
+	if err := (&Dispatcher{db: db, runner: &fakeTransport{}}).DispatchOnce(context.Background()); err == nil {
+		t.Error("want error when db.ListDueCollectors fails, got nil")
+	}
+}
+
+func TestDispatchOnceNoDueCollectors(t *testing.T) {
+	db := &mockDispatchDB{dueCollectors: nil}
+	tr := runOnce(t, db)
+	if len(tr.called) != 0 {
+		t.Errorf("runner called %d times, want 0 when no collectors due", len(tr.called))
 	}
 }
 

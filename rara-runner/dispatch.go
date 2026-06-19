@@ -33,6 +33,12 @@ type DispatchProvider struct {
 type DispatchDB interface {
 	ListAssignedSteps(ctx context.Context) ([]AssignedStep, error)
 	GetProvider(ctx context.Context, name string) (DispatchProvider, bool, error)
+	// ListDueCollectors returns enabled collector providers whose collect_cadence_seconds has
+	// elapsed since last_collect_at (or have never been dispatched).
+	ListDueCollectors(ctx context.Context) ([]DispatchProvider, error)
+	// TouchCollectorDispatched stamps last_collect_at = now() after a successful wake. Not called
+	// when the runner errors — the next pass retries the collector.
+	TouchCollectorDispatched(ctx context.Context, name string) error
 }
 
 // Dispatcher reads desired state from the DB and wakes providers. One wake per provider per pass
@@ -43,8 +49,9 @@ type Dispatcher struct {
 	runner Runner
 }
 
-// DispatchOnce performs a single pass: list assigned steps, coalesce by provider, wake each once.
-// Runner errors are best-effort (logged, not returned): one failed wake must not prevent the rest.
+// DispatchOnce performs a single pass: wake assigned workers (coalesced by provider) and any
+// collector providers whose cadence has elapsed. Runner errors are best-effort (logged, not
+// returned): one failed wake must not prevent the rest.
 func (d *Dispatcher) DispatchOnce(ctx context.Context) error {
 	steps, err := d.db.ListAssignedSteps(ctx)
 	if err != nil {
@@ -68,25 +75,45 @@ func (d *Dispatcher) DispatchOnce(ctx context.Context) error {
 			log.Printf("dispatch: provider %q not found; skipping", name)
 			continue
 		}
-		// Copy Env so the RunRequest owns it — prov is per-call, but the copy keeps the wake's
-		// config independent of any downstream mutation.
-		var env map[string]string
-		if len(prov.Env) > 0 {
-			env = make(map[string]string, len(prov.Env))
-			for k, v := range prov.Env {
-				env[k] = v
-			}
-		}
-		req := RunRequest{
-			App:        prov.Name,
-			Runtime:    prov.Runtime,
-			Activation: prov.Activation,
-			RunnerURL:  prov.RunnerURL,
-			Env:        env,
-		}
-		if err := d.runner.Run(ctx, req); err != nil {
+		if err := d.runner.Run(ctx, buildRunRequest(prov)); err != nil {
 			log.Printf("dispatch: wake %q: %v", name, err) // best-effort
 		}
 	}
+
+	// Dispatch collectors whose cadence has elapsed. Unlike workers (which are woken by
+	// pending item_steps), collectors create items and have no item_step to pull — the
+	// dispatcher checks the cadence and stamps last_collect_at only on a successful wake.
+	collectors, err := d.db.ListDueCollectors(ctx)
+	if err != nil {
+		return err
+	}
+	for _, prov := range collectors {
+		if err := d.runner.Run(ctx, buildRunRequest(prov)); err != nil {
+			log.Printf("dispatch: wake collector %q: %v", prov.Name, err) // best-effort; next pass retries
+			continue
+		}
+		if err := d.db.TouchCollectorDispatched(ctx, prov.Name); err != nil {
+			log.Printf("dispatch: touch collector %q: %v", prov.Name, err) // best-effort
+		}
+	}
 	return nil
+}
+
+// buildRunRequest constructs a RunRequest from a DispatchProvider, copying Env so the
+// RunRequest owns it and downstream mutations cannot bleed back into the provider map.
+func buildRunRequest(prov DispatchProvider) RunRequest {
+	var env map[string]string
+	if len(prov.Env) > 0 {
+		env = make(map[string]string, len(prov.Env))
+		for k, v := range prov.Env {
+			env[k] = v
+		}
+	}
+	return RunRequest{
+		App:        prov.Name,
+		Runtime:    prov.Runtime,
+		Activation: prov.Activation,
+		RunnerURL:  prov.RunnerURL,
+		Env:        env,
+	}
 }

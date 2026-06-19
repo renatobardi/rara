@@ -35,8 +35,8 @@ import (
 const (
 	laneLinkedIn         = "linkedin"
 	linkedinFlowName     = "linkedin"
-	provManualInbox      = "manual-inbox"        // coletar — manual post submission (fallback)
-	provBrightDataLinked = "brightdata-linkedin" // coletar — automated Bright Data crawl (Phase 6)
+	provManualInbox      = "manual-inbox" // coletar — manual post submission via surface (fallback)
+	provBrightDataLinked = "clip"         // coletar — Bright Data crawl via rara-clip; job rara-clip
 	provExtrairLinked    = "extrair-linkedin"    // extrair — LinkedIn post normalizer (accepts linkedin)
 )
 
@@ -186,7 +186,9 @@ func SeedLinkedInLane(ctx context.Context, db Database) error {
 	// for completeness and config-as-data.
 	//   manual-inbox        — a person pastes a post through the surface (the Phase 5 stand-in,
 	//                         KEPT as a fallback for posts the crawl misses).
-	//   brightdata-linkedin — the automated Bright Data crawl (Phase 6), the default collector.
+	//   clip               — the automated Bright Data crawl via rara-clip (provider name maps to
+	//                         Cloud Run job rara-clip via CLOUD_RUN_JOB_PREFIX); woken by the
+	//                         dispatcher every 6h (collect_cadence_seconds=21600, F5).
 	// The Bright Data swap changes only WHO fills linkedin_posts; the flow/extractor/gates never
 	// change (ARCHITECTURE-2.0: "swap collector behind the same contract, flow unchanged").
 	if err := db.UpsertProvider(ctx, Provider{
@@ -199,7 +201,8 @@ func SeedLinkedInLane(ctx context.Context, db Database) error {
 	if err := db.UpsertProvider(ctx, Provider{
 		Name: provBrightDataLinked, Capability: capColetar, Runtime: runtimeCloudRun, Activation: activationOnDemand,
 		Cost: 0.30, Quality: 0.90, LatencyMs: 5000,
-		Constraints: []byte(`{"accepts":["linkedin"]}`), Enabled: true,
+		Constraints:           []byte(`{"accepts":["linkedin"]}`), Enabled: true,
+		CollectCadenceSeconds: intPtr(21600), // 6h — mirrors rara-clip-6h scheduler
 	}); err != nil {
 		return err
 	}
