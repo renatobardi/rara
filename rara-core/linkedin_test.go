@@ -430,8 +430,8 @@ func TestSeedLinkedInLanePreservesOperatorEnable(t *testing.T) {
 
 // TestReconcileLinkedInRoutesToExtrairLinkedin: the linkedin flow routes the to-text step to
 // the extrair-linkedin provider (not the email extractor), and once it completes the item
-// reaches to_text; gate_rico for a PUBLIC post routes to the third-party (cloud) gate, not the
-// self-host one (the sensitivity payoff, in reverse of email).
+// reaches to_text; gate_rico for a PUBLIC post routes to the VPC-first gate (gate-rico-local),
+// because the per-capability routing policy pins local before cloud for all public traffic.
 func TestReconcileLinkedInRoutesToExtrairLinkedin(t *testing.T) {
 	ctx := context.Background()
 	db := newMockDatabase()
@@ -463,8 +463,8 @@ func TestReconcileLinkedInRoutesToExtrairLinkedin(t *testing.T) {
 	if got := db.itemByID[itemID].Status; got != itemToText {
 		t.Errorf("item status = %q, want to_text after extrair", got)
 	}
-	if g, ok := stepBySeq(db, itemID, 4); !ok || g.AssignedProvider != provGateRico {
-		t.Errorf("gate_rico step = %+v, want pending+gate-rico (third-party, public item)", g)
+	if g, ok := stepBySeq(db, itemID, 4); !ok || g.AssignedProvider != provGateRicoLocal {
+		t.Errorf("gate_rico step = %+v, want pending+gate-rico-local (VPC-first, public item)", g)
 	}
 }
 
