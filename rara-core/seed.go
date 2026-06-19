@@ -114,7 +114,11 @@ func seedSharedProviders(ctx context.Context, db Database) error {
 		{Name: provDistillLocal, Capability: capDestilar, Runtime: runtimeVPC, Activation: activationOnDemand,
 			Cost: 1.50, Quality: 0.92, LatencyMs: 60000, Enabled: true,
 			RunnerURL: os.Getenv("RUNNER_LOCAL_URL"),
-			Env:       []byte(`{"DISTILL_PROVIDER":"distill-local"}`)},
+			// CURATE_ENGINE=litellm: the VPC host runs LiteLLM as gateway; groq-llama avoids
+			// the TPM cap that groq-fast hits on long transcripts. Differs from the cloud distill
+			// (which inherits these from the Cloud Run job env); distill-local gets only what's
+			// injected here by the dispatcher.
+			Env: []byte(`{"DISTILL_PROVIDER":"distill-local","CURATE_ENGINE":"litellm","LITELLM_MODEL":"groq-llama"}`)},
 		// gate_barato / gate_rico: the cascade gates (rules -> profile -> LLM-judge). Cheap on
 		// average (only the borderline middle pays the LLM call).
 		{Name: provGateBarato, Capability: capGateBarato, Runtime: runtimeCloudRun, Activation: activationOnDemand,

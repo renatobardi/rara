@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestSeedYouTubeLane asserts the lane config the reconciler later reads back: the five
@@ -112,7 +113,7 @@ func TestSeedSharedProviderEnv(t *testing.T) {
 		provGateRico:        `{"SIFT_GATE":"gate_rico","SIFT_PROVIDER":"gate-rico","LITELLM_MODEL":"groq-fast"}`,
 		provGateRicoLocal:   `{"SIFT_GATE":"gate_rico","SIFT_PROVIDER":"gate-rico-local"}`,
 		provDistill:         `{"DISTILL_PROVIDER":"distill","LITELLM_MODEL":"groq-llama"}`,
-		provDistillLocal:    `{"DISTILL_PROVIDER":"distill-local"}`,
+		provDistillLocal:    `{"DISTILL_PROVIDER":"distill-local","CURATE_ENGINE":"litellm","LITELLM_MODEL":"groq-llama"}`,
 	}
 	for name, wantEnv := range want {
 		if got := string(db.providers[name].Env); got != wantEnv {
@@ -308,6 +309,43 @@ func TestSeedPreservesHeartbeatAtOnReseed(t *testing.T) {
 	}
 	if db.providers[provDistillLocal].HeartbeatAt == nil {
 		t.Error("re-seed zeroed HeartbeatAt on distill-local; TouchProviderHeartbeat's stamp must survive re-seed")
+	}
+}
+
+// TestSeedPreservesLastCollectAtOnReseed guards against re-seed zeroing last_collect_at on
+// collector providers. last_collect_at is stamped by the dispatcher after each successful
+// collector wake; zeroing it resets the cadence clock (rara-harvest/dial/feed all run again
+// immediately instead of waiting their daily/6h window). Mirrors TestSeedPreservesHeartbeatAtOnReseed.
+func TestSeedPreservesLastCollectAtOnReseed(t *testing.T) {
+	ctx := context.Background()
+	db := newMockDatabase()
+	for _, fn := range []func(context.Context, Database) error{
+		SeedYouTubeLane, SeedPodcastLane, SeedEmailLane, SeedNewsLane,
+	} {
+		if err := fn(ctx, db); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+	}
+	// Simulate dispatcher stamping last_collect_at on each collector after first seed.
+	now := time.Now()
+	collectors := []string{provHarvest, provShelf, provDial, provFeed, provCourier}
+	for _, name := range collectors {
+		p := db.providers[name]
+		p.LastCollectAt = &now
+		db.providers[name] = p
+	}
+	// Re-seed must NOT zero last_collect_at (cadence clock must survive).
+	for _, fn := range []func(context.Context, Database) error{
+		SeedYouTubeLane, SeedPodcastLane, SeedEmailLane, SeedNewsLane,
+	} {
+		if err := fn(ctx, db); err != nil {
+			t.Fatalf("re-seed: %v", err)
+		}
+	}
+	for _, name := range collectors {
+		if db.providers[name].LastCollectAt == nil {
+			t.Errorf("re-seed zeroed LastCollectAt on %q; dispatcher cadence clock must survive re-seed", name)
+		}
 	}
 }
 

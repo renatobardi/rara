@@ -121,7 +121,7 @@ func (d *pgxDatabase) ListProvidersForCapability(ctx context.Context, capability
 	// idx_providers_capability (partial, enabled=true) backs this lookup.
 	const q = `
 		SELECT name, capability, runtime, activation, cost, quality, latency_ms,
-		       constraints, enabled, heartbeat_at, COALESCE(runner_url, ''), env
+		       constraints, enabled, heartbeat_at, last_collect_at, COALESCE(runner_url, ''), env
 		FROM providers
 		WHERE capability = $1 AND enabled = true
 		ORDER BY name`
@@ -134,7 +134,7 @@ func (d *pgxDatabase) ListProvidersForCapability(ctx context.Context, capability
 	for rows.Next() {
 		var p Provider
 		if err := rows.Scan(&p.Name, &p.Capability, &p.Runtime, &p.Activation, &p.Cost,
-			&p.Quality, &p.LatencyMs, &p.Constraints, &p.Enabled, &p.HeartbeatAt, &p.RunnerURL, &p.Env); err != nil {
+			&p.Quality, &p.LatencyMs, &p.Constraints, &p.Enabled, &p.HeartbeatAt, &p.LastCollectAt, &p.RunnerURL, &p.Env); err != nil {
 			return nil, err
 		}
 		out = append(out, p)
@@ -145,12 +145,12 @@ func (d *pgxDatabase) ListProvidersForCapability(ctx context.Context, capability
 func (d *pgxDatabase) GetProvider(ctx context.Context, name string) (Provider, bool, error) {
 	const q = `
 		SELECT name, capability, runtime, activation, cost, quality, latency_ms,
-		       constraints, enabled, heartbeat_at, COALESCE(runner_url, ''), env
+		       constraints, enabled, heartbeat_at, last_collect_at, COALESCE(runner_url, ''), env
 		FROM providers
 		WHERE name = $1`
 	var p Provider
 	err := d.conn.QueryRow(ctx, q, name).Scan(&p.Name, &p.Capability, &p.Runtime, &p.Activation,
-		&p.Cost, &p.Quality, &p.LatencyMs, &p.Constraints, &p.Enabled, &p.HeartbeatAt, &p.RunnerURL, &p.Env)
+		&p.Cost, &p.Quality, &p.LatencyMs, &p.Constraints, &p.Enabled, &p.HeartbeatAt, &p.LastCollectAt, &p.RunnerURL, &p.Env)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Provider{}, false, nil
 	}
@@ -542,7 +542,7 @@ func (d *pgxDatabase) ListPodcastFeeds(ctx context.Context) ([]PodcastFeed, erro
 func (d *pgxDatabase) ListProviders(ctx context.Context) ([]Provider, error) {
 	const q = `
 		SELECT name, capability, runtime, activation, cost, quality, latency_ms,
-		       constraints, enabled, heartbeat_at, COALESCE(runner_url, ''), env
+		       constraints, enabled, heartbeat_at, last_collect_at, COALESCE(runner_url, ''), env
 		FROM providers ORDER BY name`
 	rows, err := d.conn.Query(ctx, q)
 	if err != nil {
@@ -553,7 +553,7 @@ func (d *pgxDatabase) ListProviders(ctx context.Context) ([]Provider, error) {
 	for rows.Next() {
 		var p Provider
 		if err := rows.Scan(&p.Name, &p.Capability, &p.Runtime, &p.Activation, &p.Cost,
-			&p.Quality, &p.LatencyMs, &p.Constraints, &p.Enabled, &p.HeartbeatAt, &p.RunnerURL, &p.Env); err != nil {
+			&p.Quality, &p.LatencyMs, &p.Constraints, &p.Enabled, &p.HeartbeatAt, &p.LastCollectAt, &p.RunnerURL, &p.Env); err != nil {
 			return nil, err
 		}
 		out = append(out, p)
