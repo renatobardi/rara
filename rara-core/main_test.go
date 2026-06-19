@@ -145,7 +145,11 @@ func (m *MockDatabase) UpsertProvider(_ context.Context, p Provider) error {
 	if _, ok := m.capabilities[p.Capability]; !ok {
 		return errFKViolation // REFERENCES capabilities(name)
 	}
-	m.providers[p.Name] = p // ON CONFLICT (name) DO UPDATE
+	// Mirror the SQL ON CONFLICT: preserve runtime-owned columns that seed never sets.
+	if existing, ok := m.providers[p.Name]; ok {
+		p.HeartbeatAt = existing.HeartbeatAt // owned by TouchProviderHeartbeat
+	}
+	m.providers[p.Name] = p
 	return nil
 }
 
