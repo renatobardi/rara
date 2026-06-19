@@ -1,0 +1,99 @@
+name: Neon Branch per PR
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, closed]
+
+concurrency:
+  group: neon-pr-${{ github.event.number }}
+  cancel-in-progress: true
+
+jobs:
+  setup-branch:
+    name: Create branch and apply migrations
+    if: github.event.action != 'closed'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          fetch-depth: 0
+
+      - name: Compute branch expiry (7 days)
+        id: expiry
+        run: echo "expires_at=$(date -u -d '+7 days' +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+      - name: Create Neon branch
+        id: create-branch
+        uses: neondatabase/create-branch-action@v6
+        with:
+          project_id: ${{ vars.NEON_PROJECT_ID }}
+          branch_name: preview/pr-${{ github.event.number }}
+          role: ${{ secrets.NEON_USERNAME }}
+          database: ${{ secrets.NEON_DATABASE }}
+          api_key: ${{ secrets.NEON_API_KEY }}
+          expires_at: ${{ steps.expiry.outputs.expires_at }}
+
+      - name: Install PostgreSQL client
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q postgresql-client
+
+      - name: Detect changed migration files
+        id: migrations
+        run: |
+          # All migrations/*.sql files added or modified in this PR, sorted lexicographically
+          FILES=$(git diff --name-only --diff-filter=AM origin/main...HEAD -- '**/migrations/*.sql' | sort)
+          echo "files<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$FILES" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+          COUNT=$(echo "$FILES" | grep -c . || true)
+          echo "count=$COUNT" >> "$GITHUB_OUTPUT"
+
+      - name: Apply changed migrations
+        if: steps.migrations.outputs.count > 0
+        env:
+          # Use the branch-specific db_url — never the production NEON_HOST secrets.
+          # The ephemeral branch has its own host; reusing NEON_HOST would silently
+          # apply migrations to production. ponytail: this is the isolation boundary.
+          DB_URL: ${{ steps.create-branch.outputs.db_url }}
+        run: |
+          # Normalize postgresql:// → postgres:// (psql accepts both, but make it explicit)
+          CONN="${DB_URL/postgresql:\/\//postgres://}"
+          echo "Applying ${{ steps.migrations.outputs.count }} migration(s) to branch preview/pr-${{ github.event.number }}:"
+          while IFS= read -r file; do
+            [ -z "$file" ] && continue
+            echo "  → $(basename "$file")"
+            psql "$CONN" -v ON_ERROR_STOP=1 -f "$file" \
+              && echo "    ✅ ok" \
+              || { echo "    ❌ failed"; exit 1; }
+          done <<< "${{ steps.migrations.outputs.files }}"
+
+      - name: Schema diff
+        uses: neondatabase/schema-diff-action@v1
+        with:
+          project_id: ${{ vars.NEON_PROJECT_ID }}
+          compare_branch: preview/pr-${{ github.event.number }}
+          base_branch: main
+          api_key: ${{ secrets.NEON_API_KEY }}
+          database: ${{ secrets.NEON_DATABASE }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+  cleanup-branch:
+    name: Delete Neon branch
+    if: github.event.action == 'closed'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Delete Neon branch
+        uses: neondatabase/delete-branch-action@v3
+        with:
+          project_id: ${{ vars.NEON_PROJECT_ID }}
+          branch: preview/pr-${{ github.event.number }}
+          api_key: ${{ secrets.NEON_API_KEY }}
