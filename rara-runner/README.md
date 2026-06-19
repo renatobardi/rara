@@ -45,6 +45,7 @@ This runs containers on a personal machine (the Mac), so the trust boundary is t
 | `RUNNER_ALLOWED_IMAGES` | ✅ | `app=image,app2=image2`; each image **must** be pinned by digest (`@sha256:`). A duplicate app or an unpinned image fails startup. |
 | `RUNNER_DOCKER_BIN` | — | Launcher binary; default `docker`. Must be `docker`, `podman`, or an absolute path (a relative name is refused so PATH can't be hijacked). `podman` is rootless — a container escape stays in the user namespace instead of reaching the host as root. |
 | `RUNNER_WORKER_ENV_FILE` | — | Path to a `KEY=VAL` file with host-side secrets and config (e.g. `DATABASE_URL`, `LITELLM_BASE_URL`) injected into **every** container started by this agent. **Must have restrictive permissions (`chmod 600` or `640`)** — the file contains secrets. The body's `env` is merged on top — body wins on conflict, so the caller can override non-secret config but secrets only live on the host. Missing file or empty var → no base env (doesn't fail). Format: one `KEY=VAL` per line; `#` comments and blank lines are ignored; values may contain `=`. |
+| `DOCKER_CONFIG` | — | Directory containing `config.json` with Docker registry credentials. Required when the service runs under systemd with `ProtectHome=true` (the default), which blocks `~/.docker/`. Set to `/etc/rara-runner/docker` and copy the credentials there — see [deploy/agent.env.example](deploy/agent.env.example). |
 
 See [.env.example](.env.example).
 
@@ -119,9 +120,23 @@ sudo chown ubuntu:ubuntu /etc/rara-runner/worker.env
 sudo chmod 600 /etc/rara-runner/worker.env
 nano /etc/rara-runner/worker.env   # DATABASE_URL, LITELLM_BASE_URL, API keys, etc.
 
-# 3. Provision the agent config
+# 3. Copy Docker registry credentials (ProtectHome=true blocks ~/.docker/ from the service)
+sudo mkdir -p /etc/rara-runner/docker
+sudo cp ~/.docker/config.json /etc/rara-runner/docker/config.json
+sudo chown -R ubuntu:ubuntu /etc/rara-runner/docker
+sudo chmod 600 /etc/rara-runner/docker/config.json
+
+# 4. If LITELLM_BASE_URL points to the host (e.g. http://172.17.0.1:4010), allow containers to
+#    reach it — Oracle/nftables blocks docker0→host traffic by default:
+sudo nft insert rule ip filter INPUT iifname "docker0" tcp dport 4010 accept
+# Persist across reboots (append to rc.local):
+echo 'nft insert rule ip filter INPUT iifname "docker0" tcp dport 4010 accept' | sudo tee -a /etc/rc.local
+
+# 5. Provision the agent config
 cp deploy/agent.env.example /etc/rara-runner/agent.env && chmod 640 /etc/rara-runner/agent.env
 nano /etc/rara-runner/agent.env   # RUNNER_ADDR (tailnet IP), RUNNER_TOKEN, RUNNER_ALLOWED_IMAGES
+# NOTE: RUNNER_ALLOWED_IMAGES must use the manifest-list digest, not a per-platform digest.
+# See the comments in agent.env.example for how to get it.
 ```
 
 Then run the workflow: `gh workflow run deploy-runner.yml`.
