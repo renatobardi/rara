@@ -109,7 +109,7 @@ func TestDecodeB64URL(t *testing.T) {
 type MockDatabase struct {
 	emails   map[string]Email // keyed by message_id (UNIQUE)
 	err      error
-	stampErr error  // returned by StampProviderCollected when set
+	stampErr error    // returned by StampProviderCollected when set
 	stamped  []string // provider names passed to StampProviderCollected
 }
 
