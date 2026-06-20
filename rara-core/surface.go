@@ -92,8 +92,8 @@ type WorkerMetric struct {
 	ByStatus       map[string]int `json:"by_status"`
 	Done           int            `json:"done"`
 	Failed         int            `json:"failed"`
-	SuccessRate    float64        `json:"success_rate"`    // done/(done+failed); 0 when both are 0
-	Queue          int            `json:"queue"`           // pending+assigned+running
+	SuccessRate    float64        `json:"success_rate"` // done/(done+failed); 0 when both are 0
+	Queue          int            `json:"queue"`        // pending+assigned+running
 	AvgAttempt     float64        `json:"avg_attempt"`
 	LastActivityAt *time.Time     `json:"last_activity_at,omitempty"`
 }
