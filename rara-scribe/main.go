@@ -1331,6 +1331,17 @@ func loadConfig() Config {
 	}
 }
 
+// buildScribePoolConfig parses the DSN and forces simple protocol so pgx never caches
+// prepared statements — required when DATABASE_URL points to a PgBouncer pooler endpoint.
+func buildScribePoolConfig(dbURL string) (*pgxpool.Config, error) {
+	cfg, err := pgxpool.ParseConfig(dbURL)
+	if err != nil {
+		return nil, err
+	}
+	cfg.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
+	return cfg, nil
+}
+
 // main wires the bridge-total claim-worker: the SDK (addon.Run) owns the queue protocol; this
 // process only supplies the transcrever domain (transcribeHandler). It serves ONE provider
 // (SCRIBE_PROVIDER: asr-youtube on the Mac with a residential IP, or asr-direct-audio for podcast
@@ -1366,14 +1377,12 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	poolCfg, err := pgxpool.ParseConfig(cfg.DatabaseURL)
+	poolCfg, err := buildScribePoolConfig(cfg.DatabaseURL)
 	if err != nil {
 		log.Fatalf("Failed to parse DATABASE_URL: %v", err)
 	}
 	// A single-item worker needs only a connection or two (the drain loop + the SDK's heartbeat
-	// goroutine in resident mode); cap the pool to stay well under Neon's connection limit, and
-	// recycle idle connections before Neon's pooler drops them (a long local chunk sits minutes
-	// between saves).
+	// goroutine in resident mode); cap the pool to stay well under Neon's connection limit.
 	poolCfg.MaxConns = 2
 	poolCfg.MaxConnIdleTime = 5 * time.Minute
 	poolCfg.MaxConnLifetime = 30 * time.Minute

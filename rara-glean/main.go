@@ -308,6 +308,17 @@ func (db *appDB) WriteText(ctx context.Context, sourceType, sourceRef, text, eng
 // Config & entrypoint
 // ---------------------------------------------------------------------------
 
+// buildGleanPoolConfig parses the DSN and forces simple protocol so pgx never caches
+// prepared statements — required when DATABASE_URL points to a PgBouncer pooler endpoint.
+func buildGleanPoolConfig(dbURL string) (*pgxpool.Config, error) {
+	cfg, err := pgxpool.ParseConfig(dbURL)
+	if err != nil {
+		return nil, err
+	}
+	cfg.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
+	return cfg, nil
+}
+
 // main wires the bridge-total claim-worker: the SDK (addon.Run) owns the queue protocol; this
 // process only supplies the extrair domain (gleanHandler). One app serves all text providers by
 // config: GLEAN_PROVIDER picks the concrete provider it serves (extrair-email | extrair-linkedin |
@@ -328,7 +339,11 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	pool, err := pgxpool.New(ctx, dbURL)
+	poolCfg, err := buildGleanPoolConfig(dbURL)
+	if err != nil {
+		log.Fatalf("Failed to parse DATABASE_URL: %v", err)
+	}
+	pool, err := pgxpool.NewWithConfig(ctx, poolCfg)
 	if err != nil {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}

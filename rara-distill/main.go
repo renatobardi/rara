@@ -1219,6 +1219,17 @@ func loadConfig() Config {
 }
 
 // main wires the bridge-total claim-worker: the SDK (addon.Run) owns the queue protocol; this
+// buildDistillPoolConfig parses the DSN and forces simple protocol so pgx never caches
+// prepared statements — required when DATABASE_URL points to a PgBouncer pooler endpoint.
+func buildDistillPoolConfig(dbURL string) (*pgxpool.Config, error) {
+	cfg, err := pgxpool.ParseConfig(dbURL)
+	if err != nil {
+		return nil, err
+	}
+	cfg.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
+	return cfg, nil
+}
+
 // process only supplies the destilar domain (distillHandler). It serves ONE provider
 // (DISTILL_PROVIDER, e.g. distill | distill-local) so it claims only the steps the reconciler
 // routed to it. Default is on_demand (drain once and exit, the woken Cloud Run job); a resident
@@ -1248,7 +1259,11 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	pool, err := pgxpool.New(ctx, cfg.DatabaseURL)
+	poolCfg, err := buildDistillPoolConfig(cfg.DatabaseURL)
+	if err != nil {
+		log.Fatalf("Failed to parse DATABASE_URL: %v", err)
+	}
+	pool, err := pgxpool.NewWithConfig(ctx, poolCfg)
 	if err != nil {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}

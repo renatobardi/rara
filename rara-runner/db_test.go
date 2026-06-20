@@ -3,7 +3,19 @@ package main
 import (
 	"strings"
 	"testing"
+
+	"github.com/jackc/pgx/v5"
 )
+
+func TestBuildDispatchPoolConfig_simpleProtocol(t *testing.T) {
+	cfg, err := buildDispatchPoolConfig("postgres://u:p@localhost/db")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.ConnConfig.DefaultQueryExecMode != pgx.QueryExecModeSimpleProtocol {
+		t.Errorf("DefaultQueryExecMode = %v, want SimpleProtocol", cfg.ConnConfig.DefaultQueryExecMode)
+	}
+}
 
 // parseProviderEnv is the JSONB-text -> map seam GetProvider uses. Testing it directly keeps the
 // suite zero-I/O (no pgx pool, no fake driver dep) while covering the empty/populated/garbage paths.

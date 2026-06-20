@@ -19,6 +19,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -91,6 +92,17 @@ func runAgent() {
 	}
 }
 
+// buildDispatchPoolConfig parses the DSN and forces simple protocol so pgx never caches
+// prepared statements — required when DATABASE_URL points to a PgBouncer pooler endpoint.
+func buildDispatchPoolConfig(dbURL string) (*pgxpool.Config, error) {
+	cfg, err := pgxpool.ParseConfig(dbURL)
+	if err != nil {
+		return nil, err
+	}
+	cfg.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
+	return cfg, nil
+}
+
 // runDispatch reads desired state from Neon and wakes providers in a loop.
 // Required env: DATABASE_URL (Neon pgx DSN).
 // Optional: DISPATCH_INTERVAL_SECONDS (default 5).
@@ -103,7 +115,7 @@ func runDispatch() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	cfg, err := pgxpool.ParseConfig(dbURL)
+	cfg, err := buildDispatchPoolConfig(dbURL)
 	if err != nil {
 		log.Fatalf("dispatch: invalid DATABASE_URL") // don't echo err — may contain DSN credentials
 	}

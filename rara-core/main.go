@@ -1010,6 +1010,27 @@ Commands:
   status                     Phase 0 health check: confirm the control tables are reachable
 `
 
+// buildCoreConnConfig parses the DSN and forces simple protocol so pgx never caches
+// prepared statements — required when DATABASE_URL points to a PgBouncer pooler endpoint.
+func buildCoreConnConfig(dbURL string) (*pgx.ConnConfig, error) {
+	cfg, err := pgx.ParseConfig(dbURL)
+	if err != nil {
+		return nil, err
+	}
+	cfg.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
+	return cfg, nil
+}
+
+// buildSurfacePoolConfig parses the DSN and forces simple protocol (same reason as buildCoreConnConfig).
+func buildSurfacePoolConfig(dbURL string) (*pgxpool.Config, error) {
+	cfg, err := pgxpool.ParseConfig(dbURL)
+	if err != nil {
+		return nil, err
+	}
+	cfg.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
+	return cfg, nil
+}
+
 func main() {
 	if len(os.Args) < 2 {
 		fmt.Print(usage)
@@ -1025,8 +1046,12 @@ func main() {
 	// the worker drain stop gracefully (the VPC/Cloud Run lifecycle delivers SIGTERM).
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	connCfg, err := buildCoreConnConfig(dbURL)
+	if err != nil {
+		log.Fatalf("Failed to parse DATABASE_URL: %v", err)
+	}
 	connectCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	conn, err := pgx.Connect(connectCtx, dbURL)
+	conn, err := pgx.ConnectConfig(connectCtx, connCfg)
 	cancel()
 	if err != nil {
 		log.Fatalf("Failed to connect to database: %v", err)
@@ -1213,7 +1238,11 @@ func serveSurfacePool(ctx context.Context, dbURL, addr, token string) error {
 	if token == "" {
 		return fmt.Errorf("surface: SURFACE_TOKEN is required (refusing to serve without auth)")
 	}
-	pool, err := pgxpool.New(ctx, dbURL)
+	poolCfg, err := buildSurfacePoolConfig(dbURL)
+	if err != nil {
+		return fmt.Errorf("surface: parse DATABASE_URL: %w", err)
+	}
+	pool, err := pgxpool.NewWithConfig(ctx, poolCfg)
 	if err != nil {
 		return fmt.Errorf("surface: connection pool: %w", err)
 	}
