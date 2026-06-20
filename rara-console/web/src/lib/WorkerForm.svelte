@@ -54,19 +54,41 @@
 	let submitting = $state(false);
 	let serverError = $state('');
 
+	const VALID_RUNTIMES = ['local', 'cloudrun', 'vpc'];
+	const VALID_ACTIVATIONS = ['resident', 'on_demand'];
+	// ponytail: loopback only — private ranges (10.x, 172.16-31.x, 192.168.x, 100.x tailnet)
+	// are intentionally allowed; rara-runner lives on those networks by design.
+	const LOOPBACK = /^(localhost|127\.\d+\.\d+\.\d+|::1)$/i;
+
 	function validate(): boolean {
 		const e: Record<string, string> = {};
 		if (!name.trim()) e.name = t.workers.formNameRequired;
 		if (!capability.trim()) e.capability = t.workers.formCapabilityRequired;
+		if (!VALID_RUNTIMES.includes(runtime)) e.runtime = t.workers.formRuntimeInvalid;
+		if (!VALID_ACTIVATIONS.includes(activation)) e.activation = t.workers.formActivationInvalid;
 		const c = parseFloat(cost);
 		if (isNaN(c) || c < 0) e.cost = t.workers.formCostInvalid;
 		const q = parseFloat(quality);
 		if (isNaN(q) || q < 0 || q > 1) e.quality = t.workers.formQualityInvalid;
+		if (runnerUrl.trim()) {
+			try {
+				const u = new URL(runnerUrl.trim());
+				if (!['http:', 'https:'].includes(u.protocol)) {
+					e.runnerUrl = t.workers.formRunnerUrlInvalidScheme;
+				} else if (LOOPBACK.test(u.hostname)) {
+					e.runnerUrl = t.workers.formRunnerUrlInvalidHost;
+				}
+			} catch {
+				e.runnerUrl = t.workers.formRunnerUrlInvalidFormat;
+			}
+		}
 		if (envRaw.trim()) {
 			try {
 				const parsed = JSON.parse(envRaw.trim());
 				if (typeof parsed !== 'object' || Array.isArray(parsed) || parsed === null) {
 					e.env = t.workers.formEnvInvalid;
+				} else if (!Object.values(parsed).every((v) => typeof v === 'string')) {
+					e.env = t.workers.formEnvValuesInvalid;
 				}
 			} catch {
 				e.env = t.workers.formEnvInvalid;
@@ -197,6 +219,7 @@
 					<option value="cloudrun">cloudrun</option>
 					<option value="vpc">vpc</option>
 				</select>
+				{#if errors.runtime}<p class={errorClass}>{errors.runtime}</p>{/if}
 			</div>
 
 			<!-- Activation -->
@@ -206,6 +229,7 @@
 					<option value="resident">resident</option>
 					<option value="on_demand">on_demand</option>
 				</select>
+				{#if errors.activation}<p class={errorClass}>{errors.activation}</p>{/if}
 			</div>
 
 			<!-- Cost -->
@@ -254,6 +278,7 @@
 					placeholder={t.workers.formRunnerUrlPlaceholder}
 					bind:value={runnerUrl}
 				/>
+				{#if errors.runnerUrl}<p class={errorClass}>{errors.runnerUrl}</p>{/if}
 			</div>
 		</div>
 
