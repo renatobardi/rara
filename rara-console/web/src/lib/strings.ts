@@ -118,6 +118,7 @@ export const t = {
 		metricsEmpty: 'Sem atividade no período.',
 		lastActivity: 'Última atividade',
 		never: 'Nunca',
+		stale: 'stale',
 		asleep: 'dormindo',
 		failuresInPeriod: 'falhas no período',
 		topErrorWorker: 'Maior share de erro',

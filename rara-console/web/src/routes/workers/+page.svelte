@@ -31,13 +31,13 @@
 	type WorkerMetric = {
 		provider: string;
 		total: number;
-		by_status: ByStatus;
+		by_status?: ByStatus;
 		done: number;
 		failed: number;
 		success_rate: number;
 		queue: number;
 		avg_attempt: number;
-		last_activity_at: string;
+		last_activity_at?: string;
 	};
 
 	// --- existing state ---
@@ -68,6 +68,9 @@
 
 	// ponytail: 5min stale threshold mirrors defaultHealthTTL in core router.go
 	const STALE_MS = 5 * 60 * 1000;
+
+	// request counter to discard out-of-order responses on rapid period switching
+	let windowReqId = 0;
 
 	function workerStatus(p: Provider): 'alive' | 'stale' | 'asleep' {
 		if (p.activation === 'on_demand') return 'alive';
@@ -135,14 +138,17 @@
 	function fetchMetricsWindow(days: number | null) {
 		metricsWindowLoading = true;
 		metricsWindowError = false;
+		const reqId = ++windowReqId;
 		const url = days !== null ? `/api/workers/metrics?days=${days}` : '/api/workers/metrics';
 		fetch(url)
 			.then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
 			.then((d) => {
+				if (reqId !== windowReqId) return;
 				metricsWindow = Array.isArray(d) ? d : [];
 				metricsWindowLoading = false;
 			})
 			.catch(() => {
+				if (reqId !== windowReqId) return;
 				metricsWindowError = true;
 				metricsWindowLoading = false;
 			});
@@ -242,6 +248,7 @@
 					period.days
 						? 'bg-bg font-semibold text-text shadow-sm'
 						: 'text-muted hover:text-text'}"
+					aria-pressed={selectedDays === period.days}
 					onclick={() => selectPeriod(period.days)}
 				>
 					{period.label}
@@ -256,8 +263,6 @@
 				<div class="h-[108px] animate-pulse rounded-xl border border-border bg-surface-2"></div>
 			{/each}
 		</div>
-	{:else if metricsAllError || metricsWindowError}
-		<p class="text-sm text-red-500">{t.workers.metricsError}</p>
 	{:else}
 		<div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
 			<!-- Card 1: Saúde & atividade (ao vivo) -->
@@ -270,10 +275,10 @@
 						>{t.workers.nowBadge}</span
 					>
 				</div>
-				{#if loading}
+				{#if metricsAllError || error}
+					<p class="text-sm text-red-500">{t.workers.metricsError}</p>
+				{:else if loading}
 					<p class="text-sm text-muted">{t.workers.loading}</p>
-				{:else if error}
-					<p class="text-sm text-red-500">{t.workers.error}</p>
 				{:else if providers.length === 0}
 					<p class="text-sm text-muted">{t.workers.empty}</p>
 				{:else}
@@ -281,7 +286,8 @@
 						{aliveCount}<span class="text-[14px] font-normal text-muted"> / {providers.length}</span>
 					</p>
 					<p class="mt-1 text-[11px] text-muted">
-						{staleCount} stale · {asleepCount}
+						{staleCount}
+						{t.workers.stale} · {asleepCount}
 						{t.workers.asleep}
 					</p>
 					{#if lastActivity}
@@ -299,7 +305,9 @@
 						>{t.workers.cardReliability}</span
 					>
 				</div>
-				{#if successRate === null}
+				{#if metricsWindowError}
+					<p class="text-sm text-red-500">{t.workers.metricsError}</p>
+				{:else if successRate === null}
 					<p class="text-sm text-muted">{t.workers.metricsEmpty}</p>
 				{:else}
 					<p class="text-[22px] font-bold text-text">
@@ -321,7 +329,9 @@
 						>{t.workers.cardVolume}</span
 					>
 				</div>
-				{#if totalDoneW === 0}
+				{#if metricsWindowError}
+					<p class="text-sm text-red-500">{t.workers.metricsError}</p>
+				{:else if totalDoneW === 0}
 					<p class="text-sm text-muted">{t.workers.metricsEmpty}</p>
 				{:else}
 					<p class="text-[22px] font-bold text-text">{totalDoneW}</p>
@@ -342,7 +352,9 @@
 						>{t.workers.nowBadge}</span
 					>
 				</div>
-				{#if metricsAll.length === 0}
+				{#if metricsAllError}
+					<p class="text-sm text-red-500">{t.workers.metricsError}</p>
+				{:else if metricsAll.length === 0}
 					<p class="text-sm text-muted">{t.workers.metricsEmpty}</p>
 				{:else}
 					<p class="text-[22px] font-bold text-text">{totalQueue}</p>
