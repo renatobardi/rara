@@ -103,6 +103,8 @@ export const t = {
 		placementsCount: 'placement(s)',
 		expandPlacements: 'Expandir placements',
 		collapsePlacements: 'Recolher placements',
+		enabledStatus: 'ativo',
+		disabledStatus: 'inativo',
 		addWorker: 'Novo worker',
 		editWorker: 'Editar worker',
 		formName: 'Nome',

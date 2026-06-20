@@ -77,6 +77,12 @@
 		candidates: Candidate[];
 	};
 
+	function isWorker(v: unknown): v is Worker {
+		if (typeof v !== 'object' || v === null) return false;
+		const w = v as Record<string, unknown>;
+		return typeof w.name === 'string' && typeof w.capability === 'string' && Array.isArray(w.placements);
+	}
+
 	// --- existing state ---
 	let workers = $state<Worker[]>([]);
 	// providers is a flat derived list used by health cards, routing editor, and route preview.
@@ -313,7 +319,7 @@
 		fetch('/api/workers')
 			.then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
 			.then((d) => {
-				if (!Array.isArray(d)) throw new Error('unexpected payload');
+				if (!Array.isArray(d) || !d.every(isWorker)) throw new Error('unexpected payload');
 				workers = d;
 				loading = false;
 			})
@@ -410,16 +416,26 @@
 		saving = p.name;
 		saveMsg = '';
 		try {
-			const updated = { ...p, enabled: !p.enabled };
+			// ponytail: explicit DTO — omit heartbeat_at (core preserves it from DB on upsert).
+			// env must stay: full-record upsert, omitting it would set env={} in the DB.
+			// ponytail: explicit DTO — omit heartbeat_at (core preserves it from DB on upsert).
+			// env must stay: full-record upsert, omitting it would set env={} in the DB.
+			const dto = {
+				name: p.name, capability: p.capability, runtime: p.runtime,
+				activation: p.activation, cost: p.cost, quality: p.quality,
+				enabled: !p.enabled, constraints: p.constraints,
+				runner_url: p.runner_url, env: p.env
+			};
+			const optimistic: Provider = { ...p, enabled: !p.enabled };
 			const res = await fetch('/api/placements', {
 				method: 'PUT',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify(updated)
+				body: JSON.stringify(dto)
 			});
 			if (res.ok) {
 				workers = workers.map((w) => ({
 					...w,
-					placements: w.placements.map((x) => (x.name === p.name ? updated : x))
+					placements: w.placements.map((x) => (x.name === p.name ? optimistic : x))
 				}));
 				saveMsg = t.workers.saveOk;
 			} else {
@@ -652,7 +668,7 @@
 					</tr>
 				</thead>
 				<tbody>
-					{#each workers as w}
+					{#each workers as w (w.name)}
 						{@const expanded = expandedWorkers.has(w.name)}
 						<tr
 							class="border-b border-border hover:bg-hover {expanded ? 'bg-surface-2' : ''} cursor-pointer"
@@ -688,7 +704,7 @@
 											</tr>
 										</thead>
 										<tbody>
-											{#each w.placements as p}
+											{#each w.placements as p (p.name)}
 												<tr class="border-b border-border/30 last:border-0 hover:bg-hover/60">
 													<td class="py-2 pl-10 pr-3 font-mono">{p.name}</td>
 													<td class="py-2 pr-3 text-muted">{p.runtime}</td>
@@ -700,8 +716,9 @@
 															class="inline-block rounded-full px-2 py-0.5 text-[10px] font-semibold {p.enabled
 																? 'bg-green/20 text-green'
 																: 'bg-surface-2 text-muted'}"
+															aria-label={p.enabled ? t.workers.enabledStatus : t.workers.disabledStatus}
 														>
-															{p.enabled ? '●' : '○'}
+															<span aria-hidden="true">{p.enabled ? '●' : '○'}</span>
 														</span>
 													</td>
 													<td class="py-2 pr-3">
