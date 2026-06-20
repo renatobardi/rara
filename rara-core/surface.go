@@ -84,6 +84,20 @@ type StepCount struct {
 	Count      int    `json:"count"`
 }
 
+// WorkerMetric is the per-provider rollup for GET /v1/workers/metrics.
+// Feeds the 4 metric cards on the Workers screen (CONSOLE-WORKERS.pt-BR.md §8).
+type WorkerMetric struct {
+	Provider       string         `json:"provider"`
+	Total          int            `json:"total"`
+	ByStatus       map[string]int `json:"by_status"`
+	Done           int            `json:"done"`
+	Failed         int            `json:"failed"`
+	SuccessRate    float64        `json:"success_rate"`    // done/(done+failed); 0 when both are 0
+	Queue          int            `json:"queue"`           // pending+assigned+running
+	AvgAttempt     float64        `json:"avg_attempt"`
+	LastActivityAt *time.Time     `json:"last_activity_at,omitempty"`
+}
+
 // ---------------------------------------------------------------------------
 // Core — the operations layer (the "núcleo" both adapters drive).
 // ---------------------------------------------------------------------------
@@ -496,6 +510,12 @@ func (c *Core) Usage(ctx context.Context) (UsageReport, error) {
 	return c.db.UsageCounts(ctx)
 }
 
+// WorkerMetrics returns the per-provider step rollup for the Workers screen metric cards.
+// since restricts the window (nil = all-time).
+func (c *Core) WorkerMetrics(ctx context.Context, since *time.Time) ([]WorkerMetric, error) {
+	return c.db.WorkerMetrics(ctx, since)
+}
+
 // RoutePreview is the response shape for GET /v1/route/preview.
 type RoutePreview struct {
 	Capability string      `json:"capability"`
@@ -604,6 +624,9 @@ func NewSurfaceMux(core *Core, token string) http.Handler {
 	mux.HandleFunc("POST /v1/feedback/distillation", h.feedbackDistillation)
 	mux.HandleFunc("POST /v1/quarantine/review", h.reviewQuarantine)
 
+	// Worker metrics rollup (CONSOLE-WORKERS.pt-BR.md §8, fatia 2/9).
+	mux.HandleFunc("GET /v1/workers/metrics", h.workerMetrics)
+
 	// Router dry-run.
 	mux.HandleFunc("GET /v1/route/preview", h.routePreview)
 
@@ -651,6 +674,21 @@ func (h *httpSurface) health(w http.ResponseWriter, r *http.Request) {
 func (h *httpSurface) usage(w http.ResponseWriter, r *http.Request) {
 	report, err := h.core.Usage(r.Context())
 	writeResult(w, report, err)
+}
+
+func (h *httpSurface) workerMetrics(w http.ResponseWriter, r *http.Request) {
+	var since *time.Time
+	if raw := r.URL.Query().Get("days"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n <= 0 || n > 365 {
+			writeResult(w, nil, badInput("days must be a positive integer between 1 and 365"))
+			return
+		}
+		t := time.Now().Add(-time.Duration(n) * 24 * time.Hour)
+		since = &t
+	}
+	metrics, err := h.core.WorkerMetrics(r.Context(), since)
+	writeResult(w, metrics, err)
 }
 
 func (h *httpSurface) listItems(w http.ResponseWriter, r *http.Request) {

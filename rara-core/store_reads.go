@@ -819,3 +819,77 @@ func (d *pgxDatabase) ListAssignedSteps(ctx context.Context) ([]ItemStep, error)
 	}
 	return out, rows.Err()
 }
+
+// WorkerMetrics returns a per-provider rollup of item_steps for the Workers screen
+// metric cards. Only rows with a non-NULL assigned_provider are counted; when since
+// is non-nil only rows updated at or after that timestamp are included.
+func (d *pgxDatabase) WorkerMetrics(ctx context.Context, since *time.Time) ([]WorkerMetric, error) {
+	var (
+		q    string
+		args []any
+	)
+	const base = `
+		SELECT assigned_provider,
+		       status,
+		       COUNT(*)        AS n,
+		       MAX(updated_at) AS last_at,
+		       AVG(attempt)    AS avg_attempt
+		FROM item_steps
+		WHERE assigned_provider IS NOT NULL`
+	if since != nil {
+		q = base + ` AND updated_at >= $1 GROUP BY assigned_provider, status ORDER BY assigned_provider, status`
+		args = []any{since}
+	} else {
+		q = base + ` GROUP BY assigned_provider, status ORDER BY assigned_provider, status`
+	}
+
+	rows, err := d.conn.Query(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("worker metrics query: %w", err)
+	}
+	defer rows.Close()
+
+	byProvider := map[string]*WorkerMetric{}
+	var order []string // insertion order == sorted (ORDER BY provider name)
+	for rows.Next() {
+		var provider, status string
+		var n int
+		var lastAt *time.Time
+		var avgAttempt float64
+		if err := rows.Scan(&provider, &status, &n, &lastAt, &avgAttempt); err != nil {
+			return nil, fmt.Errorf("worker metrics scan: %w", err)
+		}
+		m, ok := byProvider[provider]
+		if !ok {
+			m = &WorkerMetric{Provider: provider, ByStatus: map[string]int{}}
+			byProvider[provider] = m
+			order = append(order, provider)
+		}
+		m.ByStatus[status] += n
+		m.Total += n
+		if lastAt != nil && (m.LastActivityAt == nil || lastAt.After(*m.LastActivityAt)) {
+			m.LastActivityAt = lastAt
+		}
+		// accumulate weighted sum; divide by total after all rows to get avg
+		m.AvgAttempt += avgAttempt * float64(n)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("worker metrics rows: %w", err)
+	}
+
+	out := make([]WorkerMetric, 0, len(order))
+	for _, p := range order {
+		m := byProvider[p]
+		m.Done = m.ByStatus[stepDone]
+		m.Failed = m.ByStatus[stepFailed]
+		m.Queue = m.ByStatus[stepPending] + m.ByStatus[stepAssigned] + m.ByStatus[stepRunning]
+		if terminal := m.Done + m.Failed; terminal > 0 {
+			m.SuccessRate = float64(m.Done) / float64(terminal)
+		}
+		if m.Total > 0 {
+			m.AvgAttempt /= float64(m.Total)
+		}
+		out = append(out, *m)
+	}
+	return out, nil
+}

@@ -767,6 +767,83 @@ func (m *MockDatabase) UsageCounts(ctx context.Context) (UsageReport, error) {
 	return r, nil
 }
 
+// WorkerMetrics mirrors the SQL rollup: groups item_steps by (assigned_provider, status),
+// excludes unassigned rows, applies the since filter, and collapses to one WorkerMetric
+// per provider sorted by name.
+// Steps with nil UpdatedAt are excluded when since is set (treated as "before any window").
+func (m *MockDatabase) WorkerMetrics(ctx context.Context, since *time.Time) ([]WorkerMetric, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	type row struct {
+		n          int
+		lastAt     *time.Time
+		sumAttempt float64
+	}
+	type key struct{ provider, status string }
+	agg := map[key]*row{}
+	var provOrder []string
+	seen := map[string]bool{}
+
+	for _, s := range m.itemSteps {
+		if s.AssignedProvider == "" {
+			continue
+		}
+		if since != nil && (s.UpdatedAt == nil || s.UpdatedAt.Before(*since)) {
+			continue
+		}
+		k := key{s.AssignedProvider, s.Status}
+		if agg[k] == nil {
+			agg[k] = &row{}
+		}
+		r := agg[k]
+		r.n++
+		r.sumAttempt += float64(s.Attempt)
+		if s.UpdatedAt != nil && (r.lastAt == nil || s.UpdatedAt.After(*r.lastAt)) {
+			t := *s.UpdatedAt
+			r.lastAt = &t
+		}
+		if !seen[s.AssignedProvider] {
+			seen[s.AssignedProvider] = true
+			provOrder = append(provOrder, s.AssignedProvider)
+		}
+	}
+
+	sort.Strings(provOrder)
+	out := make([]WorkerMetric, 0, len(provOrder))
+	for _, p := range provOrder {
+		wm := WorkerMetric{Provider: p, ByStatus: map[string]int{}}
+		var total int
+		var sumAttempt float64
+		var lastAt *time.Time
+		for _, status := range []string{stepPending, stepAssigned, stepRunning, stepDone, stepFailed, stepSkipped} {
+			r := agg[key{p, status}]
+			if r == nil {
+				continue
+			}
+			wm.ByStatus[status] = r.n
+			total += r.n
+			sumAttempt += r.sumAttempt
+			if r.lastAt != nil && (lastAt == nil || r.lastAt.After(*lastAt)) {
+				lastAt = r.lastAt
+			}
+		}
+		wm.Total = total
+		wm.Done = wm.ByStatus[stepDone]
+		wm.Failed = wm.ByStatus[stepFailed]
+		wm.Queue = wm.ByStatus[stepPending] + wm.ByStatus[stepAssigned] + wm.ByStatus[stepRunning]
+		wm.LastActivityAt = lastAt
+		if terminal := wm.Done + wm.Failed; terminal > 0 {
+			wm.SuccessRate = float64(wm.Done) / float64(terminal)
+		}
+		if total > 0 {
+			wm.AvgAttempt = sumAttempt / float64(total)
+		}
+		out = append(out, wm)
+	}
+	return out, nil
+}
+
 // compile-time guarantee the mock satisfies the seam the pgx impl does.
 var _ Database = (*MockDatabase)(nil)
 
