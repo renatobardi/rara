@@ -6,8 +6,10 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 )
@@ -374,5 +376,27 @@ func TestHTTPWorkerMetricsDaysFilter(t *testing.T) {
 	// the 30-days-old step must be excluded → no providers
 	if len(metrics) != 0 {
 		t.Errorf("days=7 should exclude the old step, got %d metrics", len(metrics))
+	}
+}
+
+// TestCoreWorkerMetricsWrapsDBError: Core.WorkerMetrics must wrap db errors so the caller
+// can identify the layer where the failure occurred.
+func TestCoreWorkerMetricsWrapsDBError(t *testing.T) {
+	core, _, _ := newTestCore(t)
+
+	// A cancelled context causes MockDatabase.WorkerMetrics to return context.Canceled.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := core.WorkerMetrics(ctx, nil)
+
+	if err == nil {
+		t.Fatal("expected error from cancelled context, got nil")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("errors.Is(err, context.Canceled) = false; err = %v", err)
+	}
+	if !strings.Contains(err.Error(), "core worker metrics") {
+		t.Errorf("error not wrapped with context; err = %v", err)
 	}
 }
