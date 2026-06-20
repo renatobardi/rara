@@ -151,7 +151,7 @@
 	// routing editor derived
 	let routingScopes = $derived([
 		{ id: GLOBAL_SCOPE, label: t.workers.policyScopeGlobal },
-		...knownCapabilities.map((c) => ({ id: c, label: c }))
+		...knownCapabilities.filter((c) => c !== GLOBAL_SCOPE).map((c) => ({ id: c, label: c }))
 	]);
 	let fallbackAvailable = $derived(
 		selectedScope === GLOBAL_SCOPE
