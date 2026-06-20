@@ -505,9 +505,8 @@
 				body: JSON.stringify(payload)
 			});
 			if (!res.ok) {
-				let msg = t.workers.saveError;
-				try { const b = await res.json(); if (b?.error) msg = b.error; } catch { /* ignore */ }
-				throw new Error(msg);
+				try { const b = await res.json(); if (b?.error) console.warn('[saveWorker]', b.error); } catch { /* ignore */ }
+				throw new Error(t.workers.saveError);
 			}
 			saveMsg = t.workers.saveOk;
 			closeForm();
@@ -762,12 +761,14 @@
 															<button
 																class="cursor-pointer rounded-token border border-border bg-bg px-2 py-0.5 text-[11px] hover:bg-hover disabled:opacity-40"
 																onclick={(e) => { e.stopPropagation(); openEdit(p, w.name); }}
+																onkeydown={(e) => e.stopPropagation()}
 																aria-label="{t.workers.editWorker} {p.name}"
 																title={t.workers.editWorker}
 															>✏</button>
 															<button
 																class="cursor-pointer rounded-token border border-border bg-bg px-2 py-0.5 text-[11px] hover:bg-hover disabled:opacity-40"
 																onclick={(e) => { e.stopPropagation(); toggleProvider(p, w.name); }}
+																onkeydown={(e) => e.stopPropagation()}
 																disabled={saving === p.name}
 																aria-label="{p.enabled ? t.workers.disable : t.workers.enable} {p.name}"
 															>
