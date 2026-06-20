@@ -293,7 +293,8 @@
 	function candidateHealth(c: Candidate): 'fresh' | 'exempt' | 'stale' {
 		if (!c.healthy) return 'stale';
 		const prov = providers.find((p) => p.name === c.name);
-		if (prov?.activation === 'on_demand') return 'exempt';
+		if (!prov) return 'stale'; // ponytail: unknown provider treated conservatively
+		if (prov.activation === 'on_demand') return 'exempt';
 		return 'fresh';
 	}
 
