@@ -77,10 +77,23 @@
 		candidates: Candidate[];
 	};
 
+	function isProvider(v: unknown): v is Provider {
+		if (typeof v !== 'object' || v === null) return false;
+		const p = v as Record<string, unknown>;
+		return (
+			typeof p.name === 'string' && typeof p.capability === 'string' &&
+			typeof p.runtime === 'string' && typeof p.activation === 'string' &&
+			typeof p.enabled === 'boolean'
+		);
+	}
+
 	function isWorker(v: unknown): v is Worker {
 		if (typeof v !== 'object' || v === null) return false;
 		const w = v as Record<string, unknown>;
-		return typeof w.name === 'string' && typeof w.capability === 'string' && Array.isArray(w.placements);
+		return (
+			typeof w.name === 'string' && typeof w.capability === 'string' &&
+			Array.isArray(w.placements) && w.placements.every(isProvider)
+		);
 	}
 
 	// --- existing state ---
