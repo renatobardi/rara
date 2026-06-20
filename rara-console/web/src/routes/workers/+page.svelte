@@ -1,6 +1,13 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { t } from '$lib/strings';
+	import WorkerForm from '$lib/WorkerForm.svelte';
+
+	type Constraints = {
+		requires?: string;
+		accepts?: string[];
+		sensitivity?: string;
+	};
 
 	type Provider = {
 		name: string;
@@ -11,6 +18,9 @@
 		quality: number;
 		enabled: boolean;
 		heartbeat_at?: string;
+		constraints?: Constraints;
+		runner_url?: string;
+		env?: Record<string, string>;
 	};
 
 	type RoutingPolicy = {
@@ -66,6 +76,10 @@
 	let metricsWindowLoading = $state(true);
 	let metricsWindowError = $state(false);
 
+	// --- CRUD form state ---
+	let formMode = $state<'add' | 'edit' | null>(null);
+	let formInitial = $state<Provider | null>(null);
+
 	// ponytail: 5min stale threshold mirrors defaultHealthTTL in core router.go
 	const STALE_MS = 5 * 60 * 1000;
 
@@ -119,6 +133,25 @@
 	let pendingTotal = $derived(metricsAll.reduce((s, m) => s + (m.by_status?.pending ?? 0), 0));
 	let assignedTotal = $derived(metricsAll.reduce((s, m) => s + (m.by_status?.assigned ?? 0), 0));
 	let runningTotal = $derived(metricsAll.reduce((s, m) => s + (m.by_status?.running ?? 0), 0));
+
+	// unique capabilities for datalist
+	let knownCapabilities = $derived([...new Set(providers.map((p) => p.capability))].sort());
+
+	function fetchWorkers() {
+		loading = true;
+		error = false;
+		fetch('/api/workers')
+			.then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
+			.then((d) => {
+				if (!Array.isArray(d)) throw new Error('unexpected payload');
+				providers = d;
+				loading = false;
+			})
+			.catch(() => {
+				error = true;
+				loading = false;
+			});
+	}
 
 	function fetchMetricsAll() {
 		metricsAllLoading = true;
@@ -184,17 +217,7 @@
 			}
 		} catch { /* ignore */ }
 
-		fetch('/api/workers')
-			.then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
-			.then((d) => {
-				if (!Array.isArray(d)) throw new Error('unexpected payload');
-				providers = d;
-				loading = false;
-			})
-			.catch(() => {
-				error = true;
-				loading = false;
-			});
+		fetchWorkers();
 
 		fetch('/api/routing-policies')
 			.then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
@@ -233,6 +256,35 @@
 		} finally {
 			saving = null;
 		}
+	}
+
+	function openAdd() {
+		formInitial = null;
+		formMode = 'add';
+		saveMsg = '';
+	}
+
+	function openEdit(p: Provider) {
+		formInitial = p;
+		formMode = 'edit';
+		saveMsg = '';
+	}
+
+	function closeForm() {
+		formMode = null;
+		formInitial = null;
+	}
+
+	async function saveWorker(payload: Provider) {
+		const res = await fetch('/api/workers', {
+			method: 'PUT',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify(payload)
+		});
+		if (!res.ok) throw new Error(t.workers.saveError);
+		saveMsg = t.workers.saveOk;
+		closeForm();
+		fetchWorkers();
 	}
 </script>
 
@@ -370,9 +422,28 @@
 	{/if}
 </section>
 
-<!-- ── Workers table (unchanged) ── -->
+<!-- ── Workers table ── -->
 <section class="mb-8">
-	<h2 class="mb-4 text-[15px] font-semibold">{t.workers.title}</h2>
+	<div class="mb-4 flex items-center gap-3">
+		<h2 class="text-[15px] font-semibold">{t.workers.title}</h2>
+		<button
+			class="ml-auto cursor-pointer rounded-token border border-border bg-surface-2 px-3 py-1.5 text-[12px] font-semibold hover:bg-hover"
+			onclick={openAdd}
+		>
+			+ {t.workers.addWorker}
+		</button>
+	</div>
+
+	{#if formMode === 'add'}
+		<div class="mb-4">
+			<WorkerForm
+				initial={null}
+				capabilities={knownCapabilities}
+				onSave={saveWorker}
+				onCancel={closeForm}
+			/>
+		</div>
+	{/if}
 
 	{#if loading}
 		<p class="text-sm text-muted">{t.workers.loading}</p>
@@ -417,20 +488,42 @@
 								</span>
 							</td>
 							<td class="px-4 py-2.5">
-								<button
-									class="cursor-pointer rounded-token border border-border bg-surface-2 px-3 py-1 text-[12px] hover:bg-hover disabled:opacity-40"
-									onclick={() => toggleProvider(p)}
-									disabled={saving === p.name}
-									aria-label="{p.enabled ? t.workers.disable : t.workers.enable} {p.name}"
-								>
-									{saving === p.name
-										? t.workers.saving
-										: p.enabled
-											? t.workers.disable
-											: t.workers.enable}
-								</button>
+								<div class="flex items-center gap-2">
+									<button
+										class="cursor-pointer rounded-token border border-border bg-surface-2 px-2 py-1 text-[12px] hover:bg-hover disabled:opacity-40"
+										onclick={() => openEdit(p)}
+										aria-label="{t.workers.editWorker} {p.name}"
+										title={t.workers.editWorker}
+									>
+										✏
+									</button>
+									<button
+										class="cursor-pointer rounded-token border border-border bg-surface-2 px-3 py-1 text-[12px] hover:bg-hover disabled:opacity-40"
+										onclick={() => toggleProvider(p)}
+										disabled={saving === p.name}
+										aria-label="{p.enabled ? t.workers.disable : t.workers.enable} {p.name}"
+									>
+										{saving === p.name
+											? t.workers.saving
+											: p.enabled
+												? t.workers.disable
+												: t.workers.enable}
+									</button>
+								</div>
 							</td>
 						</tr>
+						{#if formMode === 'edit' && formInitial?.name === p.name}
+							<tr>
+								<td colspan="8" class="px-4 py-3">
+									<WorkerForm
+										initial={formInitial}
+										capabilities={knownCapabilities}
+										onSave={saveWorker}
+										onCancel={closeForm}
+									/>
+								</td>
+							</tr>
+						{/if}
 					{/each}
 				</tbody>
 			</table>
