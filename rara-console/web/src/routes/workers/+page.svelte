@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
+	import { onMount, onDestroy } from 'svelte';
 	import { t } from '$lib/strings';
 	import WorkerForm from '$lib/WorkerForm.svelte';
 
@@ -118,6 +118,7 @@
 	let previewLoading = $state(false);
 	let previewError = $state(false);
 	let previewDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+	let previewAbortController: AbortController | null = null;
 
 	// ponytail: 5min stale threshold mirrors defaultHealthTTL in core router.go
 	const STALE_MS = 5 * 60 * 1000;
@@ -249,19 +250,23 @@
 
 	function fetchPreview() {
 		if (!previewCapability) return;
+		previewAbortController?.abort();
+		previewAbortController = new AbortController();
+		const signal = previewAbortController.signal;
 		previewLoading = true;
 		previewError = false;
 		const params = new URLSearchParams({ capability: previewCapability });
 		if (previewLane) params.set('lane', previewLane);
 		params.set('sensitivity', previewSensitivity);
 		for (const name of previewExcludes) params.append('exclude', name);
-		fetch(`/api/route/preview?${params}`)
+		fetch(`/api/route/preview?${params}`, { signal })
 			.then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
 			.then((d) => {
 				previewResult = d;
 				previewLoading = false;
 			})
-			.catch(() => {
+			.catch((err) => {
+				if (err instanceof DOMException && err.name === 'AbortError') return;
 				previewError = true;
 				previewLoading = false;
 			});
@@ -271,6 +276,11 @@
 		if (previewDebounceTimer) clearTimeout(previewDebounceTimer);
 		previewDebounceTimer = setTimeout(fetchPreview, 300);
 	}
+
+	onDestroy(() => {
+		if (previewDebounceTimer) clearTimeout(previewDebounceTimer);
+		previewAbortController?.abort();
+	});
 
 	function togglePreviewExclude(name: string) {
 		const next = new Set(previewExcludes);
@@ -832,22 +842,24 @@
 				</select>
 			</div>
 
-			<!-- Lane (optional) -->
+			<!-- Lane (optional) — datalist allows predefined values + free text -->
 			<div>
 				<label class="mb-1 block text-[11px] font-medium text-muted" for="preview-lane">
 					{t.workers.previewLaneLabel}
 				</label>
-				<select
+				<input
 					id="preview-lane"
+					list="preview-lane-list"
 					bind:value={previewLane}
-					onchange={debouncedPreview}
+					oninput={debouncedPreview}
+					placeholder={t.workers.previewLanePlaceholder}
 					class="w-full rounded-token border border-border bg-bg px-2 py-1.5 text-[12px] outline-none focus:border-text/40"
-				>
-					<option value="">{t.workers.previewLanePlaceholder}</option>
+				/>
+				<datalist id="preview-lane-list">
 					{#each ['youtube', 'podcast', 'email', 'linkedin', 'url'] as lane}
-						<option value={lane}>{lane}</option>
+						<option value={lane}></option>
 					{/each}
-				</select>
+				</datalist>
 			</div>
 
 			<!-- Sensitivity (optional) -->
