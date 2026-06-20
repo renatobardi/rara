@@ -370,8 +370,22 @@ func (s *server) handleUpsertGateRule(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(body)
 }
 
-// handleWorkers proxies GET /v1/providers — list of all workers (config-as-data).
+// handleWorkers proxies GET /v1/workers — workers grouped by logical name, each with a
+// placements slice (the flat providers that share that worker name). This is the E2 grouped
+// endpoint; the SPA renders it as a worker→placements tree.
 func (s *server) handleWorkers(w http.ResponseWriter, r *http.Request) {
+	body, err := s.fetchCore(r.Context(), "/v1/workers")
+	if err != nil {
+		badGateway(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, json.RawMessage(body))
+}
+
+// handlePlacementsFlat proxies GET /v1/providers — the flat list of all placements
+// (individual provider rows). Used by the SPA for health cards, fallback selectors, and
+// routing scopes where a flat list is needed.
+func (s *server) handlePlacementsFlat(w http.ResponseWriter, r *http.Request) {
 	body, err := s.fetchCore(r.Context(), "/v1/providers")
 	if err != nil {
 		badGateway(w, err)
@@ -380,9 +394,9 @@ func (s *server) handleWorkers(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, json.RawMessage(body))
 }
 
-// handleUpsertWorker proxies PUT /v1/providers with bearer injected server-side.
+// handleUpsertPlacement proxies PUT /v1/providers with bearer injected server-side.
 // Core 4xx (e.g. invalid enum) propagates; only transport errors become 502.
-func (s *server) handleUpsertWorker(w http.ResponseWriter, r *http.Request) {
+func (s *server) handleUpsertPlacement(w http.ResponseWriter, r *http.Request) {
 	status, body, err := s.putCore(r.Context(), "/v1/providers", r.Body)
 	if err != nil {
 		badGateway(w, err)
@@ -725,9 +739,11 @@ func main() {
 	mux.HandleFunc("POST /api/interest-profile/approve", s.handleApproveInterestProfile)
 	mux.HandleFunc("GET /api/gate-rules", s.handleGateRules)
 	mux.HandleFunc("PUT /api/gate-rules", s.handleUpsertGateRule)
-	// /api/workers is the BFF surface; proxies to /v1/providers in core (semantic rename).
+	// /api/workers → grouped worker→placements view (proxies /v1/workers).
+	// /api/placements → flat provider list + upsert (proxies /v1/providers).
 	mux.HandleFunc("GET /api/workers", s.handleWorkers)
-	mux.HandleFunc("PUT /api/workers", s.handleUpsertWorker)
+	mux.HandleFunc("GET /api/placements", s.handlePlacementsFlat)
+	mux.HandleFunc("PUT /api/placements", s.handleUpsertPlacement)
 	mux.HandleFunc("GET /api/routing-policies", s.handleRoutingPolicies)
 	mux.HandleFunc("PUT /api/routing-policies", s.handleUpsertRoutingPolicy)
 	mux.HandleFunc("GET /api/decisions", s.handleDecisionsFeed)
