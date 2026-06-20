@@ -147,9 +147,9 @@ func (m *MockDatabase) UpsertProvider(_ context.Context, p Provider) error {
 	}
 	// Mirror the SQL ON CONFLICT: preserve runtime-owned columns that seed never sets.
 	if existing, ok := m.providers[p.Name]; ok {
-		p.HeartbeatAt = existing.HeartbeatAt       // owned by TouchProviderHeartbeat
-		p.LastCollectAt = existing.LastCollectAt   // owned by dispatcher (cadence clock)
-		p.LastAttemptAt = existing.LastAttemptAt   // owned by dispatcher (retry throttle)
+		p.HeartbeatAt = existing.HeartbeatAt     // owned by TouchProviderHeartbeat
+		p.LastCollectAt = existing.LastCollectAt // owned by dispatcher (cadence clock)
+		p.LastAttemptAt = existing.LastAttemptAt // owned by dispatcher (retry throttle)
 	}
 	m.providers[p.Name] = p
 	return nil
