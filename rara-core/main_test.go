@@ -145,6 +145,9 @@ func (m *MockDatabase) UpsertProvider(_ context.Context, p Provider) error {
 	if _, ok := m.capabilities[p.Capability]; !ok {
 		return errFKViolation // REFERENCES capabilities(name)
 	}
+	if p.Worker == "" {
+		p.Worker = p.Name // mirror pgxDatabase guard
+	}
 	// Mirror the SQL ON CONFLICT: preserve runtime-owned columns that seed never sets.
 	if existing, ok := m.providers[p.Name]; ok {
 		p.HeartbeatAt = existing.HeartbeatAt     // owned by TouchProviderHeartbeat
@@ -872,6 +875,20 @@ func TestProviderRejectsBadEnum(t *testing.T) {
 	bad := Provider{Name: "x", Capability: capTranscrever, Runtime: "gpu", Activation: activationResident}
 	if err := db.UpsertProvider(ctx, bad); !errors.Is(err, errCheckViolation) {
 		t.Fatalf("invalid runtime should fail CHECK, got %v", err)
+	}
+}
+
+func TestProviderUpsertDefaultsWorkerToName(t *testing.T) {
+	ctx := context.Background()
+	db := newMockDatabase()
+	_ = db.UpsertCapability(ctx, Capability{Name: capTranscrever})
+	p := Provider{Name: "asr-youtube", Capability: capTranscrever, Runtime: runtimeLocal, Activation: activationResident}
+	// Worker deliberately left empty — guard must default it to Name.
+	if err := db.UpsertProvider(ctx, p); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	if got := db.providers["asr-youtube"].Worker; got != "asr-youtube" {
+		t.Errorf("Worker = %q, want %q", got, "asr-youtube")
 	}
 }
 

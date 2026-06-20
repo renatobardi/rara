@@ -286,7 +286,7 @@ type Provider struct {
 	// Worker is the logical binary name grouping cloud and VPC placements of the same job
 	// (e.g. both "distill" and "distill-local" carry Worker="distill"). Equals Name for
 	// providers that have no -local sibling. Populated by seed; backfilled by migration 014.
-	Worker string `json:"worker,omitempty"`
+	Worker string `json:"worker"`
 }
 
 // Flow is one declarative pipeline per source lane.
@@ -745,6 +745,9 @@ func (d *pgxDatabase) UpsertProvider(ctx context.Context, p Provider) error {
 	}
 	if !isJSONObject(p.Env) {
 		return fmt.Errorf("env must be a JSON object")
+	}
+	if p.Worker == "" {
+		p.Worker = p.Name
 	}
 	const q = `
 		INSERT INTO providers
