@@ -6,8 +6,11 @@
 // Security is the whole point — this runs containers on a personal machine (the Mac):
 //   - Listener binds tailnet-only (RUNNER_ADDR); a wildcard bind (0.0.0.0 / :port) is refused.
 //   - Bearer auth fails CLOSED (constant-time, mirrors rara-addon/poke.go): an empty token rejects all.
-//   - The image is resolved ONLY from the allowlist (app -> digest-pinned image); a body never names
-//     an image. The runner trusts no secret from the body either — env in the body is per-run config.
+//   - The image is resolved ONLY from the allowlist (app -> registry path); a body never names an
+//     image. The runner trusts no secret from the body either — env in the body is per-run config.
+//   - --pull=always ensures the agent always runs the latest pushed image for the allowlisted path.
+//     Trust boundary: the registry (push requires credentials); a compromised dispatch could pick any
+//     tag of an allowlisted path, but never an arbitrary image. Acceptable for a private registry.
 //
 // The container launcher is a seam (ContainerRunner) so tests assert dispatch + the resolved image
 // without a real docker.
@@ -26,13 +29,23 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"time"
 )
 
-// digestRE matches a properly-formatted digest-only image reference: registry/image@sha256:<64 hex>.
-var digestRE = regexp.MustCompile(`^[^:@]+@sha256:[a-f0-9]{64}$`)
+// imagePath strips the tag (:tag) or digest (@sha256:...) from an image reference, returning the
+// bare registry path. Used to validate that an allowlist entry is a pure path with no pinned tag or
+// digest. A colon before the last slash is a registry host port (e.g. localhost:5000/img) — not a tag.
+func imagePath(ref string) string {
+	if i := strings.Index(ref, "@"); i >= 0 {
+		return ref[:i]
+	}
+	// Tag separator is the last ":" that appears inside the name component (after the last "/").
+	if i := strings.LastIndex(ref, ":"); i > strings.LastIndex(ref, "/") {
+		return ref[:i]
+	}
+	return ref
+}
 
 // ContainerRunner starts the worker container for a resolved (already-allowlisted) image with the
 // given per-run env. ctx carries the request deadline so a stalled docker binary doesn't hold the
@@ -118,8 +131,9 @@ func mergeEnv(base, override map[string]string) map[string]string {
 
 // newAgentServer builds the HTTP handler: GET /healthz (no auth) and POST /run (Bearer + allowlist).
 // token is the shared tailnet bearer (empty => everything is rejected, fail-closed). allowed maps an
-// app name to its digest-pinned image. baseEnv is host-side config (secrets, DATABASE_URL, etc.)
-// injected into every container; the body env is merged on top (body wins on conflict).
+// app name to its registry path (no tag or digest); the agent resolves path:latest at run time with
+// --pull=always. baseEnv is host-side config (secrets, DATABASE_URL, etc.) injected into every
+// container; the body env is merged on top (body wins on conflict).
 func newAgentServer(token string, allowed map[string]string, baseEnv map[string]string, runner ContainerRunner) http.Handler {
 	want := []byte(token)
 	mux := http.NewServeMux()
@@ -151,11 +165,13 @@ func newAgentServer(token string, allowed map[string]string, baseEnv map[string]
 			http.Error(w, "app is required", http.StatusBadRequest)
 			return
 		}
-		image, ok := allowed[req.App]
+		allowedPath, ok := allowed[req.App]
 		if !ok {
 			http.Error(w, "app not in allowlist", http.StatusForbidden)
 			return
 		}
+		// ponytail: :latest + --pull=always; add RUNNER_IMAGE_TAG env var if non-latest default needed.
+		image := allowedPath + ":latest"
 		// Env reaches `docker run -e KEY=VAL`; reject a malformed name at the boundary so a bad
 		// request is a clear 400, not an opaque docker failure after we've already answered 202.
 		if err := validateEnvKeys(req.Env); err != nil {
@@ -229,7 +245,7 @@ type dockerRunner struct {
 }
 
 func (d dockerRunner) Run(ctx context.Context, image string, env map[string]string) error {
-	args := []string{"run", "-d", "--rm"}
+	args := []string{"run", "--pull=always", "-d", "--rm"}
 	for k, v := range env {
 		args = append(args, "-e", k+"="+v) // exec passes argv directly — no shell, no injection
 	}
@@ -277,10 +293,10 @@ func validateListenAddr(addr string) error {
 	return fmt.Errorf("RUNNER_ADDR %q: must be a loopback or Tailscale address (100.64.0.0/10 or fd7a:115c:a1e0::/48)", addr)
 }
 
-// parseAllowlist parses RUNNER_ALLOWED_IMAGES — comma-separated "app=image" pairs — into the app->image
-// map. It is the trust boundary for which images may run, so it fails fast at startup: a malformed or
-// empty list, an image not pinned by digest (@sha256:), or a duplicate app is an error — never a
-// silently empty or ambiguous allowlist.
+// parseAllowlist parses RUNNER_ALLOWED_IMAGES — comma-separated "app=path" pairs — into the
+// app->registry-path map. It is the trust boundary for which images may run, so it fails fast at
+// startup: a malformed or empty list, a path with a tag or digest (use the bare path; the agent
+// appends :latest), or a duplicate app is an error — never a silently empty or ambiguous allowlist.
 func parseAllowlist(s string) (map[string]string, error) {
 	out := map[string]string{}
 	for _, pair := range strings.Split(s, ",") {
@@ -291,10 +307,10 @@ func parseAllowlist(s string) (map[string]string, error) {
 		app, image, ok := strings.Cut(pair, "=")
 		app, image = strings.TrimSpace(app), strings.TrimSpace(image)
 		if !ok || app == "" || image == "" {
-			return nil, fmt.Errorf("RUNNER_ALLOWED_IMAGES entry %q: want app=image", pair)
+			return nil, fmt.Errorf("RUNNER_ALLOWED_IMAGES entry %q: want app=registry-path", pair)
 		}
-		if !digestRE.MatchString(image) {
-			return nil, fmt.Errorf("RUNNER_ALLOWED_IMAGES %q: image must be digest-pinned (registry/image@sha256:<64hex>)", app)
+		if imagePath(image) != image {
+			return nil, fmt.Errorf("RUNNER_ALLOWED_IMAGES %q: value must be a bare registry path (no tag or digest); got %q", app, image)
 		}
 		if _, dup := out[app]; dup {
 			return nil, fmt.Errorf("RUNNER_ALLOWED_IMAGES: duplicate app %q", app)

@@ -36,19 +36,18 @@ func (f *fakeRunner) Run(_ context.Context, image string, env map[string]string)
 const (
 	testToken = "s3cret-tailnet-token"
 	testApp   = "rara-distill"
-	// testDigest is a fake but properly-formatted 64-hex SHA256 so parseAllowlist validation passes.
-	testDigest = "us-docker.pkg.dev/p/r/rara-distill@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-	testImage  = testDigest
+	testPath  = "us-docker.pkg.dev/p/r/rara-distill" // bare registry path; no tag or digest
+	testImage = testPath + ":latest"                  // resolved at run time by the agent
 )
 
 func newTestServer(t *testing.T, token string, runner ContainerRunner) http.Handler {
 	t.Helper()
-	return newAgentServer(token, map[string]string{testApp: testImage}, nil, runner)
+	return newAgentServer(token, map[string]string{testApp: testPath}, nil, runner)
 }
 
 func newTestServerWithBase(t *testing.T, base map[string]string, runner ContainerRunner) http.Handler {
 	t.Helper()
-	return newAgentServer(testToken, map[string]string{testApp: testImage}, base, runner)
+	return newAgentServer(testToken, map[string]string{testApp: testPath}, base, runner)
 }
 
 func post(t *testing.T, h http.Handler, bearer, body string) *httptest.ResponseRecorder {
@@ -113,7 +112,7 @@ func TestRunRejectsAppNotInAllowlist(t *testing.T) {
 	}
 }
 
-func TestRunValidAppDispatchesPinnedImage(t *testing.T) {
+func TestRunValidAppDispatchesAllowlistedImage(t *testing.T) {
 	f := &fakeRunner{}
 	rr := post(t, newTestServer(t, testToken, f), testToken,
 		`{"app":"rara-distill","env":{"DISTILL_RECIPE":"opus","FOO":"bar"}}`)
@@ -124,7 +123,7 @@ func TestRunValidAppDispatchesPinnedImage(t *testing.T) {
 		t.Fatalf("runner calls: got %d, want 1", f.calls)
 	}
 	if f.gotImage != testImage {
-		t.Fatalf("image: got %q, want pinned %q", f.gotImage, testImage)
+		t.Fatalf("image: got %q, want %q (path:latest)", f.gotImage, testImage)
 	}
 	if f.gotEnv["DISTILL_RECIPE"] != "opus" || f.gotEnv["FOO"] != "bar" {
 		t.Fatalf("env not forwarded: %v", f.gotEnv)
@@ -218,27 +217,41 @@ func TestValidateListenAddrRejectsWildcard(t *testing.T) {
 
 func TestParseAllowlist(t *testing.T) {
 	const (
-		imgA = "img-a@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-		imgB = "img-b@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-		imgC = "img-c@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+		pathA = "us-docker.pkg.dev/p/r/rara-distill"
+		pathB = "us-docker.pkg.dev/p/r/rara-sift"
 	)
-	got, err := parseAllowlist("rara-distill=" + imgA + ", rara-sift=" + imgB)
+	got, err := parseAllowlist("rara-distill=" + pathA + ", rara-sift=" + pathB)
 	if err != nil {
 		t.Fatalf("parseAllowlist: %v", err)
 	}
-	if got["rara-distill"] != imgA || got["rara-sift"] != imgB {
+	if got["rara-distill"] != pathA || got["rara-sift"] != pathB {
 		t.Fatalf("parsed wrong: %v", got)
 	}
 	for _, bad := range []string{
-		"",                         // empty allowlist
-		"no-equals-sign",           // not app=image
-		"app=",                     // empty image
-		"app=img:latest",           // not pinned by digest
-		"app=img@sha256:abc123",    // digest too short (not 64 hex)
-		"a=" + imgA + ",a=" + imgC, // duplicate app
+		"",                      // empty allowlist
+		"no-equals-sign",        // not app=path
+		"app=",                  // empty path
+		"app=img:latest",        // tagged — must be bare path
+		"app=img@sha256:abc123", // digest-pinned — must be bare path
+		"a=" + pathA + ",a=" + pathB, // duplicate app
 	} {
 		if _, err := parseAllowlist(bad); err == nil {
 			t.Errorf("parseAllowlist(%q): want error, got nil", bad)
+		}
+	}
+}
+
+func TestImagePath(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"us-docker.pkg.dev/p/r/img", "us-docker.pkg.dev/p/r/img"},
+		{"us-docker.pkg.dev/p/r/img:latest", "us-docker.pkg.dev/p/r/img"},
+		{"us-docker.pkg.dev/p/r/img@sha256:" + strings.Repeat("a", 64), "us-docker.pkg.dev/p/r/img"},
+		{"localhost:5000/img:tag", "localhost:5000/img"},
+		{"localhost:5000/img", "localhost:5000/img"},
+	}
+	for _, c := range cases {
+		if got := imagePath(c.in); got != c.want {
+			t.Errorf("imagePath(%q) = %q, want %q", c.in, got, c.want)
 		}
 	}
 }
