@@ -877,6 +877,17 @@ func nullStr(s string) *string {
 
 // main wires the bridge-total claim-worker: the SDK (addon.Run) owns the queue protocol; this
 // process only supplies the gate domain (siftHandler). One app serves BOTH gates and BOTH provider
+// buildSiftPoolConfig parses the DSN and forces simple protocol so pgx never caches
+// prepared statements — required when DATABASE_URL points to a PgBouncer pooler endpoint.
+func buildSiftPoolConfig(dbURL string) (*pgxpool.Config, error) {
+	cfg, err := pgxpool.ParseConfig(dbURL)
+	if err != nil {
+		return nil, err
+	}
+	cfg.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
+	return cfg, nil
+}
+
 // tiers by config: SIFT_GATE picks the capability (gate_barato | gate_rico), SIFT_PROVIDER picks
 // the concrete provider it serves (gate-barato | gate-barato-local | gate-rico | gate-rico-local)
 // so it claims only the steps the reconciler routed to it. Default is on_demand (drain once and
@@ -904,7 +915,11 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	pool, err := pgxpool.New(ctx, dbURL)
+	poolCfg, err := buildSiftPoolConfig(dbURL)
+	if err != nil {
+		log.Fatalf("Failed to parse DATABASE_URL") // don't echo err — may contain DSN credentials
+	}
+	pool, err := pgxpool.NewWithConfig(ctx, poolCfg)
 	if err != nil {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
