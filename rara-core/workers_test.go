@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"testing"
 )
@@ -129,6 +130,29 @@ func TestHTTPListWorkers200(t *testing.T) {
 	}
 	if len(workers[0].Placements) != 2 {
 		t.Errorf("want 2 placements, got %d", len(workers[0].Placements))
+	}
+}
+
+// TestUpsertProviderRejectsInconsistentWorkerCapability: adding a placement with a different
+// capability than existing siblings under the same worker is a bad-input error.
+func TestUpsertProviderRejectsInconsistentWorkerCapability(t *testing.T) {
+	ctx := context.Background()
+	core, db, _ := newTestCore(t)
+	_ = db.UpsertCapability(ctx, Capability{Name: capDestilar})
+	_ = db.UpsertCapability(ctx, Capability{Name: capTranscrever})
+	mustProvider(t, db, Provider{Name: "distill", Capability: capDestilar, Worker: "distill",
+		Runtime: runtimeCloudRun, Activation: activationOnDemand, Enabled: true})
+
+	err := core.UpsertProvider(ctx, Provider{
+		Name: "distill-local", Capability: capTranscrever, Worker: "distill",
+		Runtime: runtimeLocal, Activation: activationResident, Enabled: true,
+	})
+	if err == nil {
+		t.Fatal("expected error for inconsistent worker capability, got nil")
+	}
+	var bad badInputError
+	if !errors.As(err, &bad) {
+		t.Errorf("want badInputError, got %T: %v", err, err)
 	}
 }
 

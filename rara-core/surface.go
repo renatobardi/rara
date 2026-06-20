@@ -185,7 +185,7 @@ type Worker struct {
 func (c *Core) Workers(ctx context.Context) ([]Worker, error) {
 	providers, err := c.db.ListProviders(ctx)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("list providers: %w", err)
 	}
 	index := map[string]*Worker{}
 	order := []string{}
@@ -397,6 +397,20 @@ func (c *Core) UpsertProvider(ctx context.Context, p Provider) error {
 	}
 	if !isValidActivation(p.Activation) {
 		return badInput("invalid activation %q (want resident|on_demand)", p.Activation)
+	}
+	// Reject placements that would give a worker inconsistent capabilities. Two providers sharing
+	// the same worker field must always agree on capability — enforced here since the DB has no
+	// (worker, capability) unique constraint.
+	if p.Worker != "" {
+		all, err := c.db.ListProviders(ctx)
+		if err != nil {
+			return fmt.Errorf("list providers: %w", err)
+		}
+		for _, sib := range all {
+			if sib.Worker == p.Worker && sib.Name != p.Name && sib.Capability != p.Capability {
+				return badInput("worker %q already has capability %q; placement %q with capability %q is inconsistent", p.Worker, sib.Capability, p.Name, p.Capability)
+			}
+		}
 	}
 	// heartbeat_at is RUNTIME liveness (owned by TouchProviderHeartbeat), not config. A
 	// full-record config upsert would clobber it — so PRESERVE the live value across an edit
