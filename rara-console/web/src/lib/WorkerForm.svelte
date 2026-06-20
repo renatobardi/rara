@@ -10,6 +10,7 @@
 
 	type Provider = {
 		name: string;
+		worker?: string;
 		capability: string;
 		runtime: string;
 		activation: string;
@@ -25,17 +26,32 @@
 	type Props = {
 		initial?: Provider | null;
 		capabilities: string[];
+		/** Pre-fill worker and make it read-only (add-placement mode). */
+		lockedWorker?: string;
+		/** Pre-fill capability and make it read-only (add-placement mode). */
+		lockedCapability?: string;
 		onSave: (p: Provider) => Promise<void>;
 		onCancel: () => void;
 	};
 
-	let { initial = null, capabilities, onSave, onCancel }: Props = $props();
+	let {
+		initial = null,
+		capabilities,
+		lockedWorker,
+		lockedCapability,
+		onSave,
+		onCancel
+	}: Props = $props();
 
 	const isEdit = $derived(initial !== null);
+	// worker is read-only when editing (can't regroup) or when adding placement to an existing worker
+	const workerReadonly = $derived(isEdit || !!lockedWorker);
+	const capabilityReadonly = $derived(!!lockedCapability);
 
 	// untrack: form mounts fresh for each add/edit open — capturing initial value once is correct
+	let worker = $state(untrack(() => lockedWorker ?? initial?.worker ?? ''));
 	let name = $state(untrack(() => initial?.name ?? ''));
-	let capability = $state(untrack(() => initial?.capability ?? ''));
+	let capability = $state(untrack(() => lockedCapability ?? initial?.capability ?? ''));
 	let runtime = $state(untrack(() => initial?.runtime ?? 'local'));
 	let activation = $state(untrack(() => initial?.activation ?? 'on_demand'));
 	let cost = $state(untrack(() => String(initial?.cost ?? '0')));
@@ -49,10 +65,28 @@
 	let cAccepts = $state(untrack(() => initial?.constraints?.accepts?.join(', ') ?? ''));
 	let cSensitivity = $state(untrack(() => initial?.constraints?.sensitivity ?? ''));
 
+	// track whether user has manually edited the name field (stops auto-suggestion)
+	let nameEdited = $state(untrack(() => isEdit || !!initial?.name));
+
+	// auto-suggest name = <worker>-<runtime> while user hasn't touched the name field
+	$effect(() => {
+		if (!isEdit && !nameEdited && worker.trim() && runtime) {
+			name = `${worker.trim()}-${runtime}`;
+		}
+	});
+
 	// validation errors
 	let errors = $state<Record<string, string>>({});
 	let submitting = $state(false);
 	let serverError = $state('');
+
+	const formTitle = $derived(
+		isEdit
+			? t.workers.editWorker
+			: lockedWorker
+				? t.workers.formTitleAddPlacement
+				: t.workers.addWorker
+	);
 
 	const VALID_RUNTIMES = ['local', 'cloudrun', 'vpc'];
 	const VALID_ACTIVATIONS = ['resident', 'on_demand'];
@@ -62,6 +96,7 @@
 
 	function validate(): boolean {
 		const e: Record<string, string> = {};
+		if (!worker.trim()) e.worker = t.workers.formWorkerRequired;
 		if (!name.trim()) e.name = t.workers.formNameRequired;
 		if (!capability.trim()) e.capability = t.workers.formCapabilityRequired;
 		if (!VALID_RUNTIMES.includes(runtime)) e.runtime = t.workers.formRuntimeInvalid;
@@ -119,6 +154,7 @@
 		const payload: Provider = {
 			// preserve all original fields when editing so upsert doesn't wipe them
 			...(initial ?? {}),
+			worker: worker.trim(),
 			name: name.trim(),
 			capability: capability.trim(),
 			runtime,
@@ -157,17 +193,38 @@
 
 	const fieldClass =
 		'w-full rounded-token border border-border bg-bg px-3 py-1.5 text-[13px] text-text placeholder:text-muted focus:border-text focus:outline-none';
+	const readonlyFieldClass =
+		'w-full rounded-token border border-border bg-bg px-3 py-1.5 text-[13px] text-text cursor-not-allowed opacity-60';
 	const labelClass = 'block text-[11px] font-semibold uppercase tracking-wide text-muted mb-1';
 	const errorClass = 'mt-0.5 text-[11px] text-red-500';
 </script>
 
 <div class="rounded-xl border border-border bg-surface-2 p-5">
 	<h3 class="mb-4 text-[14px] font-semibold">
-		{isEdit ? t.workers.editWorker : t.workers.addWorker}
+		{formTitle}
 	</h3>
 
 	<form onsubmit={(e) => { e.preventDefault(); handleSubmit(); }} novalidate>
 		<div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+			<!-- Worker -->
+			<div>
+				<label class={labelClass} for="wf-worker">
+					{workerReadonly ? t.workers.formWorkerReadonly : t.workers.formWorker}
+				</label>
+				{#if workerReadonly}
+					<input id="wf-worker" class={readonlyFieldClass} value={worker} readonly />
+				{:else}
+					<input
+						id="wf-worker"
+						class={fieldClass}
+						placeholder={t.workers.formWorkerPlaceholder}
+						bind:value={worker}
+						autocomplete="off"
+					/>
+					{#if errors.worker}<p class={errorClass}>{errors.worker}</p>{/if}
+				{/if}
+			</div>
+
 			<!-- Name -->
 			<div>
 				<label class={labelClass} for="wf-name">
@@ -176,7 +233,7 @@
 				{#if isEdit}
 					<input
 						id="wf-name"
-						class="{fieldClass} cursor-not-allowed opacity-60"
+						class={readonlyFieldClass}
 						value={name}
 						readonly
 					/>
@@ -187,6 +244,7 @@
 						placeholder={t.workers.formNamePlaceholder}
 						bind:value={name}
 						autocomplete="off"
+						oninput={() => { nameEdited = true; }}
 					/>
 					{#if errors.name}<p class={errorClass}>{errors.name}</p>{/if}
 				{/if}
@@ -195,20 +253,24 @@
 			<!-- Capability -->
 			<div>
 				<label class={labelClass} for="wf-cap">{t.workers.formCapability}</label>
-				<input
-					id="wf-cap"
-					class={fieldClass}
-					list="wf-cap-list"
-					placeholder={t.workers.formCapabilityPlaceholder}
-					bind:value={capability}
-					autocomplete="off"
-				/>
-				<datalist id="wf-cap-list">
-					{#each capabilities as cap}
-						<option value={cap}></option>
-					{/each}
-				</datalist>
-				{#if errors.capability}<p class={errorClass}>{errors.capability}</p>{/if}
+				{#if capabilityReadonly}
+					<input id="wf-cap" class={readonlyFieldClass} value={capability} readonly />
+				{:else}
+					<input
+						id="wf-cap"
+						class={fieldClass}
+						list="wf-cap-list"
+						placeholder={t.workers.formCapabilityPlaceholder}
+						bind:value={capability}
+						autocomplete="off"
+					/>
+					<datalist id="wf-cap-list">
+						{#each capabilities as cap}
+							<option value={cap}></option>
+						{/each}
+					</datalist>
+					{#if errors.capability}<p class={errorClass}>{errors.capability}</p>{/if}
+				{/if}
 			</div>
 
 			<!-- Runtime -->
