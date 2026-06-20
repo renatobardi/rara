@@ -960,10 +960,10 @@
 													: t.workers.previewHealthStale}
 										</span>
 									</td>
-									<td class="py-1.5 pr-3 tabular-nums">{(c.cost_credit ?? 0).toFixed(2)}</td>
-									<td class="py-1.5 pr-3 tabular-nums">{(c.quality ?? 0).toFixed(2)}</td>
+									<td class="py-1.5 pr-3 tabular-nums">{Number(c.cost_credit ?? 0).toFixed(2)}</td>
+									<td class="py-1.5 pr-3 tabular-nums">{Number(c.quality ?? 0).toFixed(2)}</td>
 									<td class="py-1.5 pr-3 tabular-nums font-semibold"
-										>{c.eligible ? (c.score ?? 0).toFixed(2) : '—'}</td
+										>{c.eligible ? Number(c.score ?? 0).toFixed(2) : '—'}</td
 									>
 									<td class="py-1.5 pr-3 tabular-nums"
 										>{c.fallback_pos > 0 ? c.fallback_pos : '—'}</td
