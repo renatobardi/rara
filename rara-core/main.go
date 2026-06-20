@@ -375,6 +375,7 @@ type ItemStep struct {
 	HeartbeatAt      *time.Time `json:"heartbeat_at,omitempty"`
 	OutputRef        string     `json:"output_ref,omitempty"` // "" => NULL; logical link to a worker domain row
 	Error            string     `json:"error,omitempty"`
+	UpdatedAt        *time.Time `json:"updated_at,omitempty"`
 }
 
 // GateDecision is one append-only curation-gate audit row.
@@ -660,6 +661,12 @@ type Database interface {
 	// to decide which providers need waking — one RunRequest per unique provider per pass.
 	// Ordered by id (FIFO); does NOT include running/done/failed steps.
 	ListAssignedSteps(ctx context.Context) ([]ItemStep, error)
+
+	// WorkerMetrics returns a per-provider rollup of item_steps for the Workers screen
+	// metric cards (CONSOLE-WORKERS.pt-BR.md §8). Only steps with a non-NULL
+	// assigned_provider are included. When since is non-nil, only steps updated at or
+	// after that time are counted. Results are ordered by provider name.
+	WorkerMetrics(ctx context.Context, since *time.Time) ([]WorkerMetric, error)
 }
 
 // ---------------------------------------------------------------------------

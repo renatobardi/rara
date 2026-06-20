@@ -767,6 +767,37 @@ func (m *MockDatabase) UsageCounts(ctx context.Context) (UsageReport, error) {
 	return r, nil
 }
 
+// WorkerMetrics mirrors the SQL rollup: groups item_steps by (assigned_provider, status),
+// excludes unassigned rows, applies the since filter, and collapses to one WorkerMetric
+// per provider sorted by name.
+// Steps with nil UpdatedAt are excluded when since is set (treated as "before any window").
+func (m *MockDatabase) WorkerMetrics(ctx context.Context, since *time.Time) ([]WorkerMetric, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	byProvider := map[string]*WorkerMetric{}
+	var order []string
+
+	for _, s := range m.itemSteps {
+		if s.AssignedProvider == "" {
+			continue
+		}
+		if since != nil && (s.UpdatedAt == nil || s.UpdatedAt.Before(*since)) {
+			continue
+		}
+		workerMetricAcc(byProvider, &order, s.AssignedProvider, s.Status, 1, s.UpdatedAt, float64(s.Attempt))
+	}
+
+	sort.Strings(order)
+	out := make([]WorkerMetric, 0, len(order))
+	for _, p := range order {
+		wm := byProvider[p]
+		workerMetricFinalize(wm)
+		out = append(out, *wm)
+	}
+	return out, nil
+}
+
 // compile-time guarantee the mock satisfies the seam the pgx impl does.
 var _ Database = (*MockDatabase)(nil)
 
