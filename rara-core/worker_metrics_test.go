@@ -299,7 +299,10 @@ func TestWorkerMetricsSinceNilUpdatedAt(t *testing.T) {
 // HTTP surface tests
 // ---------------------------------------------------------------------------
 
-func TestHTTPWorkerMetrics200(t *testing.T) {
+// seedWorkerMetricsHTTP creates the minimal surface mux + one capability + one provider +
+// one item used by the HTTP handler tests. Returns (mux, db, itemID).
+func seedWorkerMetricsHTTP(t *testing.T) (http.Handler, *MockDatabase, int) {
+	t.Helper()
 	ctx := context.Background()
 	core, db, _ := newTestCore(t)
 	if err := db.UpsertCapability(ctx, Capability{Name: capDestilar}); err != nil {
@@ -311,11 +314,15 @@ func TestHTTPWorkerMetrics200(t *testing.T) {
 	itemID, _ := db.UpsertItem(ctx, Item{
 		Lane: laneYouTube, SourceRef: "v1", FlowID: fid, FlowVersion: 1, Status: itemDiscovered,
 	})
+	return NewSurfaceMux(core, testToken), db, itemID
+}
+
+func TestHTTPWorkerMetrics200(t *testing.T) {
+	h, db, itemID := seedWorkerMetricsHTTP(t)
 	now := time.Now()
 	mustStep(t, db, ItemStep{ItemID: itemID, Seq: 1, Capability: capDestilar,
 		Status: stepDone, AssignedProvider: "distill-a", Attempt: 1, UpdatedAt: &now})
 
-	h := NewSurfaceMux(core, testToken)
 	rec := do(t, h, http.MethodGet, "/v1/workers/metrics", "")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("want 200, got %d: %s", rec.Code, rec.Body.String())
@@ -350,23 +357,12 @@ func TestHTTPWorkerMetricsInvalidDays(t *testing.T) {
 
 // TestHTTPWorkerMetricsDaysFilter: ?days=7 restricts to recent steps only.
 func TestHTTPWorkerMetricsDaysFilter(t *testing.T) {
-	ctx := context.Background()
-	core, db, _ := newTestCore(t)
-	if err := db.UpsertCapability(ctx, Capability{Name: capDestilar}); err != nil {
-		t.Fatal(err)
-	}
-	mustProvider(t, db, Provider{Name: "distill-a", Capability: capDestilar,
-		Runtime: runtimeCloudRun, Activation: activationOnDemand, Enabled: true})
-	fid := seedFlow(t, db)
-	itemID, _ := db.UpsertItem(ctx, Item{
-		Lane: laneYouTube, SourceRef: "v1", FlowID: fid, FlowVersion: 1, Status: itemDiscovered,
-	})
+	h, db, itemID := seedWorkerMetricsHTTP(t)
 	// old step (30 days ago — outside ?days=7 window)
 	old := time.Now().Add(-30 * 24 * time.Hour)
 	mustStep(t, db, ItemStep{ItemID: itemID, Seq: 1, Capability: capDestilar,
 		Status: stepDone, AssignedProvider: "distill-a", Attempt: 1, UpdatedAt: &old})
 
-	h := NewSurfaceMux(core, testToken)
 	rec := do(t, h, http.MethodGet, "/v1/workers/metrics?days=7", "")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("want 200 with days=7, got %d: %s", rec.Code, rec.Body.String())
