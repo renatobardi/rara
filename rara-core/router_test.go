@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"sort"
 	"testing"
 	"time"
 )
@@ -409,5 +410,181 @@ func mustProvider(t *testing.T, db *MockDatabase, p Provider) {
 	t.Helper()
 	if err := db.UpsertProvider(context.Background(), p); err != nil {
 		t.Fatalf("upsert provider %s: %v", p.Name, err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// explainProviders tests — RED first, then GREEN in router.go
+// ---------------------------------------------------------------------------
+
+// resident builds a resident provider that requires a local runtime.
+func resident(name string, cost, quality float64, hb *time.Time) Provider {
+	return Provider{Name: name, Capability: capDestilar, Runtime: runtimeLocal,
+		Activation: activationResident, Cost: cost, Quality: quality,
+		HeartbeatAt: hb, Enabled: true}
+}
+
+// findCandidate returns the Candidate with the given name, or fails the test.
+func findCandidate(t *testing.T, cands []Candidate, name string) Candidate {
+	t.Helper()
+	for _, c := range cands {
+		if c.Name == name {
+			return c
+		}
+	}
+	t.Fatalf("candidate %q not found in %v", name, candidateNames(cands))
+	return Candidate{}
+}
+
+func candidateNames(cands []Candidate) []string {
+	out := make([]string, len(cands))
+	for i, c := range cands {
+		out[i] = c.Name
+	}
+	return out
+}
+
+// TestExplainFallbackPinnedWins: a resident pinned at fallback position 1 wins over a higher-
+// scoring on_demand provider at position 2. Both are eligible and healthy.
+func TestExplainFallbackPinnedWins(t *testing.T) {
+	freshHB := ptime(routerClock.Add(-1 * time.Minute))
+	mac := resident("distill-mac", 0, 0.70, freshHB)
+	cloud := onDemand("distill-cloud", 0, 0.90) // higher quality but non-pinned
+	policy := RoutingPolicy{CostWeight: 0.5, QualityWeight: 0.5,
+		Fallback: json.RawMessage(`["distill-mac","distill-cloud"]`)}
+
+	cands := explainProviders([]Provider{mac, cloud}, policy, routerItem, routerClock, routerHealthTTL, nil)
+	if len(cands) != 2 {
+		t.Fatalf("want 2 candidates, got %d", len(cands))
+	}
+
+	m := findCandidate(t, cands, "distill-mac")
+	if !m.Eligible || !m.Healthy || !m.Selected || m.FallbackPos != 1 {
+		t.Errorf("distill-mac: want eligible+healthy+selected+fallback_pos=1, got %+v", m)
+	}
+	c := findCandidate(t, cands, "distill-cloud")
+	if !c.Eligible || !c.Healthy || c.Selected || c.FallbackPos != 2 {
+		t.Errorf("distill-cloud: want eligible+healthy+not-selected+fallback_pos=2, got %+v", c)
+	}
+}
+
+// TestExplainOnDemandHealthExempt: an on_demand provider is healthy with informational reason
+// "on_demand: health exempt", even when it has never heartbeated.
+func TestExplainOnDemandHealthExempt(t *testing.T) {
+	cloud := onDemand("distill-cloud", 0, 0.90)
+	cands := explainProviders([]Provider{cloud}, RoutingPolicy{QualityWeight: 1}, routerItem, routerClock, routerHealthTTL, nil)
+	c := findCandidate(t, cands, "distill-cloud")
+	if !c.Healthy {
+		t.Error("on_demand provider should be healthy (health-exempt)")
+	}
+	if c.Reason == "" {
+		t.Error("on_demand provider should carry informational reason (health exempt note)")
+	}
+}
+
+// TestExplainConstraintIneligible: a provider whose hard constraint fails is eligible=false
+// with a non-empty reason describing the failure.
+func TestExplainConstraintIneligible(t *testing.T) {
+	// cloudrun provider declares residential constraint — only local satisfies it.
+	dc := Provider{Name: "asr-dc", Capability: capTranscrever, Runtime: runtimeCloudRun,
+		Activation: activationOnDemand, Constraints: residential, Enabled: true}
+	cands := explainProviders([]Provider{dc}, RoutingPolicy{}, routerItem, routerClock, routerHealthTTL, nil)
+	c := findCandidate(t, cands, "asr-dc")
+	if c.Eligible {
+		t.Error("asr-dc should be ineligible (residential constraint not satisfied by cloudrun)")
+	}
+	if c.Reason == "" {
+		t.Error("ineligible candidate must carry a non-empty reason")
+	}
+}
+
+// TestExplainResidentStaleHeartbeat: a resident with a heartbeat older than healthTTL is
+// eligible but healthy=false with reason "heartbeat stale".
+func TestExplainResidentStaleHeartbeat(t *testing.T) {
+	staleHB := ptime(routerClock.Add(-30 * time.Minute))
+	stale := resident("stale-worker", 0, 0.8, staleHB)
+	cands := explainProviders([]Provider{stale}, RoutingPolicy{QualityWeight: 1}, routerItem, routerClock, routerHealthTTL, nil)
+	c := findCandidate(t, cands, "stale-worker")
+	if !c.Eligible {
+		t.Error("provider with satisfied constraints should be eligible")
+	}
+	if c.Healthy {
+		t.Error("resident with stale heartbeat should be healthy=false")
+	}
+	if c.Reason == "" {
+		t.Error("unhealthy candidate must carry a non-empty reason")
+	}
+}
+
+// TestExplainExcludeReranks: excluding the first winner makes the next candidate selected.
+// The excluded candidate appears with eligible=false, reason="excluded".
+func TestExplainExcludeReranks(t *testing.T) {
+	a := onDemand("a", 1, 0.9) // would win on score
+	b := onDemand("b", 2, 0.8)
+	policy := RoutingPolicy{QualityWeight: 1}
+
+	// Without exclude: a wins.
+	cands := explainProviders([]Provider{a, b}, policy, routerItem, routerClock, routerHealthTTL, nil)
+	if ca := findCandidate(t, cands, "a"); !ca.Selected {
+		t.Error("without exclude: a should be selected")
+	}
+
+	// With exclude=a: b becomes winner; a is ineligible with reason="excluded".
+	cands = explainProviders([]Provider{a, b}, policy, routerItem, routerClock, routerHealthTTL, map[string]bool{"a": true})
+	ca := findCandidate(t, cands, "a")
+	if ca.Eligible || ca.Reason != "excluded" {
+		t.Errorf("excluded candidate: want eligible=false reason=excluded, got %+v", ca)
+	}
+	if cb := findCandidate(t, cands, "b"); !cb.Selected {
+		t.Error("after excluding a, b should be selected")
+	}
+}
+
+// TestExplainConsistentWithRankProviders: the Selected winner from explainProviders must
+// match the first result from rankProviders, and the eligible+healthy set must be the same
+// and in the same order (sorted by candidateLess, same key both use).
+func TestExplainConsistentWithRankProviders(t *testing.T) {
+	freshHB := ptime(routerClock.Add(-1 * time.Minute))
+	mac := resident("distill-mac", 0, 0.70, freshHB)
+	vpc := onDemand("distill-vpc", 1, 0.40)
+	cloud := onDemand("distill-cloud", 2, 0.90)
+	policy := RoutingPolicy{CostWeight: 0.5, QualityWeight: 0.5,
+		Fallback: json.RawMessage(`["distill-mac","distill-vpc"]`)}
+	providers := []Provider{mac, vpc, cloud}
+
+	ranked := rankProviders(providers, policy, routerItem, routerClock, routerHealthTTL, nil)
+	cands := explainProviders(providers, policy, routerItem, routerClock, routerHealthTTL, nil)
+
+	// Winner must match; explainProviders must not select a winner when ranked is empty.
+	winner := ""
+	for _, c := range cands {
+		if c.Selected {
+			winner = c.Name
+			break
+		}
+	}
+	if len(ranked) == 0 && winner != "" {
+		t.Errorf("rankProviders returned nothing but explainProviders selected %q", winner)
+	}
+	if len(ranked) > 0 && winner != ranked[0].Name {
+		t.Errorf("explainProviders winner=%q, rankProviders[0]=%q — must match", winner, ranked[0].Name)
+	}
+
+	// Eligible+healthy candidates sorted by candidateLess must be identical to rankProviders output.
+	eligCands := make([]Candidate, 0, len(cands))
+	for _, c := range cands {
+		if c.Eligible && c.Healthy {
+			eligCands = append(eligCands, c)
+		}
+	}
+	sort.SliceStable(eligCands, func(i, j int) bool { return candidateLess(eligCands[i], eligCands[j]) })
+
+	if len(ranked) != len(eligCands) {
+		t.Fatalf("ranked len=%d, explain eligible len=%d — must match", len(ranked), len(eligCands))
+	}
+	for i := range ranked {
+		if ranked[i].Name != eligCands[i].Name {
+			t.Errorf("ranked[%d]=%q but sorted eligible[%d]=%q — order must match", i, ranked[i].Name, i, eligCands[i].Name)
+		}
 	}
 }
