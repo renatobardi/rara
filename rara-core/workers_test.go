@@ -8,17 +8,20 @@ import (
 	"testing"
 )
 
+func mustCapability(t *testing.T, db *MockDatabase, name string) {
+	t.Helper()
+	if err := db.UpsertCapability(context.Background(), Capability{Name: name}); err != nil {
+		t.Fatalf("upsert capability %q: %v", name, err)
+	}
+}
+
 // TestCoreWorkersGroupsByWorkerField: two providers sharing worker="distill" → one Worker with
 // two placements; one provider with worker="asr-youtube" → one Worker with one placement.
 func TestCoreWorkersGroupsByWorkerField(t *testing.T) {
 	ctx := context.Background()
 	core, db, _ := newTestCore(t)
-	if err := db.UpsertCapability(ctx, Capability{Name: capDestilar}); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.UpsertCapability(ctx, Capability{Name: capTranscrever}); err != nil {
-		t.Fatal(err)
-	}
+	mustCapability(t, db, capDestilar)
+	mustCapability(t, db, capTranscrever)
 	mustProvider(t, db, Provider{Name: "distill", Capability: capDestilar, Worker: "distill",
 		Runtime: runtimeCloudRun, Activation: activationOnDemand, Enabled: true})
 	mustProvider(t, db, Provider{Name: "distill-local", Capability: capDestilar, Worker: "distill",
@@ -60,9 +63,7 @@ func TestCoreWorkersGroupsByWorkerField(t *testing.T) {
 func TestCoreWorkersEmptyWorkerFallback(t *testing.T) {
 	ctx := context.Background()
 	core, db, _ := newTestCore(t)
-	if err := db.UpsertCapability(ctx, Capability{Name: capDestilar}); err != nil {
-		t.Fatal(err)
-	}
+	mustCapability(t, db, capDestilar)
 	// Worker field intentionally empty
 	mustProvider(t, db, Provider{Name: "distill", Capability: capDestilar,
 		Runtime: runtimeCloudRun, Activation: activationOnDemand, Enabled: true})
@@ -86,9 +87,7 @@ func TestCoreWorkersEmptyWorkerFallback(t *testing.T) {
 func TestCoreWorkersOrdering(t *testing.T) {
 	ctx := context.Background()
 	core, db, _ := newTestCore(t)
-	if err := db.UpsertCapability(ctx, Capability{Name: capDestilar}); err != nil {
-		t.Fatal(err)
-	}
+	mustCapability(t, db, capDestilar)
 	// Insert in reverse order to verify sort
 	mustProvider(t, db, Provider{Name: "z-provider", Capability: capDestilar, Worker: "z-worker",
 		Runtime: runtimeCloudRun, Activation: activationOnDemand, Enabled: true})
@@ -110,11 +109,8 @@ func TestCoreWorkersOrdering(t *testing.T) {
 
 // TestHTTPListWorkers200: GET /v1/workers returns 200 with correct shape.
 func TestHTTPListWorkers200(t *testing.T) {
-	ctx := context.Background()
 	core, db, _ := newTestCore(t)
-	if err := db.UpsertCapability(ctx, Capability{Name: capDestilar}); err != nil {
-		t.Fatal(err)
-	}
+	mustCapability(t, db, capDestilar)
 	mustProvider(t, db, Provider{Name: "distill", Capability: capDestilar, Worker: "distill",
 		Runtime: runtimeCloudRun, Activation: activationOnDemand, Enabled: true})
 	mustProvider(t, db, Provider{Name: "distill-local", Capability: capDestilar, Worker: "distill",
@@ -148,12 +144,8 @@ func TestHTTPListWorkers200(t *testing.T) {
 func TestUpsertProviderRejectsInconsistentWorkerCapability(t *testing.T) {
 	ctx := context.Background()
 	core, db, _ := newTestCore(t)
-	if err := db.UpsertCapability(ctx, Capability{Name: capDestilar}); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.UpsertCapability(ctx, Capability{Name: capTranscrever}); err != nil {
-		t.Fatal(err)
-	}
+	mustCapability(t, db, capDestilar)
+	mustCapability(t, db, capTranscrever)
 	mustProvider(t, db, Provider{Name: "distill", Capability: capDestilar, Worker: "distill",
 		Runtime: runtimeCloudRun, Activation: activationOnDemand, Enabled: true})
 
@@ -172,11 +164,8 @@ func TestUpsertProviderRejectsInconsistentWorkerCapability(t *testing.T) {
 
 // TestHTTPListWorkersDoesNotBreakProviders: GET /v1/providers still works after adding /v1/workers.
 func TestHTTPListWorkersDoesNotBreakProviders(t *testing.T) {
-	ctx := context.Background()
 	core, db, _ := newTestCore(t)
-	if err := db.UpsertCapability(ctx, Capability{Name: capDestilar}); err != nil {
-		t.Fatal(err)
-	}
+	mustCapability(t, db, capDestilar)
 	mustProvider(t, db, Provider{Name: "distill", Capability: capDestilar, Worker: "distill",
 		Runtime: runtimeCloudRun, Activation: activationOnDemand, Enabled: true})
 
