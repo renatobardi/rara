@@ -93,6 +93,9 @@ func (d *pgxDispatchDB) ListDueCollectors(ctx context.Context) ([]DispatchProvid
 		  AND enabled = true
 		  AND (last_collect_at IS NULL
 		       OR now() - last_collect_at > collect_cadence_seconds * interval '1 second')
+		  AND (last_attempt_at IS NULL
+		       OR retry_interval_seconds IS NULL
+		       OR now() - last_attempt_at > retry_interval_seconds * interval '1 second')
 		ORDER BY name`
 	rows, err := d.pool.Query(ctx, q)
 	if err != nil {
@@ -118,11 +121,11 @@ func (d *pgxDispatchDB) ListDueCollectors(ctx context.Context) ([]DispatchProvid
 	return out, nil
 }
 
-func (d *pgxDispatchDB) TouchCollectorDispatched(ctx context.Context, name string) error {
-	const q = `UPDATE providers SET last_collect_at = now() WHERE name = $1`
+func (d *pgxDispatchDB) TouchCollectorAttempted(ctx context.Context, name string) error {
+	const q = `UPDATE providers SET last_attempt_at = now() WHERE name = $1`
 	_, err := d.pool.Exec(ctx, q, name)
 	if err != nil {
-		return fmt.Errorf("touch collector %q: %w", name, err)
+		return fmt.Errorf("touch attempt %q: %w", name, err)
 	}
 	return nil
 }

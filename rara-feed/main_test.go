@@ -340,6 +340,7 @@ type MockDatabase struct {
 	saveCount int
 	saveErr   error
 	srcErr    error
+	stamped   []string
 }
 
 func newMockDatabase() *MockDatabase {
@@ -364,6 +365,11 @@ func (m *MockDatabase) SaveItem(ctx context.Context, it NewsItem) error {
 	}
 	m.items[it.URL] = it // upsert: replaces, mirroring ON CONFLICT (url) DO UPDATE
 	m.saveCount++
+	return nil
+}
+
+func (m *MockDatabase) StampProviderCollected(ctx context.Context, name string) error {
+	m.stamped = append(m.stamped, name)
 	return nil
 }
 
@@ -802,5 +808,17 @@ func TestUnlockerSourceCount(t *testing.T) {
 	}
 	if got := unlockerSourceCount(nil); got != 0 {
 		t.Errorf("unlockerSourceCount(nil) = %d, want 0", got)
+	}
+}
+
+// StampProviderCollected must be called with "feed" after a successful batch run.
+func TestRunBatchStampsProviderOnSuccess(t *testing.T) {
+	src := rssSource()
+	h := NewFeedHarness(t).WithSource(src).WithFetch(src.Endpoint, rssFixture)
+	if err := h.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if len(h.db.stamped) != 1 || h.db.stamped[0] != "feed" {
+		t.Errorf("stamped = %v, want [feed]", h.db.stamped)
 	}
 }

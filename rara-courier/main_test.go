@@ -107,8 +107,9 @@ func TestDecodeB64URL(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 type MockDatabase struct {
-	emails map[string]Email // keyed by message_id (UNIQUE)
-	err    error
+	emails  map[string]Email // keyed by message_id (UNIQUE)
+	err     error
+	stamped []string // provider names passed to StampProviderCollected
 }
 
 func newMockDatabase() *MockDatabase { return &MockDatabase{emails: map[string]Email{}} }
@@ -118,6 +119,11 @@ func (m *MockDatabase) UpsertEmail(_ context.Context, e Email) error {
 		return m.err
 	}
 	m.emails[e.MessageID] = e // ON CONFLICT (message_id) DO UPDATE
+	return nil
+}
+
+func (m *MockDatabase) StampProviderCollected(_ context.Context, name string) error {
+	m.stamped = append(m.stamped, name)
 	return nil
 }
 
@@ -210,5 +216,20 @@ func TestRunSurfacesListError(t *testing.T) {
 	api := &fakeGmail{listErr: errors.New("api down")}
 	if _, err := run(context.Background(), db, api, "", 100); err == nil {
 		t.Error("a list error should abort the run")
+	}
+}
+
+func TestRunStampsProviderOnSuccess(t *testing.T) {
+	ctx := context.Background()
+	db := newMockDatabase()
+	api := &fakeGmail{
+		ids:      []string{"a"},
+		messages: map[string]Email{"a": {MessageID: "a", Body: "body"}},
+	}
+	if _, err := run(ctx, db, api, "", 100); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if len(db.stamped) != 1 || db.stamped[0] != "courier" {
+		t.Errorf("stamped = %v, want [courier]", db.stamped)
 	}
 }

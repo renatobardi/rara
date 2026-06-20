@@ -54,6 +54,7 @@ type Database interface {
 	ActiveFeeds(ctx context.Context) ([]Feed, error)
 	UpsertEpisode(ctx context.Context, feedID int, e Episode) error
 	SetFeedTitle(ctx context.Context, feedID int, title string) error
+	StampProviderCollected(ctx context.Context, name string) error
 }
 
 // parsePublishedFloor parses the PODCAST_MIN_PUBLISHED env var (ISO date like "2025-07-01").
@@ -155,6 +156,9 @@ func runWithFloor(ctx context.Context, db Database, fetch Fetcher, floor *time.T
 			log.Printf("Feed %q: catalogued %d/%d episodes", title, catalogued, len(episodes))
 		}
 		total += catalogued
+	}
+	if err := db.StampProviderCollected(ctx, "dial"); err != nil {
+		log.Printf("stamp provider collected: %v", err)
 	}
 	return total, nil
 }
@@ -312,5 +316,11 @@ func (d *pgxDatabase) UpsertEpisode(ctx context.Context, feedID int, e Episode) 
 func (d *pgxDatabase) SetFeedTitle(ctx context.Context, feedID int, title string) error {
 	const q = `UPDATE podcast_feeds SET title = $2 WHERE id = $1`
 	_, err := d.conn.Exec(ctx, q, feedID, title)
+	return err
+}
+
+func (d *pgxDatabase) StampProviderCollected(ctx context.Context, name string) error {
+	const q = `UPDATE providers SET last_collect_at = now() WHERE name = $1`
+	_, err := d.conn.Exec(ctx, q, name)
 	return err
 }

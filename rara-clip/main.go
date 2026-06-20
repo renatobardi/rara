@@ -60,10 +60,13 @@ type LinkedInCollector interface {
 	FetchPosts(ctx context.Context) ([]LinkedInPost, error)
 }
 
-// Database is the persistence seam: the idempotent linkedin_posts upsert. The pgx implementation
-// talks to Neon; tests use an in-memory mock.
+// Database is the persistence seam: the idempotent linkedin_posts upsert and the provider stamp.
+// The pgx implementation talks to Neon; tests use an in-memory mock.
 type Database interface {
 	UpsertLinkedInPost(ctx context.Context, p LinkedInPost) error
+	// StampProviderCollected records the moment the named provider finished a collection run,
+	// keeping rara-core's providers table in sync for scheduling decisions.
+	StampProviderCollected(ctx context.Context, name string) error
 }
 
 func main() {
@@ -98,7 +101,9 @@ func mustConnect(ctx context.Context, databaseURL string) *pgx.Conn {
 
 // run is the collector loop: fetch the current batch from Bright Data and catalog each post (see
 // catalogPost for the per-post policy). A fetch error IS propagated — it is a real source fault, not
-// a per-post quirk — so the whole run aborts. Returns the count of posts stored.
+// a per-post quirk — so the whole run aborts. On success the provider stamp is updated so
+// rara-core's scheduler sees that this lane finished a collection cycle; a stamp error is logged
+// but does not fail the run (the posts are already safely stored). Returns the count of posts stored.
 func run(ctx context.Context, db Database, collector LinkedInCollector) (int, error) {
 	posts, err := collector.FetchPosts(ctx)
 	if err != nil {
@@ -109,6 +114,9 @@ func run(ctx context.Context, db Database, collector LinkedInCollector) (int, er
 		if catalogPost(ctx, db, p) {
 			stored++
 		}
+	}
+	if err := db.StampProviderCollected(ctx, "clip"); err != nil {
+		log.Printf("clip: stamp provider: %v", err)
 	}
 	return stored, nil
 }
@@ -279,5 +287,13 @@ func (d *pgxDatabase) UpsertLinkedInPost(ctx context.Context, p LinkedInPost) er
 			author = EXCLUDED.author,
 			body   = EXCLUDED.body`
 	_, err := d.conn.Exec(ctx, q, p.URL, p.Author, p.Text)
+	return err
+}
+
+// StampProviderCollected updates the last_collect_at timestamp for the named provider row so
+// rara-core's scheduler sees that this lane finished a collection cycle.
+func (d *pgxDatabase) StampProviderCollected(ctx context.Context, name string) error {
+	const q = `UPDATE providers SET last_collect_at = now() WHERE name = $1`
+	_, err := d.conn.Exec(ctx, q, name)
 	return err
 }

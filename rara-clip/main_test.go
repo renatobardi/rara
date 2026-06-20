@@ -31,9 +31,11 @@ func (f *fakeCollector) FetchPosts(_ context.Context) ([]LinkedInPost, error) {
 
 // mockDatabase is the Neon seam, mocked: linkedin_posts as a map keyed on the URL, so the upsert
 // is idempotent exactly like the real ON CONFLICT (url). failOn forces a per-post upsert error.
+// stamped records which provider names were passed to StampProviderCollected.
 type mockDatabase struct {
-	posts  map[string]LinkedInPost
-	failOn string
+	posts   map[string]LinkedInPost
+	failOn  string
+	stamped []string
 }
 
 func newMockDatabase() *mockDatabase { return &mockDatabase{posts: map[string]LinkedInPost{}} }
@@ -43,6 +45,11 @@ func (m *mockDatabase) UpsertLinkedInPost(_ context.Context, p LinkedInPost) err
 		return errors.New("upsert failed")
 	}
 	m.posts[p.URL] = p // idempotent on URL: a re-collect refreshes in place
+	return nil
+}
+
+func (m *mockDatabase) StampProviderCollected(_ context.Context, name string) error {
+	m.stamped = append(m.stamped, name)
 	return nil
 }
 
@@ -124,6 +131,24 @@ func TestRunTrimsURLKey(t *testing.T) {
 	}
 	if len(db.posts) != 1 {
 		t.Errorf("a padded URL must collapse onto the same row: %d rows", len(db.posts))
+	}
+}
+
+// On a successful run the provider stamp is written once with the provider name "clip", signalling
+// to rara-core that this lane has collected. A fetch error must not stamp (the stamp is skipped
+// because run returns early before reaching the stamp call).
+func TestRunStampsProviderOnSuccess(t *testing.T) {
+	ctx := context.Background()
+	db := newMockDatabase()
+	collector := &fakeCollector{posts: []LinkedInPost{
+		{URL: urlA, Author: authorRenato, Text: "on platform engineering"},
+	}}
+
+	if _, err := run(ctx, db, collector); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if len(db.stamped) != 1 || db.stamped[0] != "clip" {
+		t.Errorf("stamped = %v, want [clip]", db.stamped)
 	}
 }
 

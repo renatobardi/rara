@@ -11,11 +11,11 @@ type mockDispatchDB struct {
 	steps         []AssignedStep
 	providers     map[string]DispatchProvider
 	dueCollectors []DispatchProvider
-	touched       map[string]int // name -> call count; detects double-touch bugs
+	attempted     map[string]int // name -> TouchCollectorAttempted call count
 	listErr       error
 	getErr        error
 	collectErr    error
-	touchErr      error
+	attemptErr    error
 }
 
 func (m *mockDispatchDB) ListAssignedSteps(_ context.Context) ([]AssignedStep, error) {
@@ -34,12 +34,12 @@ func (m *mockDispatchDB) ListDueCollectors(_ context.Context) ([]DispatchProvide
 	return m.dueCollectors, m.collectErr
 }
 
-func (m *mockDispatchDB) TouchCollectorDispatched(_ context.Context, name string) error {
-	if m.touched == nil {
-		m.touched = make(map[string]int)
+func (m *mockDispatchDB) TouchCollectorAttempted(_ context.Context, name string) error {
+	if m.attempted == nil {
+		m.attempted = make(map[string]int)
 	}
-	m.touched[name]++
-	return m.touchErr
+	m.attempted[name]++
+	return m.attemptErr
 }
 
 // runOnce is a test helper that wires up a Dispatcher and calls DispatchOnce once.
@@ -226,19 +226,20 @@ func TestDispatchOnceDueCollectorIsWoken(t *testing.T) {
 	}
 }
 
-func TestDispatchOnceTouchesCollectorAfterWake(t *testing.T) {
+func TestDispatchOnceTouchesAttemptAfterWake(t *testing.T) {
+	// The dispatcher stamps last_attempt_at on every wake attempt (success or failure).
 	db := &mockDispatchDB{
 		dueCollectors: []DispatchProvider{{Name: "harvest", Runtime: runtimeCloudRun}},
 	}
 	runOnce(t, db)
-	if db.touched["harvest"] != 1 {
-		t.Errorf("touched[harvest] = %d, want 1; full map: %v", db.touched["harvest"], db.touched)
+	if db.attempted["harvest"] != 1 {
+		t.Errorf("attempted[harvest] = %d, want 1; full map: %v", db.attempted["harvest"], db.attempted)
 	}
 }
 
-func TestDispatchOnceCollectorNotTouchedOnRunnerError(t *testing.T) {
-	// A runner error (e.g. Cloud Run API down) must NOT stamp last_collect_at — the collector
-	// was never actually woken, so the next dispatch pass should retry it.
+func TestDispatchOnceAttemptStampedEvenOnRunnerError(t *testing.T) {
+	// last_attempt_at is stamped even when runner.Run fails (Cloud Run API down, etc.).
+	// This throttles the retry so a persistently failing collector doesn't spam wakes.
 	db := &mockDispatchDB{
 		dueCollectors: []DispatchProvider{{Name: "dial", Runtime: runtimeCloudRun}},
 	}
@@ -246,8 +247,8 @@ func TestDispatchOnceCollectorNotTouchedOnRunnerError(t *testing.T) {
 	if err := (&Dispatcher{db: db, runner: tr}).DispatchOnce(context.Background()); err != nil {
 		t.Fatalf("DispatchOnce: %v", err)
 	}
-	if len(db.touched) != 0 {
-		t.Errorf("touched after runner error: %v, want empty map", db.touched)
+	if db.attempted["dial"] != 1 {
+		t.Errorf("attempted[dial] = %d, want 1 (attempt always stamped)", db.attempted["dial"])
 	}
 }
 

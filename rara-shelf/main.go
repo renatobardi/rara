@@ -28,6 +28,19 @@ type pgxExecutor interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
+// pgxExecer is the minimal subset needed to stamp provider timestamps.
+// *pgx.Conn satisfies this interface.
+type pgxExecer interface {
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+}
+
+// stampProviderCollected sets providers.last_collect_at = now() for the named provider.
+// Called on successful completion so the dispatcher can track cadence.
+func stampProviderCollected(ctx context.Context, db pgxExecer, name string) error {
+	_, err := db.Exec(ctx, `UPDATE providers SET last_collect_at = now() WHERE name = $1`, name)
+	return err
+}
+
 // Playlist is a YouTube playlist owned by the authenticated user.
 type Playlist struct {
 	ID                int
@@ -155,6 +168,9 @@ func main() {
 	}
 
 	log.Println("Shelf job completed successfully")
+	if err := stampProviderCollected(context.Background(), conn, "shelf"); err != nil {
+		log.Printf("stamp provider collected: %v", err)
+	}
 }
 
 // getAccessToken exchanges an OAuth refresh token for a short-lived access token.

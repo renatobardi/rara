@@ -34,11 +34,14 @@ type DispatchDB interface {
 	ListAssignedSteps(ctx context.Context) ([]AssignedStep, error)
 	GetProvider(ctx context.Context, name string) (DispatchProvider, bool, error)
 	// ListDueCollectors returns enabled collector providers whose collect_cadence_seconds has
-	// elapsed since last_collect_at (or have never been dispatched).
+	// elapsed since last_collect_at (or have never succeeded), AND whose retry_interval_seconds
+	// has elapsed since last_attempt_at (or have never been attempted). The two conditions are
+	// independent: cadence gates how often a healthy collector runs; retry throttles re-wakes of
+	// a failing one.
 	ListDueCollectors(ctx context.Context) ([]DispatchProvider, error)
-	// TouchCollectorDispatched stamps last_collect_at = now() after a successful wake. Not called
-	// when the runner errors — the next pass retries the collector.
-	TouchCollectorDispatched(ctx context.Context, name string) error
+	// TouchCollectorAttempted stamps last_attempt_at = now() before each wake. Called regardless
+	// of whether the runner succeeds — the collector itself stamps last_collect_at on success.
+	TouchCollectorAttempted(ctx context.Context, name string) error
 }
 
 // Dispatcher reads desired state from the DB and wakes providers. One wake per provider per pass
@@ -82,18 +85,18 @@ func (d *Dispatcher) DispatchOnce(ctx context.Context) error {
 
 	// Dispatch collectors whose cadence has elapsed. Unlike workers (which are woken by
 	// pending item_steps), collectors create items and have no item_step to pull — the
-	// dispatcher checks the cadence and stamps last_collect_at only on a successful wake.
+	// dispatcher stamps last_attempt_at before each wake; the collector itself stamps
+	// last_collect_at on success.
 	collectors, err := d.db.ListDueCollectors(ctx)
 	if err != nil {
 		return err
 	}
 	for _, prov := range collectors {
-		if err := d.runner.Run(ctx, buildRunRequest(prov)); err != nil {
-			log.Printf("dispatch: wake collector %q: %v", prov.Name, err) // best-effort; next pass retries
-			continue
+		if err := d.db.TouchCollectorAttempted(ctx, prov.Name); err != nil {
+			log.Printf("dispatch: attempt stamp %q: %v", prov.Name, err) // best-effort
 		}
-		if err := d.db.TouchCollectorDispatched(ctx, prov.Name); err != nil {
-			log.Printf("dispatch: touch collector %q: %v", prov.Name, err) // best-effort
+		if err := d.runner.Run(ctx, buildRunRequest(prov)); err != nil {
+			log.Printf("dispatch: wake collector %q: %v", prov.Name, err) // best-effort; throttled by last_attempt_at
 		}
 	}
 	return nil
