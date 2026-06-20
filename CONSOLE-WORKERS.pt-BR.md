@@ -16,7 +16,7 @@ Esta rodada faz um **redesign completo**, reposiciona o vocabulário e separa um
 ## 2. Decisões travadas
 
 1. **Renomear para "Workers".** O conceito de domínio é *worker* (a implementação concreta de uma
-   capability: `distill-mac`, `sift-vpc`, …). "Provider" no código permanece (é o nome da tabela e
+   capability: `distill`, `distill-local`, …). "Provider" no código permanece (é o nome da tabela e
    do struct); a **UI** passa a dizer "Worker". Rota `/providers` → `/workers`.
 2. **"Agents" vira item de menu separado**, no mesmo nível, com **página stub "em breve"**. Agents é
    um domínio futuro (IA agêntica, cadastro de agentes, ciclo de vida próprio) — não tem relação de
@@ -103,17 +103,14 @@ disposição de cada um:
 ```jsonc
 {
   "capability": "distill",
-  "winner": "distill-mac",
+  "winner": "distill",
   "candidates": [
-    { "name": "distill-mac",   "eligible": true,  "healthy": true,
-      "cost_credit": 1.00, "quality": 0.70, "score": 0.91,
-      "fallback_pos": 1, "selected": true,  "reason": "" },
-    { "name": "distill-vpc",   "eligible": true,  "healthy": true,
-      "cost_credit": 1.00, "quality": 0.40, "score": 0.82,
-      "fallback_pos": 2, "selected": false, "reason": "" },
-    { "name": "distill-cloud", "eligible": true,  "healthy": true,
+    { "name": "distill",       "eligible": true,  "healthy": true,
       "cost_credit": 0.00, "quality": 0.90, "score": 0.27,
-      "fallback_pos": 3, "selected": false, "reason": "on_demand: saúde isenta" }
+      "fallback_pos": 1, "selected": true,  "reason": "on_demand: saúde isenta" },
+    { "name": "distill-local", "eligible": true,  "healthy": true,
+      "cost_credit": 1.00, "quality": 0.70, "score": 0.91,
+      "fallback_pos": 2, "selected": false, "reason": "" }
   ]
 }
 ```
