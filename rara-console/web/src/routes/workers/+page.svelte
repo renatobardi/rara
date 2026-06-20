@@ -29,7 +29,7 @@
 	let saveMsg = $state('');
 
 	onMount(() => {
-		fetch('/api/providers')
+		fetch('/api/workers')
 			.then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
 			.then((d) => {
 				if (!Array.isArray(d)) throw new Error('unexpected payload');
@@ -59,7 +59,7 @@
 		saveMsg = '';
 		try {
 			const updated = { ...p, enabled: !p.enabled };
-			const res = await fetch('/api/providers', {
+			const res = await fetch('/api/workers', {
 				method: 'PUT',
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify(updated)
