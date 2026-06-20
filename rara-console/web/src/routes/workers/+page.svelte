@@ -896,7 +896,7 @@
 		{:else if previewError}
 			<p class="text-[12px] text-red-500">{t.workers.previewError}</p>
 		{:else if previewResult}
-			{@const eligibleCandidates = previewResult.candidates.filter((c) => c.eligible)}
+			{@const eligibleCandidates = (previewResult.candidates ?? []).filter((c) => c.eligible)}
 
 			{#if previewExcludes.size > 0}
 				<p class="mb-3 text-[11px] text-muted" aria-live="polite">
@@ -937,7 +937,7 @@
 							</tr>
 						</thead>
 						<tbody>
-							{#each previewResult.candidates as c}
+							{#each (previewResult.candidates ?? []) as c}
 								{@const health = candidateHealth(c)}
 								<tr
 									class="border-b border-border/50 last:border-0 {c.selected
@@ -960,10 +960,10 @@
 													: t.workers.previewHealthStale}
 										</span>
 									</td>
-									<td class="py-1.5 pr-3 tabular-nums">{c.cost_credit.toFixed(2)}</td>
-									<td class="py-1.5 pr-3 tabular-nums">{c.quality.toFixed(2)}</td>
+									<td class="py-1.5 pr-3 tabular-nums">{(c.cost_credit ?? 0).toFixed(2)}</td>
+									<td class="py-1.5 pr-3 tabular-nums">{(c.quality ?? 0).toFixed(2)}</td>
 									<td class="py-1.5 pr-3 tabular-nums font-semibold"
-										>{c.eligible ? c.score.toFixed(2) : '—'}</td
+										>{c.eligible ? (c.score ?? 0).toFixed(2) : '—'}</td
 									>
 									<td class="py-1.5 pr-3 tabular-nums"
 										>{c.fallback_pos > 0 ? c.fallback_pos : '—'}</td
