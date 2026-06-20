@@ -47,10 +47,11 @@ type GmailAPI interface {
 	GetMessage(ctx context.Context, id string) (Email, error)
 }
 
-// Database is the persistence seam: the idempotent email upsert. The pgx implementation talks
-// to Neon; tests use an in-memory mock.
+// Database is the persistence seam: the idempotent email upsert and provider stamp. The pgx
+// implementation talks to Neon; tests use an in-memory mock.
 type Database interface {
 	UpsertEmail(ctx context.Context, e Email) error
+	StampProviderCollected(ctx context.Context, name string) error
 }
 
 func main() {
@@ -119,6 +120,9 @@ func run(ctx context.Context, db Database, api GmailAPI, query string, max int) 
 			continue
 		}
 		catalogued++
+	}
+	if err := db.StampProviderCollected(ctx, "courier"); err != nil {
+		log.Printf("stamp provider courier: %v", err)
 	}
 	return catalogued, nil
 }
@@ -369,6 +373,14 @@ func (a *httpGmailAPI) get(ctx context.Context, reqURL string) ([]byte, error) {
 // ---------------------------------------------------------------------------
 
 type pgxDatabase struct{ conn *pgx.Conn }
+
+// StampProviderCollected updates the providers table to record the time of the last successful
+// collection run for this agent.
+func (d *pgxDatabase) StampProviderCollected(ctx context.Context, name string) error {
+	const q = `UPDATE providers SET last_collect_at = now() WHERE name = $1`
+	_, err := d.conn.Exec(ctx, q, name)
+	return err
+}
 
 // UpsertEmail inserts an email, idempotent on message_id. On conflict it refreshes the
 // metadata/body so an edited message propagates, but never collected_at/status.

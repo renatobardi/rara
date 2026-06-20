@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // TestConvertToUploadPlaylistID tests channel ID to upload playlist ID conversion
@@ -505,3 +507,35 @@ func TestETLHarnessEmptyChannels(t *testing.T) {
 
 	harness.AssertVideoCount(0)
 }
+
+// execMock captures Exec calls so TestStampProviderCollected runs zero-I/O.
+type execMock struct {
+	gotArgs []any
+	err     error
+}
+
+func (m *execMock) Exec(_ context.Context, _ string, args ...any) (pgconn.CommandTag, error) {
+	m.gotArgs = args
+	return pgconn.CommandTag{}, m.err
+}
+
+func TestStampProviderCollected(t *testing.T) {
+	mock := &execMock{}
+	if err := stampProviderCollected(context.Background(), mock, "harvest"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(mock.gotArgs) != 1 || mock.gotArgs[0] != "harvest" {
+		t.Errorf("Exec args = %v, want [harvest]", mock.gotArgs)
+	}
+}
+
+func TestStampProviderCollectedPropagatesError(t *testing.T) {
+	mock := &execMock{err: errBoom{}}
+	if err := stampProviderCollected(context.Background(), mock, "harvest"); err == nil {
+		t.Error("want error from Exec, got nil")
+	}
+}
+
+type errBoom struct{}
+
+func (errBoom) Error() string { return "boom" }

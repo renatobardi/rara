@@ -134,6 +134,7 @@ type Database interface {
 	EnabledSources(ctx context.Context) ([]FeedSource, error)
 	GetItem(ctx context.Context, url string) (NewsItem, bool, error)
 	SaveItem(ctx context.Context, it NewsItem) error
+	StampProviderCollected(ctx context.Context, name string) error
 }
 
 // Fetcher is the transport seam. strategy is the source's fetch_strategy ('http' |
@@ -523,6 +524,9 @@ func runBatch(ctx context.Context, db Database, fetch Fetcher, cfg Config) error
 		}
 	}
 	log.Printf("Batch complete: %d item(s) upserted, %d source(s) skipped\n", saved, skippedSources)
+	if err := db.StampProviderCollected(ctx, "feed"); err != nil {
+		log.Printf("Warning: failed to stamp provider collected: %v\n", err)
+	}
 	return nil
 }
 
@@ -1011,6 +1015,12 @@ func (d *pgxDatabase) SaveItem(ctx context.Context, it NewsItem) error {
 		nullStr(it.Error),
 		initialAttempt,
 	)
+	return err
+}
+
+func (d *pgxDatabase) StampProviderCollected(ctx context.Context, name string) error {
+	const q = `UPDATE providers SET last_collect_at = now() WHERE name = $1`
+	_, err := d.conn.Exec(ctx, q, name)
 	return err
 }
 

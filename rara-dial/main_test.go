@@ -123,6 +123,7 @@ type MockDatabase struct {
 	feeds    []Feed
 	episodes map[string]Episode // keyed by guid (UNIQUE)
 	feedOf   map[string]int     // guid -> feed_id (FK)
+	stamped  []string           // provider names passed to StampProviderCollected
 	err      error
 }
 
@@ -161,6 +162,11 @@ func (m *MockDatabase) SetFeedTitle(_ context.Context, feedID int, title string)
 			m.feeds[i].Title = title
 		}
 	}
+	return nil
+}
+
+func (m *MockDatabase) StampProviderCollected(_ context.Context, name string) error {
+	m.stamped = append(m.stamped, name)
 	return nil
 }
 
@@ -443,5 +449,23 @@ func TestPublishedFloorDisabledWhenEmpty(t *testing.T) {
 	}
 	if n != 2 {
 		t.Errorf("catalogued %d, want 2 (no floor = all episodes)", n)
+	}
+}
+
+// TestRunWithFloorStampsProviderOnSuccess: a successful run must stamp the "dial" provider
+// exactly once so the control plane knows when dial last collected.
+func TestRunWithFloorStampsProviderOnSuccess(t *testing.T) {
+	ctx := context.Background()
+	db := newMockDatabase()
+	db.feeds = []Feed{{ID: 1, FeedURL: "https://example.com/feed.xml", Active: true}}
+
+	if _, err := runWithFloor(ctx, db, staticFetcher(sampleFeed), nil); err != nil {
+		t.Fatalf("runWithFloor: %v", err)
+	}
+	if len(db.stamped) != 1 {
+		t.Fatalf("StampProviderCollected called %d times, want 1", len(db.stamped))
+	}
+	if db.stamped[0] != "dial" {
+		t.Errorf("stamped provider = %q, want %q", db.stamped[0], "dial")
 	}
 }

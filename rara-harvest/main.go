@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 type Channel struct {
@@ -40,6 +41,19 @@ type PlaylistResponse struct {
 // across the ~100 channels processed per run (a fresh client per call would defeat
 // keep-alive). 15s timeout bounds any single YouTube Data API call.
 var httpClient = &http.Client{Timeout: 15 * time.Second}
+
+// pgxExecer is the minimal DB subset needed to stamp provider timestamps.
+// *pgx.Conn satisfies this interface.
+type pgxExecer interface {
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+}
+
+// stampProviderCollected sets providers.last_collect_at = now() for the named provider.
+// Called on successful completion so the dispatcher knows the cadence actually ran.
+func stampProviderCollected(ctx context.Context, db pgxExecer, name string) error {
+	_, err := db.Exec(ctx, `UPDATE providers SET last_collect_at = now() WHERE name = $1`, name)
+	return err
+}
 
 func main() {
 	apiKey := os.Getenv("YOUTUBE_API_KEY")
@@ -91,6 +105,9 @@ func main() {
 	}
 
 	log.Println("ETL job completed successfully")
+	if err := stampProviderCollected(context.Background(), conn, "harvest"); err != nil {
+		log.Printf("stamp provider collected: %v", err)
+	}
 }
 
 func fetchActiveChannels(ctx context.Context, conn *pgx.Conn) ([]Channel, error) {

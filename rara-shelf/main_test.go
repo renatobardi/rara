@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // TestPlaylistItemParsing tests the YouTube API item shape.
@@ -373,4 +375,32 @@ func TestHarnessSkipsEmptyVideoID(t *testing.T) {
 	}
 	h.AssertVideoCount(1)
 	h.AssertVideoExists("PL1", "v1")
+}
+
+// shelfExecMock captures Exec calls for TestStampProviderCollected (zero-I/O).
+type shelfExecMock struct {
+	gotArgs []any
+	err     error
+}
+
+func (m *shelfExecMock) Exec(_ context.Context, _ string, args ...any) (pgconn.CommandTag, error) {
+	m.gotArgs = args
+	return pgconn.CommandTag{}, m.err
+}
+
+func TestStampProviderCollected(t *testing.T) {
+	mock := &shelfExecMock{}
+	if err := stampProviderCollected(context.Background(), mock, "shelf"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(mock.gotArgs) != 1 || mock.gotArgs[0] != "shelf" {
+		t.Errorf("Exec args = %v, want [shelf]", mock.gotArgs)
+	}
+}
+
+func TestStampProviderCollectedPropagatesError(t *testing.T) {
+	mock := &shelfExecMock{err: fmt.Errorf("db down")}
+	if err := stampProviderCollected(context.Background(), mock, "shelf"); err == nil {
+		t.Error("want error from Exec, got nil")
+	}
 }
