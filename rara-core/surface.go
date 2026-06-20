@@ -624,7 +624,7 @@ func NewSurfaceMux(core *Core, token string) http.Handler {
 	mux.HandleFunc("POST /v1/feedback/distillation", h.feedbackDistillation)
 	mux.HandleFunc("POST /v1/quarantine/review", h.reviewQuarantine)
 
-	// Worker metrics rollup (CONSOLE-WORKERS.pt-BR.md §8, fatia 2/9).
+	// Worker metrics rollup (CONSOLE-WORKERS.pt-BR.md §8, slice 2/9).
 	mux.HandleFunc("GET /v1/workers/metrics", h.workerMetrics)
 
 	// Router dry-run.

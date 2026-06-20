@@ -1,6 +1,6 @@
 package main
 
-// worker_metrics_test.go — tests for GET /v1/workers/metrics (fatia 2/9 da tela Workers).
+// worker_metrics_test.go — tests for GET /v1/workers/metrics (slice 2/9 of the Workers screen).
 // See CONSOLE-WORKERS.pt-BR.md §8.
 
 import (
