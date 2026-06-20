@@ -13,6 +13,7 @@
 
 	type Provider = {
 		name: string;
+		worker?: string;
 		capability: string;
 		runtime: string;
 		activation: string;
@@ -128,6 +129,8 @@
 	// --- CRUD form state ---
 	let formMode = $state<'add' | 'edit' | null>(null);
 	let formInitial = $state<Provider | null>(null);
+	let formLockedWorker = $state<string | null>(null);
+	let formLockedCapability = $state<string | null>(null);
 
 	// --- routing editor state ---
 	let selectedScope = $state<string>(GLOBAL_SCOPE);
@@ -425,21 +428,19 @@
 		fetchMetricsWindow(selectedDays);
 	});
 
-	async function toggleProvider(p: Provider) {
+	async function toggleProvider(p: Provider, workerName: string) {
 		saving = p.name;
 		saveMsg = '';
 		try {
 			// ponytail: explicit DTO — omit heartbeat_at (core preserves it from DB on upsert).
 			// env must stay: full-record upsert, omitting it would set env={} in the DB.
-			// ponytail: explicit DTO — omit heartbeat_at (core preserves it from DB on upsert).
-			// env must stay: full-record upsert, omitting it would set env={} in the DB.
 			const dto = {
-				name: p.name, capability: p.capability, runtime: p.runtime,
+				worker: workerName, name: p.name, capability: p.capability, runtime: p.runtime,
 				activation: p.activation, cost: p.cost, quality: p.quality,
 				enabled: !p.enabled, constraints: p.constraints,
 				runner_url: p.runner_url, env: p.env
 			};
-			const optimistic: Provider = { ...p, enabled: !p.enabled };
+			const optimistic: Provider = { ...p, worker: workerName, enabled: !p.enabled };
 			const res = await fetch('/api/placements', {
 				method: 'PUT',
 				headers: { 'Content-Type': 'application/json' },
@@ -464,18 +465,36 @@
 	function openAdd() {
 		formInitial = null;
 		formMode = 'add';
+		formLockedWorker = null;
+		formLockedCapability = null;
 		saveMsg = '';
 	}
 
-	function openEdit(p: Provider) {
-		formInitial = p;
+	function openAddPlacement(w: Worker) {
+		formInitial = null;
+		formMode = 'add';
+		formLockedWorker = w.name;
+		formLockedCapability = w.capability;
+		saveMsg = '';
+		// ensure worker row is expanded so the inline form is visible
+		const next = new Set(expandedWorkers);
+		next.add(w.name);
+		expandedWorkers = next;
+	}
+
+	function openEdit(p: Provider, workerName: string) {
+		formInitial = { ...p, worker: workerName };
 		formMode = 'edit';
+		formLockedWorker = null;
+		formLockedCapability = null;
 		saveMsg = '';
 	}
 
 	function closeForm() {
 		formMode = null;
 		formInitial = null;
+		formLockedWorker = null;
+		formLockedCapability = null;
 	}
 
 	async function saveWorker(payload: Provider) {
@@ -485,7 +504,11 @@
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify(payload)
 			});
-			if (!res.ok) throw new Error(t.workers.saveError);
+			if (!res.ok) {
+				let msg = t.workers.saveError;
+				try { const b = await res.json(); if (b?.error) msg = b.error; } catch { /* ignore */ }
+				throw new Error(msg);
+			}
 			saveMsg = t.workers.saveOk;
 			closeForm();
 			fetchWorkers();
@@ -649,7 +672,7 @@
 		</button>
 	</div>
 
-	{#if formMode === 'add'}
+	{#if formMode === 'add' && !formLockedWorker}
 		<div class="mb-4">
 			<WorkerForm
 				initial={null}
@@ -738,13 +761,13 @@
 														<div class="flex items-center gap-2">
 															<button
 																class="cursor-pointer rounded-token border border-border bg-bg px-2 py-0.5 text-[11px] hover:bg-hover disabled:opacity-40"
-																onclick={(e) => { e.stopPropagation(); openEdit(p); }}
+																onclick={(e) => { e.stopPropagation(); openEdit(p, w.name); }}
 																aria-label="{t.workers.editWorker} {p.name}"
 																title={t.workers.editWorker}
 															>✏</button>
 															<button
 																class="cursor-pointer rounded-token border border-border bg-bg px-2 py-0.5 text-[11px] hover:bg-hover disabled:opacity-40"
-																onclick={(e) => { e.stopPropagation(); toggleProvider(p); }}
+																onclick={(e) => { e.stopPropagation(); toggleProvider(p, w.name); }}
 																disabled={saving === p.name}
 																aria-label="{p.enabled ? t.workers.disable : t.workers.enable} {p.name}"
 															>
@@ -772,6 +795,27 @@
 											{/each}
 										</tbody>
 									</table>
+									{#if formMode === 'add' && formLockedWorker === w.name}
+										<div class="px-4 py-3 pl-10">
+											<WorkerForm
+												lockedWorker={w.name}
+												lockedCapability={w.capability}
+												capabilities={knownCapabilities}
+												onSave={saveWorker}
+												onCancel={closeForm}
+											/>
+										</div>
+									{:else}
+										<div class="border-t border-border/30 px-4 py-2 pl-10">
+											<button
+												class="cursor-pointer rounded-token border border-border bg-bg px-3 py-1 text-[12px] font-semibold hover:bg-hover"
+												onclick={() => openAddPlacement(w)}
+												aria-label="{t.workers.addPlacement}: {w.name}"
+											>
+												+ {t.workers.addPlacement}
+											</button>
+										</div>
+									{/if}
 								</td>
 							</tr>
 						{/if}
