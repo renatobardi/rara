@@ -357,11 +357,14 @@ func TestMigration014ProviderWorker(t *testing.T) {
 		t.Error("migration 014 must alter the providers table")
 	}
 	if !strings.Contains(sql, "ADD COLUMN IF NOT EXISTS worker") {
-		t.Error("migration 014 must add worker idempotently (ADD COLUMN IF NOT EXISTS)")
+		t.Fatal("migration 014 must add worker idempotently (ADD COLUMN IF NOT EXISTS)")
 	}
 	// Nullable: no NOT NULL on the ADD COLUMN line (a future cleanup migration can add it
 	// once every seeder always stamps worker).
 	colIdx := strings.Index(sql, "ADD COLUMN IF NOT EXISTS worker")
+	if colIdx == -1 {
+		t.Fatal("ADD COLUMN IF NOT EXISTS worker not found in migration 014")
+	}
 	stmt := sql[colIdx:min(colIdx+80, len(sql))]
 	if strings.Contains(stmt, "NOT NULL") {
 		t.Errorf("worker must be nullable on add, got: %q", stmt)

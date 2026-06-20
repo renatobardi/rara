@@ -1,5 +1,5 @@
 -- 014_provider_worker.sql
--- Promotes the logical worker name to a first-class column (Opção B, fatia E1).
+-- Promotes the logical worker name to a first-class column (Option B, slice E1).
 --
 -- Background: providers.name encodes (capability × host) by convention, e.g.
 --   "distill"       — Cloud Run placement
