@@ -1048,7 +1048,7 @@ func main() {
 	defer stop()
 	connCfg, err := buildCoreConnConfig(dbURL)
 	if err != nil {
-		log.Fatalf("Failed to parse DATABASE_URL") // don't echo err — may contain DSN credentials
+		log.Fatalf("Failed to parse DATABASE_URL: ensure format is valid (postgres://user:pass@host/db)") // don't echo err — may contain DSN credentials
 	}
 	connectCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	conn, err := pgx.ConnectConfig(connectCtx, connCfg)
