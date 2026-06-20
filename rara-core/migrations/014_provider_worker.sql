@@ -22,7 +22,7 @@ ALTER TABLE providers
 -- Idempotent backfill: only touch rows that are still NULL (or were set to empty
 -- by an older buggy migration — guard on both). Safe to re-run.
 UPDATE providers
-   SET worker = regexp_replace(name, '-local$', '', 'g')
+   SET worker = regexp_replace(name, '-local$', '')
  WHERE worker IS NULL OR worker = '';
 
 COMMIT;
