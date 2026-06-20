@@ -400,7 +400,6 @@ func providerHealthyExplain(p Provider, now time.Time, healthTTL time.Duration) 
 	return true, ""
 }
 
-
 // fallbackPositions parses the policy's ordered fallback list (a JSON array of provider
 // names) into name->position. An empty or malformed list yields no positions, leaving pure
 // score ordering. Duplicate names keep their first position.
