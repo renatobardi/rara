@@ -11,9 +11,10 @@
 BEGIN;
 
 -- Safety backfill: idempotent, covers NULL and the empty-string edge case.
+-- NULLIF(worker, '') returns NULL when worker is NULL or '', so IS NULL catches both.
 UPDATE providers
    SET worker = name
- WHERE worker IS NULL OR worker = '';
+ WHERE NULLIF(worker, '') IS NULL;
 
 -- No-op if the column is already NOT NULL (e.g. re-running on a fresh schema).
 ALTER TABLE providers ALTER COLUMN worker SET NOT NULL;
