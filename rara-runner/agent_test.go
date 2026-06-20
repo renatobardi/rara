@@ -37,7 +37,7 @@ const (
 	testToken = "s3cret-tailnet-token"
 	testApp   = "rara-distill"
 	testPath  = "us-docker.pkg.dev/p/r/rara-distill" // bare registry path; no tag or digest
-	testImage = testPath + ":latest"                  // resolved at run time by the agent
+	testImage = testPath + ":latest"                 // resolved at run time by the agent
 )
 
 func newTestServer(t *testing.T, token string, runner ContainerRunner) http.Handler {
@@ -228,11 +228,11 @@ func TestParseAllowlist(t *testing.T) {
 		t.Fatalf("parsed wrong: %v", got)
 	}
 	for _, bad := range []string{
-		"",                      // empty allowlist
-		"no-equals-sign",        // not app=path
-		"app=",                  // empty path
-		"app=img:latest",        // tagged — must be bare path
-		"app=img@sha256:abc123", // digest-pinned — must be bare path
+		"",                           // empty allowlist
+		"no-equals-sign",             // not app=path
+		"app=",                       // empty path
+		"app=img:latest",             // tagged — must be bare path
+		"app=img@sha256:abc123",      // digest-pinned — must be bare path
 		"a=" + pathA + ",a=" + pathB, // duplicate app
 	} {
 		if _, err := parseAllowlist(bad); err == nil {
