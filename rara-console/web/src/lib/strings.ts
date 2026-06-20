@@ -92,6 +92,8 @@ export const t = {
 		colCost: 'Custo',
 		colQuality: 'Qualidade',
 		colEnabled: 'Ativo',
+		enable: 'Ativar',
+		disable: 'Desativar',
 		saving: 'Salvando…',
 		saveError: 'Erro ao salvar worker.',
 		saveOk: 'Salvo.',

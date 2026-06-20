@@ -32,7 +32,8 @@
 		fetch('/api/providers')
 			.then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
 			.then((d) => {
-				providers = Array.isArray(d) ? d : [];
+				if (!Array.isArray(d)) throw new Error('unexpected payload');
+				providers = d;
 				loading = false;
 			})
 			.catch(() => {
@@ -43,7 +44,8 @@
 		fetch('/api/routing-policies')
 			.then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
 			.then((d) => {
-				policies = Array.isArray(d) ? d : [];
+				if (!Array.isArray(d)) throw new Error('unexpected payload');
+				policies = d;
 				policiesLoading = false;
 			})
 			.catch(() => {
@@ -126,9 +128,9 @@
 									class="cursor-pointer rounded-token border border-border bg-surface-2 px-3 py-1 text-[12px] hover:bg-hover disabled:opacity-40"
 									onclick={() => toggleProvider(p)}
 									disabled={saving === p.name}
-									aria-label="{p.enabled ? 'Desativar' : 'Ativar'} {p.name}"
+									aria-label="{p.enabled ? t.workers.disable : t.workers.enable} {p.name}"
 								>
-									{saving === p.name ? t.workers.saving : p.enabled ? 'Desativar' : 'Ativar'}
+									{saving === p.name ? t.workers.saving : p.enabled ? t.workers.disable : t.workers.enable}
 								</button>
 							</td>
 						</tr>
