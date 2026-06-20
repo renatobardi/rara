@@ -3,6 +3,8 @@
 	import { t } from '$lib/strings';
 	import WorkerForm from '$lib/WorkerForm.svelte';
 
+	const GLOBAL_SCOPE = 'global' as const;
+
 	type Constraints = {
 		requires?: string;
 		accepts?: string[];
@@ -82,7 +84,7 @@
 	let formInitial = $state<Provider | null>(null);
 
 	// --- routing editor state ---
-	let selectedScope = $state('global');
+	let selectedScope = $state<string>(GLOBAL_SCOPE);
 	let editCostWeight = $state(0.5);
 	let editFallback = $state<string[]>([]);
 	let routingAddWorker = $state('');
@@ -147,9 +149,12 @@
 	let knownCapabilities = $derived([...new Set(providers.map((p) => p.capability))].sort());
 
 	// routing editor derived
-	let routingScopes = $derived([t.workers.policyScopeGlobal, ...knownCapabilities]);
+	let routingScopes = $derived([
+		{ id: GLOBAL_SCOPE, label: t.workers.policyScopeGlobal },
+		...knownCapabilities.map((c) => ({ id: c, label: c }))
+	]);
 	let fallbackAvailable = $derived(
-		selectedScope === t.workers.policyScopeGlobal
+		selectedScope === GLOBAL_SCOPE
 			? providers
 			: providers.filter((p) => p.capability === selectedScope)
 	);
@@ -180,6 +185,7 @@
 
 	function addFallback(name: string) {
 		if (!name || editFallback.includes(name)) return;
+		if (!fallbackAvailable.some((p) => p.name === name)) return;
 		editFallback = [...editFallback, name];
 	}
 
@@ -301,7 +307,7 @@
 				if (!Array.isArray(d)) throw new Error('unexpected payload');
 				policies = d;
 				policiesLoading = false;
-				selectScope('global');
+				selectScope(GLOBAL_SCOPE);
 			})
 			.catch(() => {
 				policiesError = true;
@@ -631,7 +637,7 @@
 					class="rounded-token border border-border bg-bg px-3 py-1.5 text-[13px] outline-none focus:border-text/40"
 				>
 					{#each routingScopes as scope}
-						<option value={scope}>{scope}</option>
+						<option value={scope.id}>{scope.label}</option>
 					{/each}
 				</select>
 			</div>
@@ -671,18 +677,18 @@
 									class="rounded px-1.5 py-0.5 text-[11px] text-muted hover:bg-hover disabled:opacity-30"
 									onclick={() => moveFallback(i, -1)}
 									disabled={i === 0}
-									aria-label="mover para cima"
+									aria-label={t.workers.fallbackMoveUp}
 								>{t.fontesFlows.hostsUp}</button>
 								<button
 									class="rounded px-1.5 py-0.5 text-[11px] text-muted hover:bg-hover disabled:opacity-30"
 									onclick={() => moveFallback(i, 1)}
 									disabled={i === editFallback.length - 1}
-									aria-label="mover para baixo"
+									aria-label={t.workers.fallbackMoveDown}
 								>{t.fontesFlows.hostsDown}</button>
 								<button
 									class="rounded px-1.5 py-0.5 text-[11px] text-muted hover:bg-hover"
 									onclick={() => removeFallback(i)}
-									aria-label="remover"
+									aria-label={t.workers.fallbackRemove}
 								>{t.fontesFlows.hostsRemove}</button>
 							</li>
 						{/each}
