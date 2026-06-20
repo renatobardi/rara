@@ -58,6 +58,22 @@ jobs:
           rsync -az rara-runner/deploy/rara-runner-agent.service \
             "${DEPLOY_USER}@${DEPLOY_HOST}:/opt/rara-runner/staging/rara-runner-agent.service"
 
+      - name: Migrate agent.env to path-only allowlist format
+        env:
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          ssh "${DEPLOY_USER}@${DEPLOY_HOST}" bash <<'EOF'
+            set -euo pipefail
+            env_file=/etc/rara-runner/agent.env
+            if [ -f "$env_file" ] && grep -qE '^RUNNER_ALLOWED_IMAGES=.*@sha256:[a-f0-9]{64}' "$env_file"; then
+              sudo sed -i '/^RUNNER_ALLOWED_IMAGES=/s/@sha256:[a-f0-9]\{64\}//g' "$env_file"
+              echo "Migrated $env_file: stripped digest pins from RUNNER_ALLOWED_IMAGES"
+            else
+              echo "No digest pins found in $env_file — nothing to migrate"
+            fi
+          EOF
+
       - name: Install services and restart
         env:
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}

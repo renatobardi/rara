@@ -125,6 +125,7 @@ type MockDatabase struct {
 	feedOf   map[string]int     // guid -> feed_id (FK)
 	stamped  []string           // provider names passed to StampProviderCollected
 	err      error
+	stampErr error // returned by StampProviderCollected when set
 }
 
 func newMockDatabase() *MockDatabase {
@@ -167,7 +168,7 @@ func (m *MockDatabase) SetFeedTitle(_ context.Context, feedID int, title string)
 
 func (m *MockDatabase) StampProviderCollected(_ context.Context, name string) error {
 	m.stamped = append(m.stamped, name)
-	return nil
+	return m.stampErr
 }
 
 var _ Database = (*MockDatabase)(nil)
@@ -467,5 +468,19 @@ func TestRunWithFloorStampsProviderOnSuccess(t *testing.T) {
 	}
 	if db.stamped[0] != "dial" {
 		t.Errorf("stamped provider = %q, want %q", db.stamped[0], "dial")
+	}
+}
+
+// TestStampProviderCollectedErrorIsBestEffort: a StampProviderCollected failure must be logged
+// but must NOT propagate — the stamp is best-effort and must not fail a successful collection run.
+func TestStampProviderCollectedErrorIsBestEffort(t *testing.T) {
+	ctx := context.Background()
+	db := newMockDatabase()
+	db.feeds = []Feed{{ID: 1, FeedURL: "https://example.com/feed.xml", Active: true}}
+	db.stampErr = errors.New("providers table not found")
+
+	_, err := runWithFloor(ctx, db, staticFetcher(sampleFeed), nil)
+	if err != nil {
+		t.Errorf("runWithFloor returned error %v; stamp failure must be best-effort (logged only)", err)
 	}
 }

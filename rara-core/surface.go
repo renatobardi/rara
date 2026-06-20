@@ -496,6 +496,51 @@ func (c *Core) Usage(ctx context.Context) (UsageReport, error) {
 	return c.db.UsageCounts(ctx)
 }
 
+// RoutePreview is the response shape for GET /v1/route/preview.
+type RoutePreview struct {
+	Capability string      `json:"capability"`
+	Winner     string      `json:"winner"` // empty when no eligible provider exists
+	Candidates []Candidate `json:"candidates"`
+}
+
+// RoutePreview returns a dry-run of the router for the given capability: all providers
+// evaluated with eligibility, health, scoring, and which one would be selected — without
+// assigning or dispatching anything. lane and sensitivity build a synthetic item; exclude
+// names providers to skip (the what-if path, same mechanism as timeout→fallback).
+func (c *Core) RoutePreview(ctx context.Context, capability, lane, sensitivity string, exclude []string) (RoutePreview, error) {
+	if capability == "" {
+		return RoutePreview{}, badInput("capability is required")
+	}
+	if sensitivity == "" {
+		sensitivity = sensitivityPublic
+	}
+	if sensitivity != sensitivityPublic && sensitivity != sensitivityPrivate {
+		return RoutePreview{}, badInput("invalid sensitivity %q (want public|private)", sensitivity)
+	}
+	providers, err := c.db.ListProvidersForCapability(ctx, capability)
+	if err != nil {
+		return RoutePreview{}, err
+	}
+	policy, err := policyForCapability(ctx, c.db, capability)
+	if err != nil {
+		return RoutePreview{}, err
+	}
+	item := Item{Lane: lane, Sensitivity: sensitivity}
+	ex := make(map[string]bool, len(exclude))
+	for _, n := range exclude {
+		ex[n] = true
+	}
+	cands := explainProviders(providers, policy, item, time.Now(), defaultHealthTTL, ex)
+	winner := ""
+	for _, cand := range cands {
+		if cand.Selected {
+			winner = cand.Name
+			break
+		}
+	}
+	return RoutePreview{Capability: capability, Winner: winner, Candidates: cands}, nil
+}
+
 // SubmitLinkedIn is the manual-inbox collector (deliverable #3): upsert the post + discover the
 // spine item. Returns the item id.
 func (c *Core) SubmitLinkedIn(ctx context.Context, p LinkedInPost) (int, error) {
@@ -558,6 +603,9 @@ func NewSurfaceMux(core *Core, token string) http.Handler {
 	// Human-in-the-loop.
 	mux.HandleFunc("POST /v1/feedback/distillation", h.feedbackDistillation)
 	mux.HandleFunc("POST /v1/quarantine/review", h.reviewQuarantine)
+
+	// Router dry-run.
+	mux.HandleFunc("GET /v1/route/preview", h.routePreview)
 
 	// LinkedIn manual inbox.
 	mux.HandleFunc("POST /v1/linkedin/inbox", h.linkedinInbox)
@@ -855,6 +903,16 @@ func (h *httpSurface) reviewQuarantine(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeResult(w, okResult{OK: true}, h.core.ReviewQuarantineItem(r.Context(), req.ItemID, req.Signal))
+}
+
+func (h *httpSurface) routePreview(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	capability := q.Get("capability")
+	lane := q.Get("lane")
+	sensitivity := q.Get("sensitivity")
+	exclude := q["exclude"] // repeatable param: ?exclude=a&exclude=b
+	preview, err := h.core.RoutePreview(r.Context(), capability, lane, sensitivity, exclude)
+	writeResult(w, preview, err)
 }
 
 func (h *httpSurface) linkedinInbox(w http.ResponseWriter, r *http.Request) {

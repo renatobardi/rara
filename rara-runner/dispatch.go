@@ -93,7 +93,8 @@ func (d *Dispatcher) DispatchOnce(ctx context.Context) error {
 	}
 	for _, prov := range collectors {
 		if err := d.db.TouchCollectorAttempted(ctx, prov.Name); err != nil {
-			log.Printf("dispatch: attempt stamp %q: %v", prov.Name, err) // best-effort
+			log.Printf("dispatch: attempt stamp %q: %v — skipping wake (throttle protection)", prov.Name, err)
+			continue // don't wake without stamping — throttle would be bypassed
 		}
 		if err := d.runner.Run(ctx, buildRunRequest(prov)); err != nil {
 			log.Printf("dispatch: wake collector %q: %v", prov.Name, err) // best-effort; throttled by last_attempt_at

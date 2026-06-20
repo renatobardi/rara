@@ -50,9 +50,17 @@ type pgxExecer interface {
 
 // stampProviderCollected sets providers.last_collect_at = now() for the named provider.
 // Called on successful completion so the dispatcher knows the cadence actually ran.
+// Returns an error if the provider row does not exist, so a misconfigured name is
+// caught at runtime rather than silently succeeding with zero rows updated.
 func stampProviderCollected(ctx context.Context, db pgxExecer, name string) error {
-	_, err := db.Exec(ctx, `UPDATE providers SET last_collect_at = now() WHERE name = $1`, name)
-	return err
+	tag, err := db.Exec(ctx, `UPDATE providers SET last_collect_at = now() WHERE name = $1`, name)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("provider %q not found in providers table", name)
+	}
+	return nil
 }
 
 func main() {
@@ -105,7 +113,9 @@ func main() {
 	}
 
 	log.Println("ETL job completed successfully")
-	if err := stampProviderCollected(context.Background(), conn, "harvest"); err != nil {
+	stampCtx, stampCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer stampCancel()
+	if err := stampProviderCollected(stampCtx, conn, "harvest"); err != nil {
 		log.Printf("stamp provider collected: %v", err)
 	}
 }

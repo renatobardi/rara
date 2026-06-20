@@ -105,109 +105,219 @@ func (rt *Router) SelectForStep(ctx context.Context, capability string, item Ite
 	return ranked[0], true, nil
 }
 
-// policyFor returns the capability-scoped routing policy, falling back to the global
-// scope, then to a neutral default (equal cost<->quality weight, no fallback) so the
-// router always has a policy even before one is seeded.
-func (rt *Router) policyFor(ctx context.Context, capability string) (RoutingPolicy, error) {
-	if p, ok, err := rt.db.GetRoutingPolicy(ctx, capability); err != nil {
-		return RoutingPolicy{}, err
+// policyForCapability returns the capability-scoped routing policy, falling back to the global
+// scope, then to a neutral default (equal cost<->quality weight, no fallback) so the router
+// always has a policy even before one is seeded. Both Router and Core use this function.
+func policyForCapability(ctx context.Context, db Database, capability string) (RoutingPolicy, error) {
+	if p, ok, err := db.GetRoutingPolicy(ctx, capability); err != nil {
+		return RoutingPolicy{}, fmt.Errorf("routing policy for %q: %w", capability, err)
 	} else if ok {
 		return p, nil
 	}
-	if p, ok, err := rt.db.GetRoutingPolicy(ctx, policyScopeGlobal); err != nil {
-		return RoutingPolicy{}, err
+	if p, ok, err := db.GetRoutingPolicy(ctx, policyScopeGlobal); err != nil {
+		return RoutingPolicy{}, fmt.Errorf("global routing policy: %w", err)
 	} else if ok {
 		return p, nil
 	}
 	return RoutingPolicy{Scope: policyScopeGlobal, CostWeight: 0.5, QualityWeight: 0.5}, nil
 }
 
-// rankProviders returns the eligible, healthy providers for a routing decision in
-// preference order (best first). Filter, then order:
+// policyFor returns the routing policy for a capability. Delegates to policyForCapability.
+func (rt *Router) policyFor(ctx context.Context, capability string) (RoutingPolicy, error) {
+	return policyForCapability(ctx, rt.db, capability)
+}
+
+// Candidate is the explain-level view of a single provider in a routing decision.
+// explainProviders returns one per input provider; rankProviders derives its output
+// from these — no rule is duplicated between the two.
+type Candidate struct {
+	Name        string  `json:"name"`
+	Eligible    bool    `json:"eligible"`
+	Healthy     bool    `json:"healthy"`
+	Reason      string  `json:"reason"` // empty when eligible+healthy resident; informational for on_demand
+	CostCredit  float64 `json:"cost_credit"`
+	Quality     float64 `json:"quality"`
+	Score       float64 `json:"score"`
+	FallbackPos int     `json:"fallback_pos"` // 0 = not pinned; 1+ = position in fallback list
+	Selected    bool    `json:"selected"`
+}
+
+// explainProviders evaluates all providers for a routing decision without discarding
+// any: each Candidate carries eligibility, health, scoring, and fallback position, and
+// the winner is marked Selected. rankProviders derives its output from these, so the
+// selection rule lives here only.
 //
-//	excluded  — names in `exclude` are dropped (the dead provider on timeout->fallback)
-//	eligible  — hard constraints satisfied (constraintsSatisfied)
-//	healthy   — resident providers heartbeat fresh; on_demand are exempt (providerHealthy)
-//
-// Order: providers named in the policy's ordered `fallback` come first, in listed order
-// (an explicit operator failover chain that overrides scoring); the rest follow by
-// descending cost<->quality score, ties broken by name for determinism. It is pure — no
-// store access — so the whole selection policy is unit-tested without I/O.
-func rankProviders(providers []Provider, policy RoutingPolicy, item Item, now time.Time, healthTTL time.Duration, exclude map[string]bool) []Provider {
-	cands := make([]Provider, 0, len(providers))
-	for _, p := range providers {
-		if exclude[p.Name] {
-			continue
-		}
-		if !constraintsSatisfied(p, item) {
-			continue
-		}
-		if !providerHealthy(p, now, healthTTL) {
-			continue
-		}
-		cands = append(cands, p)
-	}
-	if len(cands) == 0 {
-		return nil
-	}
-	scores := scoreProviders(cands, policy)
+// Scoring uses min-max normalization over the eligible+healthy set (the same range
+// rankProviders would use), giving ineligible providers a comparable display score.
+// The sort key is: fallback-pinned first (ascending FallbackPos), then Score descending,
+// then Name for determinism — identical to rankProviders.
+func explainProviders(providers []Provider, policy RoutingPolicy, item Item, now time.Time, healthTTL time.Duration, exclude map[string]bool) []Candidate {
 	fbPos := fallbackPositions(policy.Fallback)
-	sort.SliceStable(cands, func(i, j int) bool {
-		pi, iIn := fbPos[cands[i].Name]
-		pj, jIn := fbPos[cands[j].Name]
-		if iIn && jIn {
-			return pi < pj // both pinned: explicit fallback order
+
+	// First pass: eligibility and health for every provider; collect the eligible+healthy
+	// set for score normalization.
+	type raw struct {
+		eligible bool
+		healthy  bool
+		reason   string
+	}
+	raws := make([]raw, len(providers))
+	eligibleSet := make([]Provider, 0, len(providers))
+
+	for i, p := range providers {
+		r := raw{healthy: true}
+		if exclude[p.Name] {
+			r.eligible = false
+			r.reason = "excluded"
+		} else {
+			r.eligible, r.reason = constraintsExplain(p, item)
 		}
-		if iIn != jIn {
-			return iIn // a fallback-listed provider precedes a non-listed one
+		hOk, hReason := providerHealthyExplain(p, now, healthTTL)
+		r.healthy = hOk
+		if r.eligible {
+			if !hOk {
+				r.reason = hReason
+			} else if hReason != "" {
+				r.reason = hReason // informational (on_demand: health exempt)
+			}
 		}
-		if si, sj := scores[cands[i].Name], scores[cands[j].Name]; si != sj {
-			return si > sj // higher score first
+		raws[i] = r
+		if r.eligible && r.healthy {
+			eligibleSet = append(eligibleSet, p)
 		}
-		return cands[i].Name < cands[j].Name // deterministic tie-break
-	})
+	}
+
+	// Score normalization over the eligible+healthy set (min-max on cost, same as rankProviders used).
+	var minCost, maxCost, span float64
+	if len(eligibleSet) > 0 {
+		minCost, maxCost = eligibleSet[0].Cost, eligibleSet[0].Cost
+		for _, p := range eligibleSet {
+			if p.Cost < minCost {
+				minCost = p.Cost
+			}
+			if p.Cost > maxCost {
+				maxCost = p.Cost
+			}
+		}
+		span = maxCost - minCost
+	}
+
+	costCredit := func(cost float64) float64 {
+		if span == 0 {
+			return 1.0
+		}
+		cc := 1 - (cost-minCost)/span
+		if cc < 0 {
+			cc = 0
+		} else if cc > 1 {
+			cc = 1
+		}
+		return cc
+	}
+
+	// Build candidates and find the winner by sorting the eligible+healthy subset.
+	cands := make([]Candidate, len(providers))
+	eligCands := make([]Candidate, 0, len(eligibleSet))
+	for i, p := range providers {
+		cc := costCredit(p.Cost)
+		fp := 0
+		if pos, ok := fbPos[p.Name]; ok {
+			fp = pos + 1 // 1-indexed
+		}
+		c := Candidate{
+			Name:        p.Name,
+			Eligible:    raws[i].eligible,
+			Healthy:     raws[i].healthy,
+			Reason:      raws[i].reason,
+			CostCredit:  cc,
+			Quality:     p.Quality,
+			Score:       policy.QualityWeight*p.Quality + policy.CostWeight*cc,
+			FallbackPos: fp,
+		}
+		cands[i] = c
+		if c.Eligible && c.Healthy {
+			eligCands = append(eligCands, c)
+		}
+	}
+
+	if len(eligCands) > 0 {
+		sort.SliceStable(eligCands, func(i, j int) bool {
+			return candidateLess(eligCands[i], eligCands[j])
+		})
+		winner := eligCands[0].Name
+		for i := range cands {
+			if cands[i].Name == winner {
+				cands[i].Selected = true
+				break
+			}
+		}
+	}
+
 	return cands
 }
 
-// scoreProviders maps each candidate to a cost<->quality score (higher is better). Quality
-// is already normalized in [0,1]; cost is min-max normalized across the candidate set and
-// inverted, so the cheapest candidate gets full cost credit and the dearest gets none. The
-// policy's weights trade the two off. With an all-equal cost set the cost term is neutral
-// (every candidate gets full credit) and quality alone decides.
-func scoreProviders(cands []Provider, policy RoutingPolicy) map[string]float64 {
-	minCost, maxCost := cands[0].Cost, cands[0].Cost
-	for _, p := range cands {
-		if p.Cost < minCost {
-			minCost = p.Cost
-		}
-		if p.Cost > maxCost {
-			maxCost = p.Cost
+// candidateLess is the sort key for eligible Candidates: fallback-pinned first (ascending
+// FallbackPos), then Score descending, then Name for determinism.
+func candidateLess(a, b Candidate) bool {
+	aIn := a.FallbackPos > 0
+	bIn := b.FallbackPos > 0
+	if aIn && bIn {
+		return a.FallbackPos < b.FallbackPos
+	}
+	if aIn != bIn {
+		return aIn
+	}
+	if a.Score != b.Score {
+		return a.Score > b.Score
+	}
+	return a.Name < b.Name
+}
+
+// rankProviders returns the eligible, healthy providers for a routing decision in
+// preference order (best first). It is a thin filter over explainProviders — all selection
+// rules live there; this function only extracts and sorts the eligible+healthy subset.
+func rankProviders(providers []Provider, policy RoutingPolicy, item Item, now time.Time, healthTTL time.Duration, exclude map[string]bool) []Provider {
+	explained := explainProviders(providers, policy, item, now, healthTTL, exclude)
+
+	provByName := make(map[string]Provider, len(providers))
+	for _, p := range providers {
+		provByName[p.Name] = p
+	}
+
+	eligible := make([]Candidate, 0, len(providers))
+	for _, c := range explained {
+		if c.Eligible && c.Healthy {
+			eligible = append(eligible, c)
 		}
 	}
-	span := maxCost - minCost
-	scores := make(map[string]float64, len(cands))
-	for _, p := range cands {
-		costCredit := 1.0 // all-equal costs: neutral, so quality decides
-		if span > 0 {
-			costCredit = 1 - (p.Cost-minCost)/span
-		}
-		scores[p.Name] = policy.QualityWeight*p.Quality + policy.CostWeight*costCredit
+	if len(eligible) == 0 {
+		return nil
 	}
-	return scores
+	sort.SliceStable(eligible, func(i, j int) bool {
+		return candidateLess(eligible[i], eligible[j])
+	})
+
+	result := make([]Provider, len(eligible))
+	for i, c := range eligible {
+		result[i] = provByName[c.Name]
+	}
+	return result
 }
 
 // providerConstraints is the parsed shape of providers.constraints. Three keys are
 // understood: `requires` (a runtime requirement), `accepts` (the item lanes this provider can
 // consume), and `sensitivity` (a third-party tag). Unknown keys are ignored, but an unknown
-// requirement VALUE fails closed (constraintsSatisfied).
+// requirement VALUE fails closed (constraintsExplain).
 type providerConstraints struct {
 	Requires    string   `json:"requires"`
 	Accepts     []string `json:"accepts"`
 	Sensitivity string   `json:"sensitivity"`
 }
 
-// constraintsSatisfied reports whether a provider can serve a given ITEM under the hard
-// constraints it declares. Three independent gates, all of which must pass:
+// constraintsExplain is the single source of truth for constraint evaluation. It returns
+// (satisfied, reason) where reason is empty on success and describes the first failing gate.
+//
+// Three independent gates, all of which must pass:
 //
 //  1. requires (runtime): asr-youtube declares {"requires":"residential"} because YouTube
 //     blocks audio download from datacenter IPs, so only runtime=local qualifies — a
@@ -223,13 +333,13 @@ type providerConstraints struct {
 // Fail-closed on the unknowns: malformed constraints or an unrecognized requirement value
 // make the provider ineligible, so the router never assigns a provider it cannot PROVE fits
 // (the item waits, with a clear error, rather than routing blind).
-func constraintsSatisfied(p Provider, item Item) bool {
+func constraintsExplain(p Provider, item Item) (bool, string) {
 	if len(p.Constraints) == 0 {
-		return true // no constraints declared: serves any item
+		return true, "" // no constraints declared: serves any item
 	}
 	var c providerConstraints
 	if err := json.Unmarshal(p.Constraints, &c); err != nil {
-		return false
+		return false, "constraint: malformed JSON"
 	}
 	// 1) runtime requirement
 	switch c.Requires {
@@ -237,20 +347,20 @@ func constraintsSatisfied(p Provider, item Item) bool {
 		// no hard runtime requirement declared
 	case constraintResidential:
 		if p.Runtime != runtimeLocal {
-			return false
+			return false, "constraint: requires residential"
 		}
 	default:
-		return false // unknown hard requirement: fail closed
+		return false, "constraint: unknown requirement"
 	}
 	// 2) source matching: a declared accepts-list must include the item's lane
 	if len(c.Accepts) > 0 && !containsString(c.Accepts, item.Lane) {
-		return false
+		return false, "constraint: lane not accepted"
 	}
 	// 3) sensitivity: third-party providers cannot process private content
 	if item.Sensitivity == sensitivityPrivate && c.Sensitivity == constraintThirdParty {
-		return false
+		return false, "constraint: third_party excluded for private"
 	}
-	return true
+	return true, ""
 }
 
 // containsString reports whether v is in xs.
@@ -263,26 +373,31 @@ func containsString(xs []string, v string) bool {
 	return false
 }
 
-// providerHealthy reports whether a provider is alive enough to receive work. on_demand
-// providers (Cloud Run, scale-to-zero) are asleep by design until the reconciler wakes
-// them, so they always pass the health gate at SELECTION time; their post-assignment
-// liveness is tracked per-step on item_steps.heartbeat_at (the reconciler's stale backstop).
+// providerHealthyExplain is the single source of truth for provider health. It returns
+// (healthy, reason) where reason is:
+//   - "on_demand: health exempt" for on_demand providers (informational; they are always healthy)
+//   - "heartbeat stale" for resident providers with an old heartbeat
+//   - "" for a fresh or never-seen resident (bootstrap grace)
 //
-// A resident provider (the Mac scribe, a VPC worker) is meant to be awake and heartbeating.
-// We can only call one DEAD once we have seen it alive and then lost it: a STALE heartbeat
-// (older than healthTTL) excludes it, so its work fails over. A provider we have NEVER heard
-// from gets bootstrap grace — it is treated as starting-up, not dead. Without that grace the
-// lane would deadlock: a resident only stamps its first heartbeat when it CLAIMS work, which
-// it can only do once the router has selected it. The worker becomes "known alive" on its
-// first claim (worker.go), after which staleness — the real failure signal — applies.
-func providerHealthy(p Provider, now time.Time, healthTTL time.Duration) bool {
+// providerHealthy wraps it for callers that only need the bool.
+//
+// on_demand providers (Cloud Run, scale-to-zero) are asleep by design until the reconciler
+// wakes them, so they always pass the health gate at SELECTION time. A resident provider
+// (the Mac scribe, a VPC worker) is meant to be awake and heartbeating. A STALE heartbeat
+// (older than healthTTL) excludes it; a provider we have NEVER heard from gets bootstrap
+// grace — treated as starting-up, not dead — to avoid the ovo-galinha deadlock (a resident
+// only stamps its first heartbeat when it CLAIMS work, which requires being selected first).
+func providerHealthyExplain(p Provider, now time.Time, healthTTL time.Duration) (bool, string) {
 	if p.Activation == activationOnDemand {
-		return true
+		return true, "on_demand: health exempt"
 	}
 	if p.HeartbeatAt == nil {
-		return true // bootstrap grace: never-seen != dead
+		return true, "" // bootstrap grace: never-seen != dead
 	}
-	return now.Sub(*p.HeartbeatAt) <= healthTTL
+	if now.Sub(*p.HeartbeatAt) > healthTTL {
+		return false, "heartbeat stale"
+	}
+	return true, ""
 }
 
 // fallbackPositions parses the policy's ordered fallback list (a JSON array of provider

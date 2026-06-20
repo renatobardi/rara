@@ -107,9 +107,10 @@ func TestDecodeB64URL(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 type MockDatabase struct {
-	emails  map[string]Email // keyed by message_id (UNIQUE)
-	err     error
-	stamped []string // provider names passed to StampProviderCollected
+	emails   map[string]Email // keyed by message_id (UNIQUE)
+	err      error
+	stampErr error    // returned by StampProviderCollected when set
+	stamped  []string // provider names passed to StampProviderCollected
 }
 
 func newMockDatabase() *MockDatabase { return &MockDatabase{emails: map[string]Email{}} }
@@ -124,7 +125,7 @@ func (m *MockDatabase) UpsertEmail(_ context.Context, e Email) error {
 
 func (m *MockDatabase) StampProviderCollected(_ context.Context, name string) error {
 	m.stamped = append(m.stamped, name)
-	return nil
+	return m.stampErr
 }
 
 var _ Database = (*MockDatabase)(nil)
@@ -231,5 +232,23 @@ func TestRunStampsProviderOnSuccess(t *testing.T) {
 	}
 	if len(db.stamped) != 1 || db.stamped[0] != "courier" {
 		t.Errorf("stamped = %v, want [courier]", db.stamped)
+	}
+}
+
+func TestRunStampErrorIsBestEffort(t *testing.T) {
+	// StampProviderCollected errors must not abort the run — stamp is best-effort.
+	ctx := context.Background()
+	db := newMockDatabase()
+	db.stampErr = errors.New("provider not found")
+	api := &fakeGmail{
+		ids:      []string{"a"},
+		messages: map[string]Email{"a": {MessageID: "a", Body: "body"}},
+	}
+	n, err := run(ctx, db, api, "", 100)
+	if err != nil {
+		t.Fatalf("run returned error on stamp failure (should be best-effort): %v", err)
+	}
+	if n != 1 {
+		t.Errorf("catalogued %d, want 1", n)
 	}
 }

@@ -341,6 +341,7 @@ type MockDatabase struct {
 	saveErr   error
 	srcErr    error
 	stamped   []string
+	stampErr  error
 }
 
 func newMockDatabase() *MockDatabase {
@@ -370,7 +371,7 @@ func (m *MockDatabase) SaveItem(ctx context.Context, it NewsItem) error {
 
 func (m *MockDatabase) StampProviderCollected(ctx context.Context, name string) error {
 	m.stamped = append(m.stamped, name)
-	return nil
+	return m.stampErr
 }
 
 // MockFetcher returns preconfigured bytes per URL, or a per-URL error. calls counts
@@ -820,5 +821,28 @@ func TestRunBatchStampsProviderOnSuccess(t *testing.T) {
 	}
 	if len(h.db.stamped) != 1 || h.db.stamped[0] != "feed" {
 		t.Errorf("stamped = %v, want [feed]", h.db.stamped)
+	}
+}
+
+// Issue 1: stamp must also fire when there are no enabled sources (best-effort
+// successful run).
+func TestRunBatchStampsWhenNoSources(t *testing.T) {
+	h := NewFeedHarness(t) // no sources added
+	if err := h.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if len(h.db.stamped) != 1 || h.db.stamped[0] != "feed" {
+		t.Errorf("stamped = %v, want [feed]", h.db.stamped)
+	}
+}
+
+// Issue 3: stampErr field — when StampProviderCollected returns an error the
+// batch run must still return nil (best-effort).
+func TestRunBatchStampErrorIsNonFatal(t *testing.T) {
+	src := rssSource()
+	h := NewFeedHarness(t).WithSource(src).WithFetch(src.Endpoint, rssFixture)
+	h.db.stampErr = errors.New("provider not found")
+	if err := h.Execute(); err != nil {
+		t.Errorf("execute returned %v, want nil (stamp error must be non-fatal)", err)
 	}
 }

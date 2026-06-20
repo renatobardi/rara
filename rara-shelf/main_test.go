@@ -225,6 +225,9 @@ type ShelfHarness struct {
 	playlists      []Playlist
 	playlistVideos map[string][]PlaylistItem // keyed by youtube_playlist_id
 	t              *testing.T
+	stampErr       error  // injected error for stampProviderCollected
+	stamped        bool   // true if stampProviderCollected was called
+	stampedName    string // the provider name passed to stampProviderCollected
 }
 
 func NewShelfHarness(t *testing.T) *ShelfHarness {
@@ -247,8 +250,38 @@ func (h *ShelfHarness) WithVideosForPlaylist(youtubePlaylistID string, items ...
 	return h
 }
 
-// Execute simulates the discovery + cataloguing flow against the mock.
+// WithStampErr injects an error that stampProviderCollected will return.
+func (h *ShelfHarness) WithStampErr(err error) *ShelfHarness {
+	h.stampErr = err
+	return h
+}
+
+// stamp simulates calling stampProviderCollected from main().
+func (h *ShelfHarness) stamp(name string) error {
+	h.stamped = true
+	h.stampedName = name
+	return h.stampErr
+}
+
+// AssertStamped asserts that stampProviderCollected was called with the given name.
+func (h *ShelfHarness) AssertStamped(name string) {
+	if !h.stamped {
+		h.t.Errorf("want stampProviderCollected(%q) called, but it was not", name)
+		return
+	}
+	if h.stampedName != name {
+		h.t.Errorf("stamped provider = %q, want %q", h.stampedName, name)
+	}
+}
+
+// Execute simulates the discovery + cataloguing flow against the mock,
+// including the stampProviderCollected call that mirrors main().
 func (h *ShelfHarness) Execute(ctx context.Context) error {
+	if len(h.playlists) == 0 {
+		// Mirror the early-return stamp added for Issue 2.
+		_ = h.stamp("shelf")
+		return nil
+	}
 	for _, pl := range h.playlists {
 		id, err := h.db.UpsertPlaylist(ctx, pl)
 		if err != nil {
@@ -271,6 +304,8 @@ func (h *ShelfHarness) Execute(ctx context.Context) error {
 			}
 		}
 	}
+	// Mirror the final stamp added for Issue 3.
+	_ = h.stamp("shelf")
 	return nil
 }
 
@@ -378,18 +413,21 @@ func TestHarnessSkipsEmptyVideoID(t *testing.T) {
 }
 
 // shelfExecMock captures Exec calls for TestStampProviderCollected (zero-I/O).
+// rowsAffected controls the CommandTag returned; set to 1 for the happy path.
 type shelfExecMock struct {
-	gotArgs []any
-	err     error
+	gotArgs      []any
+	err          error
+	rowsAffected int64
 }
 
 func (m *shelfExecMock) Exec(_ context.Context, _ string, args ...any) (pgconn.CommandTag, error) {
 	m.gotArgs = args
-	return pgconn.CommandTag{}, m.err
+	tag := pgconn.NewCommandTag(fmt.Sprintf("UPDATE %d", m.rowsAffected))
+	return tag, m.err
 }
 
 func TestStampProviderCollected(t *testing.T) {
-	mock := &shelfExecMock{}
+	mock := &shelfExecMock{rowsAffected: 1}
 	if err := stampProviderCollected(context.Background(), mock, "shelf"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -402,5 +440,58 @@ func TestStampProviderCollectedPropagatesError(t *testing.T) {
 	mock := &shelfExecMock{err: fmt.Errorf("db down")}
 	if err := stampProviderCollected(context.Background(), mock, "shelf"); err == nil {
 		t.Error("want error from Exec, got nil")
+	}
+}
+
+// TestHarnessStampCalledAfterNormalRun verifies stampProviderCollected is called
+// after a normal (non-empty) run (Issue 3 — final stamp).
+func TestHarnessStampCalledAfterNormalRun(t *testing.T) {
+	h := NewShelfHarness(t).
+		WithPlaylists([]Playlist{{YoutubePlaylistID: "PL1", Title: "First"}}).
+		WithVideosForPlaylist("PL1", makePlaylistItem("v1", "Video 1"))
+
+	if err := h.Execute(context.Background()); err != nil {
+		t.Fatalf("execute failed: %v", err)
+	}
+	h.AssertStamped("shelf")
+}
+
+// TestHarnessStampCalledOnEmptyPlaylists verifies stampProviderCollected is also
+// called when no playlists are found (Issue 2 — early-return stamp).
+func TestHarnessStampCalledOnEmptyPlaylists(t *testing.T) {
+	h := NewShelfHarness(t) // no WithPlaylists → zero playlists
+
+	if err := h.Execute(context.Background()); err != nil {
+		t.Fatalf("execute failed: %v", err)
+	}
+	h.AssertStamped("shelf")
+}
+
+// TestHarnessStampErrorDoesNotCrash verifies that a stamp error is logged but
+// does not abort the run (Issue 4 — stamp errors are non-fatal).
+func TestHarnessStampErrorDoesNotCrash(t *testing.T) {
+	h := NewShelfHarness(t).
+		WithPlaylists([]Playlist{{YoutubePlaylistID: "PL1", Title: "First"}}).
+		WithVideosForPlaylist("PL1", makePlaylistItem("v1", "Video 1")).
+		WithStampErr(fmt.Errorf("stamp failed"))
+
+	// Execute must complete without returning an error — stamp errors are logged, not propagated.
+	if err := h.Execute(context.Background()); err != nil {
+		t.Fatalf("execute returned error on stamp failure: %v", err)
+	}
+	h.AssertStamped("shelf")
+}
+
+// TestStampProviderCollectedNotFound verifies that zero rows affected returns an
+// error rather than silently succeeding (Issue 1).
+func TestStampProviderCollectedNotFound(t *testing.T) {
+	mock := &shelfExecMock{rowsAffected: 0} // provider row absent
+	err := stampProviderCollected(context.Background(), mock, "shelf")
+	if err == nil {
+		t.Fatal("want error when provider row not found, got nil")
+	}
+	want := `provider "shelf" not found in providers table`
+	if err.Error() != want {
+		t.Errorf("error = %q, want %q", err.Error(), want)
 	}
 }

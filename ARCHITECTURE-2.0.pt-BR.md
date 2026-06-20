@@ -4,8 +4,7 @@ Documento mestre da arquitetura 2.0 do `rara`. Reflete **todas as decisões fina
 contradição em docs antigos foi removida nesta consolidação. Os docs de detalhe (linkados abaixo)
 aprofundam cada parte sem divergir deste.
 
-> **Status:** o motor (`rara-core`) está **code-complete** (7 fases de build, validadas, no `main`;
-> schema migrado no Neon). O que falta é a **reestruturação bridge-total + o deploy** — ver §12.
+> **Status:** sistema em produção. VPC Oracle + Mac + Cloud Run ativos; todos os workers deployados.
 
 ## Índice dos docs canônicos
 
@@ -20,8 +19,8 @@ aprofundam cada parte sem divergir deste.
 | Contrato rara → KURA | [KURA-CONTRACT.md](./KURA-CONTRACT.md) |
 | Modelo de dados / fluxos (diagramas) | [DATA-MODEL.mermaid.md](./DATA-MODEL.mermaid.md) · [FLOWS.mermaid.md](./FLOWS.mermaid.md) |
 
-Docs do 1.0 (`ARCHITECTURE.md`, `DATABASE_SCHEMA.md`, `INFRASTRUCTURE.md`) ficam como histórico do
-sistema legado.
+Docs do 1.0 (`ARCHITECTURE.md`, `DATABASE_SCHEMA.md`) ficam como histórico do sistema legado.
+`INFRASTRUCTURE.md` foi atualizado para o estado 2.0 atual.
 
 ---
 
@@ -149,14 +148,12 @@ constraint.
 
 | Host | Roda | 
 |---|---|
-| **VPC Oracle** (always-on) | `core` (orquestra + superfície + console) + `hone` (cron) + Tailscale |
-| **Mac** (residente) | `scribe`/asr-youtube, `sift`-local, `distill`-local, Ollama, CLI |
-| **GCP Cloud Run** (on_demand) | todos os coletores + `scribe`/asr-direct + `glean` + `sift`/distill de terceiro + LiteLLM |
+| **VPC Oracle** (always-on) | `core` + `console` + `runner` (dispatch + agent) + workers VPC-local (via Docker) + LiteLLM container |
+| **Mac** (residente) | `scribe`/asr-youtube (launchd, IP residencial) |
+| **GCP Cloud Run** (on_demand) | coletores + `sift` + `distill` + `scribe`/asr-direct + `glean` + `hone` + LiteLLM Service |
 | **Neon** | estado · config · domínio (de tudo) |
 
-Matriz com ondas em [DEPLOY-MATRIX](./DEPLOY-MATRIX.pt-BR.md); roteiro em
-[DEPLOY-PHASES](./DEPLOY-PHASES.pt-BR.md). **Marco de "começar a usar": fim da onda 2** (podcast
-público, 100% Cloud Run, sem depender do Mac).
+Detalhes de deploy em [INFRASTRUCTURE.md](./INFRASTRUCTURE.md).
 
 ## 9. Anti-lock-in (3 camadas)
 
@@ -178,12 +175,39 @@ SvelteKit embutido num Go via `embed.FS`; consome a superfície do core; acesso 
 visão geral, pipeline, quarentena, distillations (thumbs), curadoria (perfil + regras), fontes/flows,
 providers/roteamento, auditoria.
 
-## 12. Estado atual & próximos passos
+## 12. Estado de deploy e execução
 
-- **Pronto (code):** 7 fases de build do `rara-core` no `main`, validadas; schema no Neon.
-- **A fazer (a reestruturação bridge-total + deploy):**
-  - **P1a** — extrair o SDK `rara-addon` + corrigir o claim por `(capability, assigned_provider)`.
-  - **P1b** — Activators reais (Cloud Run `run` + poke no tailnet).
-  - **P1c** — separar as capacidades em apps (nomes do §5), usando o SDK.
-  - **P2–P7** — imagem/CI, VPC+Tailscale+seed, inferência (LiteLLM por host + shim CLI + Ollama),
-    Cloud Run jobs, Mac, acender as raias. Depois → **console** (C0…).
+### VPC Oracle (always-on, systemd, arm64 nativo)
+
+| Serviço | Comando | Papel |
+|---|---|---|
+| `rara-core` | `core-job reconcile --loop` | Reconciler + superfície HTTP/MCP no Tailnet |
+| `rara-console` | `console` | Painel operador: SvelteKit SPA embarcado em Go, Tailnet |
+| `rara-runner-dispatch` | `rara-runner dispatch` | Lê `item_steps` + coletores vencidos; aciona por transporte: `jobs:run` (Cloud Run) ou poke HTTP (VPC agent) |
+| `rara-runner-agent` | `rara-runner agent` | Daemon HTTP Tailnet → `docker run` para workers VPC-local |
+
+Binários nativos arm64, sem Docker. Deploy: rsync + SSH + systemd (`deploy-core.yml` e `deploy-console.yml` em push a `main`; `deploy-runner.yml` é `workflow_dispatch` deliberado). LiteLLM roda como container Docker na VPC (`groq-fast` para gates, `groq-llama` para distill).
+
+### Cloud Run Jobs (on_demand, amd64, acionados pelo dispatcher)
+
+| Job(s) | App | Capability |
+|---|---|---|
+| `rara-harvest`, `rara-shelf`, `rara-feed` | harvest / shelf / feed | coletar (YouTube API, Spotify, RSS) |
+| `rara-dial` | dial | coletar (podcasts) |
+| `rara-courier` | courier | coletar (email) |
+| `rara-clip` | clip | coletar (LinkedIn via Bright Data) |
+| `rara-gate-barato`, `rara-gate-rico` | sift | gate_barato / gate_rico |
+| `rara-distill` | distill | destilar |
+| `rara-asr-direct-audio` | scribe | transcrever (áudio via URL direta) |
+| `rara-extrair-email`, `rara-extrair-linkedin`, `rara-extrair-news` | glean | extrair |
+| `rara-hone` | hone | revise (Cloud Scheduler diário) |
+
+Cloud Run **Service** `litellm`: gateway de inferência para os workers cloud (escala a zero). Workers 2.0 (sift, distill, scribe, glean) usam imagens multi-arch (`buildx`, amd64 + arm64) — um manifest list serve Cloud Run e VPC.
+
+### Mac (native, launchd)
+
+`asr-youtube` (rara-scribe): launchd `com.rara.scribe`, diário 02:00. yt-dlp + ffmpeg nativos. IP residencial é constraint hard — sem fallback para datacenter.
+
+### Neon (Postgres)
+
+Endpoint direto (sem `-pooler`), pgx simple protocol. Branch-por-PR via GitHub integration. Migrations aplicadas por `database-*.yml` (BEGIN/ROLLBACK em PR; aplica no merge a `main`). `core-job seed` é idempotente e não destrutivo — preserva `runner_url`, env, heartbeats e `last_collect_at`.

@@ -95,7 +95,7 @@ jobs:
       - name: Vulnerability scan (govulncheck)
         run: |
           cd rara-sift
-          go install golang.org/x/vuln/cmd/govulncheck@latest
+          go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
           "$(go env GOPATH)/bin/govulncheck" ./...
 
       - name: Secret scan (gitleaks)

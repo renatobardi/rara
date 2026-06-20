@@ -352,6 +352,88 @@ func TestSeedPreservesLastCollectAtOnReseed(t *testing.T) {
 	}
 }
 
+// TestSeedCollectorRetryIntervalSeeded verifies every scheduled collector has
+// retry_interval_seconds=1800 after seeding, and that non-collector providers leave it nil.
+// Mirrors TestCollectorCadencesSeeded.
+func TestSeedCollectorRetryIntervalSeeded(t *testing.T) {
+	ctx := context.Background()
+	db := newMockDatabase()
+	for _, fn := range []func(context.Context, Database) error{
+		SeedYouTubeLane, SeedPodcastLane, SeedEmailLane, SeedNewsLane, SeedLinkedInLane,
+	} {
+		if err := fn(ctx, db); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+	}
+
+	const wantRetry = 1800
+	collectors := []string{provHarvest, provShelf, provDial, provFeed, provCourier, provBrightDataLinked}
+	for _, name := range collectors {
+		p, ok := db.providers[name]
+		if !ok {
+			t.Errorf("collector provider %q not seeded", name)
+			continue
+		}
+		if p.RetryIntervalSeconds == nil {
+			t.Errorf("provider %q: RetryIntervalSeconds is nil, want %d", name, wantRetry)
+		} else if *p.RetryIntervalSeconds != wantRetry {
+			t.Errorf("provider %q: RetryIntervalSeconds = %d, want %d", name, *p.RetryIntervalSeconds, wantRetry)
+		}
+	}
+	// Non-collectors must not have a retry interval set.
+	nonCollectors := []string{provDistill, provDistillLocal, provGateBarato, provGateBaratoLocal, provGateRico, provGateRicoLocal}
+	for _, name := range nonCollectors {
+		p, ok := db.providers[name]
+		if !ok {
+			t.Errorf("provider %q not seeded", name)
+			continue
+		}
+		if p.RetryIntervalSeconds != nil {
+			t.Errorf("provider %q: RetryIntervalSeconds = %d, want nil (non-collector)", name, *p.RetryIntervalSeconds)
+		}
+	}
+}
+
+// TestSeedPreservesLastAttemptAtOnReseed guards against re-seed zeroing last_attempt_at on
+// collector providers. last_attempt_at is stamped by the dispatcher on every wake attempt;
+// zeroing it resets the retry throttle (a collector in backoff would be dispatched immediately).
+// Mirrors TestSeedPreservesLastCollectAtOnReseed.
+func TestSeedPreservesLastAttemptAtOnReseed(t *testing.T) {
+	ctx := context.Background()
+	db := newMockDatabase()
+	for _, fn := range []func(context.Context, Database) error{
+		SeedYouTubeLane, SeedPodcastLane, SeedEmailLane, SeedNewsLane, SeedLinkedInLane,
+	} {
+		if err := fn(ctx, db); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+	}
+	// Simulate dispatcher stamping last_attempt_at on each collector after first seed.
+	now := time.Now()
+	collectors := []string{provHarvest, provShelf, provDial, provFeed, provCourier, provBrightDataLinked}
+	for _, name := range collectors {
+		if _, ok := db.providers[name]; !ok {
+			t.Fatalf("precondition: provider %q not seeded", name)
+		}
+		p := db.providers[name]
+		p.LastAttemptAt = &now
+		db.providers[name] = p
+	}
+	// Re-seed must NOT zero last_attempt_at (retry throttle must survive).
+	for _, fn := range []func(context.Context, Database) error{
+		SeedYouTubeLane, SeedPodcastLane, SeedEmailLane, SeedNewsLane, SeedLinkedInLane,
+	} {
+		if err := fn(ctx, db); err != nil {
+			t.Fatalf("re-seed: %v", err)
+		}
+	}
+	for _, name := range collectors {
+		if db.providers[name].LastAttemptAt == nil {
+			t.Errorf("re-seed zeroed LastAttemptAt on %q; dispatcher retry throttle must survive re-seed", name)
+		}
+	}
+}
+
 // TestSeedVPCLocalProvidersGetRunnerURLFromEnv guards against re-seed zeroing runner_url on
 // the three VPC on_demand providers. runner_url is the tailnet endpoint the dispatcher POSTs
 // to wake a worker; zeroing it causes "no transport path" dispatch failures.

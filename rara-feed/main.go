@@ -448,6 +448,9 @@ func runBatch(ctx context.Context, db Database, fetch Fetcher, cfg Config) error
 	sources = filterSources(sources, cfg.SourcesFilter)
 	if len(sources) == 0 {
 		log.Println("No enabled feed sources to process")
+		if err := db.StampProviderCollected(ctx, "feed"); err != nil {
+			log.Printf("Warning: failed to stamp provider collected: %v\n", err)
+		}
 		return nil
 	}
 	now := cfg.now()
@@ -1020,8 +1023,14 @@ func (d *pgxDatabase) SaveItem(ctx context.Context, it NewsItem) error {
 
 func (d *pgxDatabase) StampProviderCollected(ctx context.Context, name string) error {
 	const q = `UPDATE providers SET last_collect_at = now() WHERE name = $1`
-	_, err := d.conn.Exec(ctx, q, name)
-	return err
+	tag, err := d.conn.Exec(ctx, q, name)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("provider %q not found in providers table", name)
+	}
+	return nil
 }
 
 func nullStr(s string) *string {

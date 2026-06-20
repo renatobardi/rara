@@ -31,11 +31,13 @@ func (f *fakeCollector) FetchPosts(_ context.Context) ([]LinkedInPost, error) {
 
 // mockDatabase is the Neon seam, mocked: linkedin_posts as a map keyed on the URL, so the upsert
 // is idempotent exactly like the real ON CONFLICT (url). failOn forces a per-post upsert error.
-// stamped records which provider names were passed to StampProviderCollected.
+// stamped records which provider names were passed to StampProviderCollected. stampErr, if set,
+// is returned by StampProviderCollected to simulate a provider-not-found or DB error.
 type mockDatabase struct {
-	posts   map[string]LinkedInPost
-	failOn  string
-	stamped []string
+	posts    map[string]LinkedInPost
+	failOn   string
+	stamped  []string
+	stampErr error
 }
 
 func newMockDatabase() *mockDatabase { return &mockDatabase{posts: map[string]LinkedInPost{}} }
@@ -50,7 +52,7 @@ func (m *mockDatabase) UpsertLinkedInPost(_ context.Context, p LinkedInPost) err
 
 func (m *mockDatabase) StampProviderCollected(_ context.Context, name string) error {
 	m.stamped = append(m.stamped, name)
-	return nil
+	return m.stampErr
 }
 
 // ---------------------------------------------------------------------------
@@ -297,6 +299,22 @@ func TestFetchPostsNoURLs(t *testing.T) {
 	t.Setenv(envBrightDataURLs, "")
 	if _, err := newBrightDataLinkedInSource().FetchPosts(context.Background()); err == nil {
 		t.Error("FetchPosts with no URLs should error rather than run the CLI")
+	}
+}
+
+// A StampProviderCollected error must not propagate — the stamp is best-effort. run must still
+// return nil so the crawl is considered successful (all posts were catalogued).
+func TestRunStampErrorIsNotFatal(t *testing.T) {
+	ctx := context.Background()
+	db := newMockDatabase()
+	db.stampErr = errors.New("provider \"clip\" not found in providers table")
+	collector := &fakeCollector{posts: []LinkedInPost{
+		{URL: urlA, Author: authorRenato, Text: "on platform engineering"},
+	}}
+
+	_, err := run(ctx, db, collector)
+	if err != nil {
+		t.Fatalf("stamp error must not be fatal: run returned %v", err)
 	}
 }
 
