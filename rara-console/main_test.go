@@ -1308,12 +1308,12 @@ func fakeC4CoreReturns4xx(t *testing.T) *httptest.Server {
 	return srv
 }
 
-func TestProvidersProxiesWithBearer(t *testing.T) {
+func TestWorkersProxiesWithBearer(t *testing.T) {
 	core := fakeC4Core(t, "secret")
 	s := &server{coreURL: core.URL, token: "secret", client: core.Client()}
 
 	rec := httptest.NewRecorder()
-	s.handleProviders(rec, httptest.NewRequest("GET", "/api/providers", nil))
+	s.handleWorkers(rec, httptest.NewRequest("GET", "/api/workers", nil))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d, body=%s", rec.Code, rec.Body)
@@ -1327,48 +1327,48 @@ func TestProvidersProxiesWithBearer(t *testing.T) {
 	}
 }
 
-func TestProvidersNeverLeaksToken(t *testing.T) {
+func TestWorkersNeverLeaksToken(t *testing.T) {
 	core := fakeC4Core(t, "supersecret")
 	s := &server{coreURL: core.URL, token: "supersecret", client: core.Client()}
 
 	rec := httptest.NewRecorder()
-	s.handleProviders(rec, httptest.NewRequest("GET", "/api/providers", nil))
+	s.handleWorkers(rec, httptest.NewRequest("GET", "/api/workers", nil))
 
 	if body := rec.Body.String(); contains(body, "supersecret") {
 		t.Errorf("response leaked the surface token: %s", body)
 	}
 }
 
-func TestProvidersReturns502WhenCoreUnreachable(t *testing.T) {
+func TestWorkersReturns502WhenCoreUnreachable(t *testing.T) {
 	s := &server{coreURL: "http://127.0.0.1:1", token: "secret", client: http.DefaultClient}
 
 	rec := httptest.NewRecorder()
-	s.handleProviders(rec, httptest.NewRequest("GET", "/api/providers", nil))
+	s.handleWorkers(rec, httptest.NewRequest("GET", "/api/workers", nil))
 
 	if rec.Code != http.StatusBadGateway {
 		t.Errorf("status=%d, want 502", rec.Code)
 	}
 }
 
-func TestUpsertProviderProxiesPut(t *testing.T) {
+func TestUpsertWorkerProxiesPut(t *testing.T) {
 	core := fakeC4Core(t, "secret")
 	s := &server{coreURL: core.URL, token: "secret", client: core.Client()}
 
 	body := strings.NewReader(`{"name":"test","capability":"destilar","runtime":"vpc","activation":"resident","cost":1,"quality":0.9,"latency_ms":200,"enabled":true}`)
 	rec := httptest.NewRecorder()
-	s.handleUpsertProvider(rec, httptest.NewRequest("PUT", "/api/providers", body))
+	s.handleUpsertWorker(rec, httptest.NewRequest("PUT", "/api/workers", body))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d, body=%s", rec.Code, rec.Body)
 	}
 }
 
-func TestUpsertProviderPropagates4xx(t *testing.T) {
+func TestUpsertWorkerPropagates4xx(t *testing.T) {
 	core := fakeC4CoreReturns4xx(t)
 	s := &server{coreURL: core.URL, token: "secret", client: core.Client()}
 
 	rec := httptest.NewRecorder()
-	s.handleUpsertProvider(rec, httptest.NewRequest("PUT", "/api/providers", strings.NewReader(`{"name":"bad"}`)))
+	s.handleUpsertWorker(rec, httptest.NewRequest("PUT", "/api/workers", strings.NewReader(`{"name":"bad"}`)))
 
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("status=%d, want 400", rec.Code)

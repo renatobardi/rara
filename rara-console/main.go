@@ -370,8 +370,8 @@ func (s *server) handleUpsertGateRule(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(body)
 }
 
-// handleProviders proxies GET /v1/providers — list of all providers (config-as-data).
-func (s *server) handleProviders(w http.ResponseWriter, r *http.Request) {
+// handleWorkers proxies GET /v1/providers — list of all workers (config-as-data).
+func (s *server) handleWorkers(w http.ResponseWriter, r *http.Request) {
 	body, err := s.fetchCore(r.Context(), "/v1/providers")
 	if err != nil {
 		badGateway(w, err)
@@ -380,9 +380,9 @@ func (s *server) handleProviders(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, json.RawMessage(body))
 }
 
-// handleUpsertProvider proxies PUT /v1/providers with bearer injected server-side.
+// handleUpsertWorker proxies PUT /v1/providers with bearer injected server-side.
 // Core 4xx (e.g. invalid enum) propagates; only transport errors become 502.
-func (s *server) handleUpsertProvider(w http.ResponseWriter, r *http.Request) {
+func (s *server) handleUpsertWorker(w http.ResponseWriter, r *http.Request) {
 	status, body, err := s.putCore(r.Context(), "/v1/providers", r.Body)
 	if err != nil {
 		badGateway(w, err)
@@ -725,8 +725,9 @@ func main() {
 	mux.HandleFunc("POST /api/interest-profile/approve", s.handleApproveInterestProfile)
 	mux.HandleFunc("GET /api/gate-rules", s.handleGateRules)
 	mux.HandleFunc("PUT /api/gate-rules", s.handleUpsertGateRule)
-	mux.HandleFunc("GET /api/providers", s.handleProviders)
-	mux.HandleFunc("PUT /api/providers", s.handleUpsertProvider)
+	// /api/workers is the BFF surface; proxies to /v1/providers in core (semantic rename).
+	mux.HandleFunc("GET /api/workers", s.handleWorkers)
+	mux.HandleFunc("PUT /api/workers", s.handleUpsertWorker)
 	mux.HandleFunc("GET /api/routing-policies", s.handleRoutingPolicies)
 	mux.HandleFunc("PUT /api/routing-policies", s.handleUpsertRoutingPolicy)
 	mux.HandleFunc("GET /api/decisions", s.handleDecisionsFeed)
