@@ -366,7 +366,7 @@ func TestMigration014ProviderWorker(t *testing.T) {
 	if strings.Contains(stmt, "NOT NULL") {
 		t.Errorf("worker must be nullable on add, got: %q", stmt)
 	}
-	// Idempotent backfill: UPDATE guarded by worker IS NULL OR worker = ''.
+	// Idempotent backfill: UPDATE guarded by worker IS NULL (new column is always NULL on first run).
 	if !strings.Contains(sql, "WHERE worker IS NULL") {
 		t.Error("migration 014 must have an idempotent backfill guarded on worker IS NULL")
 	}

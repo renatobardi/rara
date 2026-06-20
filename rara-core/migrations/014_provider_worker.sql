@@ -19,10 +19,10 @@ BEGIN;
 ALTER TABLE providers
     ADD COLUMN IF NOT EXISTS worker VARCHAR(48);
 
--- Idempotent backfill: only touch rows that are still NULL (or were set to empty
--- by an older buggy migration — guard on both). Safe to re-run.
+-- Idempotent backfill: only touch rows that are still NULL. Safe to re-run because
+-- a newly added column starts as NULL; on second run all rows already have a value.
 UPDATE providers
    SET worker = regexp_replace(name, '-local$', '')
- WHERE worker IS NULL OR worker = '';
+ WHERE worker IS NULL;
 
 COMMIT;
