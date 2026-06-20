@@ -10,7 +10,8 @@
 		{ label: t.nav.quarantine, href: '/quarentena' },
 		{ label: t.nav.distillations, href: '/distillations' },
 		{ label: t.nav.curation, href: '/curadoria' },
-		{ label: t.nav.providers, href: '/providers' },
+		{ label: t.nav.workers, href: '/workers' },
+		{ label: t.nav.agents, href: '/agents' },
 		{ label: t.nav.audit, href: '/auditoria' }
 	];
 

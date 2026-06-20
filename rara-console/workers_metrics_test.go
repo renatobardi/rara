@@ -248,13 +248,23 @@ func TestRoutePreviewForwardsSensitivity(t *testing.T) {
 	core, captured := fakeWorkersCore(t, "tok")
 	s := &server{coreURL: core.URL, token: "tok", client: core.Client()}
 
-	rec := doRoutePreview(s, "capability=distill&sensitivity=high")
+	rec := doRoutePreview(s, "capability=distill&sensitivity=public")
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
 	}
-	if !strings.Contains(*captured, "sensitivity=high") {
+	if !strings.Contains(*captured, "sensitivity=public") {
 		t.Errorf("sensitivity param not forwarded; core received: %q", *captured)
+	}
+}
+
+func TestRoutePreviewRejectsInvalidSensitivity(t *testing.T) {
+	s := &server{coreURL: "http://127.0.0.1:1", token: "x", client: http.DefaultClient}
+
+	rec := doRoutePreview(s, "capability=distill&sensitivity=high")
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", rec.Code, rec.Body.String())
 	}
 }
 

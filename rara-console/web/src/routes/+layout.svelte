@@ -37,7 +37,8 @@
 		{ section: t.nav.secTrain },
 		{ icon: '◐', label: t.nav.curation, href: '/curadoria' },
 		{ icon: '⇄', label: t.nav.sources, href: '/fontes-flows' },
-		{ icon: '⚙', label: t.nav.providers, href: '/providers' },
+		{ icon: '⚡', label: t.nav.workers, href: '/workers' },
+		{ icon: '◆', label: t.nav.agents, href: '/agents' },
 		{ section: t.nav.secSystem },
 		{ icon: '≣', label: t.nav.audit, href: '/auditoria' },
 		{ icon: '⚙', label: t.nav.settings, href: '/configuracoes' }
@@ -49,7 +50,8 @@
 		'/quarentena': t.nav.quarantine,
 		'/distillations': t.nav.distillations,
 		'/curadoria': t.nav.curation,
-		'/providers': t.nav.providers,
+		'/workers': t.nav.workers,
+		'/agents': t.nav.agents,
 		'/fontes-flows': t.nav.sources,
 		'/auditoria': t.nav.audit,
 		'/configuracoes': t.settings.title

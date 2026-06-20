@@ -607,6 +607,10 @@ func (s *server) handleRoutePreview(w http.ResponseWriter, r *http.Request) {
 		q.Set("lane", v)
 	}
 	if v := r.URL.Query().Get("sensitivity"); v != "" {
+		if v != "public" && v != "private" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "sensitivity must be 'public' or 'private'"})
+			return
+		}
 		q.Set("sensitivity", v)
 	}
 	for _, ex := range r.URL.Query()["exclude"] {
