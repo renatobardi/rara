@@ -378,8 +378,14 @@ type pgxDatabase struct{ conn *pgx.Conn }
 // collection run for this agent.
 func (d *pgxDatabase) StampProviderCollected(ctx context.Context, name string) error {
 	const q = `UPDATE providers SET last_collect_at = now() WHERE name = $1`
-	_, err := d.conn.Exec(ctx, q, name)
-	return err
+	tag, err := d.conn.Exec(ctx, q, name)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("provider %q not found in providers table", name)
+	}
+	return nil
 }
 
 // UpsertEmail inserts an email, idempotent on message_id. On conflict it refreshes the

@@ -110,12 +110,12 @@ func (rt *Router) SelectForStep(ctx context.Context, capability string, item Ite
 // always has a policy even before one is seeded. Both Router and Core use this function.
 func policyForCapability(ctx context.Context, db Database, capability string) (RoutingPolicy, error) {
 	if p, ok, err := db.GetRoutingPolicy(ctx, capability); err != nil {
-		return RoutingPolicy{}, err
+		return RoutingPolicy{}, fmt.Errorf("routing policy for %q: %w", capability, err)
 	} else if ok {
 		return p, nil
 	}
 	if p, ok, err := db.GetRoutingPolicy(ctx, policyScopeGlobal); err != nil {
-		return RoutingPolicy{}, err
+		return RoutingPolicy{}, fmt.Errorf("global routing policy: %w", err)
 	} else if ok {
 		return p, nil
 	}

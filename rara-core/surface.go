@@ -514,6 +514,9 @@ func (c *Core) RoutePreview(ctx context.Context, capability, lane, sensitivity s
 	if sensitivity == "" {
 		sensitivity = sensitivityPublic
 	}
+	if sensitivity != sensitivityPublic && sensitivity != sensitivityPrivate {
+		return RoutePreview{}, badInput("invalid sensitivity %q (want public|private)", sensitivity)
+	}
 	providers, err := c.db.ListProvidersForCapability(ctx, capability)
 	if err != nil {
 		return RoutePreview{}, err

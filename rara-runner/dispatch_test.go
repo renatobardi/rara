@@ -252,6 +252,23 @@ func TestDispatchOnceAttemptStampedEvenOnRunnerError(t *testing.T) {
 	}
 }
 
+func TestDispatchOnceSkipsRunWhenStampFails(t *testing.T) {
+	// When TouchCollectorAttempted fails, Run must NOT be called — waking without stamping
+	// would bypass the retry throttle (last_attempt_at not updated, so the next pass would see
+	// the collector as still due and wake it again immediately).
+	db := &mockDispatchDB{
+		dueCollectors: []DispatchProvider{{Name: "harvest", Runtime: runtimeCloudRun}},
+		attemptErr:    errBoom{},
+	}
+	tr := &fakeTransport{}
+	if err := (&Dispatcher{db: db, runner: tr}).DispatchOnce(context.Background()); err != nil {
+		t.Fatalf("DispatchOnce: %v", err)
+	}
+	if len(tr.called) != 0 {
+		t.Errorf("runner called %d times, want 0 when stamp fails (throttle protection)", len(tr.called))
+	}
+}
+
 func TestDispatchOnceCollectorsAndWorkersInSamePass(t *testing.T) {
 	// Collectors and assigned workers are both dispatched in the same DispatchOnce pass.
 	db := &mockDispatchDB{

@@ -294,6 +294,12 @@ func (d *pgxDatabase) UpsertLinkedInPost(ctx context.Context, p LinkedInPost) er
 // rara-core's scheduler sees that this lane finished a collection cycle.
 func (d *pgxDatabase) StampProviderCollected(ctx context.Context, name string) error {
 	const q = `UPDATE providers SET last_collect_at = now() WHERE name = $1`
-	_, err := d.conn.Exec(ctx, q, name)
-	return err
+	tag, err := d.conn.Exec(ctx, q, name)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("provider %q not found in providers table", name)
+	}
+	return nil
 }

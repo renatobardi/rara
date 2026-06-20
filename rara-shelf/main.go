@@ -36,9 +36,16 @@ type pgxExecer interface {
 
 // stampProviderCollected sets providers.last_collect_at = now() for the named provider.
 // Called on successful completion so the dispatcher can track cadence.
+// Returns an error if no row was updated (provider not registered in providers table).
 func stampProviderCollected(ctx context.Context, db pgxExecer, name string) error {
-	_, err := db.Exec(ctx, `UPDATE providers SET last_collect_at = now() WHERE name = $1`, name)
-	return err
+	tag, err := db.Exec(ctx, `UPDATE providers SET last_collect_at = now() WHERE name = $1`, name)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("provider %q not found in providers table", name)
+	}
+	return nil
 }
 
 // Playlist is a YouTube playlist owned by the authenticated user.
@@ -141,6 +148,11 @@ func main() {
 
 	if len(playlists) == 0 {
 		log.Println("No playlists found")
+		stampCtx, stampCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer stampCancel()
+		if err := stampProviderCollected(stampCtx, conn, "shelf"); err != nil {
+			log.Printf("stamp provider collected: %v", err)
+		}
 		return
 	}
 
@@ -168,7 +180,9 @@ func main() {
 	}
 
 	log.Println("Shelf job completed successfully")
-	if err := stampProviderCollected(context.Background(), conn, "shelf"); err != nil {
+	stampCtx, stampCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer stampCancel()
+	if err := stampProviderCollected(stampCtx, conn, "shelf"); err != nil {
 		log.Printf("stamp provider collected: %v", err)
 	}
 }

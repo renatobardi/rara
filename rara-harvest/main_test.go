@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -509,18 +510,24 @@ func TestETLHarnessEmptyChannels(t *testing.T) {
 }
 
 // execMock captures Exec calls so TestStampProviderCollected runs zero-I/O.
+// rows controls how many RowsAffected the mock reports (default 0).
 type execMock struct {
 	gotArgs []any
 	err     error
+	rows    int64 // rows to report via CommandTag
 }
 
 func (m *execMock) Exec(_ context.Context, _ string, args ...any) (pgconn.CommandTag, error) {
 	m.gotArgs = args
-	return pgconn.CommandTag{}, m.err
+	if m.err != nil {
+		return pgconn.CommandTag{}, m.err
+	}
+	tag := pgconn.NewCommandTag("UPDATE " + fmt.Sprintf("%d", m.rows))
+	return tag, nil
 }
 
 func TestStampProviderCollected(t *testing.T) {
-	mock := &execMock{}
+	mock := &execMock{rows: 1}
 	if err := stampProviderCollected(context.Background(), mock, "harvest"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -533,6 +540,20 @@ func TestStampProviderCollectedPropagatesError(t *testing.T) {
 	mock := &execMock{err: errBoom{}}
 	if err := stampProviderCollected(context.Background(), mock, "harvest"); err == nil {
 		t.Error("want error from Exec, got nil")
+	}
+}
+
+// TestStampProviderCollectedNotFound verifies that zero rows affected (provider
+// not present in the providers table) is treated as an error, not a silent no-op.
+func TestStampProviderCollectedNotFound(t *testing.T) {
+	mock := &execMock{rows: 0} // UPDATE matched nothing
+	err := stampProviderCollected(context.Background(), mock, "harvest")
+	if err == nil {
+		t.Fatal("want error when provider not found, got nil")
+	}
+	want := `provider "harvest" not found in providers table`
+	if err.Error() != want {
+		t.Errorf("error = %q, want %q", err.Error(), want)
 	}
 }
 

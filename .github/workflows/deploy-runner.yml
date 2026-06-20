@@ -66,8 +66,8 @@ jobs:
           ssh "${DEPLOY_USER}@${DEPLOY_HOST}" bash <<'EOF'
             set -euo pipefail
             env_file=/etc/rara-runner/agent.env
-            if [ -f "$env_file" ] && grep -qE '@sha256:[a-f0-9]{64}' "$env_file"; then
-              sudo sed -i 's/@sha256:[a-f0-9]\{64\}//g' "$env_file"
+            if [ -f "$env_file" ] && grep -qE '^RUNNER_ALLOWED_IMAGES=.*@sha256:[a-f0-9]{64}' "$env_file"; then
+              sudo sed -i '/^RUNNER_ALLOWED_IMAGES=/s/@sha256:[a-f0-9]\{64\}//g' "$env_file"
               echo "Migrated $env_file: stripped digest pins from RUNNER_ALLOWED_IMAGES"
             else
               echo "No digest pins found in $env_file — nothing to migrate"

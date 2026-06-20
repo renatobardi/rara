@@ -17,6 +17,6 @@ BEGIN;
 
 ALTER TABLE providers
     ADD COLUMN IF NOT EXISTS last_attempt_at TIMESTAMPTZ,
-    ADD COLUMN IF NOT EXISTS retry_interval_seconds INT;
+    ADD COLUMN IF NOT EXISTS retry_interval_seconds INT CHECK (retry_interval_seconds >= 0);
 
 COMMIT;

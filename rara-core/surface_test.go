@@ -1225,6 +1225,15 @@ func TestHTTPRoutePreviewShape(t *testing.T) {
 	}
 }
 
+// TestHTTPRoutePreviewInvalidSensitivity: unknown sensitivity values return 400.
+func TestHTTPRoutePreviewInvalidSensitivity(t *testing.T) {
+	h, _ := seedRoutePreviewFixture(t)
+	rec := do(t, h, http.MethodGet, "/v1/route/preview?capability=destilar&sensitivity=bogus", "")
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("invalid sensitivity should be 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
 // TestHTTPRoutePreviewExclude: the exclude query param re-ranks and changes the winner.
 func TestHTTPRoutePreviewExclude(t *testing.T) {
 	h, _ := seedRoutePreviewFixture(t)
