@@ -1257,6 +1257,12 @@ func fakeC4Core(t *testing.T, token string) *httptest.Server {
 		}
 		_, _ = w.Write([]byte(`[{"name":"distill-local","capability":"destilar","runtime":"vpc","activation":"resident","enabled":true}]`))
 	})
+	mux.HandleFunc("GET /v1/workers", func(w http.ResponseWriter, r *http.Request) {
+		if !requireBearer(w, r) {
+			return
+		}
+		_, _ = w.Write([]byte(`[{"name":"distill","capability":"destilar","placements":[{"name":"distill-local","capability":"destilar","runtime":"vpc","activation":"resident","enabled":true}]}]`))
+	})
 	mux.HandleFunc("PUT /v1/providers", func(w http.ResponseWriter, r *http.Request) {
 		if !requireBearer(w, r) {
 			return
@@ -1318,12 +1324,17 @@ func TestWorkersProxiesWithBearer(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d, body=%s", rec.Code, rec.Body)
 	}
+	// Expect grouped Worker→placements shape (from /v1/workers, not flat /v1/providers).
 	var got []map[string]any
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 1 || got[0]["name"] != "distill-local" {
-		t.Errorf("providers = %+v, want one distill-local", got)
+	if len(got) != 1 || got[0]["name"] != "distill" {
+		t.Errorf("workers = %+v, want one 'distill' worker group", got)
+	}
+	placements, ok := got[0]["placements"].([]any)
+	if !ok || len(placements) != 1 {
+		t.Errorf("placements = %v, want one entry", got[0]["placements"])
 	}
 }
 
@@ -1350,25 +1361,68 @@ func TestWorkersReturns502WhenCoreUnreachable(t *testing.T) {
 	}
 }
 
-func TestUpsertWorkerProxiesPut(t *testing.T) {
+func TestPlacementsProxiesWithBearer(t *testing.T) {
+	core := fakeC4Core(t, "secret")
+	s := &server{coreURL: core.URL, token: "secret", client: core.Client()}
+
+	rec := httptest.NewRecorder()
+	s.handlePlacementsFlat(rec, httptest.NewRequest("GET", "/api/placements", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d, body=%s", rec.Code, rec.Body)
+	}
+	// Flat list from /v1/providers — individual placement names.
+	var got []map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0]["name"] != "distill-local" {
+		t.Errorf("placements = %+v, want one distill-local placement", got)
+	}
+}
+
+func TestPlacementsNeverLeaksToken(t *testing.T) {
+	core := fakeC4Core(t, "supersecret")
+	s := &server{coreURL: core.URL, token: "supersecret", client: core.Client()}
+
+	rec := httptest.NewRecorder()
+	s.handlePlacementsFlat(rec, httptest.NewRequest("GET", "/api/placements", nil))
+
+	if body := rec.Body.String(); contains(body, "supersecret") {
+		t.Errorf("response leaked the surface token: %s", body)
+	}
+}
+
+func TestPlacementsReturns502WhenCoreUnreachable(t *testing.T) {
+	s := &server{coreURL: "http://127.0.0.1:1", token: "secret", client: http.DefaultClient}
+
+	rec := httptest.NewRecorder()
+	s.handlePlacementsFlat(rec, httptest.NewRequest("GET", "/api/placements", nil))
+
+	if rec.Code != http.StatusBadGateway {
+		t.Errorf("status=%d, want 502", rec.Code)
+	}
+}
+
+func TestUpsertPlacementProxiesPut(t *testing.T) {
 	core := fakeC4Core(t, "secret")
 	s := &server{coreURL: core.URL, token: "secret", client: core.Client()}
 
 	body := strings.NewReader(`{"name":"test","capability":"destilar","runtime":"vpc","activation":"resident","cost":1,"quality":0.9,"latency_ms":200,"enabled":true}`)
 	rec := httptest.NewRecorder()
-	s.handleUpsertWorker(rec, httptest.NewRequest("PUT", "/api/workers", body))
+	s.handleUpsertPlacement(rec, httptest.NewRequest("PUT", "/api/placements", body))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d, body=%s", rec.Code, rec.Body)
 	}
 }
 
-func TestUpsertWorkerPropagates4xx(t *testing.T) {
+func TestUpsertPlacementPropagates4xx(t *testing.T) {
 	core := fakeC4CoreReturns4xx(t)
 	s := &server{coreURL: core.URL, token: "secret", client: core.Client()}
 
 	rec := httptest.NewRecorder()
-	s.handleUpsertWorker(rec, httptest.NewRequest("PUT", "/api/workers", strings.NewReader(`{"name":"bad"}`)))
+	s.handleUpsertPlacement(rec, httptest.NewRequest("PUT", "/api/placements", strings.NewReader(`{"name":"bad"}`)))
 
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("status=%d, want 400", rec.Code)

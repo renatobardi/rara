@@ -25,6 +25,12 @@
 		env?: Record<string, string>;
 	};
 
+	type Worker = {
+		name: string;
+		capability: string;
+		placements: Provider[];
+	};
+
 	type RoutingPolicy = {
 		scope: string;
 		cost_weight: number;
@@ -72,7 +78,9 @@
 	};
 
 	// --- existing state ---
-	let providers = $state<Provider[]>([]);
+	let workers = $state<Worker[]>([]);
+	// providers is a flat derived list used by health cards, routing editor, and route preview.
+	let providers = $derived(workers.flatMap((w) => w.placements));
 	let policies = $state<RoutingPolicy[]>([]);
 	let loading = $state(true);
 	let error = $state(false);
@@ -80,6 +88,7 @@
 	let policiesError = $state(false);
 	let saving = $state<string | null>(null);
 	let saveMsg = $state('');
+	let expandedWorkers = $state<Set<string>>(new Set());
 
 	// --- metrics state ---
 	const PERIODS = [
@@ -305,7 +314,7 @@
 			.then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
 			.then((d) => {
 				if (!Array.isArray(d)) throw new Error('unexpected payload');
-				providers = d;
+				workers = d;
 				loading = false;
 			})
 			.catch(() => {
@@ -402,13 +411,16 @@
 		saveMsg = '';
 		try {
 			const updated = { ...p, enabled: !p.enabled };
-			const res = await fetch('/api/workers', {
+			const res = await fetch('/api/placements', {
 				method: 'PUT',
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify(updated)
 			});
 			if (res.ok) {
-				providers = providers.map((x) => (x.name === p.name ? updated : x));
+				workers = workers.map((w) => ({
+					...w,
+					placements: w.placements.map((x) => (x.name === p.name ? updated : x))
+				}));
 				saveMsg = t.workers.saveOk;
 			} else {
 				saveMsg = t.workers.saveError;
@@ -438,7 +450,7 @@
 	}
 
 	async function saveWorker(payload: Provider) {
-		const res = await fetch('/api/workers', {
+		const res = await fetch('/api/placements', {
 			method: 'PUT',
 			headers: { 'Content-Type': 'application/json' },
 			body: JSON.stringify(payload)
@@ -447,6 +459,13 @@
 		saveMsg = t.workers.saveOk;
 		closeForm();
 		fetchWorkers();
+	}
+
+	function toggleExpanded(workerName: string) {
+		const next = new Set(expandedWorkers);
+		if (next.has(workerName)) next.delete(workerName);
+		else next.add(workerName);
+		expandedWorkers = next;
 	}
 </script>
 
@@ -584,7 +603,7 @@
 	{/if}
 </section>
 
-<!-- ── Workers table ── -->
+<!-- ── Workers table (grouped by worker → placements) ── -->
 <section class="mb-8">
 	<div class="mb-4 flex items-center gap-3">
 		<h2 class="text-[15px] font-semibold">{t.workers.title}</h2>
@@ -611,7 +630,7 @@
 		<p class="text-sm text-muted">{t.workers.loading}</p>
 	{:else if error}
 		<p class="text-sm text-red-500">{t.workers.error}</p>
-	{:else if providers.length === 0}
+	{:else if workers.length === 0}
 		<p class="text-sm text-muted">{t.workers.empty}</p>
 	{:else}
 		{#if saveMsg}
@@ -621,68 +640,98 @@
 			<table class="w-full border-collapse text-[13px]">
 				<thead>
 					<tr class="border-b border-border bg-surface-2 text-left text-muted">
-						<th class="px-4 py-2.5 font-medium">{t.workers.colName}</th>
+						<th class="w-6 px-2 py-2.5"></th>
+						<th class="px-4 py-2.5 font-medium">{t.workers.colWorker}</th>
 						<th class="px-4 py-2.5 font-medium">{t.workers.colCapability}</th>
-						<th class="px-4 py-2.5 font-medium">{t.workers.colRuntime}</th>
-						<th class="px-4 py-2.5 font-medium">{t.workers.colActivation}</th>
-						<th class="px-4 py-2.5 font-medium">{t.workers.colCost}</th>
-						<th class="px-4 py-2.5 font-medium">{t.workers.colQuality}</th>
-						<th class="px-4 py-2.5 font-medium">{t.workers.colEnabled}</th>
-						<th class="px-4 py-2.5"></th>
+						<th class="px-4 py-2.5 font-medium">{t.workers.colPlacements}</th>
 					</tr>
 				</thead>
 				<tbody>
-					{#each providers as p}
-						<tr class="border-b border-border last:border-0 hover:bg-hover">
-							<td class="px-4 py-2.5 font-mono text-[12px]">{p.name}</td>
-							<td class="px-4 py-2.5">{p.capability}</td>
-							<td class="px-4 py-2.5">{p.runtime}</td>
-							<td class="px-4 py-2.5">{p.activation}</td>
-							<td class="px-4 py-2.5">{p.cost}</td>
-							<td class="px-4 py-2.5">{p.quality}</td>
-							<td class="px-4 py-2.5">
-								<span
-									class="inline-block rounded-full px-2 py-0.5 text-[11px] font-semibold {p.enabled
-										? 'bg-green/20 text-green'
-										: 'bg-surface-2 text-muted'}"
-								>
-									{p.enabled ? '●' : '○'}
-								</span>
+					{#each workers as w}
+						{@const expanded = expandedWorkers.has(w.name)}
+						<tr
+							class="border-b border-border hover:bg-hover {expanded ? 'bg-surface-2' : ''} cursor-pointer"
+							onclick={() => toggleExpanded(w.name)}
+						>
+							<td class="px-2 py-2.5 text-center text-[11px] text-muted select-none">
+								{expanded ? '▲' : '▼'}
 							</td>
-							<td class="px-4 py-2.5">
-								<div class="flex items-center gap-2">
-									<button
-										class="cursor-pointer rounded-token border border-border bg-surface-2 px-2 py-1 text-[12px] hover:bg-hover disabled:opacity-40"
-										onclick={() => openEdit(p)}
-										aria-label="{t.workers.editWorker} {p.name}"
-										title={t.workers.editWorker}
-									>
-										✏
-									</button>
-									<button
-										class="cursor-pointer rounded-token border border-border bg-surface-2 px-3 py-1 text-[12px] hover:bg-hover disabled:opacity-40"
-										onclick={() => toggleProvider(p)}
-										disabled={saving === p.name}
-										aria-label="{p.enabled ? t.workers.disable : t.workers.enable} {p.name}"
-									>
-										{saving === p.name
-											? t.workers.saving
-											: p.enabled
-												? t.workers.disable
-												: t.workers.enable}
-									</button>
-								</div>
+							<td class="px-4 py-2.5 font-mono text-[12px] font-semibold">{w.name}</td>
+							<td class="px-4 py-2.5 text-muted">{w.capability}</td>
+							<td class="px-4 py-2.5 tabular-nums text-muted">
+								{w.placements.length} {t.workers.placementsCount}
 							</td>
 						</tr>
-						{#if formMode === 'edit' && formInitial?.name === p.name}
-							<tr>
-								<td colspan="8" class="px-4 py-3">
-									<WorkerForm
-										initial={formInitial}
-										capabilities={knownCapabilities}
-										onSave={saveWorker}
-										onCancel={closeForm}
-									/>
+						{#if expanded}
+							<tr class="border-b border-border">
+								<td colspan="4" class="px-0 py-0">
+									<table class="w-full border-collapse text-[12px]">
+										<thead>
+											<tr class="border-b border-border/40 bg-surface-2/60 text-left text-[11px] text-muted">
+												<th class="py-1.5 pl-10 pr-3 font-medium">{t.workers.colName}</th>
+												<th class="py-1.5 pr-3 font-medium">{t.workers.colRuntime}</th>
+												<th class="py-1.5 pr-3 font-medium">{t.workers.colActivation}</th>
+												<th class="py-1.5 pr-3 font-medium">{t.workers.colCost}</th>
+												<th class="py-1.5 pr-3 font-medium">{t.workers.colQuality}</th>
+												<th class="py-1.5 pr-3 font-medium">{t.workers.colEnabled}</th>
+												<th class="py-1.5 pr-3"></th>
+											</tr>
+										</thead>
+										<tbody>
+											{#each w.placements as p}
+												<tr class="border-b border-border/30 last:border-0 hover:bg-hover/60">
+													<td class="py-2 pl-10 pr-3 font-mono">{p.name}</td>
+													<td class="py-2 pr-3 text-muted">{p.runtime}</td>
+													<td class="py-2 pr-3 text-muted">{p.activation}</td>
+													<td class="py-2 pr-3 tabular-nums">{p.cost}</td>
+													<td class="py-2 pr-3 tabular-nums">{p.quality}</td>
+													<td class="py-2 pr-3">
+														<span
+															class="inline-block rounded-full px-2 py-0.5 text-[10px] font-semibold {p.enabled
+																? 'bg-green/20 text-green'
+																: 'bg-surface-2 text-muted'}"
+														>
+															{p.enabled ? '●' : '○'}
+														</span>
+													</td>
+													<td class="py-2 pr-3">
+														<div class="flex items-center gap-2">
+															<button
+																class="cursor-pointer rounded-token border border-border bg-bg px-2 py-0.5 text-[11px] hover:bg-hover disabled:opacity-40"
+																onclick={(e) => { e.stopPropagation(); openEdit(p); }}
+																aria-label="{t.workers.editWorker} {p.name}"
+																title={t.workers.editWorker}
+															>✏</button>
+															<button
+																class="cursor-pointer rounded-token border border-border bg-bg px-2 py-0.5 text-[11px] hover:bg-hover disabled:opacity-40"
+																onclick={(e) => { e.stopPropagation(); toggleProvider(p); }}
+																disabled={saving === p.name}
+																aria-label="{p.enabled ? t.workers.disable : t.workers.enable} {p.name}"
+															>
+																{saving === p.name
+																	? t.workers.saving
+																	: p.enabled
+																		? t.workers.disable
+																		: t.workers.enable}
+															</button>
+														</div>
+													</td>
+												</tr>
+												{#if formMode === 'edit' && formInitial?.name === p.name}
+													<tr>
+														<td colspan="7" class="px-4 py-3 pl-10">
+															<WorkerForm
+																initial={formInitial}
+																capabilities={knownCapabilities}
+																onSave={saveWorker}
+																onCancel={closeForm}
+															/>
+														</td>
+													</tr>
+												{/if}
+											{/each}
+										</tbody>
+									</table>
 								</td>
 							</tr>
 						{/if}

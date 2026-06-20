@@ -98,6 +98,11 @@ export const t = {
 		saveError: 'Erro ao salvar worker.',
 		saveOk: 'Salvo.',
 		// CRUD form
+		colWorker: 'Worker',
+		colPlacements: 'Placements',
+		placementsCount: 'placement(s)',
+		expandPlacements: 'Expandir placements',
+		collapsePlacements: 'Recolher placements',
 		addWorker: 'Novo worker',
 		editWorker: 'Editar worker',
 		formName: 'Nome',
