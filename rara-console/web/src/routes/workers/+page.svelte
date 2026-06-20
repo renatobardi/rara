@@ -450,15 +450,20 @@
 	}
 
 	async function saveWorker(payload: Provider) {
-		const res = await fetch('/api/placements', {
-			method: 'PUT',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify(payload)
-		});
-		if (!res.ok) throw new Error(t.workers.saveError);
-		saveMsg = t.workers.saveOk;
-		closeForm();
-		fetchWorkers();
+		try {
+			const res = await fetch('/api/placements', {
+				method: 'PUT',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify(payload)
+			});
+			if (!res.ok) throw new Error(t.workers.saveError);
+			saveMsg = t.workers.saveOk;
+			closeForm();
+			fetchWorkers();
+		} catch (err) {
+			// Re-throw so WorkerForm's onSave catch can surface the error to the user.
+			throw err instanceof Error ? err : new Error(t.workers.saveError);
+		}
 	}
 
 	function toggleExpanded(workerName: string) {
@@ -651,7 +656,12 @@
 						{@const expanded = expandedWorkers.has(w.name)}
 						<tr
 							class="border-b border-border hover:bg-hover {expanded ? 'bg-surface-2' : ''} cursor-pointer"
+							role="button"
+							tabindex="0"
+							aria-expanded={expanded}
+							aria-label={expanded ? t.workers.collapsePlacements + ' ' + w.name : t.workers.expandPlacements + ' ' + w.name}
 							onclick={() => toggleExpanded(w.name)}
+							onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleExpanded(w.name); } }}
 						>
 							<td class="px-2 py-2.5 text-center text-[11px] text-muted select-none">
 								{expanded ? '▲' : '▼'}
