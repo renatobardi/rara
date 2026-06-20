@@ -27,6 +27,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -171,6 +172,45 @@ func (c *Core) FlowSteps(ctx context.Context, flowID int) ([]FlowStep, error) {
 	return c.db.ListFlowSteps(ctx, flowID)
 }
 func (c *Core) Providers(ctx context.Context) ([]Provider, error) { return c.db.ListProviders(ctx) }
+
+// Worker is a logical binary grouping one or more provider placements.
+type Worker struct {
+	Name       string     `json:"name"`
+	Capability string     `json:"capability"`
+	Placements []Provider `json:"placements"`
+}
+
+// Workers returns all providers grouped by their Worker field (fallback: Name), with both the
+// worker list and each placements slice sorted by name.
+func (c *Core) Workers(ctx context.Context) ([]Worker, error) {
+	providers, err := c.db.ListProviders(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list providers: %w", err)
+	}
+	index := map[string]*Worker{}
+	order := []string{}
+	for _, p := range providers {
+		key := p.Worker
+		if key == "" {
+			key = p.Name
+		}
+		if _, exists := index[key]; !exists {
+			index[key] = &Worker{Name: key, Capability: p.Capability}
+			order = append(order, key)
+		}
+		index[key].Placements = append(index[key].Placements, p)
+	}
+	sort.Strings(order)
+	workers := make([]Worker, len(order))
+	for i, name := range order {
+		w := index[name]
+		sort.Slice(w.Placements, func(a, b int) bool {
+			return w.Placements[a].Name < w.Placements[b].Name
+		})
+		workers[i] = *w
+	}
+	return workers, nil
+}
 
 // AvailableProvider is the restricted view of a Provider sent to the hosts editor.
 // Internal fields (runner_url, heartbeat_at, constraints, env) are intentionally omitted.
@@ -357,6 +397,23 @@ func (c *Core) UpsertProvider(ctx context.Context, p Provider) error {
 	}
 	if !isValidActivation(p.Activation) {
 		return badInput("invalid activation %q (want resident|on_demand)", p.Activation)
+	}
+	// Reject placements that would give a worker inconsistent capabilities. Two providers sharing
+	// the same worker field must always agree on capability — enforced here since the DB has no
+	// (worker, capability) unique constraint.
+	// ponytail: TOCTOU — two concurrent upserts can both pass this check before either writes.
+	// Acceptable: UpsertProvider is an operator action (never concurrent). Upgrade path: add a
+	// UNIQUE constraint on (worker, capability) in providers and surface the violation as badInput.
+	if p.Worker != "" {
+		all, err := c.db.ListProviders(ctx)
+		if err != nil {
+			return fmt.Errorf("list providers: %w", err)
+		}
+		for _, sib := range all {
+			if sib.Worker == p.Worker && sib.Name != p.Name && sib.Capability != p.Capability {
+				return badInput("worker %q already has capability %q; placement %q with capability %q is inconsistent", p.Worker, sib.Capability, p.Name, p.Capability)
+			}
+		}
 	}
 	// heartbeat_at is RUNTIME liveness (owned by TouchProviderHeartbeat), not config. A
 	// full-record config upsert would clobber it — so PRESERVE the live value across an edit
@@ -605,6 +662,7 @@ func NewSurfaceMux(core *Core, token string) http.Handler {
 	mux.HandleFunc("GET /v1/flows/{flow_id}/steps/{seq}/hosts", h.listStepHosts)
 	mux.HandleFunc("PUT /v1/flows/{flow_id}/steps/{seq}/hosts", h.setStepHosts)
 	mux.HandleFunc("GET /v1/providers", h.listProviders)
+	mux.HandleFunc("GET /v1/workers", h.listWorkers)
 	mux.HandleFunc("GET /v1/routing-policies", h.listRoutingPolicies)
 	mux.HandleFunc("GET /v1/gate-rules", h.listGateRules)
 	mux.HandleFunc("GET /v1/interest-profile", h.getInterestProfile)
@@ -761,6 +819,11 @@ func (h *httpSurface) flowSteps(w http.ResponseWriter, r *http.Request) {
 func (h *httpSurface) listProviders(w http.ResponseWriter, r *http.Request) {
 	providers, err := h.core.Providers(r.Context())
 	writeResult(w, providers, err)
+}
+
+func (h *httpSurface) listWorkers(w http.ResponseWriter, r *http.Request) {
+	workers, err := h.core.Workers(r.Context())
+	writeResult(w, workers, err)
 }
 
 func (h *httpSurface) listRoutingPolicies(w http.ResponseWriter, r *http.Request) {
