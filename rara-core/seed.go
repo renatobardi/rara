@@ -108,11 +108,11 @@ func seedSharedProviders(ctx context.Context, db Database) error {
 		// variants are on_demand: cloud woken via Cloud Run Jobs `run`; self-host woken by
 		// rara-runner (POST /run on the tailnet, spawn-and-exit per item).
 		{Name: provDistill, Capability: capDestilar, Runtime: runtimeCloudRun, Activation: activationOnDemand,
-			Cost: 2.00, Quality: 0.92, LatencyMs: 30000, Constraints: thirdParty, Enabled: true,
+			Cost: 2.00, Quality: 0.92, LatencyMs: 30000, Constraints: thirdParty, Enabled: true, Worker: provDistill,
 			Env: []byte(`{"DISTILL_PROVIDER":"distill","LITELLM_MODEL":"groq-llama"}`)},
 		// ponytail: cost 1.50 < 2.00 (cloud) → VPC wins the score; quality parity: same model
 		{Name: provDistillLocal, Capability: capDestilar, Runtime: runtimeVPC, Activation: activationOnDemand,
-			Cost: 1.50, Quality: 0.92, LatencyMs: 60000, Enabled: true,
+			Cost: 1.50, Quality: 0.92, LatencyMs: 60000, Enabled: true, Worker: provDistill, // same worker as cloud sibling
 			RunnerURL: os.Getenv("RUNNER_LOCAL_URL"),
 			// CURATE_ENGINE=litellm: the VPC host runs LiteLLM as gateway; groq-llama avoids
 			// the TPM cap that groq-fast hits on long transcripts. Differs from the cloud distill
@@ -122,19 +122,19 @@ func seedSharedProviders(ctx context.Context, db Database) error {
 		// gate_barato / gate_rico: the cascade gates (rules -> profile -> LLM-judge). Cheap on
 		// average (only the borderline middle pays the LLM call).
 		{Name: provGateBarato, Capability: capGateBarato, Runtime: runtimeCloudRun, Activation: activationOnDemand,
-			Cost: 0.50, Quality: 0.88, LatencyMs: 5000, Constraints: thirdParty, Enabled: true,
+			Cost: 0.50, Quality: 0.88, LatencyMs: 5000, Constraints: thirdParty, Enabled: true, Worker: provGateBarato,
 			Env: []byte(`{"SIFT_GATE":"gate_barato","SIFT_PROVIDER":"gate-barato","LITELLM_MODEL":"groq-fast"}`)},
 		// ponytail: cost 0.30 < 0.50 (cloud) → VPC wins the score; quality parity: same model
 		{Name: provGateBaratoLocal, Capability: capGateBarato, Runtime: runtimeVPC, Activation: activationOnDemand,
-			Cost: 0.30, Quality: 0.88, LatencyMs: 9000, Enabled: true,
+			Cost: 0.30, Quality: 0.88, LatencyMs: 9000, Enabled: true, Worker: provGateBarato, // same worker as cloud sibling
 			RunnerURL: os.Getenv("RUNNER_LOCAL_URL"),
 			Env:       []byte(`{"SIFT_GATE":"gate_barato","SIFT_PROVIDER":"gate-barato-local"}`)},
 		{Name: provGateRico, Capability: capGateRico, Runtime: runtimeCloudRun, Activation: activationOnDemand,
-			Cost: 0.60, Quality: 0.90, LatencyMs: 8000, Constraints: thirdParty, Enabled: true,
+			Cost: 0.60, Quality: 0.90, LatencyMs: 8000, Constraints: thirdParty, Enabled: true, Worker: provGateRico,
 			Env: []byte(`{"SIFT_GATE":"gate_rico","SIFT_PROVIDER":"gate-rico","LITELLM_MODEL":"groq-fast"}`)},
 		// ponytail: cost 0.40 < 0.60 (cloud) → VPC wins the score; quality parity: same model
 		{Name: provGateRicoLocal, Capability: capGateRico, Runtime: runtimeVPC, Activation: activationOnDemand,
-			Cost: 0.40, Quality: 0.90, LatencyMs: 14000, Enabled: true,
+			Cost: 0.40, Quality: 0.90, LatencyMs: 14000, Enabled: true, Worker: provGateRico, // same worker as cloud sibling
 			RunnerURL: os.Getenv("RUNNER_LOCAL_URL"),
 			Env:       []byte(`{"SIFT_GATE":"gate_rico","SIFT_PROVIDER":"gate-rico-local"}`)},
 	}
@@ -253,10 +253,10 @@ func SeedYouTubeLane(ctx context.Context, db Database) error {
 		// Woken by the dispatcher (rara-runner) on the cadence below; reads target_channels /
 		// discovers playlists via API on each wake (sources already in Neon for harvest).
 		{Name: provHarvest, Capability: capColetar, Runtime: runtimeCloudRun, Activation: activationOnDemand,
-			Cost: 0.10, Quality: 0.95, LatencyMs: 500, Enabled: true,
+			Cost: 0.10, Quality: 0.95, LatencyMs: 500, Enabled: true, Worker: provHarvest,
 			CollectCadenceSeconds: intPtr(86400), RetryIntervalSeconds: intPtr(1800)}, // daily cadence; 30min retry throttle
 		{Name: provShelf, Capability: capColetar, Runtime: runtimeCloudRun, Activation: activationOnDemand,
-			Cost: 0.10, Quality: 0.95, LatencyMs: 800, Enabled: true,
+			Cost: 0.10, Quality: 0.95, LatencyMs: 800, Enabled: true, Worker: provShelf,
 			CollectCadenceSeconds: intPtr(86400), RetryIntervalSeconds: intPtr(1800)}, // daily cadence; 30min retry throttle
 		// transcrever: scribe (local Whisper) is resident on the Mac. YouTube blocks audio
 		// download from datacenter IPs, hence the residential constraint; `accepts` pins it to
@@ -266,7 +266,7 @@ func SeedYouTubeLane(ctx context.Context, db Database) error {
 		// same block. Contrast with clip/rara-clip (Bright Data proxies do the unblock,
 		// so the host IP doesn't matter → no residential constraint on that provider).
 		{Name: provASRYouTube, Capability: capTranscrever, Runtime: runtimeLocal, Activation: activationResident,
-			Cost: 1.00, Quality: 0.90, LatencyMs: 120000,
+			Cost: 1.00, Quality: 0.90, LatencyMs: 120000, Worker: provASRYouTube,
 			Constraints: []byte(`{"requires":"residential","accepts":["youtube"]}`), Enabled: true},
 	}
 	for _, p := range providers {
@@ -301,7 +301,7 @@ func SeedPodcastLane(ctx context.Context, db Database) error {
 	// "rara-" = Cloud Run job "rara-dial".
 	if err := db.UpsertProvider(ctx, Provider{
 		Name: provDial, Capability: capColetar, Runtime: runtimeCloudRun, Activation: activationOnDemand,
-		Cost: 0.05, Quality: 0.99, LatencyMs: 30000, Enabled: true,
+		Cost: 0.05, Quality: 0.99, LatencyMs: 30000, Enabled: true, Worker: provDial,
 		CollectCadenceSeconds: intPtr(86400), RetryIntervalSeconds: intPtr(1800), // daily cadence; 30min retry throttle
 	}); err != nil {
 		return err
@@ -309,7 +309,7 @@ func SeedPodcastLane(ctx context.Context, db Database) error {
 	// transcrever: direct-audio ASR — any runtime (no residential), accepts only podcast.
 	if err := db.UpsertProvider(ctx, Provider{
 		Name: provASRDirectAudio, Capability: capTranscrever, Runtime: runtimeCloudRun, Activation: activationOnDemand,
-		Cost: 0.80, Quality: 0.88, LatencyMs: 90000,
+		Cost: 0.80, Quality: 0.88, LatencyMs: 90000, Worker: provASRDirectAudio,
 		Constraints: []byte(`{"accepts":["podcast"]}`), Enabled: true,
 	}); err != nil {
 		return err
@@ -340,7 +340,7 @@ func SeedEmailLane(ctx context.Context, db Database) error {
 	// name "courier" + job prefix "rara-" = Cloud Run job "rara-courier".
 	if err := db.UpsertProvider(ctx, Provider{
 		Name: provCourier, Capability: capColetar, Runtime: runtimeCloudRun, Activation: activationOnDemand,
-		Cost: 0.05, Quality: 0.99, LatencyMs: 30000, Enabled: true,
+		Cost: 0.05, Quality: 0.99, LatencyMs: 30000, Enabled: true, Worker: provCourier,
 		CollectCadenceSeconds: intPtr(21600), RetryIntervalSeconds: intPtr(1800), // 6h cadence; 30min retry throttle
 	}); err != nil {
 		return err
@@ -348,7 +348,7 @@ func SeedEmailLane(ctx context.Context, db Database) error {
 	// extrair: deterministic HTML/quote/signature cleaning — any runtime, accepts only email.
 	if err := db.UpsertProvider(ctx, Provider{
 		Name: provExtrairEmail, Capability: capExtrair, Runtime: runtimeCloudRun, Activation: activationOnDemand,
-		Cost: 0.20, Quality: 0.85, LatencyMs: 2000,
+		Cost: 0.20, Quality: 0.85, LatencyMs: 2000, Worker: provExtrairEmail,
 		Constraints: []byte(`{"accepts":["email"]}`), Enabled: true,
 	}); err != nil {
 		return err
@@ -383,7 +383,7 @@ func SeedNewsLane(ctx context.Context, db Database) error {
 	// + job prefix "rara-" = Cloud Run job "rara-feed".
 	if err := db.UpsertProvider(ctx, Provider{
 		Name: provFeed, Capability: capColetar, Runtime: runtimeCloudRun, Activation: activationOnDemand,
-		Cost: 0.05, Quality: 0.99, LatencyMs: 60000, Enabled: true,
+		Cost: 0.05, Quality: 0.99, LatencyMs: 60000, Enabled: true, Worker: provFeed,
 		CollectCadenceSeconds: intPtr(21600), RetryIntervalSeconds: intPtr(1800), // 6h cadence; 30min retry throttle
 	}); err != nil {
 		return err
@@ -391,7 +391,7 @@ func SeedNewsLane(ctx context.Context, db Database) error {
 	// extrair: deterministic HTML/boilerplate cleaning — any runtime, accepts only news.
 	if err := db.UpsertProvider(ctx, Provider{
 		Name: provExtrairNews, Capability: capExtrair, Runtime: runtimeCloudRun, Activation: activationOnDemand,
-		Cost: 0.20, Quality: 0.85, LatencyMs: 2000,
+		Cost: 0.20, Quality: 0.85, LatencyMs: 2000, Worker: provExtrairNews,
 		Constraints: []byte(`{"accepts":["news"]}`), Enabled: true,
 	}); err != nil {
 		return err

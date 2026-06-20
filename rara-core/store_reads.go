@@ -119,14 +119,14 @@ func (d *pgxDatabase) ListItemSteps(ctx context.Context, itemID int) ([]ItemStep
 
 // providerColumns is the shared SELECT list for a providers row (mirrors Provider struct fields).
 const providerColumns = `name, capability, runtime, activation, cost, quality, latency_ms,
-       constraints, enabled, heartbeat_at, last_collect_at, COALESCE(runner_url, ''), env`
+       constraints, enabled, heartbeat_at, last_collect_at, COALESCE(runner_url, ''), env, COALESCE(worker, '')`
 
 // scanProvider scans a single providers row using the caller's Scan function (works for both
 // pgx.Row.Scan and pgx.Rows.Scan — both accept ...any and return error).
 func scanProvider(scan func(dest ...any) error) (Provider, error) {
 	var p Provider
 	err := scan(&p.Name, &p.Capability, &p.Runtime, &p.Activation, &p.Cost,
-		&p.Quality, &p.LatencyMs, &p.Constraints, &p.Enabled, &p.HeartbeatAt, &p.LastCollectAt, &p.RunnerURL, &p.Env)
+		&p.Quality, &p.LatencyMs, &p.Constraints, &p.Enabled, &p.HeartbeatAt, &p.LastCollectAt, &p.RunnerURL, &p.Env, &p.Worker)
 	return p, err
 }
 

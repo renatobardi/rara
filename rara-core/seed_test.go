@@ -434,6 +434,64 @@ func TestSeedPreservesLastAttemptAtOnReseed(t *testing.T) {
 	}
 }
 
+// TestSeedWorkerGrouping asserts that paired cloud/VPC providers share the same Worker value
+// (the -local suffix is stripped) and that standalone providers keep their own name as Worker.
+func TestSeedWorkerGrouping(t *testing.T) {
+	ctx := context.Background()
+	db := newMockDatabase()
+	if err := SeedYouTubeLane(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	// Pairs: both sides must collapse to the same worker name.
+	pairs := [][2]string{
+		{provDistill, provDistillLocal},
+		{provGateBarato, provGateBaratoLocal},
+		{provGateRico, provGateRicoLocal},
+	}
+	for _, pair := range pairs {
+		cloud := db.providers[pair[0]]
+		local := db.providers[pair[1]]
+		if cloud.Worker != local.Worker {
+			t.Errorf("pair (%q, %q): Worker mismatch %q vs %q; both must share the same worker",
+				pair[0], pair[1], cloud.Worker, local.Worker)
+		}
+		if cloud.Worker != pair[0] {
+			t.Errorf("pair (%q, %q): Worker = %q, want %q (logical name without -local)",
+				pair[0], pair[1], cloud.Worker, pair[0])
+		}
+	}
+	// Standalone providers: Worker == own name.
+	for _, name := range []string{provHarvest, provShelf, provASRYouTube} {
+		if p := db.providers[name]; p.Worker != name {
+			t.Errorf("provider %q: Worker = %q, want %q", name, p.Worker, name)
+		}
+	}
+}
+
+// TestSeedWorkerRoundTrip asserts UpsertProvider + GetProvider preserves Worker.
+func TestSeedWorkerRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	db := newMockDatabase()
+	if err := seedCapabilities(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	p := Provider{
+		Name: "distill", Capability: capDestilar, Runtime: runtimeCloudRun,
+		Activation: activationOnDemand, Cost: 2.0, Quality: 0.92, LatencyMs: 30000,
+		Enabled: true, Worker: "distill",
+	}
+	if err := db.UpsertProvider(ctx, p); err != nil {
+		t.Fatalf("UpsertProvider: %v", err)
+	}
+	got, ok, err := db.GetProvider(ctx, "distill")
+	if err != nil || !ok {
+		t.Fatalf("GetProvider: ok=%v err=%v", ok, err)
+	}
+	if got.Worker != "distill" {
+		t.Errorf("Worker = %q, want %q", got.Worker, "distill")
+	}
+}
+
 // TestSeedVPCLocalProvidersGetRunnerURLFromEnv guards against re-seed zeroing runner_url on
 // the three VPC on_demand providers. runner_url is the tailnet endpoint the dispatcher POSTs
 // to wake a worker; zeroing it causes "no transport path" dispatch failures.
