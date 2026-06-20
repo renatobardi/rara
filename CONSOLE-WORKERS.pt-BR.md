@@ -56,18 +56,25 @@ abaixo da tabela.
 
 | Endpoint core | BFF | Uso na tela |
 |---|---|---|
-| `GET /v1/providers` | `GET /api/providers` | lista de workers |
-| `PUT /v1/providers` (upsert) | `PUT /api/providers` | **CRUD add/edit** e toggle |
+| `GET /v1/providers` | `GET /api/workers` | lista de workers |
+| `PUT /v1/providers` (upsert) | `PUT /api/workers` | **CRUD add/edit** e toggle |
 | `GET /v1/routing-policies` | `GET /api/routing-policies` | políticas por escopo |
 | `PUT /v1/routing-policies` (upsert) | `PUT /api/routing-policies` | **editar pesos + fallback** |
 
 > O `PUT /v1/providers` é upsert (`ON CONFLICT (name)`), então "adicionar worker" e "editar worker"
 > são a mesma chamada — a UI só precisa do formulário. Idem para políticas.
 
+**Modelo de autenticação e acesso:** O BFF injeta o bearer token (`SURFACE_TOKEN`) server-side em
+todas as chamadas ao core — o cliente nunca vê nem envia o token. A console só escuta em endereço
+tailnet (`CONSOLE_ADDR`, e.g. `100.x.x.x:8081`), portanto só é acessível por operadores com acesso
+à VPN Tailscale. Não há autenticação por usuário: a proteção de acesso é o isolamento de rede. Os
+endpoints PUT não têm proteção CSRF adicional porque a console não usa cookies de sessão.
+
 ### 4.2 Novos — implementar no core (+ proxy no BFF)
 
 **`GET /v1/workers/metrics`** — rollup por worker para os 4 cards. Uma query agregada; sem tabela
-nova.
+nova. Query param `?days=N` é opcional; validado no BFF e no core: deve ser inteiro entre 1 e 365
+(fora do intervalo → 400); ausente = all-time.
 
 ```
 SELECT assigned_provider,
@@ -153,10 +160,10 @@ Formulário (add/edit) com os campos reais do struct `Provider`:
 | `activation` | `resident \| on_demand` | select |
 | `cost` | number ≥ 0 | peso relativo p/ o router (não é \$) |
 | `quality` | number `0..1` | |
-| `constraints` | JSON | `requires` / `accepts[]` / `sensitivity` |
+| `constraints` | JSON | Estrutura: `{"requires": "string", "accepts": ["string"], "sensitivity": "public\|private"}` — todos os campos opcionais; campos desconhecidos são rejeitados pelo core |
 | `enabled` | bool | toggle Ativar/Desativar |
-| `runner_url` | string | tailnet do rara-runner (vazio p/ cloudrun) |
-| `env` | JSON | config não-secreta por run (sem segredos) |
+| `runner_url` | string | URL tailnet do rara-runner (ex: `http://100.x.x.x:PORT`); vazio para cloudrun. Só relevante para workers `vpc`/`local`. O campo não é validado pelo BFF (passthrough); o core usa para chamar o runner. |
+| `env` | JSON | Config **não-secreta** por run — chaves de ambiente passadas ao job. **Nunca armazenar segredos** (tokens, senhas, API keys): o campo é visível em texto claro no banco e nos logs. |
 
 Sem **delete** (FK em `item_steps`; o caminho é desativar). Validação espelha os CHECKs do schema
 (`cost >= 0`, `quality 0..1`, enums de runtime/activation).
@@ -205,7 +212,9 @@ ordenados** — perde o "porquê" de quem caiu. Para o preview:
    `explainProviders`, serializa.
 3. O painel: seletor (capability/lane/sensibilidade) → ranking com breakdown. **What-if opcional**:
    checkbox por worker que passa o nome em `exclude` (mecanismo que o router **já tem** no
-   timeout→fallback) e re-rankeia — só na simulação, não persiste.
+   timeout→fallback) e re-rankeia — só na simulação, não persiste. O BFF repassa os valores de
+   `exclude` ao core sem limite explícito; nomes inválidos (worker inexistente) são simplesmente
+   ignorados pelo router na re-classificação.
 
 ## 10. Remoção de latência — onde mexer
 
