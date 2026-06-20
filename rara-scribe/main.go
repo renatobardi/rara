@@ -1379,7 +1379,7 @@ func main() {
 
 	poolCfg, err := buildScribePoolConfig(cfg.DatabaseURL)
 	if err != nil {
-		log.Fatalf("Failed to parse DATABASE_URL: %v", err)
+		log.Fatalf("Failed to parse DATABASE_URL") // don't echo err — may contain DSN credentials
 	}
 	// A single-item worker needs only a connection or two (the drain loop + the SDK's heartbeat
 	// goroutine in resident mode); cap the pool to stay well under Neon's connection limit.

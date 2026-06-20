@@ -1261,7 +1261,7 @@ func main() {
 
 	poolCfg, err := buildDistillPoolConfig(cfg.DatabaseURL)
 	if err != nil {
-		log.Fatalf("Failed to parse DATABASE_URL: %v", err)
+		log.Fatalf("Failed to parse DATABASE_URL") // don't echo err — may contain DSN credentials
 	}
 	pool, err := pgxpool.NewWithConfig(ctx, poolCfg)
 	if err != nil {
