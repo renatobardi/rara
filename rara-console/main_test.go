@@ -1274,7 +1274,7 @@ func fakeC4Core(t *testing.T, token string) *httptest.Server {
 		if !requireBearer(w, r) {
 			return
 		}
-		_, _ = w.Write([]byte(`[{"scope":"global","cost_weight":0.5,"quality_weight":0.5}]`))
+		_, _ = w.Write([]byte(`[{"scope":"global","fallback":[]}]`))
 	})
 	mux.HandleFunc("PUT /v1/routing-policies", func(w http.ResponseWriter, r *http.Request) {
 		if !requireBearer(w, r) {
@@ -1475,7 +1475,7 @@ func TestUpsertRoutingPolicyProxiesPut(t *testing.T) {
 	core := fakeC4Core(t, "secret")
 	s := &server{coreURL: core.URL, token: "secret", client: core.Client()}
 
-	body := strings.NewReader(`{"scope":"global","cost_weight":0.5,"quality_weight":0.5}`)
+	body := strings.NewReader(`{"scope":"global","fallback":[]}`)
 	rec := httptest.NewRecorder()
 	s.handleUpsertRoutingPolicy(rec, httptest.NewRequest("PUT", "/api/routing-policies", body))
 
