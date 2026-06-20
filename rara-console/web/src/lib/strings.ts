@@ -120,7 +120,7 @@ export const t = {
 		formConstraintsSensitivityNone: '—',
 		formConstraintsSensitivityThirdParty: 'third_party',
 		formRunnerUrl: 'Runner URL',
-		formRunnerUrlPlaceholder: 'http://host.tailnet:8080 (vazio p/ cloudrun)',
+		formRunnerUrlPlaceholder: 'https://host.tailnet:8080 (vazio p/ cloudrun)',
 		formEnv: 'Env (JSON objeto)',
 		formEnvPlaceholder: '{"KEY": "value"}',
 		formEnvInvalid: 'Env deve ser um objeto JSON válido.',
