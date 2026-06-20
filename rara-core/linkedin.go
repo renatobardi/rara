@@ -193,14 +193,14 @@ func SeedLinkedInLane(ctx context.Context, db Database) error {
 	// change (ARCHITECTURE-2.0: "swap collector behind the same contract, flow unchanged").
 	if err := db.UpsertProvider(ctx, Provider{
 		Name: provManualInbox, Capability: capColetar, Runtime: runtimeVPC, Activation: activationResident,
-		Cost: 0.10, Quality: 0.95, LatencyMs: 100,
+		Cost: 0.10, Quality: 0.95, LatencyMs: 100, Worker: "manual-inbox",
 		Constraints: []byte(`{"accepts":["linkedin"]}`), Enabled: true,
 	}); err != nil {
 		return err
 	}
 	if err := db.UpsertProvider(ctx, Provider{
 		Name: provBrightDataLinked, Capability: capColetar, Runtime: runtimeCloudRun, Activation: activationOnDemand,
-		Cost: 0.30, Quality: 0.90, LatencyMs: 5000,
+		Cost: 0.30, Quality: 0.90, LatencyMs: 5000, Worker: "clip",
 		Constraints: []byte(`{"accepts":["linkedin"]}`), Enabled: true,
 		CollectCadenceSeconds: intPtr(21600), RetryIntervalSeconds: intPtr(1800), // 6h cadence; 30min retry throttle
 	}); err != nil {
@@ -210,7 +210,7 @@ func SeedLinkedInLane(ctx context.Context, db Database) error {
 	// never competes with the email extractor, and the email extractor never grabs a post).
 	if err := db.UpsertProvider(ctx, Provider{
 		Name: provExtrairLinked, Capability: capExtrair, Runtime: runtimeCloudRun, Activation: activationOnDemand,
-		Cost: 0.20, Quality: 0.85, LatencyMs: 1000,
+		Cost: 0.20, Quality: 0.85, LatencyMs: 1000, Worker: "extrair-linkedin",
 		Constraints: []byte(`{"accepts":["linkedin"]}`), Enabled: true,
 	}); err != nil {
 		return err

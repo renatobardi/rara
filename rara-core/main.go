@@ -283,6 +283,10 @@ type Provider struct {
 	// LastAttemptAt is stamped by the dispatcher on every wake attempt (success or failure).
 	// Owned by the dispatcher; seed never writes it.
 	LastAttemptAt *time.Time `json:"last_attempt_at,omitempty"`
+	// Worker is the logical binary name grouping cloud and VPC placements of the same job
+	// (e.g. both "distill" and "distill-local" carry Worker="distill"). Equals Name for
+	// providers that have no -local sibling. Populated by seed; backfilled by migration 014.
+	Worker string `json:"worker,omitempty"`
 }
 
 // Flow is one declarative pipeline per source lane.
@@ -745,8 +749,8 @@ func (d *pgxDatabase) UpsertProvider(ctx context.Context, p Provider) error {
 	const q = `
 		INSERT INTO providers
 			(name, capability, runtime, activation, cost, quality, latency_ms, constraints, enabled,
-			 runner_url, env, collect_cadence_seconds, retry_interval_seconds)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11::jsonb, $12, $13)
+			 runner_url, env, collect_cadence_seconds, retry_interval_seconds, worker)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11::jsonb, $12, $13, $14)
 		ON CONFLICT (name) DO UPDATE SET
 			capability              = EXCLUDED.capability,
 			runtime                 = EXCLUDED.runtime,
@@ -759,7 +763,8 @@ func (d *pgxDatabase) UpsertProvider(ctx context.Context, p Provider) error {
 			runner_url              = EXCLUDED.runner_url,
 			env                     = EXCLUDED.env,
 			collect_cadence_seconds = EXCLUDED.collect_cadence_seconds,
-			retry_interval_seconds  = EXCLUDED.retry_interval_seconds`
+			retry_interval_seconds  = EXCLUDED.retry_interval_seconds,
+			worker                  = EXCLUDED.worker`
 	// heartbeat_at: owned by TouchProviderHeartbeat (runner proof-of-life). Excluded from INSERT
 	// and SET so seed never clobbers it — a re-seed must not evict a healthy provider from the
 	// router's health gate.
@@ -770,7 +775,7 @@ func (d *pgxDatabase) UpsertProvider(ctx context.Context, p Provider) error {
 	_, err := d.conn.Exec(ctx, q,
 		p.Name, p.Capability, p.Runtime, p.Activation, p.Cost, p.Quality, p.LatencyMs,
 		jsonOrEmpty(p.Constraints, "{}"), p.Enabled, nullStr(p.RunnerURL),
-		jsonOrEmpty(p.Env, "{}"), p.CollectCadenceSeconds, p.RetryIntervalSeconds)
+		jsonOrEmpty(p.Env, "{}"), p.CollectCadenceSeconds, p.RetryIntervalSeconds, nullStr(p.Worker))
 	if err != nil {
 		return fmt.Errorf("upsert provider %q: %w", p.Name, err)
 	}

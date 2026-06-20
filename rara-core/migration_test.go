@@ -338,3 +338,43 @@ func TestMigrationNoCrossAgentTables(t *testing.T) {
 		}
 	}
 }
+
+// readMigration014 loads the E1 provider worker-column migration.
+func readMigration014(t *testing.T) string {
+	t.Helper()
+	b, err := os.ReadFile("migrations/014_provider_worker.sql")
+	if err != nil {
+		t.Fatalf("read migration 014: %v", err)
+	}
+	return string(b)
+}
+
+// TestMigration014ProviderWorker asserts the E1 worker-grouper column: a nullable worker
+// VARCHAR(48) added to providers with an idempotent backfill, touching no foreign tables.
+func TestMigration014ProviderWorker(t *testing.T) {
+	sql := readMigration014(t)
+	if !strings.Contains(sql, "ALTER TABLE providers") {
+		t.Error("migration 014 must alter the providers table")
+	}
+	if !strings.Contains(sql, "ADD COLUMN IF NOT EXISTS worker") {
+		t.Error("migration 014 must add worker idempotently (ADD COLUMN IF NOT EXISTS)")
+	}
+	// Nullable: no NOT NULL on the ADD COLUMN line (a future cleanup migration can add it
+	// once every seeder always stamps worker).
+	colIdx := strings.Index(sql, "ADD COLUMN IF NOT EXISTS worker")
+	stmt := sql[colIdx:min(colIdx+80, len(sql))]
+	if strings.Contains(stmt, "NOT NULL") {
+		t.Errorf("worker must be nullable on add, got: %q", stmt)
+	}
+	// Idempotent backfill: UPDATE guarded by worker IS NULL OR worker = ''.
+	if !strings.Contains(sql, "WHERE worker IS NULL") {
+		t.Error("migration 014 must have an idempotent backfill guarded on worker IS NULL")
+	}
+	// Backfill strips the -local suffix to derive the logical worker name.
+	if !strings.Contains(sql, "regexp_replace") || !strings.Contains(sql, "-local") {
+		t.Error("migration 014 backfill must use regexp_replace to strip -local suffix")
+	}
+	if strings.Contains(sql, "CREATE TABLE") {
+		t.Error("migration 014 should only alter providers, not create tables")
+	}
+}
