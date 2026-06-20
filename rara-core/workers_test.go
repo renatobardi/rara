@@ -13,8 +13,12 @@ import (
 func TestCoreWorkersGroupsByWorkerField(t *testing.T) {
 	ctx := context.Background()
 	core, db, _ := newTestCore(t)
-	_ = db.UpsertCapability(ctx, Capability{Name: capDestilar})
-	_ = db.UpsertCapability(ctx, Capability{Name: capTranscrever})
+	if err := db.UpsertCapability(ctx, Capability{Name: capDestilar}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.UpsertCapability(ctx, Capability{Name: capTranscrever}); err != nil {
+		t.Fatal(err)
+	}
 	mustProvider(t, db, Provider{Name: "distill", Capability: capDestilar, Worker: "distill",
 		Runtime: runtimeCloudRun, Activation: activationOnDemand, Enabled: true})
 	mustProvider(t, db, Provider{Name: "distill-local", Capability: capDestilar, Worker: "distill",
@@ -56,7 +60,9 @@ func TestCoreWorkersGroupsByWorkerField(t *testing.T) {
 func TestCoreWorkersEmptyWorkerFallback(t *testing.T) {
 	ctx := context.Background()
 	core, db, _ := newTestCore(t)
-	_ = db.UpsertCapability(ctx, Capability{Name: capDestilar})
+	if err := db.UpsertCapability(ctx, Capability{Name: capDestilar}); err != nil {
+		t.Fatal(err)
+	}
 	// Worker field intentionally empty
 	mustProvider(t, db, Provider{Name: "distill", Capability: capDestilar,
 		Runtime: runtimeCloudRun, Activation: activationOnDemand, Enabled: true})
@@ -80,7 +86,9 @@ func TestCoreWorkersEmptyWorkerFallback(t *testing.T) {
 func TestCoreWorkersOrdering(t *testing.T) {
 	ctx := context.Background()
 	core, db, _ := newTestCore(t)
-	_ = db.UpsertCapability(ctx, Capability{Name: capDestilar})
+	if err := db.UpsertCapability(ctx, Capability{Name: capDestilar}); err != nil {
+		t.Fatal(err)
+	}
 	// Insert in reverse order to verify sort
 	mustProvider(t, db, Provider{Name: "z-provider", Capability: capDestilar, Worker: "z-worker",
 		Runtime: runtimeCloudRun, Activation: activationOnDemand, Enabled: true})
@@ -104,7 +112,9 @@ func TestCoreWorkersOrdering(t *testing.T) {
 func TestHTTPListWorkers200(t *testing.T) {
 	ctx := context.Background()
 	core, db, _ := newTestCore(t)
-	_ = db.UpsertCapability(ctx, Capability{Name: capDestilar})
+	if err := db.UpsertCapability(ctx, Capability{Name: capDestilar}); err != nil {
+		t.Fatal(err)
+	}
 	mustProvider(t, db, Provider{Name: "distill", Capability: capDestilar, Worker: "distill",
 		Runtime: runtimeCloudRun, Activation: activationOnDemand, Enabled: true})
 	mustProvider(t, db, Provider{Name: "distill-local", Capability: capDestilar, Worker: "distill",
@@ -138,8 +148,12 @@ func TestHTTPListWorkers200(t *testing.T) {
 func TestUpsertProviderRejectsInconsistentWorkerCapability(t *testing.T) {
 	ctx := context.Background()
 	core, db, _ := newTestCore(t)
-	_ = db.UpsertCapability(ctx, Capability{Name: capDestilar})
-	_ = db.UpsertCapability(ctx, Capability{Name: capTranscrever})
+	if err := db.UpsertCapability(ctx, Capability{Name: capDestilar}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.UpsertCapability(ctx, Capability{Name: capTranscrever}); err != nil {
+		t.Fatal(err)
+	}
 	mustProvider(t, db, Provider{Name: "distill", Capability: capDestilar, Worker: "distill",
 		Runtime: runtimeCloudRun, Activation: activationOnDemand, Enabled: true})
 
@@ -160,7 +174,9 @@ func TestUpsertProviderRejectsInconsistentWorkerCapability(t *testing.T) {
 func TestHTTPListWorkersDoesNotBreakProviders(t *testing.T) {
 	ctx := context.Background()
 	core, db, _ := newTestCore(t)
-	_ = db.UpsertCapability(ctx, Capability{Name: capDestilar})
+	if err := db.UpsertCapability(ctx, Capability{Name: capDestilar}); err != nil {
+		t.Fatal(err)
+	}
 	mustProvider(t, db, Provider{Name: "distill", Capability: capDestilar, Worker: "distill",
 		Runtime: runtimeCloudRun, Activation: activationOnDemand, Enabled: true})
 

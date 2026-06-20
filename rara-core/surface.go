@@ -401,6 +401,9 @@ func (c *Core) UpsertProvider(ctx context.Context, p Provider) error {
 	// Reject placements that would give a worker inconsistent capabilities. Two providers sharing
 	// the same worker field must always agree on capability — enforced here since the DB has no
 	// (worker, capability) unique constraint.
+	// ponytail: TOCTOU — two concurrent upserts can both pass this check before either writes.
+	// Acceptable: UpsertProvider is an operator action (never concurrent). Upgrade path: add a
+	// UNIQUE constraint on (worker, capability) in providers and surface the violation as badInput.
 	if p.Worker != "" {
 		all, err := c.db.ListProviders(ctx)
 		if err != nil {
