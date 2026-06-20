@@ -254,10 +254,10 @@ func SeedYouTubeLane(ctx context.Context, db Database) error {
 		// discovers playlists via API on each wake (sources already in Neon for harvest).
 		{Name: provHarvest, Capability: capColetar, Runtime: runtimeCloudRun, Activation: activationOnDemand,
 			Cost: 0.10, Quality: 0.95, LatencyMs: 500, Enabled: true,
-			CollectCadenceSeconds: intPtr(86400)}, // daily — mirrors rara-harvest-daily scheduler
+			CollectCadenceSeconds: intPtr(86400), RetryIntervalSeconds: intPtr(1800)}, // daily cadence; 30min retry throttle
 		{Name: provShelf, Capability: capColetar, Runtime: runtimeCloudRun, Activation: activationOnDemand,
 			Cost: 0.10, Quality: 0.95, LatencyMs: 800, Enabled: true,
-			CollectCadenceSeconds: intPtr(86400)}, // daily — mirrors rara-shelf-daily scheduler
+			CollectCadenceSeconds: intPtr(86400), RetryIntervalSeconds: intPtr(1800)}, // daily cadence; 30min retry throttle
 		// transcrever: scribe (local Whisper) is resident on the Mac. YouTube blocks audio
 		// download from datacenter IPs, hence the residential constraint; `accepts` pins it to
 		// youtube items so it never competes for a podcast (which a datacenter ASR handles).
@@ -302,7 +302,7 @@ func SeedPodcastLane(ctx context.Context, db Database) error {
 	if err := db.UpsertProvider(ctx, Provider{
 		Name: provDial, Capability: capColetar, Runtime: runtimeCloudRun, Activation: activationOnDemand,
 		Cost: 0.05, Quality: 0.99, LatencyMs: 30000, Enabled: true,
-		CollectCadenceSeconds: intPtr(86400), // daily — mirrors rara-dial-daily scheduler
+		CollectCadenceSeconds: intPtr(86400), RetryIntervalSeconds: intPtr(1800), // daily cadence; 30min retry throttle
 	}); err != nil {
 		return err
 	}
@@ -341,7 +341,7 @@ func SeedEmailLane(ctx context.Context, db Database) error {
 	if err := db.UpsertProvider(ctx, Provider{
 		Name: provCourier, Capability: capColetar, Runtime: runtimeCloudRun, Activation: activationOnDemand,
 		Cost: 0.05, Quality: 0.99, LatencyMs: 30000, Enabled: true,
-		CollectCadenceSeconds: intPtr(21600), // 6h — mirrors rara-courier-schedule cadence
+		CollectCadenceSeconds: intPtr(21600), RetryIntervalSeconds: intPtr(1800), // 6h cadence; 30min retry throttle
 	}); err != nil {
 		return err
 	}
@@ -384,7 +384,7 @@ func SeedNewsLane(ctx context.Context, db Database) error {
 	if err := db.UpsertProvider(ctx, Provider{
 		Name: provFeed, Capability: capColetar, Runtime: runtimeCloudRun, Activation: activationOnDemand,
 		Cost: 0.05, Quality: 0.99, LatencyMs: 60000, Enabled: true,
-		CollectCadenceSeconds: intPtr(21600), // 6h — mirrors rara-feed-6h scheduler
+		CollectCadenceSeconds: intPtr(21600), RetryIntervalSeconds: intPtr(1800), // 6h cadence; 30min retry throttle
 	}); err != nil {
 		return err
 	}

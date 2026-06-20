@@ -202,7 +202,7 @@ func SeedLinkedInLane(ctx context.Context, db Database) error {
 		Name: provBrightDataLinked, Capability: capColetar, Runtime: runtimeCloudRun, Activation: activationOnDemand,
 		Cost: 0.30, Quality: 0.90, LatencyMs: 5000,
 		Constraints: []byte(`{"accepts":["linkedin"]}`), Enabled: true,
-		CollectCadenceSeconds: intPtr(21600), // 6h — mirrors rara-clip-6h scheduler
+		CollectCadenceSeconds: intPtr(21600), RetryIntervalSeconds: intPtr(1800), // 6h cadence; 30min retry throttle
 	}); err != nil {
 		return err
 	}

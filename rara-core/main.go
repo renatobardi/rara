@@ -277,6 +277,12 @@ type Provider struct {
 	// collectors create items and are never assigned via item_steps (coletar is auto-satisfied).
 	// NULL / 0 = not a scheduled collector.
 	CollectCadenceSeconds *int `json:"collect_cadence_seconds,omitempty"`
+	// RetryIntervalSeconds is the minimum gap between dispatch attempts for a collector that
+	// failed (last_attempt_at advanced but last_collect_at did not). NULL = no throttle.
+	RetryIntervalSeconds *int `json:"retry_interval_seconds,omitempty"`
+	// LastAttemptAt is stamped by the dispatcher on every wake attempt (success or failure).
+	// Owned by the dispatcher; seed never writes it.
+	LastAttemptAt *time.Time `json:"last_attempt_at,omitempty"`
 }
 
 // Flow is one declarative pipeline per source lane.
@@ -732,29 +738,32 @@ func (d *pgxDatabase) UpsertProvider(ctx context.Context, p Provider) error {
 	const q = `
 		INSERT INTO providers
 			(name, capability, runtime, activation, cost, quality, latency_ms, constraints, enabled,
-			 runner_url, env, collect_cadence_seconds)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11::jsonb, $12)
+			 runner_url, env, collect_cadence_seconds, retry_interval_seconds)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11::jsonb, $12, $13)
 		ON CONFLICT (name) DO UPDATE SET
-			capability             = EXCLUDED.capability,
-			runtime                = EXCLUDED.runtime,
-			activation             = EXCLUDED.activation,
-			cost                   = EXCLUDED.cost,
-			quality                = EXCLUDED.quality,
-			latency_ms             = EXCLUDED.latency_ms,
-			constraints            = EXCLUDED.constraints,
-			enabled                = EXCLUDED.enabled,
-			runner_url             = EXCLUDED.runner_url,
-			env                    = EXCLUDED.env,
-			collect_cadence_seconds = EXCLUDED.collect_cadence_seconds`
+			capability              = EXCLUDED.capability,
+			runtime                 = EXCLUDED.runtime,
+			activation              = EXCLUDED.activation,
+			cost                    = EXCLUDED.cost,
+			quality                 = EXCLUDED.quality,
+			latency_ms              = EXCLUDED.latency_ms,
+			constraints             = EXCLUDED.constraints,
+			enabled                 = EXCLUDED.enabled,
+			runner_url              = EXCLUDED.runner_url,
+			env                     = EXCLUDED.env,
+			collect_cadence_seconds = EXCLUDED.collect_cadence_seconds,
+			retry_interval_seconds  = EXCLUDED.retry_interval_seconds`
 	// heartbeat_at: owned by TouchProviderHeartbeat (runner proof-of-life). Excluded from INSERT
 	// and SET so seed never clobbers it — a re-seed must not evict a healthy provider from the
 	// router's health gate.
 	// last_collect_at: owned by the dispatcher (stamped after each successful wake). Excluded so
 	// seed never resets the cadence clock.
+	// last_attempt_at: owned by the dispatcher (stamped on every wake attempt). Excluded so
+	// seed never resets the retry throttle mid-flight.
 	_, err := d.conn.Exec(ctx, q,
 		p.Name, p.Capability, p.Runtime, p.Activation, p.Cost, p.Quality, p.LatencyMs,
 		jsonOrEmpty(p.Constraints, "{}"), p.Enabled, nullStr(p.RunnerURL),
-		jsonOrEmpty(p.Env, "{}"), p.CollectCadenceSeconds)
+		jsonOrEmpty(p.Env, "{}"), p.CollectCadenceSeconds, p.RetryIntervalSeconds)
 	if err != nil {
 		return fmt.Errorf("upsert provider %q: %w", p.Name, err)
 	}
