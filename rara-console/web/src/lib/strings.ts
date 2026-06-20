@@ -10,7 +10,8 @@ export const t = {
 		secTrain: 'Treinar',
 		curation: 'Curadoria',
 		sources: 'Fontes & Flows',
-		providers: 'Providers & Roteamento',
+		workers: 'Workers',
+		agents: 'Agents',
 		secSystem: 'Sistema',
 		audit: 'Auditoria',
 		settings: 'Configurações'
@@ -79,21 +80,20 @@ export const t = {
 		retry: 'Tentar novamente',
 		back: '← Voltar'
 	},
-	providers: {
-		title: 'Providers & Roteamento',
-		loading: 'Carregando providers…',
-		error: 'Não foi possível carregar os providers.',
-		empty: 'Nenhum provider registrado.',
+	workers: {
+		title: 'Workers',
+		loading: 'Carregando workers…',
+		error: 'Não foi possível carregar os workers.',
+		empty: 'Nenhum worker registrado.',
 		colName: 'Nome',
 		colCapability: 'Capability',
 		colRuntime: 'Runtime',
 		colActivation: 'Ativação',
 		colCost: 'Custo',
 		colQuality: 'Qualidade',
-		colLatency: 'Latência (ms)',
 		colEnabled: 'Ativo',
 		saving: 'Salvando…',
-		saveError: 'Erro ao salvar provider.',
+		saveError: 'Erro ao salvar worker.',
 		saveOk: 'Salvo.',
 		policiesSection: 'Roteamento',
 		policiesLoading: 'Carregando políticas…',
@@ -101,8 +101,12 @@ export const t = {
 		policiesEmpty: 'Nenhuma política configurada.',
 		colScope: 'Escopo',
 		colCostWeight: 'Peso custo',
-		colQualityWeight: 'Peso qualidade',
-		colLatencyWeight: 'Peso latência'
+		colQualityWeight: 'Peso qualidade'
+	},
+	agents: {
+		title: 'Agents',
+		soon: 'Em breve',
+		blurb: 'Agentes de IA autônomos que decidem, executam e aprendem — o próximo passo da plataforma rara.'
 	},
 	fontesFlows: {
 		title: 'Fontes & Flows',

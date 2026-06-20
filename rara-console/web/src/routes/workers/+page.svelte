@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { onMount } from 'svelte';
 	import { t } from '$lib/strings';
 
 	type Provider = {
@@ -8,7 +9,6 @@
 		activation: string;
 		cost: number;
 		quality: number;
-		latency_ms: number;
 		enabled: boolean;
 	};
 
@@ -16,7 +16,6 @@
 		scope: string;
 		cost_weight: number;
 		quality_weight: number;
-		latency_weight: number;
 	};
 
 	let providers = $state<Provider[]>([]);
@@ -29,11 +28,11 @@
 	let saving = $state<string | null>(null); // provider name being saved
 	let saveMsg = $state('');
 
-	$effect(() => {
+	onMount(() => {
 		fetch('/api/providers')
 			.then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
 			.then((d) => {
-				providers = d ?? [];
+				providers = Array.isArray(d) ? d : [];
 				loading = false;
 			})
 			.catch(() => {
@@ -44,7 +43,7 @@
 		fetch('/api/routing-policies')
 			.then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
 			.then((d) => {
-				policies = d ?? [];
+				policies = Array.isArray(d) ? d : [];
 				policiesLoading = false;
 			})
 			.catch(() => {
@@ -56,31 +55,36 @@
 	async function toggleProvider(p: Provider) {
 		saving = p.name;
 		saveMsg = '';
-		const updated = { ...p, enabled: !p.enabled };
-		const res = await fetch('/api/providers', {
-			method: 'PUT',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify(updated)
-		});
-		if (res.ok) {
-			providers = providers.map((x) => (x.name === p.name ? updated : x));
-			saveMsg = t.providers.saveOk;
-		} else {
-			saveMsg = t.providers.saveError;
+		try {
+			const updated = { ...p, enabled: !p.enabled };
+			const res = await fetch('/api/providers', {
+				method: 'PUT',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify(updated)
+			});
+			if (res.ok) {
+				providers = providers.map((x) => (x.name === p.name ? updated : x));
+				saveMsg = t.workers.saveOk;
+			} else {
+				saveMsg = t.workers.saveError;
+			}
+		} catch {
+			saveMsg = t.workers.saveError;
+		} finally {
+			saving = null;
 		}
-		saving = null;
 	}
 </script>
 
 <section class="mb-8">
-	<h2 class="mb-4 text-[15px] font-semibold">{t.providers.title}</h2>
+	<h2 class="mb-4 text-[15px] font-semibold">{t.workers.title}</h2>
 
 	{#if loading}
-		<p class="text-sm text-muted">{t.providers.loading}</p>
+		<p class="text-sm text-muted">{t.workers.loading}</p>
 	{:else if error}
-		<p class="text-sm text-red-500">{t.providers.error}</p>
+		<p class="text-sm text-red-500">{t.workers.error}</p>
 	{:else if providers.length === 0}
-		<p class="text-sm text-muted">{t.providers.empty}</p>
+		<p class="text-sm text-muted">{t.workers.empty}</p>
 	{:else}
 		{#if saveMsg}
 			<p class="mb-3 text-sm text-muted">{saveMsg}</p>
@@ -89,14 +93,13 @@
 			<table class="w-full border-collapse text-[13px]">
 				<thead>
 					<tr class="border-b border-border bg-surface-2 text-left text-muted">
-						<th class="px-4 py-2.5 font-medium">{t.providers.colName}</th>
-						<th class="px-4 py-2.5 font-medium">{t.providers.colCapability}</th>
-						<th class="px-4 py-2.5 font-medium">{t.providers.colRuntime}</th>
-						<th class="px-4 py-2.5 font-medium">{t.providers.colActivation}</th>
-						<th class="px-4 py-2.5 font-medium">{t.providers.colCost}</th>
-						<th class="px-4 py-2.5 font-medium">{t.providers.colQuality}</th>
-						<th class="px-4 py-2.5 font-medium">{t.providers.colLatency}</th>
-						<th class="px-4 py-2.5 font-medium">{t.providers.colEnabled}</th>
+						<th class="px-4 py-2.5 font-medium">{t.workers.colName}</th>
+						<th class="px-4 py-2.5 font-medium">{t.workers.colCapability}</th>
+						<th class="px-4 py-2.5 font-medium">{t.workers.colRuntime}</th>
+						<th class="px-4 py-2.5 font-medium">{t.workers.colActivation}</th>
+						<th class="px-4 py-2.5 font-medium">{t.workers.colCost}</th>
+						<th class="px-4 py-2.5 font-medium">{t.workers.colQuality}</th>
+						<th class="px-4 py-2.5 font-medium">{t.workers.colEnabled}</th>
 						<th class="px-4 py-2.5"></th>
 					</tr>
 				</thead>
@@ -109,7 +112,6 @@
 							<td class="px-4 py-2.5">{p.activation}</td>
 							<td class="px-4 py-2.5">{p.cost}</td>
 							<td class="px-4 py-2.5">{p.quality}</td>
-							<td class="px-4 py-2.5">{p.latency_ms}</td>
 							<td class="px-4 py-2.5">
 								<span
 									class="inline-block rounded-full px-2 py-0.5 text-[11px] font-semibold {p.enabled
@@ -124,8 +126,9 @@
 									class="cursor-pointer rounded-token border border-border bg-surface-2 px-3 py-1 text-[12px] hover:bg-hover disabled:opacity-40"
 									onclick={() => toggleProvider(p)}
 									disabled={saving === p.name}
+									aria-label="{p.enabled ? 'Desativar' : 'Ativar'} {p.name}"
 								>
-									{saving === p.name ? t.providers.saving : p.enabled ? 'Desativar' : 'Ativar'}
+									{saving === p.name ? t.workers.saving : p.enabled ? 'Desativar' : 'Ativar'}
 								</button>
 							</td>
 						</tr>
@@ -137,23 +140,22 @@
 </section>
 
 <section>
-	<h2 class="mb-4 text-[15px] font-semibold">{t.providers.policiesSection}</h2>
+	<h2 class="mb-4 text-[15px] font-semibold">{t.workers.policiesSection}</h2>
 
 	{#if policiesLoading}
-		<p class="text-sm text-muted">{t.providers.policiesLoading}</p>
+		<p class="text-sm text-muted">{t.workers.policiesLoading}</p>
 	{:else if policiesError}
-		<p class="text-sm text-red-500">{t.providers.policiesError}</p>
+		<p class="text-sm text-red-500">{t.workers.policiesError}</p>
 	{:else if policies.length === 0}
-		<p class="text-sm text-muted">{t.providers.policiesEmpty}</p>
+		<p class="text-sm text-muted">{t.workers.policiesEmpty}</p>
 	{:else}
 		<div class="overflow-x-auto rounded-xl border border-border">
 			<table class="w-full border-collapse text-[13px]">
 				<thead>
 					<tr class="border-b border-border bg-surface-2 text-left text-muted">
-						<th class="px-4 py-2.5 font-medium">{t.providers.colScope}</th>
-						<th class="px-4 py-2.5 font-medium">{t.providers.colCostWeight}</th>
-						<th class="px-4 py-2.5 font-medium">{t.providers.colQualityWeight}</th>
-						<th class="px-4 py-2.5 font-medium">{t.providers.colLatencyWeight}</th>
+						<th class="px-4 py-2.5 font-medium">{t.workers.colScope}</th>
+						<th class="px-4 py-2.5 font-medium">{t.workers.colCostWeight}</th>
+						<th class="px-4 py-2.5 font-medium">{t.workers.colQualityWeight}</th>
 					</tr>
 				</thead>
 				<tbody>
@@ -162,7 +164,6 @@
 							<td class="px-4 py-2.5">{pol.scope}</td>
 							<td class="px-4 py-2.5">{pol.cost_weight}</td>
 							<td class="px-4 py-2.5">{pol.quality_weight}</td>
-							<td class="px-4 py-2.5">{pol.latency_weight ?? '—'}</td>
 						</tr>
 					{/each}
 				</tbody>
