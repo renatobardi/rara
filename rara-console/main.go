@@ -23,6 +23,7 @@ import (
 	"net/url"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -595,7 +596,7 @@ func (s *server) handleSetStepHosts(w http.ResponseWriter, r *http.Request) {
 // handleRoutePreview proxies GET /v1/route/preview — dry-run of the router without dispatching a
 // job. Requires capability; optionally forwards lane, sensitivity, and exclude (multi-value).
 func (s *server) handleRoutePreview(w http.ResponseWriter, r *http.Request) {
-	capability := r.URL.Query().Get("capability")
+	capability := strings.TrimSpace(r.URL.Query().Get("capability"))
 	if capability == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "capability is required"})
 		return

@@ -513,7 +513,11 @@ func (c *Core) Usage(ctx context.Context) (UsageReport, error) {
 // WorkerMetrics returns the per-provider step rollup for the Workers screen metric cards.
 // since restricts the window (nil = all-time).
 func (c *Core) WorkerMetrics(ctx context.Context, since *time.Time) ([]WorkerMetric, error) {
-	return c.db.WorkerMetrics(ctx, since)
+	metrics, err := c.db.WorkerMetrics(ctx, since)
+	if err != nil {
+		return nil, fmt.Errorf("core worker metrics: %w", err)
+	}
+	return metrics, nil
 }
 
 // RoutePreview is the response shape for GET /v1/route/preview.

@@ -76,6 +76,19 @@ func doWorkerMetrics(s *server, rawQuery string) *httptest.ResponseRecorder {
 
 // --- route/preview ---
 
+func TestRoutePreviewRejectsWhitespaceCapability(t *testing.T) {
+	s := &server{coreURL: "http://127.0.0.1:1", token: "x", client: http.DefaultClient}
+
+	rec := doRoutePreview(s, "capability=+++") // "+++" decodes as "   " (spaces)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 for whitespace-only capability; body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "capability is required") {
+		t.Errorf("body missing error message: %s", rec.Body.String())
+	}
+}
+
 func TestRoutePreviewRejectsEmptyCapability(t *testing.T) {
 	// Dead URL confirms core is never called when capability is missing.
 	s := &server{coreURL: "http://127.0.0.1:1", token: "x", client: http.DefaultClient}
@@ -156,6 +169,34 @@ func TestWorkerMetricsForwardsDays(t *testing.T) {
 	}
 	if !strings.Contains(*captured, "days=7") {
 		t.Errorf("days=7 not forwarded; core received: %q", *captured)
+	}
+}
+
+func TestWorkerMetricsForwardsMinBoundaryDays(t *testing.T) {
+	core, captured := fakeWorkersCore(t, "tok")
+	s := &server{coreURL: core.URL, token: "tok", client: core.Client()}
+
+	rec := doWorkerMetrics(s, "days=1")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(*captured, "days=1") {
+		t.Errorf("days=1 not forwarded; core received: %q", *captured)
+	}
+}
+
+func TestWorkerMetricsForwardsMaxBoundaryDays(t *testing.T) {
+	core, captured := fakeWorkersCore(t, "tok")
+	s := &server{coreURL: core.URL, token: "tok", client: core.Client()}
+
+	rec := doWorkerMetrics(s, "days=365")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(*captured, "days=365") {
+		t.Errorf("days=365 not forwarded; core received: %q", *captured)
 	}
 }
 
