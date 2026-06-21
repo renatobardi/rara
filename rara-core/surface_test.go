@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -428,7 +427,7 @@ func TestHTTPUpsertProviderRoundTrips(t *testing.T) {
 		t.Fatal(err)
 	}
 	h := NewSurfaceMux(core, testToken)
-	body := `{"name":"distill-x","capability":"destilar","runtime":"cloudrun","activation":"on_demand","cost":1.5,"quality":0.9,"latency_ms":1000,"enabled":true}`
+	body := `{"name":"distill-x","capability":"destilar","runtime":"cloudrun","activation":"on_demand","enabled":true}`
 	rec := do(t, h, http.MethodPut, "/v1/providers", body)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("got %d: %s", rec.Code, rec.Body.String())
@@ -1171,94 +1170,4 @@ func mustItem(t *testing.T, db *MockDatabase, lane, ref string, flowID int, stat
 		t.Fatalf("seed item: %v", err)
 	}
 	return id
-}
-
-// ---------------------------------------------------------------------------
-// GET /v1/route/preview tests
-// ---------------------------------------------------------------------------
-
-// seedRoutePreviewFixture creates a surface mux with two on_demand providers for capDestilar.
-func seedRoutePreviewFixture(t *testing.T) (http.Handler, *MockDatabase) {
-	t.Helper()
-	ctx := context.Background()
-	core, db, _ := newTestCore(t) // LinkedIn store not needed for route-preview fixture
-	if err := db.UpsertCapability(ctx, Capability{Name: capDestilar}); err != nil {
-		t.Fatal(err)
-	}
-	previewProvider := func(name string, cost, quality float64) Provider {
-		return Provider{Name: name, Capability: capDestilar, Runtime: runtimeCloudRun,
-			Activation: activationOnDemand, Cost: cost, Quality: quality, Enabled: true}
-	}
-	mustProvider(t, db, previewProvider("distill-a", 1, 0.9))
-	mustProvider(t, db, previewProvider("distill-b", 2, 0.5))
-	return NewSurfaceMux(core, testToken), db
-}
-
-// TestHTTPRoutePreviewMissingCapability: capability is required; omitting it returns 400.
-func TestHTTPRoutePreviewMissingCapability(t *testing.T) {
-	h, _ := seedRoutePreviewFixture(t)
-	rec := do(t, h, http.MethodGet, "/v1/route/preview", "")
-	if rec.Code != http.StatusBadRequest {
-		t.Errorf("missing capability should be 400, got %d: %s", rec.Code, rec.Body.String())
-	}
-}
-
-// TestHTTPRoutePreviewShape: a valid capability returns 200 with the correct JSON shape.
-func TestHTTPRoutePreviewShape(t *testing.T) {
-	h, _ := seedRoutePreviewFixture(t)
-	rec := do(t, h, http.MethodGet, "/v1/route/preview?capability=destilar", "")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("want 200, got %d: %s", rec.Code, rec.Body.String())
-	}
-	var resp RoutePreview
-	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("decode RoutePreview: %v", err)
-	}
-	if resp.Capability != capDestilar {
-		t.Errorf("capability=%q, want %q", resp.Capability, capDestilar)
-	}
-	if resp.Winner == "" {
-		t.Error("winner should be non-empty when eligible providers exist")
-	}
-	if len(resp.Candidates) != 2 {
-		t.Errorf("want 2 candidates, got %d", len(resp.Candidates))
-	}
-}
-
-// TestHTTPRoutePreviewInvalidSensitivity: unknown sensitivity values return 400.
-func TestHTTPRoutePreviewInvalidSensitivity(t *testing.T) {
-	h, _ := seedRoutePreviewFixture(t)
-	rec := do(t, h, http.MethodGet, "/v1/route/preview?capability=destilar&sensitivity=bogus", "")
-	if rec.Code != http.StatusBadRequest {
-		t.Errorf("invalid sensitivity should be 400, got %d: %s", rec.Code, rec.Body.String())
-	}
-}
-
-// TestHTTPRoutePreviewExclude: the exclude query param re-ranks and changes the winner.
-func TestHTTPRoutePreviewExclude(t *testing.T) {
-	h, _ := seedRoutePreviewFixture(t)
-
-	// Without exclude: quality-weighted policy -> distill-a wins (quality=0.9).
-	rec := do(t, h, http.MethodGet, "/v1/route/preview?capability=destilar", "")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("want 200, got %d", rec.Code)
-	}
-	var resp RoutePreview
-	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
-		t.Fatal(err)
-	}
-	firstWinner := resp.Winner
-
-	// With exclude=winner: the other candidate must become the new winner.
-	rec = do(t, h, http.MethodGet, "/v1/route/preview?capability=destilar&exclude="+url.QueryEscape(firstWinner), "")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("with exclude: want 200, got %d: %s", rec.Code, rec.Body.String())
-	}
-	var resp2 RoutePreview
-	if err := json.Unmarshal(rec.Body.Bytes(), &resp2); err != nil {
-		t.Fatal(err)
-	}
-	if resp2.Winner == firstWinner {
-		t.Errorf("after excluding %q, winner should change, still got %q", firstWinner, resp2.Winner)
-	}
 }

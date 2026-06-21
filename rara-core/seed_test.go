@@ -113,7 +113,7 @@ func TestSeedSharedProviderEnv(t *testing.T) {
 		provGateRico:        `{"SIFT_GATE":"gate_rico","SIFT_PROVIDER":"gate-rico","LITELLM_MODEL":"groq-fast"}`,
 		provGateRicoLocal:   `{"SIFT_GATE":"gate_rico","SIFT_PROVIDER":"gate-rico-local"}`,
 		provDistill:         `{"DISTILL_PROVIDER":"distill","LITELLM_MODEL":"groq-llama"}`,
-		provDistillLocal:    `{"DISTILL_PROVIDER":"distill-local","CURATE_ENGINE":"litellm","LITELLM_MODEL":"groq-llama"}`,
+		provDistillLocal:    `{"DISTILL_PROVIDER":"distill-local"}`, // model/engine from host LiteLLM config
 	}
 	for name, wantEnv := range want {
 		if got := string(db.providers[name].Env); got != wantEnv {
@@ -160,29 +160,40 @@ func TestSeedIdempotent(t *testing.T) {
 	}
 }
 
-// TestVPCFirstCostQuality asserts that VPC providers (gate-barato-local, gate-rico-local,
-// distill-local) are cheaper than AND equal quality to their cloud peers after seeding.
-// Same model runs on both tiers, so quality parity is mandatory; lower cost is the lever
-// that makes the score-based router select VPC-first for public content.
-func TestVPCFirstCostQuality(t *testing.T) {
+// TestVPCFirstRoutingPolicy asserts that VPC-first routing is enforced via per-capability
+// routing_policies.fallback after seeding — the VPC variant must appear before its cloud peer
+// in the fallback list for each LLM capability.
+func TestVPCFirstRoutingPolicy(t *testing.T) {
 	ctx := context.Background()
 	db := newMockDatabase()
 	if err := SeedYouTubeLane(ctx, db); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	pairs := []struct{ vpc, cloud string }{
-		{provGateBaratoLocal, provGateBarato},
-		{provGateRicoLocal, provGateRico},
-		{provDistillLocal, provDistill},
+	cases := []struct {
+		scope string
+		vpc   string
+		cloud string
+	}{
+		{capGateBarato, provGateBaratoLocal, provGateBarato},
+		{capGateRico, provGateRicoLocal, provGateRico},
+		{capDestilar, provDistillLocal, provDistill},
 	}
-	for _, tt := range pairs {
-		vpc := db.providers[tt.vpc]
-		cloud := db.providers[tt.cloud]
-		if vpc.Cost >= cloud.Cost {
-			t.Errorf("%s cost %.2f >= cloud %s cost %.2f: VPC must be cheaper", tt.vpc, vpc.Cost, tt.cloud, cloud.Cost)
+	for _, tt := range cases {
+		pol, ok, err := db.GetRoutingPolicy(ctx, tt.scope)
+		if err != nil || !ok {
+			t.Errorf("routing policy for %q: ok=%v err=%v", tt.scope, ok, err)
+			continue
 		}
-		if vpc.Quality != cloud.Quality {
-			t.Errorf("%s quality %.2f != %s quality %.2f: same model → same quality", tt.vpc, vpc.Quality, tt.cloud, cloud.Quality)
+		var fallback []string
+		if err := json.Unmarshal(pol.Fallback, &fallback); err != nil || len(fallback) < 2 {
+			t.Errorf("%q fallback %q: want JSON array with ≥2 entries", tt.scope, pol.Fallback)
+			continue
+		}
+		if fallback[0] != tt.vpc {
+			t.Errorf("%q fallback[0] = %q, want %q (VPC must be first)", tt.scope, fallback[0], tt.vpc)
+		}
+		if fallback[1] != tt.cloud {
+			t.Errorf("%q fallback[1] = %q, want %q (cloud must be second)", tt.scope, fallback[1], tt.cloud)
 		}
 	}
 }
@@ -477,8 +488,7 @@ func TestSeedWorkerRoundTrip(t *testing.T) {
 	}
 	p := Provider{
 		Name: "distill", Capability: capDestilar, Runtime: runtimeCloudRun,
-		Activation: activationOnDemand, Cost: 2.0, Quality: 0.92, LatencyMs: 30000,
-		Enabled: true, Worker: "distill",
+		Activation: activationOnDemand, Enabled: true, Worker: "distill",
 	}
 	if err := db.UpsertProvider(ctx, p); err != nil {
 		t.Fatalf("UpsertProvider: %v", err)

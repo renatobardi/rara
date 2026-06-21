@@ -142,7 +142,7 @@ func TestMCPUpsertProviderMapsToCore(t *testing.T) {
 	s := newMCPServer(core)
 	res, rerr := callTool(t, s, "rara_upsert_provider", Provider{
 		Name: "gate-x", Capability: capGateRico, Runtime: runtimeVPC, Activation: activationResident,
-		Quality: 0.7, Enabled: true,
+		Constraints: json.RawMessage(`{}`), Enabled: true,
 	})
 	if rerr != nil {
 		t.Fatalf("protocol error: %+v", rerr)

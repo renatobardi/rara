@@ -118,15 +118,15 @@ func (d *pgxDatabase) ListItemSteps(ctx context.Context, itemID int) ([]ItemStep
 }
 
 // providerColumns is the shared SELECT list for a providers row (mirrors Provider struct fields).
-const providerColumns = `name, capability, runtime, activation, cost, quality, latency_ms,
+const providerColumns = `name, capability, runtime, activation,
        constraints, enabled, heartbeat_at, last_collect_at, COALESCE(runner_url, ''), env, COALESCE(worker, '')`
 
 // scanProvider scans a single providers row using the caller's Scan function (works for both
 // pgx.Row.Scan and pgx.Rows.Scan — both accept ...any and return error).
 func scanProvider(scan func(dest ...any) error) (Provider, error) {
 	var p Provider
-	err := scan(&p.Name, &p.Capability, &p.Runtime, &p.Activation, &p.Cost,
-		&p.Quality, &p.LatencyMs, &p.Constraints, &p.Enabled, &p.HeartbeatAt, &p.LastCollectAt, &p.RunnerURL, &p.Env, &p.Worker)
+	err := scan(&p.Name, &p.Capability, &p.Runtime, &p.Activation,
+		&p.Constraints, &p.Enabled, &p.HeartbeatAt, &p.LastCollectAt, &p.RunnerURL, &p.Env, &p.Worker)
 	return p, err
 }
 
@@ -162,14 +162,14 @@ func (d *pgxDatabase) GetProvider(ctx context.Context, name string) (Provider, b
 }
 
 func (d *pgxDatabase) GetRoutingPolicy(ctx context.Context, scope string) (RoutingPolicy, bool, error) {
-	const q = `SELECT scope, cost_weight, quality_weight, fallback FROM routing_policies WHERE scope = $1`
+	const q = `SELECT scope, fallback FROM routing_policies WHERE scope = $1`
 	var p RoutingPolicy
-	err := d.conn.QueryRow(ctx, q, scope).Scan(&p.Scope, &p.CostWeight, &p.QualityWeight, &p.Fallback)
+	err := d.conn.QueryRow(ctx, q, scope).Scan(&p.Scope, &p.Fallback)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return RoutingPolicy{}, false, nil
 	}
 	if err != nil {
-		return RoutingPolicy{}, false, err
+		return RoutingPolicy{}, false, fmt.Errorf("get routing policy %q: %w", scope, err)
 	}
 	return p, true, nil
 }
@@ -560,7 +560,7 @@ func (d *pgxDatabase) ListProviders(ctx context.Context) ([]Provider, error) {
 
 // ListRoutingPolicies returns every routing policy, ordered by scope.
 func (d *pgxDatabase) ListRoutingPolicies(ctx context.Context) ([]RoutingPolicy, error) {
-	const q = `SELECT scope, cost_weight, quality_weight, fallback FROM routing_policies ORDER BY scope`
+	const q = `SELECT scope, fallback FROM routing_policies ORDER BY scope`
 	rows, err := d.conn.Query(ctx, q)
 	if err != nil {
 		return nil, err
@@ -569,8 +569,8 @@ func (d *pgxDatabase) ListRoutingPolicies(ctx context.Context) ([]RoutingPolicy,
 	var out []RoutingPolicy
 	for rows.Next() {
 		var p RoutingPolicy
-		if err := rows.Scan(&p.Scope, &p.CostWeight, &p.QualityWeight, &p.Fallback); err != nil {
-			return nil, err
+		if err := rows.Scan(&p.Scope, &p.Fallback); err != nil {
+			return nil, fmt.Errorf("scan routing policy: %w", err)
 		}
 		out = append(out, p)
 	}
