@@ -9,6 +9,11 @@ import (
 	"log"
 )
 
+// bgCtx is the context used for best-effort observability writes (StampDispatchError /
+// ClearDispatchError). These writes must not be cancelled by the pass context — if the
+// pass ctx is cancelled (shutdown signal, timeout), we still want the error recorded.
+var bgCtx = context.Background()
+
 // AssignedStep is the minimal projection of item_steps the dispatcher needs: who is assigned and
 // to which provider. The provider's own poll loop handles item discovery; the dispatcher only wakes.
 type AssignedStep struct {
@@ -86,11 +91,13 @@ func (d *Dispatcher) DispatchOnce(ctx context.Context) error {
 		}
 		if err := d.runner.Run(ctx, buildRunRequest(prov)); err != nil {
 			log.Printf("dispatch: wake %q: %v", name, err)
-			if serr := d.db.StampDispatchError(ctx, name, err.Error()); serr != nil {
+			// Use bgCtx: pass ctx may be cancelled at shutdown; the error stamp must still land.
+			// runner.Run errors come from HTTP status codes / net errors — no credential values.
+			if serr := d.db.StampDispatchError(bgCtx, name, err.Error()); serr != nil {
 				log.Printf("dispatch: stamp error %q: %v", name, serr) // best-effort
 			}
 		} else {
-			if cerr := d.db.ClearDispatchError(ctx, name); cerr != nil {
+			if cerr := d.db.ClearDispatchError(bgCtx, name); cerr != nil {
 				log.Printf("dispatch: clear error %q: %v", name, cerr) // best-effort
 			}
 		}
@@ -111,11 +118,12 @@ func (d *Dispatcher) DispatchOnce(ctx context.Context) error {
 		}
 		if err := d.runner.Run(ctx, buildRunRequest(prov)); err != nil {
 			log.Printf("dispatch: wake collector %q: %v", prov.Name, err)
-			if serr := d.db.StampDispatchError(ctx, prov.Name, err.Error()); serr != nil {
+			// Use bgCtx: same rationale as the worker loop above.
+			if serr := d.db.StampDispatchError(bgCtx, prov.Name, err.Error()); serr != nil {
 				log.Printf("dispatch: stamp error collector %q: %v", prov.Name, serr) // best-effort
 			}
 		} else {
-			if cerr := d.db.ClearDispatchError(ctx, prov.Name); cerr != nil {
+			if cerr := d.db.ClearDispatchError(bgCtx, prov.Name); cerr != nil {
 				log.Printf("dispatch: clear error collector %q: %v", prov.Name, cerr) // best-effort
 			}
 		}

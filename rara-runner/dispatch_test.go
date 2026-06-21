@@ -387,6 +387,7 @@ func TestDispatchOnceCollectorRunnerSuccessClearsLastError(t *testing.T) {
 
 func TestDispatchOnceStampErrorIsBestEffort(t *testing.T) {
 	// A StampDispatchError failure must not stop the loop or return an error.
+	// We also verify StampDispatchError was actually called (not silently skipped).
 	db := &mockDispatchDB{
 		steps:     []AssignedStep{{ItemID: 1, Seq: 2, AssignedProvider: "gate-barato"}},
 		providers: map[string]DispatchProvider{"gate-barato": {Name: "gate-barato", Runtime: runtimeCloudRun}},
@@ -396,9 +397,14 @@ func TestDispatchOnceStampErrorIsBestEffort(t *testing.T) {
 	if err := (&Dispatcher{db: db, runner: tr}).DispatchOnce(context.Background()); err != nil {
 		t.Errorf("DispatchOnce must swallow stamp errors, got %v", err)
 	}
+	if _, ok := db.stampedErrors["gate-barato"]; !ok {
+		t.Error("StampDispatchError was not called despite runner failure")
+	}
 }
 
 func TestDispatchOnceClearErrorIsBestEffort(t *testing.T) {
+	// A ClearDispatchError failure must not stop the loop or return an error.
+	// We also verify ClearDispatchError was actually called (not silently skipped).
 	db := &mockDispatchDB{
 		steps:     []AssignedStep{{ItemID: 1, Seq: 2, AssignedProvider: "gate-barato"}},
 		providers: map[string]DispatchProvider{"gate-barato": {Name: "gate-barato", Runtime: runtimeCloudRun}},
@@ -406,6 +412,9 @@ func TestDispatchOnceClearErrorIsBestEffort(t *testing.T) {
 	}
 	if err := runOnceErr((&Dispatcher{db: db, runner: &fakeTransport{}})); err != nil {
 		t.Errorf("DispatchOnce must swallow clear errors, got %v", err)
+	}
+	if db.clearedErrors["gate-barato"] != 1 {
+		t.Errorf("ClearDispatchError called %d times, want 1 despite clearErr", db.clearedErrors["gate-barato"])
 	}
 }
 
