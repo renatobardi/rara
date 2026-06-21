@@ -544,7 +544,7 @@ func resolveTarget(ctx context.Context, store ScribeStore, item addon.Item) (fet
 		// enclosure URL — so the downstream gate/distill lookups chain on the same GUID.
 		return fetchTarget{source: Source{Type: "url", Ref: enclosure}, keySourceType: lanePodcast, keySourceRef: item.SourceRef, keyYoutubeID: ""}, nil
 	default:
-		return fetchTarget{}, fmt.Errorf("transcrever: unknown lane %q", item.Lane)
+		return fetchTarget{}, fmt.Errorf("transcrever %s: unknown lane %q", item.SourceRef, item.Lane)
 	}
 }
 
