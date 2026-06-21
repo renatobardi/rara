@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"testing"
 	"unicode/utf8"
 )
@@ -239,8 +240,8 @@ func TestProviderLastErrorTruncatedAtRead(t *testing.T) {
 	mustProvider(t, db, Provider{Name: "distill", Capability: capDestilar, Worker: "distill",
 		Runtime: runtimeCloudRun, Activation: activationOnDemand, Enabled: true})
 
-	// Store a value longer than the cap directly (simulates a verbose runner message).
-	long := string(make([]byte, maxProviderErrorLen+100))
+	// Use multi-byte UTF-8 chars so the test actually validates rune-boundary truncation.
+	long := strings.Repeat("á", maxProviderErrorLen+100)
 	p := db.providers["distill"]
 	p.LastError = &long
 	db.providers["distill"] = p
