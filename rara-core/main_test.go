@@ -958,8 +958,12 @@ func TestFlowStepRequiresCapabilityAndUniqueSeq(t *testing.T) {
 func TestRoutingPolicyUniqueScope(t *testing.T) {
 	ctx := context.Background()
 	db := newMockDatabase()
-	_ = db.UpsertRoutingPolicy(ctx, RoutingPolicy{Scope: "global", Fallback: []byte(`["a"]`)})
-	_ = db.UpsertRoutingPolicy(ctx, RoutingPolicy{Scope: "global", Fallback: []byte(`["b"]`)})
+	if err := db.UpsertRoutingPolicy(ctx, RoutingPolicy{Scope: "global", Fallback: []byte(`["a"]`)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.UpsertRoutingPolicy(ctx, RoutingPolicy{Scope: "global", Fallback: []byte(`["b"]`)}); err != nil {
+		t.Fatal(err)
+	}
 	if len(db.policies) != 1 {
 		t.Fatalf("UNIQUE(scope) not honored: %d rows", len(db.policies))
 	}

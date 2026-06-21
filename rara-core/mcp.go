@@ -214,12 +214,12 @@ func buildTools(core *Core) []mcpTool {
 		},
 		{
 			Name: "rara_upsert_provider", Description: "Create or update a provider (idempotent on name).",
-			InputSchema: schemaObject(`{"name":{"type":"string"},"capability":{"type":"string"},"runtime":{"type":"string"},"activation":{"type":"string"},"constraints":{"type":"object"},"enabled":{"type":"boolean"}}`, "name", "capability", "runtime", "activation"),
+			InputSchema: schemaObject(`{"name":{"type":"string"},"capability":{"type":"string"},"runtime":{"type":"string"},"activation":{"type":"string"},"constraints":{"type":"object"},"enabled":{"type":"boolean"}}`, "name", "capability", "runtime", "activation", "enabled"),
 			Handler:     upsertHandler(func(ctx context.Context, p Provider) error { return core.UpsertProvider(ctx, p) }),
 		},
 		{
 			Name: "rara_upsert_routing_policy", Description: "Create or update a routing policy (idempotent on scope).",
-			InputSchema: schemaObject(`{"scope":{"type":"string"},"fallback":{"type":"array"}}`, "scope"),
+			InputSchema: schemaObject(`{"scope":{"type":"string"},"fallback":{"type":"array"}}`, "scope", "fallback"),
 			Handler:     upsertHandler(func(ctx context.Context, p RoutingPolicy) error { return core.UpsertRoutingPolicy(ctx, p) }),
 		},
 		{

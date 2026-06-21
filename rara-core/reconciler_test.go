@@ -440,8 +440,10 @@ func TestReconcileTimeoutFallsBackToNextProvider(t *testing.T) {
 	// The routing policy pins asr-youtube first so it's the primary; asr-backup is the fallback.
 	mustProvider(t, db, Provider{Name: "asr-backup", Capability: capTranscrever, Runtime: runtimeLocal,
 		Activation: activationResident, Constraints: residential, Enabled: true})
-	_ = db.UpsertRoutingPolicy(ctx, RoutingPolicy{Scope: capTranscrever,
-		Fallback: json.RawMessage(`["` + provASRYouTube + `","asr-backup"]`)})
+	if err := db.UpsertRoutingPolicy(ctx, RoutingPolicy{Scope: capTranscrever,
+		Fallback: json.RawMessage(`["` + provASRYouTube + `","asr-backup"]`)}); err != nil {
+		t.Fatal(err)
+	}
 	setProviderHeartbeat(db, provASRYouTube, base.Add(-1*time.Minute)) // both alive at base
 	setProviderHeartbeat(db, "asr-backup", base.Add(-1*time.Minute))
 
@@ -526,8 +528,10 @@ func TestReconcileUsesStepProviders(t *testing.T) {
 		t.Fatal(err)
 	}
 	markProviderAlive(t, db, altScribe)
-	_ = db.UpsertRoutingPolicy(ctx, RoutingPolicy{Scope: capTranscrever,
-		Fallback: json.RawMessage(`["` + provASRYouTube + `","` + altScribe + `"]`)})
+	if err := db.UpsertRoutingPolicy(ctx, RoutingPolicy{Scope: capTranscrever,
+		Fallback: json.RawMessage(`["` + provASRYouTube + `","` + altScribe + `"]`)}); err != nil {
+		t.Fatal(err)
+	}
 
 	// Patch the transcrever flow step (seq 3) to pin alt-scribe first.
 	optBytes, err := json.Marshal(struct {
