@@ -16,6 +16,7 @@
 		activation: string;
 		enabled: boolean;
 		heartbeat_at?: string;
+		last_error?: string;
 		constraints?: Constraints;
 		runner_url?: string;
 		env?: Record<string, string>;
