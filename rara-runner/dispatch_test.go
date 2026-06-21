@@ -471,6 +471,51 @@ func TestSanitizeDispatchMsgRedactsBearer(t *testing.T) {
 	}
 }
 
+// --- buildRunRequest: App targeting -----------------------------------------------
+
+func TestBuildRunRequestUsesProviderApp(t *testing.T) {
+	// buildRunRequest must target by App, not Name — App is the Cloud Run job / agent image key.
+	// In production app == name today, but they are logically different (P1b will rename).
+	prov := DispatchProvider{Name: "harvest-youtube", App: "rara-harvest", Runtime: runtimeCloudRun}
+	req := buildRunRequest(prov)
+	if req.App != "rara-harvest" {
+		t.Errorf("req.App = %q, want rara-harvest (must use prov.App, not prov.Name)", req.App)
+	}
+}
+
+func TestBuildRunRequestFallsBackToNameWhenAppEmpty(t *testing.T) {
+	// App is always non-empty after the DB query (COALESCE(NULLIF(app,''),name) in SQL).
+	// buildRunRequest also guards defensively so a zero-value App never produces an empty job target.
+	prov := DispatchProvider{Name: "harvest", App: "", Runtime: runtimeCloudRun}
+	req := buildRunRequest(prov)
+	if req.App != "harvest" {
+		t.Errorf("req.App = %q, want harvest (fallback to Name when App is empty)", req.App)
+	}
+}
+
+func TestDispatchOnceObservabilityStampsByProviderName(t *testing.T) {
+	// Observability stamps (StampDispatchError / ClearDispatchError) must use prov.Name —
+	// the DB key — not prov.App. App drives job/image routing; Name drives record-keeping.
+	db := &mockDispatchDB{
+		steps:     []AssignedStep{{ItemID: 1, Seq: 2, AssignedProvider: "harvest-youtube"}},
+		providers: map[string]DispatchProvider{"harvest-youtube": {Name: "harvest-youtube", App: "rara-harvest", Runtime: runtimeCloudRun}},
+	}
+	tr := &fakeTransport{err: errBoom{}}
+	if err := (&Dispatcher{db: db, runner: tr}).DispatchOnce(context.Background()); err != nil {
+		t.Fatalf("DispatchOnce: %v", err)
+	}
+	if _, ok := db.stampedErrors["harvest-youtube"]; !ok {
+		t.Error("StampDispatchError not keyed by provider Name (want harvest-youtube, got nothing)")
+	}
+	if _, ok := db.stampedErrors["rara-harvest"]; ok {
+		t.Error("StampDispatchError keyed by App (rara-harvest) instead of Name (harvest-youtube)")
+	}
+	// Routing target must be App, not Name.
+	if len(tr.called) != 1 || tr.called[0].App != "rara-harvest" {
+		t.Errorf("RunRequest.App = %v, want rara-harvest", tr.called)
+	}
+}
+
 // runOnceErr is like runOnce but returns any error from DispatchOnce instead of failing.
 func runOnceErr(d *Dispatcher) error {
 	return d.DispatchOnce(context.Background())
