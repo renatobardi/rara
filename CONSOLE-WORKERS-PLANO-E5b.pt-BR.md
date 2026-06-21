@@ -73,6 +73,11 @@ Termos: `gate-barato(-local)`, `gate-rico(-local)`, `asr-youtube`, `asr-direct-a
 **workers que ramificam pelo nome** (só `rara-scribe` tinha — corrigido na P1c; glean=lane, sift=SIFT_GATE,
 distill=identidade ✓), workers/deploy, jobs/imagens, allowlist, docs, mermaid, READMEs.
 
+**Superfícies GCP** (verificar no cutover B de cada app): imagens órfãs em Artifact Registry
+(`rara-sift`, `rara-glean`, `rara-scribe`); jobs Cloud Run antigos (`rara-gate-barato`,
+`rara-gate-rico`, `rara-asr-direct-audio`, `rara-extrair-*`); secrets/vars que referenciam nomes
+antigos; logs estruturados com prefixo antigo (quebram alertas pós-cutover).
+
 ## 3. Cutover (sem alias → janela coordenada)
 Validar na branch Neon do PR; aplicar em baixa atividade; migration atômica; redeploy coordenado;
 **residents precisam restart** (env no startup); rollback via revert + restore Neon.

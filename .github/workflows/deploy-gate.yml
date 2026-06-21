@@ -20,6 +20,12 @@ on:
         default: false
         type: boolean
 
+# Only one deployment can run at a time — concurrent workflow_dispatch triggers could race on the
+# same Cloud Run Job resource and leave state inconsistent.
+concurrency:
+  group: deploy-gate
+  cancel-in-progress: false
+
 env:
   IMAGE: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/rara/rara-gate:${{ github.sha }}
 
@@ -118,7 +124,11 @@ jobs:
           # don't need the 70b; keeping them on groq-fast avoids quota contention with distill
           # (groq-llama/70b). vars.LITELLM_MODEL=gemini-flash is spend-capped → ignored.
           SECRETS="DATABASE_URL=database-url:latest,LITELLM_API_KEY=litellm-api-key:latest"
-          ENV_VARS="SIFT_GATE=gate_barato,SIFT_PROVIDER=gate-barato,LITELLM_BASE_URL=$LITELLM_BASE_URL,LITELLM_MODEL=groq-fast"
+          # SIFT_GATE/SIFT_PROVIDER are intentionally invalid placeholders: the dispatcher ALWAYS
+          # overrides them per execution. If the job runs without a dispatcher override (e.g. via
+          # run_after_deploy=true or a manual gcloud execute) it will fail fast on unrecognised
+          # capability — correct behaviour; silent wrong-queue processing would be worse.
+          ENV_VARS="SIFT_GATE=PLACEHOLDER_GATE,SIFT_PROVIDER=PLACEHOLDER_PROVIDER,LITELLM_BASE_URL=$LITELLM_BASE_URL,LITELLM_MODEL=groq-fast"
           COMMON_ARGS="--image $IMAGE --region $REGION --project $GCP_PROJECT --set-secrets $SECRETS --set-env-vars $ENV_VARS --max-retries 0 --task-timeout 3600s --memory 512Mi --cpu 1"
 
           UPDATE_ERR=$(gcloud run jobs update "$JOB_NAME" $COMMON_ARGS 2>&1) && echo "$UPDATE_ERR" || {

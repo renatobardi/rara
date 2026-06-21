@@ -29,7 +29,7 @@ COPY rara-gate/*.go ./
 # Static, cross-compiled binary for the target arch (set by buildx per --platform entry).
 RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -ldflags="-w -s" -o /gate-job .
 
-FROM alpine:3.21
+FROM alpine:3.21@sha256:48b0309ca019d89d40f670aa1bc06e426dc0931948452e8491e3d65087abc07d
 
 RUN apk add --no-cache ca-certificates
 

@@ -936,7 +936,7 @@ func main() {
 		PokeToken:    os.Getenv("POKE_TOKEN"),
 	}
 	if err := addon.Run(ctx, ac, siftHandler(&appDB{pool: pool}, gate, judge)); err != nil {
-		log.Fatalf("sift worker %s/%s: %v", gate, provider, err)
+		log.Fatalf("rara-gate worker %s/%s: %v", gate, provider, err)
 	}
 	log.Printf("rara-gate worker %s/%s: queue drained", gate, provider)
 }
