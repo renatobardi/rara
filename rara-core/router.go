@@ -229,6 +229,7 @@ func fallbackPositions(raw json.RawMessage) map[string]int {
 	}
 	var names []string
 	if err := json.Unmarshal(raw, &names); err != nil {
+		log.Printf("router: fallback policy has malformed JSON — falling back to name-order: %v", err)
 		return nil
 	}
 	pos := make(map[string]int, len(names))

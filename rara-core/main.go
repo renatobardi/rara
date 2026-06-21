@@ -839,7 +839,10 @@ func (d *pgxDatabase) UpsertRoutingPolicy(ctx context.Context, p RoutingPolicy) 
 		ON CONFLICT (scope) DO UPDATE SET
 			fallback = EXCLUDED.fallback`
 	_, err := d.conn.Exec(ctx, q, p.Scope, jsonOrEmpty(p.Fallback, "[]"))
-	return err
+	if err != nil {
+		return fmt.Errorf("upsert routing policy %q: %w", p.Scope, err)
+	}
+	return nil
 }
 
 func (d *pgxDatabase) UpsertGateRule(ctx context.Context, r GateRule) error {

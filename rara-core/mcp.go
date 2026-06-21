@@ -219,7 +219,7 @@ func buildTools(core *Core) []mcpTool {
 		},
 		{
 			Name: "rara_upsert_routing_policy", Description: "Create or update a routing policy (idempotent on scope).",
-			InputSchema: schemaObject(`{"scope":{"type":"string"},"fallback":{"type":"array"}}`, "scope", "fallback"),
+			InputSchema: schemaObject(`{"scope":{"type":"string"},"fallback":{"type":"array","items":{"type":"string"}}}`, "scope", "fallback"),
 			Handler:     upsertHandler(func(ctx context.Context, p RoutingPolicy) error { return core.UpsertRoutingPolicy(ctx, p) }),
 		},
 		{

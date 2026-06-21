@@ -7,11 +7,16 @@ import (
 )
 
 func TestMain(m *testing.M) {
-	// Seed helpers call os.Getenv("RUNNER_LOCAL_URL") to decide whether to enable VPC on_demand
-	// providers. Tests that verify VPC-first routing (reconciler, seed, linkedin) need VPC
-	// providers enabled, so set a dummy URL here rather than in every individual test.
-	if err := os.Setenv("RUNNER_LOCAL_URL", "http://test-runner:8080"); err != nil {
-		log.Fatalf("TestMain: set RUNNER_LOCAL_URL: %v", err)
+	// Seed helpers read env vars to configure providers. Set stable test values here so
+	// every test in the package sees a consistent, pre-configured seed environment.
+	for k, v := range map[string]string{
+		"RUNNER_LOCAL_URL": "http://test-runner:8080", // enables VPC on_demand providers
+		"DISTILL_MODEL":    "groq-llama",
+		"GATE_MODEL":       "groq-fast",
+	} {
+		if err := os.Setenv(k, v); err != nil {
+			log.Fatalf("TestMain: set %s: %v", k, err)
+		}
 	}
 	os.Exit(m.Run())
 }

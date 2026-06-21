@@ -37,13 +37,6 @@ const (
 	laneNews    = "news"
 )
 
-// LLM model names baked into provider Env — kept as constants so they match deploy-distill.yml and
-// deploy-sift.yml without silent divergence.
-const (
-	modelDistill = "groq-llama"
-	modelGate    = "groq-fast"
-)
-
 // Provider names (mirror the architecture's naming).
 const (
 	provHarvest        = "harvest"          // coletar — channels collector (Data API key); job rara-harvest
@@ -105,6 +98,14 @@ func seedSharedProviders(ctx context.Context, db Database) error {
 	// (-local, VPC) variants carry identity only — their model/endpoint comes from the host's own
 	// LiteLLM/ollama config, not a constant we can seed here. NO secrets (DATABASE_URL, API keys,
 	// LITELLM_BASE_URL is a deploy-resolved endpoint) — the host/agent resolves those (§7).
+	modelDistill := os.Getenv("DISTILL_MODEL")
+	if modelDistill == "" {
+		log.Fatalf("seed: DISTILL_MODEL is required")
+	}
+	modelGate := os.Getenv("GATE_MODEL")
+	if modelGate == "" {
+		log.Fatalf("seed: GATE_MODEL is required")
+	}
 	runnerURL := os.Getenv("RUNNER_LOCAL_URL")
 	vpcEnabled := runnerURL != "" // VPC on_demand providers need a runner URL; disable if unset
 	if !vpcEnabled {
