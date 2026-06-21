@@ -438,6 +438,23 @@ func TestStampDispatchErrorShortMsgUnchanged(t *testing.T) {
 	}
 }
 
+func TestSanitizeDispatchMsgRedactsBearer(t *testing.T) {
+	cases := []struct{ in, wantContains, wantAbsent string }{
+		{"cloud run token: Bearer eyJhbGci.secret123", "[REDACTED]", "eyJhbGci.secret123"},
+		{"BEARER SuperSecretToken xyz", "[REDACTED]", "SuperSecretToken"},
+		{"no token here: status 404", "status 404", ""},
+	}
+	for _, tc := range cases {
+		got := sanitizeDispatchMsg(tc.in)
+		if tc.wantAbsent != "" && strings.Contains(got, tc.wantAbsent) {
+			t.Errorf("sanitizeDispatchMsg(%q) still contains %q: %q", tc.in, tc.wantAbsent, got)
+		}
+		if !strings.Contains(got, tc.wantContains) {
+			t.Errorf("sanitizeDispatchMsg(%q) = %q, want to contain %q", tc.in, got, tc.wantContains)
+		}
+	}
+}
+
 // runOnceErr is like runOnce but returns any error from DispatchOnce instead of failing.
 func runOnceErr(d *Dispatcher) error {
 	return d.DispatchOnce(context.Background())

@@ -7,12 +7,24 @@ package main
 import (
 	"context"
 	"log"
+	"regexp"
 )
 
 // bgCtx is the context used for best-effort observability writes (StampDispatchError /
 // ClearDispatchError). These writes must not be cancelled by the pass context — if the
 // pass ctx is cancelled (shutdown signal, timeout), we still want the error recorded.
 var bgCtx = context.Background()
+
+// bearerRe matches "Bearer <token>" patterns that net/http can echo into error strings when
+// the Authorization header is reflected back in a transport-layer error message.
+var bearerRe = regexp.MustCompile(`(?i)(bearer\s+)\S+`)
+
+// sanitizeDispatchMsg redacts bearer tokens from a runner error string before it is
+// persisted to providers.last_error. The cap (maxDispatchErrorRunes) is applied here so
+// callers always get a safe, bounded string.
+func sanitizeDispatchMsg(s string) string {
+	return capDispatchError(bearerRe.ReplaceAllString(s, "${1}[REDACTED]"))
+}
 
 // AssignedStep is the minimal projection of item_steps the dispatcher needs: who is assigned and
 // to which provider. The provider's own poll loop handles item discovery; the dispatcher only wakes.
@@ -93,7 +105,7 @@ func (d *Dispatcher) DispatchOnce(ctx context.Context) error {
 			log.Printf("dispatch: wake %q: %v", name, err)
 			// Use bgCtx: pass ctx may be cancelled at shutdown; the error stamp must still land.
 			// runner.Run errors come from HTTP status codes / net errors — no credential values.
-			if serr := d.db.StampDispatchError(bgCtx, name, err.Error()); serr != nil {
+			if serr := d.db.StampDispatchError(bgCtx, name, sanitizeDispatchMsg(err.Error())); serr != nil {
 				log.Printf("dispatch: stamp error %q: %v", name, serr) // best-effort
 			}
 		} else {
@@ -119,7 +131,7 @@ func (d *Dispatcher) DispatchOnce(ctx context.Context) error {
 		if err := d.runner.Run(ctx, buildRunRequest(prov)); err != nil {
 			log.Printf("dispatch: wake collector %q: %v", prov.Name, err)
 			// Use bgCtx: same rationale as the worker loop above.
-			if serr := d.db.StampDispatchError(bgCtx, prov.Name, err.Error()); serr != nil {
+			if serr := d.db.StampDispatchError(bgCtx, prov.Name, sanitizeDispatchMsg(err.Error())); serr != nil {
 				log.Printf("dispatch: stamp error collector %q: %v", prov.Name, serr) // best-effort
 			}
 		} else {
