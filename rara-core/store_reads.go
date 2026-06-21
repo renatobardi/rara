@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"log"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -119,14 +120,39 @@ func (d *pgxDatabase) ListItemSteps(ctx context.Context, itemID int) ([]ItemStep
 
 // providerColumns is the shared SELECT list for a providers row (mirrors Provider struct fields).
 const providerColumns = `name, capability, runtime, activation,
-       constraints, enabled, heartbeat_at, last_collect_at, COALESCE(runner_url, ''), env, COALESCE(worker, '')`
+       constraints, enabled, heartbeat_at, last_collect_at, COALESCE(runner_url, ''), env, COALESCE(worker, ''), last_error`
+
+// maxProviderErrorLen is the rune count cap applied to last_error before it reaches the API.
+const maxProviderErrorLen = 500
+
+// truncateErrorMsg caps s to maxProviderErrorLen runes (not bytes) so multi-byte UTF-8
+// characters are never split, and JSON marshaling of the result is always valid.
+func truncateErrorMsg(s string) string {
+	if utf8.RuneCountInString(s) <= maxProviderErrorLen {
+		return s
+	}
+	n := 0
+	for i := range s {
+		if n == maxProviderErrorLen {
+			return s[:i]
+		}
+		n++
+	}
+	return s
+}
 
 // scanProvider scans a single providers row using the caller's Scan function (works for both
 // pgx.Row.Scan and pgx.Rows.Scan — both accept ...any and return error).
 func scanProvider(scan func(dest ...any) error) (Provider, error) {
 	var p Provider
 	err := scan(&p.Name, &p.Capability, &p.Runtime, &p.Activation,
-		&p.Constraints, &p.Enabled, &p.HeartbeatAt, &p.LastCollectAt, &p.RunnerURL, &p.Env, &p.Worker)
+		&p.Constraints, &p.Enabled, &p.HeartbeatAt, &p.LastCollectAt, &p.RunnerURL, &p.Env, &p.Worker, &p.LastError)
+	if err == nil && p.LastError != nil {
+		if orig := *p.LastError; utf8.RuneCountInString(orig) > maxProviderErrorLen {
+			truncated := truncateErrorMsg(orig)
+			p.LastError = &truncated
+		}
+	}
 	return p, err
 }
 

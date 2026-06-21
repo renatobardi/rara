@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func mustCapability(t *testing.T, db *MockDatabase, name string) {
@@ -159,6 +161,103 @@ func TestUpsertProviderRejectsInconsistentWorkerCapability(t *testing.T) {
 	var bad badInputError
 	if !errors.As(err, &bad) {
 		t.Errorf("want badInputError, got %T: %v", err, err)
+	}
+}
+
+// TestProviderLastErrorRoundTrip: a provider whose last_error was set (by the runner, P0d) is
+// returned by GetProvider and ListProviders with the value intact — the column survives the read path.
+func TestProviderLastErrorRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	db := newMockDatabase()
+	mustCapability(t, db, capDestilar)
+	mustProvider(t, db, Provider{Name: "distill", Capability: capDestilar, Worker: "distill",
+		Runtime: runtimeCloudRun, Activation: activationOnDemand, Enabled: true})
+
+	// Simulate the runner (P0d) writing last_error directly into the store.
+	errMsg := "context deadline exceeded"
+	p := db.providers["distill"]
+	p.LastError = &errMsg
+	db.providers["distill"] = p
+
+	got, found, err := db.GetProvider(ctx, "distill")
+	if err != nil || !found {
+		t.Fatalf("GetProvider: found=%v err=%v", found, err)
+	}
+	if got.LastError == nil || *got.LastError != errMsg {
+		t.Errorf("GetProvider last_error = %v, want %q", got.LastError, errMsg)
+	}
+
+	all, err := db.ListProviders(ctx)
+	if err != nil || len(all) != 1 {
+		t.Fatalf("ListProviders: len=%d err=%v", len(all), err)
+	}
+	if all[0].LastError == nil || *all[0].LastError != errMsg {
+		t.Errorf("ListProviders last_error = %v, want %q", all[0].LastError, errMsg)
+	}
+}
+
+// TestUpsertProviderPreservesLastError: editing a placement's config via UpsertProvider must not
+// clear a last_error written by the runner (P0d). The column is runner-owned, not config-owned.
+func TestUpsertProviderPreservesLastError(t *testing.T) {
+	ctx := context.Background()
+	db := newMockDatabase()
+	mustCapability(t, db, capDestilar)
+	mustProvider(t, db, Provider{Name: "distill", Capability: capDestilar, Worker: "distill",
+		Runtime: runtimeCloudRun, Activation: activationOnDemand, Enabled: true})
+
+	// Runner (P0d) sets last_error.
+	errMsg := "connection refused"
+	p := db.providers["distill"]
+	p.LastError = &errMsg
+	db.providers["distill"] = p
+
+	// Operator edits the placement config (disable it).
+	if err := db.UpsertProvider(ctx, Provider{
+		Name: "distill", Capability: capDestilar, Worker: "distill",
+		Runtime: runtimeCloudRun, Activation: activationOnDemand, Enabled: false,
+	}); err != nil {
+		t.Fatalf("UpsertProvider: %v", err)
+	}
+
+	got, found, err := db.GetProvider(ctx, "distill")
+	if err != nil || !found {
+		t.Fatalf("GetProvider after upsert: found=%v err=%v", found, err)
+	}
+	if got.LastError == nil || *got.LastError != errMsg {
+		t.Errorf("UpsertProvider clobbered last_error: got %v, want %q", got.LastError, errMsg)
+	}
+	if got.Enabled {
+		t.Error("UpsertProvider did not apply Enabled=false")
+	}
+}
+
+// TestProviderLastErrorTruncatedAtRead: last_error values longer than maxProviderErrorLen are
+// capped when read via the mock (mirrors the scanProvider guard that bounds API response size).
+func TestProviderLastErrorTruncatedAtRead(t *testing.T) {
+	ctx := context.Background()
+	db := newMockDatabase()
+	mustCapability(t, db, capDestilar)
+	mustProvider(t, db, Provider{Name: "distill", Capability: capDestilar, Worker: "distill",
+		Runtime: runtimeCloudRun, Activation: activationOnDemand, Enabled: true})
+
+	// Use multi-byte UTF-8 chars so the test actually validates rune-boundary truncation.
+	long := strings.Repeat("á", maxProviderErrorLen+100)
+	p := db.providers["distill"]
+	p.LastError = &long
+	db.providers["distill"] = p
+
+	got, found, err := db.GetProvider(ctx, "distill")
+	if err != nil || !found {
+		t.Fatalf("GetProvider: found=%v err=%v", found, err)
+	}
+	if got.LastError == nil {
+		t.Fatal("last_error unexpectedly nil")
+	}
+	if !utf8.ValidString(*got.LastError) {
+		t.Fatal("last_error contains invalid UTF-8 after truncation")
+	}
+	if utf8.RuneCountInString(*got.LastError) > maxProviderErrorLen {
+		t.Errorf("last_error rune count = %d, want ≤ %d", utf8.RuneCountInString(*got.LastError), maxProviderErrorLen)
 	}
 }
 

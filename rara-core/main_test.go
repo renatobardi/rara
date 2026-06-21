@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 // ---------------------------------------------------------------------------
@@ -64,6 +65,18 @@ type itemStepKey struct {
 type flowStepKey struct {
 	flowID int
 	seq    int
+}
+
+// capProviderError mirrors the scanProvider truncation guard so MockDatabase reads are
+// consistent with the real pgxDatabase (both cap last_error via truncateErrorMsg).
+func capProviderError(p Provider) Provider {
+	if p.LastError != nil {
+		if orig := *p.LastError; utf8.RuneCountInString(orig) > maxProviderErrorLen {
+			s := truncateErrorMsg(orig)
+			p.LastError = &s
+		}
+	}
+	return p
 }
 
 type MockDatabase struct {
@@ -153,6 +166,7 @@ func (m *MockDatabase) UpsertProvider(_ context.Context, p Provider) error {
 		p.HeartbeatAt = existing.HeartbeatAt     // owned by TouchProviderHeartbeat
 		p.LastCollectAt = existing.LastCollectAt // owned by dispatcher (cadence clock)
 		p.LastAttemptAt = existing.LastAttemptAt // owned by dispatcher (retry throttle)
+		p.LastError = existing.LastError         // owned by runner on dispatch failure (P0d)
 	}
 	m.providers[p.Name] = p
 	return nil
@@ -417,7 +431,7 @@ func (m *MockDatabase) ListProvidersForCapability(_ context.Context, capability 
 
 func (m *MockDatabase) GetProvider(_ context.Context, name string) (Provider, bool, error) {
 	p, ok := m.providers[name]
-	return p, ok, nil
+	return capProviderError(p), ok, nil
 }
 
 func (m *MockDatabase) GetRoutingPolicy(_ context.Context, scope string) (RoutingPolicy, bool, error) {
@@ -572,7 +586,7 @@ func (m *MockDatabase) ListFlows(_ context.Context) ([]Flow, error) {
 func (m *MockDatabase) ListProviders(_ context.Context) ([]Provider, error) {
 	var out []Provider
 	for _, p := range m.providers {
-		out = append(out, p)
+		out = append(out, capProviderError(p))
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, nil
