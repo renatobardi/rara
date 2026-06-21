@@ -179,7 +179,9 @@ export const t = {
 		successItems: 'itens com sucesso',
 		queuePending: 'pendente',
 		queueAssigned: 'atribuído',
-		queueRunning: 'em execução'
+		queueRunning: 'em execução',
+		lastError: 'Última falha',
+		lastErrorLabel: 'Erro no último dispatch'
 	},
 	agents: {
 		title: 'Agents',

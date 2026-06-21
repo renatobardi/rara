@@ -21,6 +21,7 @@
 		quality?: number;
 		enabled: boolean;
 		heartbeat_at?: string;
+		last_error?: string;
 		constraints?: Constraints;
 		runner_url?: string;
 		env?: Record<string, string>;
@@ -656,6 +657,7 @@
 												<th class="py-1.5 pr-3 font-medium">{t.workers.colActivation}</th>
 												<th class="py-1.5 pr-3 font-medium">{t.workers.colEnabled}</th>
 												<th class="py-1.5 pr-3"></th>
+												<th class="py-1.5 pr-3"></th>
 											</tr>
 										</thead>
 										<tbody>
@@ -673,6 +675,15 @@
 														>
 															<span aria-hidden="true">{p.enabled ? '●' : '○'}</span>
 														</span>
+													</td>
+													<td class="py-2 pr-3">
+														{#if p.last_error}
+															<span
+																class="inline-block rounded-full bg-red-500/15 px-2 py-0.5 text-[10px] font-semibold text-red-500"
+																title={p.last_error}
+																aria-label="{t.workers.lastErrorLabel}: {p.last_error}"
+															>{t.workers.lastError}</span>
+														{/if}
 													</td>
 													<td class="py-2 pr-3">
 														<div class="flex items-center gap-2">
@@ -701,7 +712,7 @@
 												</tr>
 												{#if formMode === 'edit' && formInitial?.name === p.name}
 													<tr>
-														<td colspan="5" class="px-4 py-3 pl-10">
+														<td colspan="6" class="px-4 py-3 pl-10">
 															<WorkerForm
 																initial={formInitial}
 																capabilities={knownCapabilities}
