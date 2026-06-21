@@ -132,8 +132,6 @@ func TestIngestEmail(t *testing.T) {
 // extrair-email provider (not a transcrever provider), and once extrair completes the item
 // reaches the to_text milestone — proving extrair is a first-class to-text capability.
 func TestReconcileEmailUsesExtrairAndReachesToText(t *testing.T) {
-	// VPC gate providers must be enabled (email excludes third-party cloud providers).
-	t.Setenv("RUNNER_LOCAL_URL", "http://test-runner:8080")
 	ctx := context.Background()
 	db := newMockDatabase()
 	if err := SeedEmailLane(ctx, db); err != nil {
