@@ -17,10 +17,9 @@
 		capability: string;
 		runtime: string;
 		activation: string;
-		cost?: number;
-		quality?: number;
 		enabled: boolean;
 		heartbeat_at?: string;
+		last_error?: string;
 		constraints?: Constraints;
 		runner_url?: string;
 		env?: Record<string, string>;
@@ -34,9 +33,6 @@
 
 	type RoutingPolicy = {
 		scope: string;
-		// ponytail: kept optional for pass-through until P0b drops the columns
-		cost_weight?: number;
-		quality_weight?: number;
 		fallback: string[];
 	};
 
@@ -223,10 +219,7 @@
 		routingSaving = true;
 		routingMsg = '';
 		const existing = policies.find((p) => p.scope === selectedScope);
-		// ponytail: pass-through until P0b drops the columns; slider removed but weights preserved
 		const payload: RoutingPolicy = {
-			...(existing?.cost_weight !== undefined ? { cost_weight: existing.cost_weight } : {}),
-			...(existing?.quality_weight !== undefined ? { quality_weight: existing.quality_weight } : {}),
 			scope: selectedScope,
 			fallback: editFallback
 		};
@@ -358,7 +351,7 @@
 			// env must stay: full-record upsert, omitting it would set env={} in the DB.
 			const dto = {
 				worker: workerName, name: p.name, capability: p.capability, runtime: p.runtime,
-				activation: p.activation, cost: p.cost, quality: p.quality,
+				activation: p.activation,
 				enabled: !p.enabled, constraints: p.constraints,
 				runner_url: p.runner_url, env: p.env
 			};
@@ -655,6 +648,7 @@
 												<th class="py-1.5 pr-3 font-medium">{t.workers.colRuntime}</th>
 												<th class="py-1.5 pr-3 font-medium">{t.workers.colActivation}</th>
 												<th class="py-1.5 pr-3 font-medium">{t.workers.colEnabled}</th>
+												<th class="py-1.5 pr-3" aria-label={t.workers.lastErrorLabel}></th>
 												<th class="py-1.5 pr-3"></th>
 											</tr>
 										</thead>
@@ -673,6 +667,15 @@
 														>
 															<span aria-hidden="true">{p.enabled ? '●' : '○'}</span>
 														</span>
+													</td>
+													<td class="py-2 pr-3">
+														{#if p.last_error}
+															<span
+																class="inline-block rounded-full bg-red-500/15 px-2 py-0.5 text-[10px] font-semibold text-red-500"
+																title={p.last_error}
+																aria-label="{t.workers.lastErrorLabel}: {p.last_error}"
+															>{t.workers.lastError}</span>
+														{/if}
 													</td>
 													<td class="py-2 pr-3">
 														<div class="flex items-center gap-2">
@@ -701,7 +704,7 @@
 												</tr>
 												{#if formMode === 'edit' && formInitial?.name === p.name}
 													<tr>
-														<td colspan="5" class="px-4 py-3 pl-10">
+														<td colspan="6" class="px-4 py-3 pl-10">
 															<WorkerForm
 																initial={formInitial}
 																capabilities={knownCapabilities}

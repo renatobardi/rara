@@ -14,10 +14,9 @@
 		capability: string;
 		runtime: string;
 		activation: string;
-		cost?: number;
-		quality?: number;
 		enabled: boolean;
 		heartbeat_at?: string;
+		last_error?: string;
 		constraints?: Constraints;
 		runner_url?: string;
 		env?: Record<string, string>;
@@ -146,37 +145,22 @@
 		serverError = '';
 
 		const payload: Provider = {
-			// preserve all original fields when editing so upsert doesn't wipe them
-			...(initial ?? {}),
 			worker: worker.trim(),
 			name: name.trim(),
 			capability: capability.trim(),
 			runtime,
 			activation,
-			// ponytail: pass-through until P0b drops the columns; not editable via UI
-			cost: initial?.cost ?? 0,
-			quality: initial?.quality ?? 1,
 			enabled
 		};
 
-		// omit runner_url when empty
 		if (runnerUrl.trim()) payload.runner_url = runnerUrl.trim();
-		else delete payload.runner_url;
 
-		// omit env when empty
 		if (envRaw.trim()) {
 			payload.env = JSON.parse(envRaw.trim());
-		} else {
-			delete payload.env;
 		}
 
 		const constraints = buildConstraints();
 		if (constraints) payload.constraints = constraints;
-		else delete payload.constraints;
-
-		// latency_ms is a dead field — never send it
-		// ponytail: delete even if it came from GET (server ignores it but keeps payload clean)
-		delete (payload as Record<string, unknown>).latency_ms;
 
 		try {
 			await onSave(payload);
