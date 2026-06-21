@@ -153,6 +153,7 @@ func (m *MockDatabase) UpsertProvider(_ context.Context, p Provider) error {
 		p.HeartbeatAt = existing.HeartbeatAt     // owned by TouchProviderHeartbeat
 		p.LastCollectAt = existing.LastCollectAt // owned by dispatcher (cadence clock)
 		p.LastAttemptAt = existing.LastAttemptAt // owned by dispatcher (retry throttle)
+		p.LastError = existing.LastError         // owned by runner on dispatch failure (P0d)
 	}
 	m.providers[p.Name] = p
 	return nil

@@ -162,6 +162,70 @@ func TestUpsertProviderRejectsInconsistentWorkerCapability(t *testing.T) {
 	}
 }
 
+// TestProviderLastErrorRoundTrip: a provider whose last_error was set (by the runner, P0d) is
+// returned by GetProvider and ListProviders with the value intact — the column survives the read path.
+func TestProviderLastErrorRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	db := newMockDatabase()
+	mustCapability(t, db, capDestilar)
+	mustProvider(t, db, Provider{Name: "distill", Capability: capDestilar, Worker: "distill",
+		Runtime: runtimeCloudRun, Activation: activationOnDemand, Enabled: true})
+
+	// Simulate the runner (P0d) writing last_error directly into the store.
+	errMsg := "context deadline exceeded"
+	p := db.providers["distill"]
+	p.LastError = &errMsg
+	db.providers["distill"] = p
+
+	got, found, err := db.GetProvider(ctx, "distill")
+	if err != nil || !found {
+		t.Fatalf("GetProvider: found=%v err=%v", found, err)
+	}
+	if got.LastError == nil || *got.LastError != errMsg {
+		t.Errorf("GetProvider last_error = %v, want %q", got.LastError, errMsg)
+	}
+
+	all, err := db.ListProviders(ctx)
+	if err != nil || len(all) != 1 {
+		t.Fatalf("ListProviders: len=%d err=%v", len(all), err)
+	}
+	if all[0].LastError == nil || *all[0].LastError != errMsg {
+		t.Errorf("ListProviders last_error = %v, want %q", all[0].LastError, errMsg)
+	}
+}
+
+// TestUpsertProviderPreservesLastError: editing a placement's config via UpsertProvider must not
+// clear a last_error written by the runner (P0d). The column is runner-owned, not config-owned.
+func TestUpsertProviderPreservesLastError(t *testing.T) {
+	ctx := context.Background()
+	db := newMockDatabase()
+	mustCapability(t, db, capDestilar)
+	mustProvider(t, db, Provider{Name: "distill", Capability: capDestilar, Worker: "distill",
+		Runtime: runtimeCloudRun, Activation: activationOnDemand, Enabled: true})
+
+	// Runner (P0d) sets last_error.
+	errMsg := "connection refused"
+	p := db.providers["distill"]
+	p.LastError = &errMsg
+	db.providers["distill"] = p
+
+	// Operator edits the placement config (disable it).
+	if err := db.UpsertProvider(ctx, Provider{
+		Name: "distill", Capability: capDestilar, Worker: "distill",
+		Runtime: runtimeCloudRun, Activation: activationOnDemand, Enabled: false,
+	}); err != nil {
+		t.Fatalf("UpsertProvider: %v", err)
+	}
+
+	got, _, _ := db.GetProvider(ctx, "distill")
+	if got.LastError == nil || *got.LastError != errMsg {
+		t.Errorf("UpsertProvider clobbered last_error: got %v, want %q", got.LastError, errMsg)
+	}
+	if got.Enabled {
+		t.Error("UpsertProvider did not apply Enabled=false")
+	}
+}
+
 // TestHTTPListWorkersDoesNotBreakProviders: GET /v1/providers still works after adding /v1/workers.
 func TestHTTPListWorkersDoesNotBreakProviders(t *testing.T) {
 	core, db, _ := newTestCore(t)
