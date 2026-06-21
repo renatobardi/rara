@@ -40,18 +40,18 @@ const (
 // Provider names — <worker>-<runtime> taxonomy (P1b).
 // App column holds the pre-rename deploy target (Cloud Run job = jobPrefix+app, runner allowlist key = app).
 const (
-	provHarvest        = "harvest-cloud"  // coletar — channels collector (Data API key)
-	provShelf          = "shelf-cloud"    // coletar — playlists collector (OAuth)
-	provDial           = "dial-cloud"     // coletar — podcast RSS collector
-	provFeed           = "feed-cloud"     // coletar — news RSS/HN/HTML collector
-	provCourier        = "courier-cloud"  // coletar — Gmail email collector
-	provASRYouTube     = "caption-mac"    // transcrever — scribe on the Mac (residential IP)
-	provASRDirectAudio = "echo-cloud"     // transcrever — direct-audio ASR on Cloud Run (podcast)
-	provDistill        = "distill-cloud"  // destilar — distill on Cloud Run (third-party LLM)
-	provGateBarato     = "sift-cloud"     // gate_barato — metadata cascade worker (third-party LLM)
-	provGateRico       = "assay-cloud"    // gate_rico — full-text cascade worker (third-party LLM)
-	provExtrairEmail   = "winnow-cloud"   // extrair — email HTML/quote/signature cleaner
-	provExtrairNews    = "glean-cloud"    // extrair — feed-article HTML/boilerplate cleaner
+	provHarvest        = "harvest-cloud" // coletar — channels collector (Data API key)
+	provShelf          = "shelf-cloud"   // coletar — playlists collector (OAuth)
+	provDial           = "dial-cloud"    // coletar — podcast RSS collector
+	provFeed           = "feed-cloud"    // coletar — news RSS/HN/HTML collector
+	provCourier        = "courier-cloud" // coletar — Gmail email collector
+	provASRYouTube     = "caption-mac"   // transcrever — scribe on the Mac (residential IP)
+	provASRDirectAudio = "echo-cloud"    // transcrever — direct-audio ASR on Cloud Run (podcast)
+	provDistill        = "distill-cloud" // destilar — distill on Cloud Run (third-party LLM)
+	provGateBarato     = "sift-cloud"    // gate_barato — metadata cascade worker (third-party LLM)
+	provGateRico       = "assay-cloud"   // gate_rico — full-text cascade worker (third-party LLM)
+	provExtrairEmail   = "winnow-cloud"  // extrair — email HTML/quote/signature cleaner
+	provExtrairNews    = "glean-cloud"   // extrair — feed-article HTML/boilerplate cleaner
 	// VPC (self-host) variants of the LLM steps — the ONLY route for private content.
 	provDistillLocal    = "distill-vpc"
 	provGateBaratoLocal = "sift-vpc"

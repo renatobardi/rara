@@ -554,14 +554,14 @@ func TestSeedAllProvidersHaveApp(t *testing.T) {
 	}
 	// Spot-check: App is the old deploy key, not the new codename.
 	wantApp := map[string]string{
-		provDistill:        "distill",
-		provDistillLocal:   "distill-local",
-		provGateBarato:     "gate-barato",
+		provDistill:         "distill",
+		provDistillLocal:    "distill-local",
+		provGateBarato:      "gate-barato",
 		provGateBaratoLocal: "gate-barato-local",
-		provGateRico:       "gate-rico",
-		provGateRicoLocal:  "gate-rico-local",
-		provASRYouTube:     "asr-youtube",
-		provASRDirectAudio: "asr-direct-audio",
+		provGateRico:        "gate-rico",
+		provGateRicoLocal:   "gate-rico-local",
+		provASRYouTube:      "asr-youtube",
+		provASRDirectAudio:  "asr-direct-audio",
 	}
 	for name, wantA := range wantApp {
 		if p := db.providers[name]; p.App != wantA {
@@ -616,14 +616,14 @@ func TestSeedProviderDescriptions(t *testing.T) {
 	}
 	// Spot-check a few key placements.
 	wantDesc := map[string]string{
-		provDistill:        "Destilador (LLM)",
-		provDistillLocal:   "Destilador (LLM)",
-		provGateBarato:     "Filtro — metadados (barato)",
+		provDistill:         "Destilador (LLM)",
+		provDistillLocal:    "Destilador (LLM)",
+		provGateBarato:      "Filtro — metadados (barato)",
 		provGateBaratoLocal: "Filtro — metadados (barato)",
-		provGateRico:       "Filtro — texto completo (rico)",
-		provASRYouTube:     "Transcritor — vídeo YouTube (Mac)",
-		provASRDirectAudio: "Transcritor — áudio/podcast",
-		provExtrairEmail:   "Normalizador — e-mail",
+		provGateRico:        "Filtro — texto completo (rico)",
+		provASRYouTube:      "Transcritor — vídeo YouTube (Mac)",
+		provASRDirectAudio:  "Transcritor — áudio/podcast",
+		provExtrairEmail:    "Normalizador — e-mail",
 	}
 	for name, want := range wantDesc {
 		if p := db.providers[name]; p.Description != want {
