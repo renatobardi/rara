@@ -37,26 +37,25 @@ const (
 	laneNews    = "news"
 )
 
-// Provider names (mirror the architecture's naming).
+// Provider names — <worker>-<runtime> taxonomy (P1b).
+// App column holds the pre-rename deploy target (Cloud Run job = jobPrefix+app, runner allowlist key = app).
 const (
-	provHarvest        = "harvest"          // coletar — channels collector (Data API key); job rara-harvest
-	provShelf          = "shelf"            // coletar — playlists collector (OAuth); job rara-shelf
-	provDial           = "dial"             // coletar — podcast RSS collector; job rara-dial (F5 wake+pull)
-	provFeed           = "feed"             // coletar — news RSS/HN/HTML collector; job rara-feed
-	provCourier        = "courier"          // coletar — Gmail email collector; job rara-courier
-	provASRYouTube     = "asr-youtube"      // transcrever — scribe on the Mac (residential IP)
-	provASRDirectAudio = "asr-direct-audio" // transcrever — direct-audio ASR on Cloud Run (podcast)
-	provDistill        = "distill"          // destilar — distill on Cloud Run (third-party LLM)
-	provGateBarato     = "gate-barato"      // gate_barato — metadata cascade worker (third-party LLM)
-	provGateRico       = "gate-rico"        // gate_rico — full-text cascade worker (third-party LLM)
-	provExtrairEmail   = "extrair-email"    // extrair — email HTML/quote/signature cleaner (Cloud Run)
-	provExtrairNews    = "extrair-news"     // extrair — feed-article HTML/boilerplate cleaner (Cloud Run)
-	// Self-host variants (VPC) of the LLM steps — the ONLY route for private content. Strictly
-	// pricier and lower quality than their cloud siblings, so the cloud (third-party) provider
-	// wins for public items, while a private item (third-party excluded) falls to these.
-	provDistillLocal    = "distill-local"
-	provGateBaratoLocal = "gate-barato-local"
-	provGateRicoLocal   = "gate-rico-local"
+	provHarvest        = "harvest-cloud" // coletar — channels collector (Data API key)
+	provShelf          = "shelf-cloud"   // coletar — playlists collector (OAuth)
+	provDial           = "dial-cloud"    // coletar — podcast RSS collector
+	provFeed           = "feed-cloud"    // coletar — news RSS/HN/HTML collector
+	provCourier        = "courier-cloud" // coletar — Gmail email collector
+	provASRYouTube     = "caption-mac"   // transcrever — scribe on the Mac (residential IP)
+	provASRDirectAudio = "echo-cloud"    // transcrever — direct-audio ASR on Cloud Run (podcast)
+	provDistill        = "distill-cloud" // destilar — distill on Cloud Run (third-party LLM)
+	provGateBarato     = "sift-cloud"    // gate_barato — metadata cascade worker (third-party LLM)
+	provGateRico       = "assay-cloud"   // gate_rico — full-text cascade worker (third-party LLM)
+	provExtrairEmail   = "winnow-cloud"  // extrair — email HTML/quote/signature cleaner
+	provExtrairNews    = "glean-cloud"   // extrair — feed-article HTML/boilerplate cleaner
+	// VPC (self-host) variants of the LLM steps — the ONLY route for private content.
+	provDistillLocal    = "distill-vpc"
+	provGateBaratoLocal = "sift-vpc"
+	provGateRicoLocal   = "assay-vpc"
 )
 
 // seedCapabilities upserts the fixed logical-task catalog. Also seeded by migration 001
@@ -119,27 +118,34 @@ func seedSharedProviders(ctx context.Context, db Database) error {
 	providers := []Provider{
 		// destilar: LLM step. Both variants on_demand: cloud via Cloud Run Jobs; VPC via rara-runner.
 		{Name: provDistill, Capability: capDestilar, Runtime: runtimeCloudRun, Activation: activationOnDemand,
-			Constraints: thirdParty, Enabled: true, Worker: provDistill,
-			Env: []byte(`{"DISTILL_PROVIDER":"distill","LITELLM_MODEL":` + string(mDistill) + `}`)},
+			Constraints: thirdParty, Enabled: true, Worker: "distill", App: "distill",
+			Description: "Destilador (LLM)",
+			Env:         []byte(`{"DISTILL_PROVIDER":"distill-cloud","LITELLM_MODEL":` + string(mDistill) + `}`)},
 		{Name: provDistillLocal, Capability: capDestilar, Runtime: runtimeVPC, Activation: activationOnDemand,
-			Enabled: vpcEnabled, Worker: provDistill, // same worker as cloud sibling
-			RunnerURL: runnerURL,
-			Env:       []byte(`{"DISTILL_PROVIDER":"distill-local"}`)}, // model/engine from host LiteLLM config
+			Enabled: vpcEnabled, Worker: "distill", App: "distill-local",
+			Description: "Destilador (LLM)",
+			RunnerURL:   runnerURL,
+			Env:         []byte(`{"DISTILL_PROVIDER":"distill-vpc"}`)}, // model/engine from host LiteLLM config
 		// gate_barato / gate_rico: cascade gates (rules -> profile -> LLM-judge).
+		// SIFT_GATE names the gate capability (unchanged); SIFT_PROVIDER is the placement identity.
 		{Name: provGateBarato, Capability: capGateBarato, Runtime: runtimeCloudRun, Activation: activationOnDemand,
-			Constraints: thirdParty, Enabled: true, Worker: provGateBarato,
-			Env: []byte(`{"SIFT_GATE":"gate_barato","SIFT_PROVIDER":"gate-barato","LITELLM_MODEL":` + string(mGate) + `}`)},
+			Constraints: thirdParty, Enabled: true, Worker: "sift", App: "gate-barato",
+			Description: "Filtro — metadados (barato)",
+			Env:         []byte(`{"SIFT_GATE":"gate_barato","SIFT_PROVIDER":"sift-cloud","LITELLM_MODEL":` + string(mGate) + `}`)},
 		{Name: provGateBaratoLocal, Capability: capGateBarato, Runtime: runtimeVPC, Activation: activationOnDemand,
-			Enabled: vpcEnabled, Worker: provGateBarato, // same worker as cloud sibling
-			RunnerURL: runnerURL,
-			Env:       []byte(`{"SIFT_GATE":"gate_barato","SIFT_PROVIDER":"gate-barato-local"}`)},
+			Enabled: vpcEnabled, Worker: "sift", App: "gate-barato-local",
+			Description: "Filtro — metadados (barato)",
+			RunnerURL:   runnerURL,
+			Env:         []byte(`{"SIFT_GATE":"gate_barato","SIFT_PROVIDER":"sift-vpc"}`)},
 		{Name: provGateRico, Capability: capGateRico, Runtime: runtimeCloudRun, Activation: activationOnDemand,
-			Constraints: thirdParty, Enabled: true, Worker: provGateRico,
-			Env: []byte(`{"SIFT_GATE":"gate_rico","SIFT_PROVIDER":"gate-rico","LITELLM_MODEL":` + string(mGate) + `}`)},
+			Constraints: thirdParty, Enabled: true, Worker: "assay", App: "gate-rico",
+			Description: "Filtro — texto completo (rico)",
+			Env:         []byte(`{"SIFT_GATE":"gate_rico","SIFT_PROVIDER":"assay-cloud","LITELLM_MODEL":` + string(mGate) + `}`)},
 		{Name: provGateRicoLocal, Capability: capGateRico, Runtime: runtimeVPC, Activation: activationOnDemand,
-			Enabled: vpcEnabled, Worker: provGateRico, // same worker as cloud sibling
-			RunnerURL: runnerURL,
-			Env:       []byte(`{"SIFT_GATE":"gate_rico","SIFT_PROVIDER":"gate-rico-local"}`)},
+			Enabled: vpcEnabled, Worker: "assay", App: "gate-rico-local",
+			Description: "Filtro — texto completo (rico)",
+			RunnerURL:   runnerURL,
+			Env:         []byte(`{"SIFT_GATE":"gate_rico","SIFT_PROVIDER":"assay-vpc"}`)},
 	}
 	for _, p := range providers {
 		if err := db.UpsertProvider(ctx, p); err != nil {
@@ -245,23 +251,16 @@ func SeedYouTubeLane(ctx context.Context, db Database) error {
 	// YouTube-specific providers.
 	providers := []Provider{
 		// coletar: YouTube Data API (key) and OAuth playlists — cheap, fast metadata reads.
-		// Woken by the dispatcher (rara-runner) on the cadence below; reads target_channels /
-		// discovers playlists via API on each wake (sources already in Neon for harvest).
 		{Name: provHarvest, Capability: capColetar, Runtime: runtimeCloudRun, Activation: activationOnDemand,
-			Enabled: true, Worker: provHarvest,
-			CollectCadenceSeconds: intPtr(86400), RetryIntervalSeconds: intPtr(1800)}, // daily cadence; 30min retry throttle
+			Enabled: true, Worker: "harvest", App: "harvest", Description: "Coletor de canais (YouTube)",
+			CollectCadenceSeconds: intPtr(86400), RetryIntervalSeconds: intPtr(1800)},
 		{Name: provShelf, Capability: capColetar, Runtime: runtimeCloudRun, Activation: activationOnDemand,
-			Enabled: true, Worker: provShelf,
-			CollectCadenceSeconds: intPtr(86400), RetryIntervalSeconds: intPtr(1800)}, // daily cadence; 30min retry throttle
-		// transcrever: scribe (local Whisper) is resident on the Mac. YouTube blocks audio
-		// download from datacenter IPs, hence the residential constraint; `accepts` pins it to
-		// youtube items so it never competes for a podcast (which a datacenter ASR handles).
-		// Routing rule: this is a HARD residential constraint with NO datacenter fallback —
-		// fail-closed (item waits) is correct; falling back to Cloud Run/VPC would just hit the
-		// same block. Contrast with clip/rara-clip (Bright Data proxies do the unblock,
-		// so the host IP doesn't matter → no residential constraint on that provider).
+			Enabled: true, Worker: "shelf", App: "shelf", Description: "Coletor de playlists (YouTube)",
+			CollectCadenceSeconds: intPtr(86400), RetryIntervalSeconds: intPtr(1800)},
+		// transcrever: scribe (local Whisper) resident on the Mac. YouTube blocks audio download
+		// from datacenter IPs — HARD residential constraint with NO datacenter fallback.
 		{Name: provASRYouTube, Capability: capTranscrever, Runtime: runtimeLocal, Activation: activationResident,
-			Worker:      provASRYouTube,
+			Worker: "caption", App: "asr-youtube", Description: "Transcritor — vídeo YouTube (Mac)",
 			Constraints: []byte(`{"requires":"residential","accepts":["youtube"]}`), Enabled: true},
 	}
 	for _, p := range providers {
@@ -291,20 +290,18 @@ func SeedPodcastLane(ctx context.Context, db Database) error {
 	if err := seedSharedProviders(ctx, db); err != nil {
 		return err
 	}
-	// coletar: rara-dial — woken by the dispatcher on cadence; reads enabled podcast_feeds
-	// from the DB on each wake (wake+pull pattern, F5). Provider name "dial" + job prefix
-	// "rara-" = Cloud Run job "rara-dial".
+	// coletar: rara-dial — woken on cadence; reads enabled podcast_feeds from the DB (F5).
 	if err := db.UpsertProvider(ctx, Provider{
 		Name: provDial, Capability: capColetar, Runtime: runtimeCloudRun, Activation: activationOnDemand,
-		Enabled: true, Worker: provDial,
-		CollectCadenceSeconds: intPtr(86400), RetryIntervalSeconds: intPtr(1800), // daily cadence; 30min retry throttle
+		Enabled: true, Worker: "dial", App: "dial", Description: "Coletor de podcasts (RSS)",
+		CollectCadenceSeconds: intPtr(86400), RetryIntervalSeconds: intPtr(1800),
 	}); err != nil {
 		return err
 	}
-	// transcrever: direct-audio ASR — any runtime (no residential), accepts only podcast.
+	// transcrever: direct-audio ASR on Cloud Run — no residential constraint, accepts only podcast.
 	if err := db.UpsertProvider(ctx, Provider{
 		Name: provASRDirectAudio, Capability: capTranscrever, Runtime: runtimeCloudRun, Activation: activationOnDemand,
-		Worker:      provASRDirectAudio,
+		Worker: "echo", App: "asr-direct-audio", Description: "Transcritor — áudio/podcast",
 		Constraints: []byte(`{"accepts":["podcast"]}`), Enabled: true,
 	}); err != nil {
 		return err
@@ -330,20 +327,18 @@ func SeedEmailLane(ctx context.Context, db Database) error {
 	if err := seedSharedProviders(ctx, db); err != nil {
 		return err
 	}
-	// coletar: rara-courier — woken by the dispatcher on cadence; Gmail OAuth credentials
-	// stay in env (Secret Manager) — no "sources" to pull from Neon for this one. Provider
-	// name "courier" + job prefix "rara-" = Cloud Run job "rara-courier".
+	// coletar: rara-courier — woken on cadence; Gmail OAuth credentials from Secret Manager.
 	if err := db.UpsertProvider(ctx, Provider{
 		Name: provCourier, Capability: capColetar, Runtime: runtimeCloudRun, Activation: activationOnDemand,
-		Enabled: true, Worker: provCourier,
-		CollectCadenceSeconds: intPtr(21600), RetryIntervalSeconds: intPtr(1800), // 6h cadence; 30min retry throttle
+		Enabled: true, Worker: "courier", App: "courier", Description: "Coletor de e-mail (Gmail)",
+		CollectCadenceSeconds: intPtr(21600), RetryIntervalSeconds: intPtr(1800),
 	}); err != nil {
 		return err
 	}
-	// extrair: deterministic HTML/quote/signature cleaning — any runtime, accepts only email.
+	// extrair: deterministic HTML/quote/signature cleaning — accepts only email.
 	if err := db.UpsertProvider(ctx, Provider{
 		Name: provExtrairEmail, Capability: capExtrair, Runtime: runtimeCloudRun, Activation: activationOnDemand,
-		Worker:      provExtrairEmail,
+		Worker: "winnow", App: "extrair-email", Description: "Normalizador — e-mail",
 		Constraints: []byte(`{"accepts":["email"]}`), Enabled: true,
 	}); err != nil {
 		return err
@@ -373,20 +368,18 @@ func SeedNewsLane(ctx context.Context, db Database) error {
 	if err := seedSharedProviders(ctx, db); err != nil {
 		return err
 	}
-	// coletar: rara-feed — woken by the dispatcher on cadence; reads enabled feed_sources
-	// from the DB on each wake (already reads Neon, pull already done). Provider name "feed"
-	// + job prefix "rara-" = Cloud Run job "rara-feed".
+	// coletar: rara-feed — woken on cadence; reads enabled feed_sources from DB on each wake.
 	if err := db.UpsertProvider(ctx, Provider{
 		Name: provFeed, Capability: capColetar, Runtime: runtimeCloudRun, Activation: activationOnDemand,
-		Enabled: true, Worker: provFeed,
-		CollectCadenceSeconds: intPtr(21600), RetryIntervalSeconds: intPtr(1800), // 6h cadence; 30min retry throttle
+		Enabled: true, Worker: "feed", App: "feed", Description: "Coletor de feeds (RSS/HN/HTML)",
+		CollectCadenceSeconds: intPtr(21600), RetryIntervalSeconds: intPtr(1800),
 	}); err != nil {
 		return err
 	}
-	// extrair: deterministic HTML/boilerplate cleaning — any runtime, accepts only news.
+	// extrair: deterministic HTML/boilerplate cleaning — accepts only news.
 	if err := db.UpsertProvider(ctx, Provider{
 		Name: provExtrairNews, Capability: capExtrair, Runtime: runtimeCloudRun, Activation: activationOnDemand,
-		Worker:      provExtrairNews,
+		Worker: "glean", App: "extrair-news", Description: "Normalizador — feed (artigo)",
 		Constraints: []byte(`{"accepts":["news"]}`), Enabled: true,
 	}); err != nil {
 		return err

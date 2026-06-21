@@ -51,10 +51,10 @@ func TestSeedYouTubeLane(t *testing.T) {
 			t.Errorf("provider %q should be enabled", name)
 		}
 	}
-	// asr-youtube carries the residential requirement AND accepts only youtube (so it never
+	// caption-mac carries the residential requirement AND accepts only youtube (so it never
 	// competes for a podcast item). The router enforces both.
 	if got := string(db.providers[provASRYouTube].Constraints); got != `{"requires":"residential","accepts":["youtube"]}` {
-		t.Errorf("asr-youtube constraints = %q, want residential + accepts youtube", got)
+		t.Errorf("caption-mac constraints = %q, want residential + accepts youtube", got)
 	}
 
 	// Flow: single youtube lane at version 1, seeded DISABLED (opt-in lane).
@@ -108,12 +108,12 @@ func TestSeedSharedProviderEnv(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 	want := map[string]string{
-		provGateBarato:      `{"SIFT_GATE":"gate_barato","SIFT_PROVIDER":"gate-barato","LITELLM_MODEL":"groq-fast"}`,
-		provGateBaratoLocal: `{"SIFT_GATE":"gate_barato","SIFT_PROVIDER":"gate-barato-local"}`,
-		provGateRico:        `{"SIFT_GATE":"gate_rico","SIFT_PROVIDER":"gate-rico","LITELLM_MODEL":"groq-fast"}`,
-		provGateRicoLocal:   `{"SIFT_GATE":"gate_rico","SIFT_PROVIDER":"gate-rico-local"}`,
-		provDistill:         `{"DISTILL_PROVIDER":"distill","LITELLM_MODEL":"groq-llama"}`,
-		provDistillLocal:    `{"DISTILL_PROVIDER":"distill-local"}`, // model/engine from host LiteLLM config
+		provGateBarato:      `{"SIFT_GATE":"gate_barato","SIFT_PROVIDER":"sift-cloud","LITELLM_MODEL":"groq-fast"}`,
+		provGateBaratoLocal: `{"SIFT_GATE":"gate_barato","SIFT_PROVIDER":"sift-vpc"}`,
+		provGateRico:        `{"SIFT_GATE":"gate_rico","SIFT_PROVIDER":"assay-cloud","LITELLM_MODEL":"groq-fast"}`,
+		provGateRicoLocal:   `{"SIFT_GATE":"gate_rico","SIFT_PROVIDER":"assay-vpc"}`,
+		provDistill:         `{"DISTILL_PROVIDER":"distill-cloud","LITELLM_MODEL":"groq-llama"}`,
+		provDistillLocal:    `{"DISTILL_PROVIDER":"distill-vpc"}`, // model/engine from host LiteLLM config
 	}
 	for name, wantEnv := range want {
 		if got := string(db.providers[name].Env); got != wantEnv {
@@ -145,9 +145,8 @@ func TestSeedIdempotent(t *testing.T) {
 	if got := db.flows[youtubeFlowName].ID; got != id1 {
 		t.Errorf("flow id changed on re-seed: %d -> %d", id1, got)
 	}
-	// 6 shared work providers (gate-barato/-local, gate-rico/-local, distill/-local) + 3
-	// YouTube-specific (harvest, shelf, asr-youtube). The learning-loop reviser is no longer a
-	// control-plane provider — it moved out to rara-hone (a periodic job, off the routing path).
+	// 6 shared work providers (sift-cloud/vpc, assay-cloud/vpc, distill-cloud/vpc) + 3
+	// YouTube-specific (harvest-cloud, shelf-cloud, caption-mac).
 	if len(db.providers) != 9 {
 		t.Errorf("expected 9 providers after re-seed, got %d", len(db.providers))
 	}
@@ -198,8 +197,8 @@ func TestVPCFirstRoutingPolicy(t *testing.T) {
 	}
 }
 
-// TestLocalProvidersAreOnDemand asserts the three VPC-local shared providers (gate-barato-local,
-// gate-rico-local, distill-local) are seeded as on_demand, not resident. They follow the
+// TestLocalProvidersAreOnDemand asserts the three VPC shared providers (sift-vpc,
+// assay-vpc, distill-vpc) are seeded as on_demand, not resident. They follow the
 // spawn-and-exit model: woken per-item by rara-runner, not polling continuously. The router
 // exempts on_demand from the heartbeat health gate, so a stale timestamp never excludes them.
 func TestLocalProvidersAreOnDemand(t *testing.T) {
@@ -307,7 +306,7 @@ func TestSeedPreservesHeartbeatAtOnReseed(t *testing.T) {
 	if err := SeedYouTubeLane(ctx, db); err != nil {
 		t.Fatal(err)
 	}
-	// Simulate runner stamping heartbeat on distill-local after first seed.
+	// Simulate runner stamping heartbeat on distill-vpc after first seed.
 	if err := db.TouchProviderHeartbeat(ctx, provDistillLocal); err != nil {
 		t.Fatal(err)
 	}
@@ -319,7 +318,7 @@ func TestSeedPreservesHeartbeatAtOnReseed(t *testing.T) {
 		t.Fatal(err)
 	}
 	if db.providers[provDistillLocal].HeartbeatAt == nil {
-		t.Error("re-seed zeroed HeartbeatAt on distill-local; TouchProviderHeartbeat's stamp must survive re-seed")
+		t.Error("re-seed zeroed HeartbeatAt on distill-vpc; TouchProviderHeartbeat's stamp must survive re-seed")
 	}
 }
 
@@ -445,19 +444,20 @@ func TestSeedPreservesLastAttemptAtOnReseed(t *testing.T) {
 	}
 }
 
-// TestSeedWorkerGrouping asserts that paired cloud/VPC providers share the same Worker value
-// (the -local suffix is stripped) and that standalone providers keep their own name as Worker.
+// TestSeedWorkerGrouping asserts that paired cloud/VPC providers share the same Worker
+// codename (the binary that implements both), and that each placement's Worker differs from
+// its Name (placement name = <worker>-<runtime>; worker = logical binary codename).
 func TestSeedWorkerGrouping(t *testing.T) {
 	ctx := context.Background()
 	db := newMockDatabase()
 	if err := SeedYouTubeLane(ctx, db); err != nil {
 		t.Fatal(err)
 	}
-	// Pairs: both sides must collapse to the same worker name.
-	pairs := [][2]string{
-		{provDistill, provDistillLocal},
-		{provGateBarato, provGateBaratoLocal},
-		{provGateRico, provGateRicoLocal},
+	// Pairs: cloud and VPC placement must share the same Worker codename.
+	pairs := [][3]string{ // [cloud_name, vpc_name, expected_worker]
+		{provDistill, provDistillLocal, "distill"},
+		{provGateBarato, provGateBaratoLocal, "sift"},
+		{provGateRico, provGateRicoLocal, "assay"},
 	}
 	for _, pair := range pairs {
 		cloud := db.providers[pair[0]]
@@ -466,15 +466,20 @@ func TestSeedWorkerGrouping(t *testing.T) {
 			t.Errorf("pair (%q, %q): Worker mismatch %q vs %q; both must share the same worker",
 				pair[0], pair[1], cloud.Worker, local.Worker)
 		}
-		if cloud.Worker != pair[0] {
-			t.Errorf("pair (%q, %q): Worker = %q, want %q (logical name without -local)",
-				pair[0], pair[1], cloud.Worker, pair[0])
+		if cloud.Worker != pair[2] {
+			t.Errorf("pair (%q, %q): Worker = %q, want %q",
+				pair[0], pair[1], cloud.Worker, pair[2])
 		}
 	}
-	// Standalone providers: Worker == own name.
-	for _, name := range []string{provHarvest, provShelf, provASRYouTube} {
-		if p := db.providers[name]; p.Worker != name {
-			t.Errorf("provider %q: Worker = %q, want %q", name, p.Worker, name)
+	// Single-placement providers each have their own Worker codename (differs from Name).
+	singles := map[string]string{ // placement_name -> expected_worker
+		provHarvest:    "harvest",
+		provShelf:      "shelf",
+		provASRYouTube: "caption",
+	}
+	for name, wantWorker := range singles {
+		if p := db.providers[name]; p.Worker != wantWorker {
+			t.Errorf("provider %q: Worker = %q, want %q", name, p.Worker, wantWorker)
 		}
 	}
 }
@@ -520,9 +525,10 @@ func TestSeedWorkerAndAppRoundTrip(t *testing.T) {
 	}
 }
 
-// TestSeedAppEqualsNameForAllProviders asserts every seeded provider has App == Name
-// (the P1a invariant: app = name as long as app/name haven't diverged yet).
-func TestSeedAppEqualsNameForAllProviders(t *testing.T) {
+// TestSeedAllProvidersHaveApp asserts every seeded provider has a non-empty App (the
+// dispatch target that P1b decoupled from Name). After P1b, App holds the pre-rename
+// deploy key (the old provider name) while Name is the new <worker>-<runtime> codename.
+func TestSeedAllProvidersHaveApp(t *testing.T) {
 	t.Setenv("DISTILL_MODEL", "groq-llama")
 	t.Setenv("GATE_MODEL", "groq-fast")
 
@@ -542,8 +548,24 @@ func TestSeedAppEqualsNameForAllProviders(t *testing.T) {
 		}
 	}
 	for name, p := range db.providers {
-		if p.App != name {
-			t.Errorf("provider %q: App = %q, want %q", name, p.App, name)
+		if p.App == "" {
+			t.Errorf("provider %q: App is empty; every provider must have a dispatch target", name)
+		}
+	}
+	// Spot-check: App is the old deploy key, not the new codename.
+	wantApp := map[string]string{
+		provDistill:         "distill",
+		provDistillLocal:    "distill-local",
+		provGateBarato:      "gate-barato",
+		provGateBaratoLocal: "gate-barato-local",
+		provGateRico:        "gate-rico",
+		provGateRicoLocal:   "gate-rico-local",
+		provASRYouTube:      "asr-youtube",
+		provASRDirectAudio:  "asr-direct-audio",
+	}
+	for name, wantA := range wantApp {
+		if p := db.providers[name]; p.App != wantA {
+			t.Errorf("provider %q: App = %q, want %q", name, p.App, wantA)
 		}
 	}
 }
@@ -568,6 +590,44 @@ func TestSeedVPCLocalProvidersGetRunnerURLFromEnv(t *testing.T) {
 		}
 		if p.RunnerURL != wantURL {
 			t.Errorf("provider %q: RunnerURL = %q, want %q (from RUNNER_LOCAL_URL)", name, p.RunnerURL, wantURL)
+		}
+	}
+}
+
+// TestSeedProviderDescriptions asserts every seeded provider carries a non-empty human-readable
+// description (config-as-data for the console UI). Spot-checks a few key placements.
+func TestSeedProviderDescriptions(t *testing.T) {
+	t.Setenv("DISTILL_MODEL", "groq-llama")
+	t.Setenv("GATE_MODEL", "groq-fast")
+
+	ctx := context.Background()
+	db := newMockDatabase()
+	for _, fn := range []func(context.Context, Database) error{
+		SeedYouTubeLane, SeedPodcastLane, SeedEmailLane, SeedNewsLane, SeedLinkedInLane,
+	} {
+		if err := fn(ctx, db); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+	}
+	for name, p := range db.providers {
+		if p.Description == "" {
+			t.Errorf("provider %q: Description is empty; every provider must have a description", name)
+		}
+	}
+	// Spot-check a few key placements.
+	wantDesc := map[string]string{
+		provDistill:         "Destilador (LLM)",
+		provDistillLocal:    "Destilador (LLM)",
+		provGateBarato:      "Filtro — metadados (barato)",
+		provGateBaratoLocal: "Filtro — metadados (barato)",
+		provGateRico:        "Filtro — texto completo (rico)",
+		provASRYouTube:      "Transcritor — vídeo YouTube (Mac)",
+		provASRDirectAudio:  "Transcritor — áudio/podcast",
+		provExtrairEmail:    "Normalizador — e-mail",
+	}
+	for name, want := range wantDesc {
+		if p := db.providers[name]; p.Description != want {
+			t.Errorf("provider %q: Description = %q, want %q", name, p.Description, want)
 		}
 	}
 }

@@ -172,9 +172,9 @@ func readMigration004(t *testing.T) string {
 	return string(b)
 }
 
-// TestMigration004LinkedInPosts asserts the Phase-5 manual-inbox domain table exists, is keyed
+// TestMigration004LinkedInPosts asserts the Phase-5 LinkedIn posts domain table exists, is keyed
 // on the post URL (the spine's source_ref), reuses the namespaced trigger, and does not touch a
-// foreign agent's domain tables (rara-core owns this one, as the manual inbox lives in its surface).
+// foreign agent's domain tables (rara-core owns this one, as the submission surface lives here).
 func TestMigration004LinkedInPosts(t *testing.T) {
 	sql := readMigration004(t)
 	if !strings.Contains(sql, "CREATE TABLE IF NOT EXISTS linkedin_posts (") {

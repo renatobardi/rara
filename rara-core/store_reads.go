@@ -120,7 +120,7 @@ func (d *pgxDatabase) ListItemSteps(ctx context.Context, itemID int) ([]ItemStep
 
 // providerColumns is the shared SELECT list for a providers row (mirrors Provider struct fields).
 const providerColumns = `name, capability, runtime, activation,
-       constraints, enabled, heartbeat_at, last_collect_at, COALESCE(runner_url, ''), env, COALESCE(worker, ''), last_error, COALESCE(app, '')`
+       constraints, enabled, heartbeat_at, last_collect_at, COALESCE(runner_url, ''), env, COALESCE(worker, ''), last_error, COALESCE(app, ''), COALESCE(description, '')`
 
 // maxProviderErrorLen is the rune count cap applied to last_error before it reaches the API.
 const maxProviderErrorLen = 500
@@ -146,7 +146,7 @@ func truncateErrorMsg(s string) string {
 func scanProvider(scan func(dest ...any) error) (Provider, error) {
 	var p Provider
 	err := scan(&p.Name, &p.Capability, &p.Runtime, &p.Activation,
-		&p.Constraints, &p.Enabled, &p.HeartbeatAt, &p.LastCollectAt, &p.RunnerURL, &p.Env, &p.Worker, &p.LastError, &p.App)
+		&p.Constraints, &p.Enabled, &p.HeartbeatAt, &p.LastCollectAt, &p.RunnerURL, &p.Env, &p.Worker, &p.LastError, &p.App, &p.Description)
 	if err == nil && p.LastError != nil {
 		if orig := *p.LastError; utf8.RuneCountInString(orig) > maxProviderErrorLen {
 			truncated := truncateErrorMsg(orig)

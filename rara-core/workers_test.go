@@ -18,17 +18,17 @@ func mustCapability(t *testing.T, db *MockDatabase, name string) {
 }
 
 // TestCoreWorkersGroupsByWorkerField: two providers sharing worker="distill" → one Worker with
-// two placements; one provider with worker="asr-youtube" → one Worker with one placement.
+// two placements; one provider with worker="caption" → one Worker with one placement.
 func TestCoreWorkersGroupsByWorkerField(t *testing.T) {
 	ctx := context.Background()
 	core, db, _ := newTestCore(t)
 	mustCapability(t, db, capDestilar)
 	mustCapability(t, db, capTranscrever)
-	mustProvider(t, db, Provider{Name: "distill", Capability: capDestilar, Worker: "distill",
+	mustProvider(t, db, Provider{Name: "distill-cloud", Capability: capDestilar, Worker: "distill",
 		Runtime: runtimeCloudRun, Activation: activationOnDemand, Enabled: true})
-	mustProvider(t, db, Provider{Name: "distill-local", Capability: capDestilar, Worker: "distill",
+	mustProvider(t, db, Provider{Name: "distill-vpc", Capability: capDestilar, Worker: "distill",
 		Runtime: runtimeLocal, Activation: activationResident, Enabled: true})
-	mustProvider(t, db, Provider{Name: "asr-youtube", Capability: capTranscrever, Worker: "asr-youtube",
+	mustProvider(t, db, Provider{Name: "caption-mac", Capability: capTranscrever, Worker: "caption",
 		Runtime: runtimeLocal, Activation: activationResident, Enabled: true})
 
 	workers, err := core.Workers(ctx)
@@ -39,9 +39,9 @@ func TestCoreWorkersGroupsByWorkerField(t *testing.T) {
 		t.Fatalf("want 2 workers, got %d: %+v", len(workers), workers)
 	}
 
-	// workers ordered by name: "asr-youtube" < "distill"
-	if workers[0].Name != "asr-youtube" {
-		t.Errorf("workers[0].Name = %q, want asr-youtube", workers[0].Name)
+	// workers ordered by name: "caption" < "distill"
+	if workers[0].Name != "caption" {
+		t.Errorf("workers[0].Name = %q, want caption", workers[0].Name)
 	}
 	if workers[1].Name != "distill" {
 		t.Errorf("workers[1].Name = %q, want distill", workers[1].Name)
@@ -49,12 +49,12 @@ func TestCoreWorkersGroupsByWorkerField(t *testing.T) {
 	if len(workers[1].Placements) != 2 {
 		t.Fatalf("distill worker: want 2 placements, got %d", len(workers[1].Placements))
 	}
-	// placements ordered by name: "distill" < "distill-local"
-	if workers[1].Placements[0].Name != "distill" {
-		t.Errorf("placements[0].Name = %q, want distill", workers[1].Placements[0].Name)
+	// placements ordered by name: "distill-cloud" < "distill-vpc"
+	if workers[1].Placements[0].Name != "distill-cloud" {
+		t.Errorf("placements[0].Name = %q, want distill-cloud", workers[1].Placements[0].Name)
 	}
-	if workers[1].Placements[1].Name != "distill-local" {
-		t.Errorf("placements[1].Name = %q, want distill-local", workers[1].Placements[1].Name)
+	if workers[1].Placements[1].Name != "distill-vpc" {
+		t.Errorf("placements[1].Name = %q, want distill-vpc", workers[1].Placements[1].Name)
 	}
 	if workers[1].Capability != capDestilar {
 		t.Errorf("distill worker capability = %q, want %s", workers[1].Capability, capDestilar)
@@ -113,9 +113,9 @@ func TestCoreWorkersOrdering(t *testing.T) {
 func TestHTTPListWorkers200(t *testing.T) {
 	core, db, _ := newTestCore(t)
 	mustCapability(t, db, capDestilar)
-	mustProvider(t, db, Provider{Name: "distill", Capability: capDestilar, Worker: "distill",
+	mustProvider(t, db, Provider{Name: "distill-cloud", Capability: capDestilar, Worker: "distill",
 		Runtime: runtimeCloudRun, Activation: activationOnDemand, Enabled: true})
-	mustProvider(t, db, Provider{Name: "distill-local", Capability: capDestilar, Worker: "distill",
+	mustProvider(t, db, Provider{Name: "distill-vpc", Capability: capDestilar, Worker: "distill",
 		Runtime: runtimeLocal, Activation: activationResident, Enabled: true})
 
 	h := NewSurfaceMux(core, testToken)
@@ -148,11 +148,11 @@ func TestUpsertProviderRejectsInconsistentWorkerCapability(t *testing.T) {
 	core, db, _ := newTestCore(t)
 	mustCapability(t, db, capDestilar)
 	mustCapability(t, db, capTranscrever)
-	mustProvider(t, db, Provider{Name: "distill", Capability: capDestilar, Worker: "distill",
+	mustProvider(t, db, Provider{Name: "distill-cloud", Capability: capDestilar, Worker: "distill",
 		Runtime: runtimeCloudRun, Activation: activationOnDemand, Enabled: true})
 
 	err := core.UpsertProvider(ctx, Provider{
-		Name: "distill-local", Capability: capTranscrever, Worker: "distill",
+		Name: "distill-vpc", Capability: capTranscrever, Worker: "distill",
 		Runtime: runtimeLocal, Activation: activationResident, Enabled: true,
 	})
 	if err == nil {

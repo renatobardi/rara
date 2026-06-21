@@ -24,7 +24,7 @@ var routerItem = Item{Lane: laneYouTube, Sensitivity: sensitivityPublic}
 
 func ptime(t time.Time) *time.Time { return &t }
 
-// residential is the JSON constraint asr-youtube carries.
+// residential is the JSON constraint caption-mac carries.
 var residential = json.RawMessage(`{"requires":"residential"}`)
 
 // names extracts provider names from a ranked slice, in order.
@@ -144,20 +144,20 @@ func TestRankExcludeForFallover(t *testing.T) {
 // first (VPC-first). When its host is actually down the caller excludes it and the cloud
 // fallback is returned — confirming the ovo-galinha fix does not stall the pipeline.
 func TestNeverRunResidentFalloverToCloud(t *testing.T) {
-	vpc := Provider{Name: "distill-local", Capability: "destilar", Runtime: runtimeLocal,
+	vpc := Provider{Name: "distill-vpc", Capability: "destilar", Runtime: runtimeLocal,
 		Activation: activationResident, HeartbeatAt: nil, Enabled: true}
 	cloud := Provider{Name: "distill-cloud", Capability: "destilar", Runtime: runtimeCloudRun,
 		Activation: activationOnDemand, HeartbeatAt: nil, Enabled: true}
-	policy := RoutingPolicy{Fallback: json.RawMessage(`["distill-local","distill-cloud"]`)}
+	policy := RoutingPolicy{Fallback: json.RawMessage(`["distill-vpc","distill-cloud"]`)}
 
 	// Round 1: never-run resident is eligible (bootstrap grace).
 	r1 := names(rankProviders([]Provider{vpc, cloud}, policy, routerItem, routerClock, routerHealthTTL, nil))
-	if len(r1) == 0 || r1[0] != "distill-local" {
-		t.Fatalf("round 1: want distill-local first (bootstrap grace), got %v", r1)
+	if len(r1) == 0 || r1[0] != "distill-vpc" {
+		t.Fatalf("round 1: want distill-vpc first (bootstrap grace), got %v", r1)
 	}
 
 	// Round 2: host was down — exclude the never-run resident; cloud must be returned.
-	r2 := names(rankProviders([]Provider{vpc, cloud}, policy, routerItem, routerClock, routerHealthTTL, map[string]bool{"distill-local": true}))
+	r2 := names(rankProviders([]Provider{vpc, cloud}, policy, routerItem, routerClock, routerHealthTTL, map[string]bool{"distill-vpc": true}))
 	if len(r2) != 1 || r2[0] != "distill-cloud" {
 		t.Fatalf("round 2: want only distill-cloud after excluding dead resident, got %v", r2)
 	}
@@ -172,13 +172,13 @@ func TestRankNoEligible(t *testing.T) {
 }
 
 // TestRankAcceptsMatchesLane: `accepts` routes an item to the provider that can consume its
-// SOURCE. transcrever carries two providers — asr-youtube accepts ["youtube"], asr-direct-audio
+// SOURCE. transcrever carries two providers — caption-mac accepts ["youtube"], echo-cloud
 // accepts ["podcast"] — and a provider with no `accepts` serves any lane. The item's lane
 // selects the eligible set.
 func TestRankAcceptsMatchesLane(t *testing.T) {
-	yt := Provider{Name: "asr-youtube", Capability: capTranscrever, Runtime: runtimeCloudRun,
+	yt := Provider{Name: "caption-mac", Capability: capTranscrever, Runtime: runtimeCloudRun,
 		Activation: activationOnDemand, Constraints: json.RawMessage(`{"accepts":["youtube"]}`), Enabled: true}
-	pod := Provider{Name: "asr-direct-audio", Capability: capTranscrever, Runtime: runtimeCloudRun,
+	pod := Provider{Name: "echo-cloud", Capability: capTranscrever, Runtime: runtimeCloudRun,
 		Activation: activationOnDemand, Constraints: json.RawMessage(`{"accepts":["podcast"]}`), Enabled: true}
 	anyLane := onDemand("any-lane") // no accepts -> serves every lane
 
@@ -193,14 +193,14 @@ func TestRankAcceptsMatchesLane(t *testing.T) {
 
 	ytItem := Item{Lane: laneYouTube}
 	got := in(rankProviders(cands, RoutingPolicy{}, ytItem, routerClock, routerHealthTTL, nil))
-	if !got["asr-youtube"] || got["asr-direct-audio"] || !got["any-lane"] {
-		t.Errorf("youtube item: want asr-youtube + any-lane, not asr-direct-audio; got %v", got)
+	if !got["caption-mac"] || got["echo-cloud"] || !got["any-lane"] {
+		t.Errorf("youtube item: want caption-mac + any-lane, not echo-cloud; got %v", got)
 	}
 
 	podItem := Item{Lane: lanePodcast}
 	got = in(rankProviders(cands, RoutingPolicy{}, podItem, routerClock, routerHealthTTL, nil))
-	if got["asr-youtube"] || !got["asr-direct-audio"] || !got["any-lane"] {
-		t.Errorf("podcast item: want asr-direct-audio + any-lane, not asr-youtube; got %v", got)
+	if got["caption-mac"] || !got["echo-cloud"] || !got["any-lane"] {
+		t.Errorf("podcast item: want echo-cloud + any-lane, not caption-mac; got %v", got)
 	}
 }
 
@@ -271,18 +271,18 @@ func TestOnDemandVPCStaleHeartbeatFallover(t *testing.T) {
 		Activation: activationOnDemand, HeartbeatAt: staleHB, Enabled: true}
 	cloud := Provider{Name: provDistill, Capability: capDestilar, Runtime: runtimeCloudRun,
 		Activation: activationOnDemand, HeartbeatAt: nil, Enabled: true}
-	policy := RoutingPolicy{Fallback: json.RawMessage(`["distill-local","distill"]`)}
+	policy := RoutingPolicy{Fallback: json.RawMessage(`["` + provDistillLocal + `","` + provDistill + `"]`)}
 
 	// Round 1: VPC on_demand with stale heartbeat must be eligible (health-exempt).
 	r1 := names(rankProviders([]Provider{vpc, cloud}, policy, routerItem, routerClock, routerHealthTTL, nil))
 	if len(r1) == 0 || r1[0] != provDistillLocal {
-		t.Fatalf("round 1: want distill-local first (on_demand health-exempt despite stale heartbeat), got %v", r1)
+		t.Fatalf("round 1: want %s first (on_demand health-exempt despite stale heartbeat), got %v", provDistillLocal, r1)
 	}
 
-	// Round 2: agent down — exclude distill-local; cloud fallback must be returned, no stall.
+	// Round 2: agent down — exclude VPC; cloud fallback must be returned, no stall.
 	r2 := names(rankProviders([]Provider{vpc, cloud}, policy, routerItem, routerClock, routerHealthTTL, map[string]bool{provDistillLocal: true}))
 	if len(r2) != 1 || r2[0] != provDistill {
-		t.Fatalf("round 2: want distill after excluding dead vpc, got %v", r2)
+		t.Fatalf("round 2: want %s after excluding dead vpc, got %v", provDistill, r2)
 	}
 }
 

@@ -8,7 +8,7 @@ import (
 )
 
 // seedAndIngestOne seeds the lane and ingests a single video, returning the item id. It
-// also marks the resident scribe (asr-youtube) "known alive" with a fresh heartbeat — the
+// also marks the resident scribe (caption-mac) "known alive" with a fresh heartbeat — the
 // realistic state of a live scribe. (A never-seen resident would still route under the
 // router's bootstrap grace; a fresh heartbeat is what keeps it eligible once seen and lets
 // staleness, not absence, be the offline signal.)
@@ -99,7 +99,7 @@ func TestReconcileFirstPass(t *testing.T) {
 	// gate_barato assigned to the VPC-first gate worker (local before cloud), pending.
 	s, ok := stepBySeq(db, itemID, 2)
 	if !ok || s.Status != stepPending || s.AssignedProvider != provGateBaratoLocal {
-		t.Errorf("gate_barato step = %+v, want pending+gate-barato-local (VPC-first)", s)
+		t.Errorf("gate_barato step = %+v, want pending+sift-vpc (VPC-first)", s)
 	}
 	// transcrever NOT materialized — it waits behind the metadata gate.
 	if _, ok := stepBySeq(db, itemID, 3); ok {
@@ -132,7 +132,7 @@ func TestReconcileGateKeepAdvances(t *testing.T) {
 	}
 
 	if s, ok := stepBySeq(db, itemID, 3); !ok || s.Status != stepPending || s.AssignedProvider != provASRYouTube {
-		t.Errorf("transcrever step = %+v, want pending+asr-youtube after a kept gate", s)
+		t.Errorf("transcrever step = %+v, want pending+caption-mac after a kept gate", s)
 	}
 	if got := db.itemByID[itemID].Status; got != itemDiscovered {
 		t.Errorf("item status = %q, want still discovered (transcription pending)", got)
@@ -212,7 +212,7 @@ func TestReconcileGateRicoDropAfterTranscribe(t *testing.T) {
 		t.Fatal(err)
 	}
 	if s, ok := stepBySeq(db, itemID, 4); !ok || s.Status != stepPending || s.AssignedProvider != provGateRicoLocal {
-		t.Fatalf("gate_rico step = %+v, want pending+gate-rico-local (VPC-first)", s)
+		t.Fatalf("gate_rico step = %+v, want pending+assay-vpc (VPC-first)", s)
 	}
 	runGate(t, db, itemID, 4, gateRico, decisionDrop)
 	if err := r.ReconcileOnce(ctx); err != nil { // route drop -> filtered
@@ -283,7 +283,7 @@ func TestReconcileAfterTranscrever(t *testing.T) {
 		t.Fatal(err)
 	}
 	if s, ok := stepBySeq(db, itemID, 5); !ok || s.Status != stepPending || s.AssignedProvider != provDistillLocal {
-		t.Errorf("destilar step = %+v, want pending+distill-local (VPC-first)", s)
+		t.Errorf("destilar step = %+v, want pending+distill-vpc (VPC-first)", s)
 	}
 }
 
@@ -437,7 +437,7 @@ func TestReconcileTimeoutFallsBackToNextProvider(t *testing.T) {
 	itemID := seedAndIngestOne(t, db, "vid1")
 
 	// A second, healthy transcrever provider (a backup Mac): also local + residential.
-	// The routing policy pins asr-youtube first so it's the primary; asr-backup is the fallback.
+	// The routing policy pins caption-mac first so it's the primary; asr-backup is the fallback.
 	mustProvider(t, db, Provider{Name: "asr-backup", Capability: capTranscrever, Runtime: runtimeLocal,
 		Activation: activationResident, Constraints: residential, Enabled: true})
 	if err := db.UpsertRoutingPolicy(ctx, RoutingPolicy{Scope: capTranscrever,
@@ -505,20 +505,20 @@ func TestReconcileNeverCallsRunner(t *testing.T) {
 		t.Errorf("gate_barato step = %+v, want done after runGate", s)
 	}
 	if s, ok := stepBySeq(db, itemID, 3); !ok || s.Status != stepPending || s.AssignedProvider != provASRYouTube {
-		t.Errorf("transcrever step = %+v, want pending+asr-youtube", s)
+		t.Errorf("transcrever step = %+v, want pending+caption-mac", s)
 	}
 }
 
 // TestReconcileUsesStepProviders: when a flow_step carries options.providers, the reconciler
 // honours that per-step priority list over the global routing policy. A second scribe is
 // registered and the flow step is patched to pin it first; after reconcile the transcrever
-// step must be assigned to the override provider, not the default asr-youtube.
+// step must be assigned to the override provider, not the default caption-mac.
 func TestReconcileUsesStepProviders(t *testing.T) {
 	ctx := context.Background()
 	db := newMockDatabase()
 	itemID := seedAndIngestOne(t, db, "vid1")
 
-	// Register an alternative local scribe. The global routing policy pins asr-youtube first
+	// Register an alternative local scribe. The global routing policy pins caption-mac first
 	// so the per-step override is required to select alt-scribe instead.
 	altScribe := "alt-scribe"
 	if err := db.UpsertProvider(ctx, Provider{
