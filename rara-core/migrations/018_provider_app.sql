@@ -7,4 +7,4 @@ ALTER TABLE providers ADD COLUMN IF NOT EXISTS app VARCHAR(48);
 -- Idempotent backfill: seed app = name for every existing row that hasn't been set.
 UPDATE providers
     SET app = name
-    WHERE app IS NULL OR app = '';
+    WHERE app IS NULL;

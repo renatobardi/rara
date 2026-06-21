@@ -369,7 +369,7 @@ func TestMigration018ProviderApp(t *testing.T) {
 	if strings.Contains(stmt, "NOT NULL") {
 		t.Errorf("app must be nullable on add, got: %q", stmt)
 	}
-	// Idempotent backfill: UPDATE guarded by app IS NULL OR app = ''.
+	// Idempotent backfill: UPDATE guarded by app IS NULL (new column is always NULL on first run).
 	if !strings.Contains(sql, "WHERE app IS NULL") {
 		t.Error("migration 018 must have an idempotent backfill guarded on app IS NULL")
 	}

@@ -502,13 +502,20 @@ func TestSeedWorkerRoundTrip(t *testing.T) {
 	}
 }
 
-// TestSeedAppRoundTrip asserts UpsertProvider + GetProvider preserves App.
-func TestSeedAppRoundTrip(t *testing.T) {
+// newAppTestDB returns a MockDatabase pre-seeded with capabilities (shared setup for App tests).
+func newAppTestDB(t *testing.T) (context.Context, *MockDatabase) {
+	t.Helper()
 	ctx := context.Background()
 	db := newMockDatabase()
 	if err := seedCapabilities(ctx, db); err != nil {
 		t.Fatal(err)
 	}
+	return ctx, db
+}
+
+// TestSeedAppRoundTrip asserts UpsertProvider + GetProvider preserves App.
+func TestSeedAppRoundTrip(t *testing.T) {
+	ctx, db := newAppTestDB(t)
 	p := Provider{
 		Name: "distill", Capability: capDestilar, Runtime: runtimeCloudRun,
 		Activation: activationOnDemand, Enabled: true, Worker: "distill", App: "distill",
@@ -527,11 +534,7 @@ func TestSeedAppRoundTrip(t *testing.T) {
 
 // TestSeedAppDefaultsToName asserts that upserting with App="" stores app = name.
 func TestSeedAppDefaultsToName(t *testing.T) {
-	ctx := context.Background()
-	db := newMockDatabase()
-	if err := seedCapabilities(ctx, db); err != nil {
-		t.Fatal(err)
-	}
+	ctx, db := newAppTestDB(t)
 	p := Provider{
 		Name: "distill", Capability: capDestilar, Runtime: runtimeCloudRun,
 		Activation: activationOnDemand, Enabled: true, Worker: "distill",
