@@ -958,13 +958,13 @@ func TestFlowStepRequiresCapabilityAndUniqueSeq(t *testing.T) {
 func TestRoutingPolicyUniqueScope(t *testing.T) {
 	ctx := context.Background()
 	db := newMockDatabase()
-	_ = db.UpsertRoutingPolicy(ctx, RoutingPolicy{Scope: "global", CostWeight: 0.5, QualityWeight: 0.5})
-	_ = db.UpsertRoutingPolicy(ctx, RoutingPolicy{Scope: "global", CostWeight: 0.3, QualityWeight: 0.7})
+	_ = db.UpsertRoutingPolicy(ctx, RoutingPolicy{Scope: "global", Fallback: []byte(`["a"]`)})
+	_ = db.UpsertRoutingPolicy(ctx, RoutingPolicy{Scope: "global", Fallback: []byte(`["b"]`)})
 	if len(db.policies) != 1 {
 		t.Fatalf("UNIQUE(scope) not honored: %d rows", len(db.policies))
 	}
-	if db.policies["global"].QualityWeight != 0.7 {
-		t.Errorf("upsert should replace policy weights")
+	if string(db.policies["global"].Fallback) != `["b"]` {
+		t.Errorf("upsert should replace policy fallback, got %s", db.policies["global"].Fallback)
 	}
 }
 
@@ -1249,8 +1249,8 @@ func TestListAssignedSteps(t *testing.T) {
 
 	_ = db.UpsertCapability(ctx, Capability{Name: capTranscrever})
 	_ = db.UpsertCapability(ctx, Capability{Name: capDestilar})
-	_ = db.UpsertProvider(ctx, Provider{Name: "p1", Capability: capTranscrever, Runtime: runtimeCloudRun, Activation: activationOnDemand, Cost: 1, Quality: 1, Enabled: true})
-	_ = db.UpsertProvider(ctx, Provider{Name: "p2", Capability: capTranscrever, Runtime: runtimeVPC, Activation: activationResident, Cost: 1, Quality: 1, Enabled: true})
+	_ = db.UpsertProvider(ctx, Provider{Name: "p1", Capability: capTranscrever, Runtime: runtimeCloudRun, Activation: activationOnDemand, Enabled: true})
+	_ = db.UpsertProvider(ctx, Provider{Name: "p2", Capability: capTranscrever, Runtime: runtimeVPC, Activation: activationResident, Enabled: true})
 	flowID, _ := db.UpsertFlow(ctx, Flow{Name: "test", SourceType: "youtube", Enabled: true})
 	itemID, _ := db.UpsertItem(ctx, Item{Lane: "youtube", SourceRef: "v1", FlowID: flowID, Status: itemDiscovered})
 
@@ -1278,7 +1278,7 @@ func TestListAssignedStepsInsertionOrder(t *testing.T) {
 	ctx := context.Background()
 	db := newMockDatabase()
 	_ = db.UpsertCapability(ctx, Capability{Name: capTranscrever})
-	_ = db.UpsertProvider(ctx, Provider{Name: "p1", Capability: capTranscrever, Runtime: runtimeCloudRun, Activation: activationOnDemand, Cost: 1, Quality: 1, Enabled: true})
+	_ = db.UpsertProvider(ctx, Provider{Name: "p1", Capability: capTranscrever, Runtime: runtimeCloudRun, Activation: activationOnDemand, Enabled: true})
 	flowID, _ := db.UpsertFlow(ctx, Flow{Name: "test", SourceType: "youtube", Enabled: true})
 	id1, _ := db.UpsertItem(ctx, Item{Lane: "youtube", SourceRef: "v1", FlowID: flowID, Status: itemDiscovered})
 	id2, _ := db.UpsertItem(ctx, Item{Lane: "youtube", SourceRef: "v2", FlowID: flowID, Status: itemDiscovered})
@@ -1308,7 +1308,7 @@ func TestProviderRunnerURL(t *testing.T) {
 	p := Provider{
 		Name: "vpc-scribe", Capability: capTranscrever,
 		Runtime: runtimeVPC, Activation: activationResident,
-		Cost: 1, Quality: 1, Enabled: true,
+		Enabled: true,
 		RunnerURL: "http://100.64.1.1:7800",
 	}
 	if err := db.UpsertProvider(ctx, p); err != nil {
@@ -1332,7 +1332,7 @@ func TestProviderEnv(t *testing.T) {
 	p := Provider{
 		Name: "distill", Capability: capDestilar,
 		Runtime: runtimeCloudRun, Activation: activationOnDemand,
-		Cost: 1, Quality: 1, Enabled: true,
+		Enabled: true,
 		Env: []byte(`{"DISTILL_PROVIDER":"distill","FUTURE_KNOB":"x"}`),
 	}
 	if err := db.UpsertProvider(ctx, p); err != nil {

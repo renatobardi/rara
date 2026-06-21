@@ -436,10 +436,12 @@ func TestReconcileTimeoutFallsBackToNextProvider(t *testing.T) {
 	db := newMockDatabase()
 	itemID := seedAndIngestOne(t, db, "vid1")
 
-	// A second, healthy transcrever provider (a backup Mac): also local + residential, but
-	// pricier so the primary asr-youtube is chosen first.
+	// A second, healthy transcrever provider (a backup Mac): also local + residential.
+	// The routing policy pins asr-youtube first so it's the primary; asr-backup is the fallback.
 	mustProvider(t, db, Provider{Name: "asr-backup", Capability: capTranscrever, Runtime: runtimeLocal,
-		Activation: activationResident, Constraints: residential, Cost: 2.0, Quality: 0.9, Enabled: true})
+		Activation: activationResident, Constraints: residential, Enabled: true})
+	_ = db.UpsertRoutingPolicy(ctx, RoutingPolicy{Scope: capTranscrever,
+		Fallback: json.RawMessage(`["` + provASRYouTube + `","asr-backup"]`)})
 	setProviderHeartbeat(db, provASRYouTube, base.Add(-1*time.Minute)) // both alive at base
 	setProviderHeartbeat(db, "asr-backup", base.Add(-1*time.Minute))
 
@@ -514,16 +516,18 @@ func TestReconcileUsesStepProviders(t *testing.T) {
 	db := newMockDatabase()
 	itemID := seedAndIngestOne(t, db, "vid1")
 
-	// Register an alternative local scribe — expensive + low quality so the balanced global
-	// policy (0.5/0.5) scores asr-youtube far higher; only the per-step override can pin it.
+	// Register an alternative local scribe. The global routing policy pins asr-youtube first
+	// so the per-step override is required to select alt-scribe instead.
 	altScribe := "alt-scribe"
 	if err := db.UpsertProvider(ctx, Provider{
 		Name: altScribe, Capability: capTranscrever, Runtime: runtimeLocal,
-		Activation: activationResident, Cost: 5.0, Quality: 0.1, Enabled: true,
+		Activation: activationResident, Enabled: true,
 	}); err != nil {
 		t.Fatal(err)
 	}
 	markProviderAlive(t, db, altScribe)
+	_ = db.UpsertRoutingPolicy(ctx, RoutingPolicy{Scope: capTranscrever,
+		Fallback: json.RawMessage(`["` + provASRYouTube + `","` + altScribe + `"]`)})
 
 	// Patch the transcrever flow step (seq 3) to pin alt-scribe first.
 	optBytes, err := json.Marshal(struct {

@@ -81,18 +81,12 @@ func seedCapabilities(ctx context.Context, db Database) error {
 // seedSharedProviders upserts the work providers every lane reuses: the two curation gates and
 // distill, each in TWO variants — a default cloud provider that calls a third-party model
 // (tagged {"sensitivity":"third_party"}) and a self-host VPC provider.
-// cost (relative weight), quality (0..1) and latency_ms feed the router's cost<->quality score.
 //
-// VPC-first routing: the VPC (*-local) variants run the same model as the cloud variants, so
-// quality is equal. VPC cost is seeded LOWER than cloud, which makes the score-based router
-// select VPC first for public content and fall through to Cloud Run only when VPC is unhealthy.
-// Private content (email) is additionally excluded from third-party cloud providers by the
-// sensitivity constraint, so it always stays on the VPC variant. Both cloud and VPC variants
-// are on_demand: the cloud ones are woken via Cloud Run Jobs `run`; the VPC ones are woken by
-// rara-runner (POST /run on the tailnet). on_demand is health-exempt at selection time — a
-// stale heartbeat never excludes a VPC provider, preventing the heartbeat ovo-galinha where a
-// spawn-and-exit worker can never refresh its heartbeat without being selected first. (coletar
-// is auto-satisfied by the reconciler — no coletar provider is needed for routing.)
+// VPC-first routing is enforced by routing_policies.fallback (see seedSharedConfig). Private
+// content (email) is additionally excluded from third-party cloud providers by the sensitivity
+// constraint, so it always stays on the VPC variant. Both cloud and VPC variants are on_demand:
+// the cloud ones are woken via Cloud Run Jobs `run`; the VPC ones are woken by rara-runner
+// (POST /run on the tailnet). on_demand is health-exempt at selection time.
 func seedSharedProviders(ctx context.Context, db Database) error {
 	thirdParty := []byte(`{"sensitivity":"third_party"}`)
 	// env = the per-run NON-secret config each worker IMAGE reads from its environment (confirmed
@@ -104,37 +98,27 @@ func seedSharedProviders(ctx context.Context, db Database) error {
 	// LiteLLM/ollama config, not a constant we can seed here. NO secrets (DATABASE_URL, API keys,
 	// LITELLM_BASE_URL is a deploy-resolved endpoint) — the host/agent resolves those (§7).
 	providers := []Provider{
-		// destilar: the priciest step (model tokens), high quality. Both cloud and self-host
-		// variants are on_demand: cloud woken via Cloud Run Jobs `run`; self-host woken by
-		// rara-runner (POST /run on the tailnet, spawn-and-exit per item).
+		// destilar: LLM step. Both variants on_demand: cloud via Cloud Run Jobs; VPC via rara-runner.
 		{Name: provDistill, Capability: capDestilar, Runtime: runtimeCloudRun, Activation: activationOnDemand,
-			Cost: 2.00, Quality: 0.92, LatencyMs: 30000, Constraints: thirdParty, Enabled: true, Worker: provDistill,
+			Constraints: thirdParty, Enabled: true, Worker: provDistill,
 			Env: []byte(`{"DISTILL_PROVIDER":"distill","LITELLM_MODEL":"groq-llama"}`)},
-		// ponytail: cost 1.50 < 2.00 (cloud) → VPC wins the score; quality parity: same model
 		{Name: provDistillLocal, Capability: capDestilar, Runtime: runtimeVPC, Activation: activationOnDemand,
-			Cost: 1.50, Quality: 0.92, LatencyMs: 60000, Enabled: true, Worker: provDistill, // same worker as cloud sibling
+			Enabled: true, Worker: provDistill, // same worker as cloud sibling
 			RunnerURL: os.Getenv("RUNNER_LOCAL_URL"),
-			// CURATE_ENGINE=litellm: the VPC host runs LiteLLM as gateway; groq-llama avoids
-			// the TPM cap that groq-fast hits on long transcripts. Differs from the cloud distill
-			// (which inherits these from the Cloud Run job env); distill-local gets only what's
-			// injected here by the dispatcher.
-			Env: []byte(`{"DISTILL_PROVIDER":"distill-local","CURATE_ENGINE":"litellm","LITELLM_MODEL":"groq-llama"}`)},
-		// gate_barato / gate_rico: the cascade gates (rules -> profile -> LLM-judge). Cheap on
-		// average (only the borderline middle pays the LLM call).
+			Env:       []byte(`{"DISTILL_PROVIDER":"distill-local","CURATE_ENGINE":"litellm","LITELLM_MODEL":"groq-llama"}`)},
+		// gate_barato / gate_rico: cascade gates (rules -> profile -> LLM-judge).
 		{Name: provGateBarato, Capability: capGateBarato, Runtime: runtimeCloudRun, Activation: activationOnDemand,
-			Cost: 0.50, Quality: 0.88, LatencyMs: 5000, Constraints: thirdParty, Enabled: true, Worker: provGateBarato,
+			Constraints: thirdParty, Enabled: true, Worker: provGateBarato,
 			Env: []byte(`{"SIFT_GATE":"gate_barato","SIFT_PROVIDER":"gate-barato","LITELLM_MODEL":"groq-fast"}`)},
-		// ponytail: cost 0.30 < 0.50 (cloud) → VPC wins the score; quality parity: same model
 		{Name: provGateBaratoLocal, Capability: capGateBarato, Runtime: runtimeVPC, Activation: activationOnDemand,
-			Cost: 0.30, Quality: 0.88, LatencyMs: 9000, Enabled: true, Worker: provGateBarato, // same worker as cloud sibling
+			Enabled: true, Worker: provGateBarato, // same worker as cloud sibling
 			RunnerURL: os.Getenv("RUNNER_LOCAL_URL"),
 			Env:       []byte(`{"SIFT_GATE":"gate_barato","SIFT_PROVIDER":"gate-barato-local"}`)},
 		{Name: provGateRico, Capability: capGateRico, Runtime: runtimeCloudRun, Activation: activationOnDemand,
-			Cost: 0.60, Quality: 0.90, LatencyMs: 8000, Constraints: thirdParty, Enabled: true, Worker: provGateRico,
+			Constraints: thirdParty, Enabled: true, Worker: provGateRico,
 			Env: []byte(`{"SIFT_GATE":"gate_rico","SIFT_PROVIDER":"gate-rico","LITELLM_MODEL":"groq-fast"}`)},
-		// ponytail: cost 0.40 < 0.60 (cloud) → VPC wins the score; quality parity: same model
 		{Name: provGateRicoLocal, Capability: capGateRico, Runtime: runtimeVPC, Activation: activationOnDemand,
-			Cost: 0.40, Quality: 0.90, LatencyMs: 14000, Enabled: true, Worker: provGateRico, // same worker as cloud sibling
+			Enabled: true, Worker: provGateRico, // same worker as cloud sibling
 			RunnerURL: os.Getenv("RUNNER_LOCAL_URL"),
 			Env:       []byte(`{"SIFT_GATE":"gate_rico","SIFT_PROVIDER":"gate-rico-local"}`)},
 	}
@@ -147,21 +131,13 @@ func seedSharedProviders(ctx context.Context, db Database) error {
 }
 
 // seedSharedConfig upserts the global routing policy, per-capability VPC-first policies, and
-// the v1 interest_profile. The global policy is a balanced cost<->quality weighting with no
-// explicit fallback. Each LLM capability gets its own policy that pins the resident VPC provider
-// first (local → cloud fallback), so public items are routed to the VPC worker when healthy and
-// fall through to the cloud on_demand provider when the resident is down or unassigned.
-// The profile is seeded ONCE (idempotent): a revision is a NEW version (Phase 6's learning
-// loop), never an overwrite.
+// the v1 interest_profile. Each LLM capability gets its own policy that pins the VPC provider
+// first in the fallback order (local → cloud), so items route to VPC and fall through to cloud
+// only when VPC is unhealthy or excluded. The profile is seeded ONCE (idempotent).
 func seedSharedConfig(ctx context.Context, db Database) error {
-	if err := db.UpsertRoutingPolicy(ctx, RoutingPolicy{Scope: policyScopeGlobal, CostWeight: 0.5, QualityWeight: 0.5}); err != nil {
+	if err := db.UpsertRoutingPolicy(ctx, RoutingPolicy{Scope: policyScopeGlobal}); err != nil {
 		return err
 	}
-	// VPC-first per-capability policies: resident VPC → cloud on_demand fallback.
-	// The fallback list pins the ordering so the router places the VPC provider first among
-	// healthy candidates (overrides score). The cost/quality values in seedSharedProviders back
-	// this up: VPC cost < cloud cost, quality equal (same model) — double guarantee that VPC
-	// wins. When the Mac tier is added, the fallback list becomes [vpc, mac, cloud].
 	// ponytail: string slice of known-safe ASCII names never errors in json.Marshal
 	fallbackJSON := func(names ...string) json.RawMessage { b, _ := json.Marshal(names); return b }
 	vpcFirst := []struct {
@@ -173,7 +149,7 @@ func seedSharedConfig(ctx context.Context, db Database) error {
 		{capDestilar, fallbackJSON(provDistillLocal, provDistill)},
 	}
 	for _, p := range vpcFirst {
-		if err := db.UpsertRoutingPolicy(ctx, RoutingPolicy{Scope: p.scope, CostWeight: 0.5, QualityWeight: 0.5, Fallback: p.fallback}); err != nil {
+		if err := db.UpsertRoutingPolicy(ctx, RoutingPolicy{Scope: p.scope, Fallback: p.fallback}); err != nil {
 			return err
 		}
 	}
@@ -253,10 +229,10 @@ func SeedYouTubeLane(ctx context.Context, db Database) error {
 		// Woken by the dispatcher (rara-runner) on the cadence below; reads target_channels /
 		// discovers playlists via API on each wake (sources already in Neon for harvest).
 		{Name: provHarvest, Capability: capColetar, Runtime: runtimeCloudRun, Activation: activationOnDemand,
-			Cost: 0.10, Quality: 0.95, LatencyMs: 500, Enabled: true, Worker: provHarvest,
+			Enabled: true, Worker: provHarvest,
 			CollectCadenceSeconds: intPtr(86400), RetryIntervalSeconds: intPtr(1800)}, // daily cadence; 30min retry throttle
 		{Name: provShelf, Capability: capColetar, Runtime: runtimeCloudRun, Activation: activationOnDemand,
-			Cost: 0.10, Quality: 0.95, LatencyMs: 800, Enabled: true, Worker: provShelf,
+			Enabled: true, Worker: provShelf,
 			CollectCadenceSeconds: intPtr(86400), RetryIntervalSeconds: intPtr(1800)}, // daily cadence; 30min retry throttle
 		// transcrever: scribe (local Whisper) is resident on the Mac. YouTube blocks audio
 		// download from datacenter IPs, hence the residential constraint; `accepts` pins it to
@@ -266,7 +242,7 @@ func SeedYouTubeLane(ctx context.Context, db Database) error {
 		// same block. Contrast with clip/rara-clip (Bright Data proxies do the unblock,
 		// so the host IP doesn't matter → no residential constraint on that provider).
 		{Name: provASRYouTube, Capability: capTranscrever, Runtime: runtimeLocal, Activation: activationResident,
-			Cost: 1.00, Quality: 0.90, LatencyMs: 120000, Worker: provASRYouTube,
+			Worker: provASRYouTube,
 			Constraints: []byte(`{"requires":"residential","accepts":["youtube"]}`), Enabled: true},
 	}
 	for _, p := range providers {
@@ -301,7 +277,7 @@ func SeedPodcastLane(ctx context.Context, db Database) error {
 	// "rara-" = Cloud Run job "rara-dial".
 	if err := db.UpsertProvider(ctx, Provider{
 		Name: provDial, Capability: capColetar, Runtime: runtimeCloudRun, Activation: activationOnDemand,
-		Cost: 0.05, Quality: 0.99, LatencyMs: 30000, Enabled: true, Worker: provDial,
+		Enabled: true, Worker: provDial,
 		CollectCadenceSeconds: intPtr(86400), RetryIntervalSeconds: intPtr(1800), // daily cadence; 30min retry throttle
 	}); err != nil {
 		return err
@@ -309,7 +285,7 @@ func SeedPodcastLane(ctx context.Context, db Database) error {
 	// transcrever: direct-audio ASR — any runtime (no residential), accepts only podcast.
 	if err := db.UpsertProvider(ctx, Provider{
 		Name: provASRDirectAudio, Capability: capTranscrever, Runtime: runtimeCloudRun, Activation: activationOnDemand,
-		Cost: 0.80, Quality: 0.88, LatencyMs: 90000, Worker: provASRDirectAudio,
+		Worker: provASRDirectAudio,
 		Constraints: []byte(`{"accepts":["podcast"]}`), Enabled: true,
 	}); err != nil {
 		return err
@@ -340,7 +316,7 @@ func SeedEmailLane(ctx context.Context, db Database) error {
 	// name "courier" + job prefix "rara-" = Cloud Run job "rara-courier".
 	if err := db.UpsertProvider(ctx, Provider{
 		Name: provCourier, Capability: capColetar, Runtime: runtimeCloudRun, Activation: activationOnDemand,
-		Cost: 0.05, Quality: 0.99, LatencyMs: 30000, Enabled: true, Worker: provCourier,
+		Enabled: true, Worker: provCourier,
 		CollectCadenceSeconds: intPtr(21600), RetryIntervalSeconds: intPtr(1800), // 6h cadence; 30min retry throttle
 	}); err != nil {
 		return err
@@ -348,7 +324,7 @@ func SeedEmailLane(ctx context.Context, db Database) error {
 	// extrair: deterministic HTML/quote/signature cleaning — any runtime, accepts only email.
 	if err := db.UpsertProvider(ctx, Provider{
 		Name: provExtrairEmail, Capability: capExtrair, Runtime: runtimeCloudRun, Activation: activationOnDemand,
-		Cost: 0.20, Quality: 0.85, LatencyMs: 2000, Worker: provExtrairEmail,
+		Worker: provExtrairEmail,
 		Constraints: []byte(`{"accepts":["email"]}`), Enabled: true,
 	}); err != nil {
 		return err
@@ -383,7 +359,7 @@ func SeedNewsLane(ctx context.Context, db Database) error {
 	// + job prefix "rara-" = Cloud Run job "rara-feed".
 	if err := db.UpsertProvider(ctx, Provider{
 		Name: provFeed, Capability: capColetar, Runtime: runtimeCloudRun, Activation: activationOnDemand,
-		Cost: 0.05, Quality: 0.99, LatencyMs: 60000, Enabled: true, Worker: provFeed,
+		Enabled: true, Worker: provFeed,
 		CollectCadenceSeconds: intPtr(21600), RetryIntervalSeconds: intPtr(1800), // 6h cadence; 30min retry throttle
 	}); err != nil {
 		return err
@@ -391,7 +367,7 @@ func SeedNewsLane(ctx context.Context, db Database) error {
 	// extrair: deterministic HTML/boilerplate cleaning — any runtime, accepts only news.
 	if err := db.UpsertProvider(ctx, Provider{
 		Name: provExtrairNews, Capability: capExtrair, Runtime: runtimeCloudRun, Activation: activationOnDemand,
-		Cost: 0.20, Quality: 0.85, LatencyMs: 2000, Worker: provExtrairNews,
+		Worker: provExtrairNews,
 		Constraints: []byte(`{"accepts":["news"]}`), Enabled: true,
 	}); err != nil {
 		return err

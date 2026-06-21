@@ -255,9 +255,6 @@ type Provider struct {
 	Capability    string          `json:"capability"` // must reference an existing capability (FK)
 	Runtime       string          `json:"runtime"`    // local | cloudrun | vpc
 	Activation    string          `json:"activation"` // resident | on_demand
-	Cost          float64         `json:"cost"`
-	Quality       float64         `json:"quality"` // 0..1
-	LatencyMs     int             `json:"latency_ms"`
 	Constraints   json.RawMessage `json:"constraints,omitempty"` // "" => '{}'
 	Enabled       bool            `json:"enabled"`
 	HeartbeatAt   *time.Time      `json:"heartbeat_at,omitempty"`
@@ -339,12 +336,10 @@ func stepFallbackFromOptions(options json.RawMessage) json.RawMessage {
 	return o.Providers
 }
 
-// RoutingPolicy is a cost<->quality weighting + ordered fallback.
+// RoutingPolicy is an ordered fallback list scoped to a capability or globally.
 type RoutingPolicy struct {
-	Scope         string          `json:"scope"` // 'global' or a capability name
-	CostWeight    float64         `json:"cost_weight"`
-	QualityWeight float64         `json:"quality_weight"`
-	Fallback      json.RawMessage `json:"fallback,omitempty"` // ordered list of provider names
+	Scope    string          `json:"scope"`             // 'global' or a capability name
+	Fallback json.RawMessage `json:"fallback,omitempty"` // ordered list of provider names
 }
 
 // Item is one row of the canonical spine.
@@ -751,16 +746,13 @@ func (d *pgxDatabase) UpsertProvider(ctx context.Context, p Provider) error {
 	}
 	const q = `
 		INSERT INTO providers
-			(name, capability, runtime, activation, cost, quality, latency_ms, constraints, enabled,
+			(name, capability, runtime, activation, constraints, enabled,
 			 runner_url, env, collect_cadence_seconds, retry_interval_seconds, worker)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11::jsonb, $12, $13, $14)
+		VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8::jsonb, $9, $10, $11)
 		ON CONFLICT (name) DO UPDATE SET
 			capability              = EXCLUDED.capability,
 			runtime                 = EXCLUDED.runtime,
 			activation              = EXCLUDED.activation,
-			cost                    = EXCLUDED.cost,
-			quality                 = EXCLUDED.quality,
-			latency_ms              = EXCLUDED.latency_ms,
 			constraints             = EXCLUDED.constraints,
 			enabled                 = EXCLUDED.enabled,
 			runner_url              = EXCLUDED.runner_url,
@@ -776,7 +768,7 @@ func (d *pgxDatabase) UpsertProvider(ctx context.Context, p Provider) error {
 	// last_attempt_at: owned by the dispatcher (stamped on every wake attempt). Excluded so
 	// seed never resets the retry throttle mid-flight.
 	_, err := d.conn.Exec(ctx, q,
-		p.Name, p.Capability, p.Runtime, p.Activation, p.Cost, p.Quality, p.LatencyMs,
+		p.Name, p.Capability, p.Runtime, p.Activation,
 		jsonOrEmpty(p.Constraints, "{}"), p.Enabled, nullStr(p.RunnerURL),
 		jsonOrEmpty(p.Env, "{}"), p.CollectCadenceSeconds, p.RetryIntervalSeconds, nullStr(p.Worker))
 	if err != nil {
@@ -842,13 +834,11 @@ func (d *pgxDatabase) SetPodcastFeedActive(ctx context.Context, id int, active b
 
 func (d *pgxDatabase) UpsertRoutingPolicy(ctx context.Context, p RoutingPolicy) error {
 	const q = `
-		INSERT INTO routing_policies (scope, cost_weight, quality_weight, fallback)
-		VALUES ($1, $2, $3, $4::jsonb)
+		INSERT INTO routing_policies (scope, fallback)
+		VALUES ($1, $2::jsonb)
 		ON CONFLICT (scope) DO UPDATE SET
-			cost_weight    = EXCLUDED.cost_weight,
-			quality_weight = EXCLUDED.quality_weight,
-			fallback       = EXCLUDED.fallback`
-	_, err := d.conn.Exec(ctx, q, p.Scope, p.CostWeight, p.QualityWeight, jsonOrEmpty(p.Fallback, "[]"))
+			fallback = EXCLUDED.fallback`
+	_, err := d.conn.Exec(ctx, q, p.Scope, jsonOrEmpty(p.Fallback, "[]"))
 	return err
 }
 
