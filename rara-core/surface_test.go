@@ -968,7 +968,7 @@ func TestHTTPUsage(t *testing.T) {
 func TestHTTPGetStepHostsReturnsAvailableAndCurrent(t *testing.T) {
 	h, _, fid := seededStepHostsFixture(t)
 
-	// transcrever is seq 3 in the youtube flow; asr-youtube is its provider.
+	// transcrever is seq 3 in the youtube flow; caption-mac is its provider.
 	rec := do(t, h, http.MethodGet, fmt.Sprintf("/v1/flows/%d/steps/3/hosts", fid), "")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("got %d: %s", rec.Code, rec.Body.String())
@@ -978,7 +978,7 @@ func TestHTTPGetStepHostsReturnsAvailableAndCurrent(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(resp.Available) == 0 {
-		t.Error("available should list at least asr-youtube")
+		t.Error("available should list at least caption-mac")
 	}
 	// No per-step override seeded: providers list is empty/nil.
 	if len(resp.Providers) != 0 {
@@ -1011,7 +1011,7 @@ func TestHTTPPutStepHostsSavesProviders(t *testing.T) {
 	ctx := context.Background()
 	h, db, fid := seededStepHostsFixture(t)
 
-	body := `{"providers":["asr-youtube"]}`
+	body := `{"providers":["caption-mac"]}`
 	rec := do(t, h, http.MethodPut, fmt.Sprintf("/v1/flows/%d/steps/3/hosts", fid), body)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("put hosts: got %d: %s", rec.Code, rec.Body.String())
@@ -1040,8 +1040,8 @@ func TestHTTPPutStepHostsSavesProviders(t *testing.T) {
 	if err := json.Unmarshal(o.Providers, &got); err != nil {
 		t.Fatalf("unmarshal providers: %v", err)
 	}
-	if len(got) != 1 || got[0] != "asr-youtube" {
-		t.Errorf("options.providers = %v, want [asr-youtube]", got)
+	if len(got) != 1 || got[0] != "caption-mac" {
+		t.Errorf("options.providers = %v, want [caption-mac]", got)
 	}
 }
 
@@ -1078,7 +1078,7 @@ func TestHTTPPutStepHostsRejectsWrongCapability(t *testing.T) {
 func TestHTTPPutStepHostsRejectsDuplicates(t *testing.T) {
 	h, _, fid := seededStepHostsFixture(t)
 	rec := do(t, h, http.MethodPut, fmt.Sprintf("/v1/flows/%d/steps/3/hosts", fid),
-		`{"providers":["asr-youtube","asr-youtube"]}`)
+		`{"providers":["caption-mac","caption-mac"]}`)
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("duplicate providers should be 400, got %d", rec.Code)
 	}
@@ -1090,7 +1090,7 @@ func TestHTTPPutStepHostsClearsProviders(t *testing.T) {
 	h, db, fid := seededStepHostsFixture(t)
 
 	// First set providers.
-	first := do(t, h, http.MethodPut, fmt.Sprintf("/v1/flows/%d/steps/3/hosts", fid), `{"providers":["asr-youtube"]}`)
+	first := do(t, h, http.MethodPut, fmt.Sprintf("/v1/flows/%d/steps/3/hosts", fid), `{"providers":["caption-mac"]}`)
 	if first.Code != http.StatusOK {
 		t.Fatalf("first put: got %d: %s", first.Code, first.Body.String())
 	}
@@ -1126,15 +1126,15 @@ func TestHTTPPutStepHostsClearsProviders(t *testing.T) {
 func TestHTTPPutStepHostsRejectsDisabledProvider(t *testing.T) {
 	ctx := context.Background()
 	h, db, fid := seededStepHostsFixture(t)
-	// Disable asr-youtube.
+	// Disable caption-mac.
 	if err := db.UpsertProvider(ctx, Provider{
-		Name: "asr-youtube", Capability: capTranscrever, Runtime: runtimeLocal,
+		Name: "caption-mac", Capability: capTranscrever, Runtime: runtimeLocal,
 		Activation: activationResident, Enabled: false,
 	}); err != nil {
 		t.Fatal(err)
 	}
 	rec := do(t, h, http.MethodPut, fmt.Sprintf("/v1/flows/%d/steps/3/hosts", fid),
-		`{"providers":["asr-youtube"]}`)
+		`{"providers":["caption-mac"]}`)
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("disabled provider should be 400, got %d: %s", rec.Code, rec.Body.String())
 	}

@@ -35,9 +35,9 @@ import (
 const (
 	laneLinkedIn         = "linkedin"
 	linkedinFlowName     = "linkedin"
-	provManualInbox      = "manual-inbox"     // coletar — manual post submission via surface (fallback)
-	provBrightDataLinked = "clip"             // coletar — Bright Data crawl via rara-clip; job rara-clip
-	provExtrairLinked    = "extrair-linkedin" // extrair — LinkedIn post normalizer (accepts linkedin)
+	provManualInbox      = "stash"       // coletar — manual post submission via surface (fallback)
+	provBrightDataLinked = "clip-cloud"  // coletar — Bright Data crawl via rara-clip
+	provExtrairLinked    = "scrub-cloud" // extrair — LinkedIn post normalizer (accepts linkedin)
 )
 
 // LinkedInPost is one manually-submitted post: its canonical URL (the spine's natural key)
@@ -193,24 +193,23 @@ func SeedLinkedInLane(ctx context.Context, db Database) error {
 	// change (ARCHITECTURE-2.0: "swap collector behind the same contract, flow unchanged").
 	if err := db.UpsertProvider(ctx, Provider{
 		Name: provManualInbox, Capability: capColetar, Runtime: runtimeVPC, Activation: activationResident,
-		Worker:      provManualInbox,
+		Worker: "stash", App: "manual-inbox", Description: "Submissão manual (LinkedIn)",
 		Constraints: []byte(`{"accepts":["linkedin"]}`), Enabled: true,
 	}); err != nil {
 		return err
 	}
 	if err := db.UpsertProvider(ctx, Provider{
 		Name: provBrightDataLinked, Capability: capColetar, Runtime: runtimeCloudRun, Activation: activationOnDemand,
-		Worker:      provBrightDataLinked,
+		Worker: "clip", App: "clip", Description: "Coletor de posts (LinkedIn)",
 		Constraints: []byte(`{"accepts":["linkedin"]}`), Enabled: true,
-		CollectCadenceSeconds: intPtr(21600), RetryIntervalSeconds: intPtr(1800), // 6h cadence; 30min retry throttle
+		CollectCadenceSeconds: intPtr(21600), RetryIntervalSeconds: intPtr(1800),
 	}); err != nil {
 		return err
 	}
-	// extrair: deterministic post normalization — any runtime, accepts only linkedin (so it
-	// never competes with the email extractor, and the email extractor never grabs a post).
+	// extrair: deterministic post normalization — accepts only linkedin.
 	if err := db.UpsertProvider(ctx, Provider{
 		Name: provExtrairLinked, Capability: capExtrair, Runtime: runtimeCloudRun, Activation: activationOnDemand,
-		Worker:      provExtrairLinked,
+		Worker: "scrub", App: "extrair-linkedin", Description: "Normalizador — post LinkedIn",
 		Constraints: []byte(`{"accepts":["linkedin"]}`), Enabled: true,
 	}); err != nil {
 		return err
