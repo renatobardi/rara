@@ -148,8 +148,10 @@ func scanProvider(scan func(dest ...any) error) (Provider, error) {
 	err := scan(&p.Name, &p.Capability, &p.Runtime, &p.Activation,
 		&p.Constraints, &p.Enabled, &p.HeartbeatAt, &p.LastCollectAt, &p.RunnerURL, &p.Env, &p.Worker, &p.LastError)
 	if err == nil && p.LastError != nil {
-		truncated := truncateErrorMsg(*p.LastError)
-		p.LastError = &truncated
+		if orig := *p.LastError; utf8.RuneCountInString(orig) > maxProviderErrorLen {
+			truncated := truncateErrorMsg(orig)
+			p.LastError = &truncated
+		}
 	}
 	return p, err
 }

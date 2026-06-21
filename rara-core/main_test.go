@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 // ---------------------------------------------------------------------------
@@ -70,8 +71,10 @@ type flowStepKey struct {
 // consistent with the real pgxDatabase (both cap last_error via truncateErrorMsg).
 func capProviderError(p Provider) Provider {
 	if p.LastError != nil {
-		s := truncateErrorMsg(*p.LastError)
-		p.LastError = &s
+		if orig := *p.LastError; utf8.RuneCountInString(orig) > maxProviderErrorLen {
+			s := truncateErrorMsg(orig)
+			p.LastError = &s
+		}
 	}
 	return p
 }

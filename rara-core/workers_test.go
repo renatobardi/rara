@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"testing"
+	"unicode/utf8"
 )
 
 func mustCapability(t *testing.T, db *MockDatabase, name string) {
@@ -251,8 +252,11 @@ func TestProviderLastErrorTruncatedAtRead(t *testing.T) {
 	if got.LastError == nil {
 		t.Fatal("last_error unexpectedly nil")
 	}
-	if len([]rune(*got.LastError)) > maxProviderErrorLen {
-		t.Errorf("last_error rune count = %d, want ≤ %d", len([]rune(*got.LastError)), maxProviderErrorLen)
+	if !utf8.ValidString(*got.LastError) {
+		t.Fatal("last_error contains invalid UTF-8 after truncation")
+	}
+	if utf8.RuneCountInString(*got.LastError) > maxProviderErrorLen {
+		t.Errorf("last_error rune count = %d, want ≤ %d", utf8.RuneCountInString(*got.LastError), maxProviderErrorLen)
 	}
 }
 
