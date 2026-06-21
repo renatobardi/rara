@@ -479,16 +479,19 @@ func TestSeedWorkerGrouping(t *testing.T) {
 	}
 }
 
-// TestSeedWorkerRoundTrip asserts UpsertProvider + GetProvider preserves Worker.
-func TestSeedWorkerRoundTrip(t *testing.T) {
+// TestSeedWorkerAndAppRoundTrip asserts UpsertProvider + GetProvider preserves both
+// Worker and App, and that the App guard defaults App to Name when left empty.
+func TestSeedWorkerAndAppRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	db := newMockDatabase()
 	if err := seedCapabilities(ctx, db); err != nil {
 		t.Fatal(err)
 	}
+
+	// Explicit App: round-trip preserves both Worker and App.
 	p := Provider{
 		Name: "distill", Capability: capDestilar, Runtime: runtimeCloudRun,
-		Activation: activationOnDemand, Enabled: true, Worker: "distill",
+		Activation: activationOnDemand, Enabled: true, Worker: "distill", App: "distill",
 	}
 	if err := db.UpsertProvider(ctx, p); err != nil {
 		t.Fatalf("UpsertProvider: %v", err)
@@ -499,6 +502,49 @@ func TestSeedWorkerRoundTrip(t *testing.T) {
 	}
 	if got.Worker != "distill" {
 		t.Errorf("Worker = %q, want %q", got.Worker, "distill")
+	}
+	if got.App != "distill" {
+		t.Errorf("App = %q, want %q", got.App, "distill")
+	}
+
+	// Empty App: guard must default it to Name.
+	p2 := Provider{
+		Name: "distill", Capability: capDestilar, Runtime: runtimeCloudRun,
+		Activation: activationOnDemand, Enabled: true, Worker: "distill",
+	}
+	if err := db.UpsertProvider(ctx, p2); err != nil {
+		t.Fatalf("UpsertProvider (empty App): %v", err)
+	}
+	if db.providers["distill"].App != "distill" {
+		t.Errorf("App guard: got %q, want %q", db.providers["distill"].App, "distill")
+	}
+}
+
+// TestSeedAppEqualsNameForAllProviders asserts every seeded provider has App == Name
+// (the P1a invariant: app = name as long as app/name haven't diverged yet).
+func TestSeedAppEqualsNameForAllProviders(t *testing.T) {
+	t.Setenv("DISTILL_MODEL", "groq-llama")
+	t.Setenv("GATE_MODEL", "groq-fast")
+
+	ctx := context.Background()
+	db := newMockDatabase()
+
+	seedFns := []func(context.Context, Database) error{
+		SeedYouTubeLane,
+		SeedPodcastLane,
+		SeedEmailLane,
+		SeedNewsLane,
+		SeedLinkedInLane,
+	}
+	for _, fn := range seedFns {
+		if err := fn(ctx, db); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+	}
+	for name, p := range db.providers {
+		if p.App != name {
+			t.Errorf("provider %q: App = %q, want %q", name, p.App, name)
+		}
 	}
 }
 

@@ -339,45 +339,57 @@ func TestMigrationNoCrossAgentTables(t *testing.T) {
 	}
 }
 
-// readMigration014 loads the E1 provider worker-column migration.
-func readMigration014(t *testing.T) string {
+// readNamedMigration loads a migration file by filename (relative to migrations/).
+func readNamedMigration(t *testing.T, filename string) string {
 	t.Helper()
-	b, err := os.ReadFile("migrations/014_provider_worker.sql")
+	b, err := os.ReadFile("migrations/" + filename)
 	if err != nil {
-		t.Fatalf("read migration 014: %v", err)
+		t.Fatalf("read migration %s: %v", filename, err)
 	}
 	return string(b)
+}
+
+// checkProviderAddColumn asserts the standard idempotent ADD COLUMN IF NOT EXISTS pattern
+// for a providers migration: column is nullable, backfill is guarded, no CREATE TABLE.
+func checkProviderAddColumn(t *testing.T, sql, colName, wantBackfillGuard, wantBackfillSet string) {
+	t.Helper()
+	if !strings.Contains(sql, "ALTER TABLE providers") {
+		t.Error("migration must alter the providers table")
+	}
+	addCol := "ADD COLUMN IF NOT EXISTS " + colName
+	if !strings.Contains(sql, addCol) {
+		t.Fatalf("migration must add %s idempotently (ADD COLUMN IF NOT EXISTS)", colName)
+	}
+	colIdx := strings.Index(sql, addCol)
+	stmt := sql[colIdx:min(colIdx+80, len(sql))]
+	if strings.Contains(stmt, "NOT NULL") {
+		t.Errorf("%s must be nullable on add, got: %q", colName, stmt)
+	}
+	if !strings.Contains(sql, wantBackfillGuard) {
+		t.Errorf("migration must have idempotent backfill with %q", wantBackfillGuard)
+	}
+	if !strings.Contains(sql, wantBackfillSet) {
+		t.Errorf("migration backfill must contain %q", wantBackfillSet)
+	}
+	if strings.Contains(sql, "CREATE TABLE") {
+		t.Error("migration should only alter providers, not create tables")
+	}
 }
 
 // TestMigration014ProviderWorker asserts the E1 worker-grouper column: a nullable worker
 // VARCHAR(48) added to providers with an idempotent backfill, touching no foreign tables.
 func TestMigration014ProviderWorker(t *testing.T) {
-	sql := readMigration014(t)
-	if !strings.Contains(sql, "ALTER TABLE providers") {
-		t.Error("migration 014 must alter the providers table")
-	}
-	if !strings.Contains(sql, "ADD COLUMN IF NOT EXISTS worker") {
-		t.Fatal("migration 014 must add worker idempotently (ADD COLUMN IF NOT EXISTS)")
-	}
-	// Nullable: no NOT NULL on the ADD COLUMN line (a future cleanup migration can add it
-	// once every seeder always stamps worker).
-	colIdx := strings.Index(sql, "ADD COLUMN IF NOT EXISTS worker")
-	if colIdx == -1 {
-		t.Fatal("ADD COLUMN IF NOT EXISTS worker not found in migration 014")
-	}
-	stmt := sql[colIdx:min(colIdx+80, len(sql))]
-	if strings.Contains(stmt, "NOT NULL") {
-		t.Errorf("worker must be nullable on add, got: %q", stmt)
-	}
-	// Idempotent backfill: UPDATE guarded by worker IS NULL (new column is always NULL on first run).
-	if !strings.Contains(sql, "WHERE worker IS NULL") {
-		t.Error("migration 014 must have an idempotent backfill guarded on worker IS NULL")
-	}
+	sql := readNamedMigration(t, "014_provider_worker.sql")
+	checkProviderAddColumn(t, sql, "worker", "WHERE worker IS NULL", "regexp_replace")
 	// Backfill strips the -local suffix to derive the logical worker name.
-	if !strings.Contains(sql, "regexp_replace") || !strings.Contains(sql, "-local") {
-		t.Error("migration 014 backfill must use regexp_replace to strip -local suffix")
+	if !strings.Contains(sql, "-local") {
+		t.Error("migration 014 backfill must reference -local suffix for regexp_replace")
 	}
-	if strings.Contains(sql, "CREATE TABLE") {
-		t.Error("migration 014 should only alter providers, not create tables")
-	}
+}
+
+// TestMigration018ProviderApp asserts the P1a app-targeting column: a nullable VARCHAR(48)
+// added to providers with an idempotent backfill (app = name), touching no foreign tables.
+func TestMigration018ProviderApp(t *testing.T) {
+	sql := readNamedMigration(t, "018_provider_app.sql")
+	checkProviderAddColumn(t, sql, "app", "WHERE app IS NULL", "SET app = name")
 }

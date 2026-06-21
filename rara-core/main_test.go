@@ -161,6 +161,9 @@ func (m *MockDatabase) UpsertProvider(_ context.Context, p Provider) error {
 	if p.Worker == "" {
 		p.Worker = p.Name // mirror pgxDatabase guard
 	}
+	if p.App == "" {
+		p.App = p.Name // mirror pgxDatabase guard
+	}
 	// Mirror the SQL ON CONFLICT: preserve runtime-owned columns that seed never sets.
 	if existing, ok := m.providers[p.Name]; ok {
 		p.HeartbeatAt = existing.HeartbeatAt     // owned by TouchProviderHeartbeat

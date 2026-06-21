@@ -290,6 +290,11 @@ type Provider struct {
 	// stack traces — only a short human-readable cause (e.g. "exit status 1", "connection
 	// refused") should reach this column. Read path caps via truncateErrorMsg.
 	LastError *string `json:"last_error,omitempty"`
+	// App is the binary/image name the dispatcher targets (Cloud Run job = jobPrefix + App;
+	// runner allowlist key = App). Decouples the placement name from the deploy artifact so
+	// renames (P1b) don't break the wake. Seeded as App = Name until multi-worker apps land
+	// (P2b); guarded to Name if left empty by the caller.
+	App string `json:"app"`
 }
 
 // Flow is one declarative pipeline per source lane.
@@ -750,11 +755,14 @@ func (d *pgxDatabase) UpsertProvider(ctx context.Context, p Provider) error {
 	if p.Worker == "" {
 		p.Worker = p.Name
 	}
+	if p.App == "" {
+		p.App = p.Name
+	}
 	const q = `
 		INSERT INTO providers
 			(name, capability, runtime, activation, constraints, enabled,
-			 runner_url, env, collect_cadence_seconds, retry_interval_seconds, worker)
-		VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8::jsonb, $9, $10, $11)
+			 runner_url, env, collect_cadence_seconds, retry_interval_seconds, worker, app)
+		VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8::jsonb, $9, $10, $11, $12)
 		ON CONFLICT (name) DO UPDATE SET
 			capability              = EXCLUDED.capability,
 			runtime                 = EXCLUDED.runtime,
@@ -765,7 +773,8 @@ func (d *pgxDatabase) UpsertProvider(ctx context.Context, p Provider) error {
 			env                     = EXCLUDED.env,
 			collect_cadence_seconds = EXCLUDED.collect_cadence_seconds,
 			retry_interval_seconds  = EXCLUDED.retry_interval_seconds,
-			worker                  = EXCLUDED.worker`
+			worker                  = EXCLUDED.worker,
+			app                     = EXCLUDED.app`
 	// heartbeat_at: owned by TouchProviderHeartbeat (runner proof-of-life). Excluded from INSERT
 	// and SET so seed never clobbers it — a re-seed must not evict a healthy provider from the
 	// router's health gate.
@@ -776,7 +785,7 @@ func (d *pgxDatabase) UpsertProvider(ctx context.Context, p Provider) error {
 	_, err := d.conn.Exec(ctx, q,
 		p.Name, p.Capability, p.Runtime, p.Activation,
 		jsonOrEmpty(p.Constraints, "{}"), p.Enabled, nullStr(p.RunnerURL),
-		jsonOrEmpty(p.Env, "{}"), p.CollectCadenceSeconds, p.RetryIntervalSeconds, nullStr(p.Worker))
+		jsonOrEmpty(p.Env, "{}"), p.CollectCadenceSeconds, p.RetryIntervalSeconds, nullStr(p.Worker), nullStr(p.App))
 	if err != nil {
 		return fmt.Errorf("upsert provider %q: %w", p.Name, err)
 	}
