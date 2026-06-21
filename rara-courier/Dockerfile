@@ -1,4 +1,6 @@
-FROM golang:1.26-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS builder
+ARG TARGETOS
+ARG TARGETARCH
 
 WORKDIR /build
 
@@ -7,12 +9,9 @@ RUN apk add --no-cache git
 COPY go.mod go.sum ./
 RUN go mod download
 
-# Copy only Go sources (avoids pulling unrelated files into the image layer).
 COPY *.go ./
 
-# Build a static binary for the build platform (amd64 on Cloud Build),
-# which is what Cloud Run runs. No hardcoded GOARCH cross-compile.
-RUN CGO_ENABLED=0 GOOS=linux go build \
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build \
     -ldflags="-w -s" \
     -o courier-job .
 
@@ -24,7 +23,6 @@ WORKDIR /app
 
 COPY --from=builder /build/courier-job /app/courier-job
 
-# Run as an unprivileged user.
 USER nobody
 
 ENTRYPOINT ["/app/courier-job"]
