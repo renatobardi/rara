@@ -36,6 +36,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
 
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
@@ -103,16 +105,23 @@ jobs:
         run: |
           # rara-feed only needs the shared database-url.
           # (The unlocker tier and its brightdata-token are a follow-up — see rara-feed/DEPLOY.md.)
-          SECRETS="DATABASE_URL=database-url:latest"
-          ENV_VARS="FEED_BATCH_SIZE=25,FEED_FULLTEXT=true,HN_MIN_POINTS=20,ITEM_MAX_AGE_DAYS=30"
-          COMMON_ARGS="--image $IMAGE --region $REGION --project $GCP_PROJECT --set-secrets $SECRETS --set-env-vars $ENV_VARS --max-retries 0 --task-timeout 3600s --memory 512Mi --cpu 1"
-
-          UPDATE_ERR=$(gcloud run jobs update "$JOB_NAME" $COMMON_ARGS 2>&1) && echo "$UPDATE_ERR" || {
+          COMMON_FLAGS=(
+            --image "$IMAGE"
+            --region "$REGION"
+            --project "$GCP_PROJECT"
+            --set-secrets "DATABASE_URL=database-url:latest"
+            --set-env-vars "FEED_BATCH_SIZE=25,FEED_FULLTEXT=true,HN_MIN_POINTS=20,ITEM_MAX_AGE_DAYS=30"
+            --max-retries 0
+            --task-timeout 3600s
+            --memory 512Mi
+            --cpu 1
+          )
+          UPDATE_ERR=$(gcloud run jobs update "$JOB_NAME" "${COMMON_FLAGS[@]}" 2>&1) && echo "$UPDATE_ERR" || {
             echo "$UPDATE_ERR"
             echo "$UPDATE_ERR" | grep -qi "not found\|does not exist\|cannot be found" || \
               { echo "❌ update failed for unexpected reason (not 'not found')"; exit 1; }
             echo "Job not found — creating for the first time..."
-            gcloud run jobs create "$JOB_NAME" $COMMON_ARGS
+            gcloud run jobs create "$JOB_NAME" "${COMMON_FLAGS[@]}"
           }
 
       - name: Execute job once
