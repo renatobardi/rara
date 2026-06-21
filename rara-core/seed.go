@@ -111,11 +111,16 @@ func seedSharedProviders(ctx context.Context, db Database) error {
 	if !vpcEnabled {
 		log.Print("seed: RUNNER_LOCAL_URL not set — VPC on_demand providers seeded as disabled")
 	}
+	// Safely encode model names from env into provider Env JSON — json.Marshal handles any
+	// special characters (quotes, backslashes) that would otherwise break the raw concatenation.
+	mDistill, _ := json.Marshal(modelDistill)
+	mGate, _ := json.Marshal(modelGate)
+
 	providers := []Provider{
 		// destilar: LLM step. Both variants on_demand: cloud via Cloud Run Jobs; VPC via rara-runner.
 		{Name: provDistill, Capability: capDestilar, Runtime: runtimeCloudRun, Activation: activationOnDemand,
 			Constraints: thirdParty, Enabled: true, Worker: provDistill,
-			Env: []byte(`{"DISTILL_PROVIDER":"distill","LITELLM_MODEL":"` + modelDistill + `"}`)},
+			Env: []byte(`{"DISTILL_PROVIDER":"distill","LITELLM_MODEL":` + string(mDistill) + `}`)},
 		{Name: provDistillLocal, Capability: capDestilar, Runtime: runtimeVPC, Activation: activationOnDemand,
 			Enabled: vpcEnabled, Worker: provDistill, // same worker as cloud sibling
 			RunnerURL: runnerURL,
@@ -123,14 +128,14 @@ func seedSharedProviders(ctx context.Context, db Database) error {
 		// gate_barato / gate_rico: cascade gates (rules -> profile -> LLM-judge).
 		{Name: provGateBarato, Capability: capGateBarato, Runtime: runtimeCloudRun, Activation: activationOnDemand,
 			Constraints: thirdParty, Enabled: true, Worker: provGateBarato,
-			Env: []byte(`{"SIFT_GATE":"gate_barato","SIFT_PROVIDER":"gate-barato","LITELLM_MODEL":"` + modelGate + `"}`)},
+			Env: []byte(`{"SIFT_GATE":"gate_barato","SIFT_PROVIDER":"gate-barato","LITELLM_MODEL":` + string(mGate) + `}`)},
 		{Name: provGateBaratoLocal, Capability: capGateBarato, Runtime: runtimeVPC, Activation: activationOnDemand,
 			Enabled: vpcEnabled, Worker: provGateBarato, // same worker as cloud sibling
 			RunnerURL: runnerURL,
 			Env:       []byte(`{"SIFT_GATE":"gate_barato","SIFT_PROVIDER":"gate-barato-local"}`)},
 		{Name: provGateRico, Capability: capGateRico, Runtime: runtimeCloudRun, Activation: activationOnDemand,
 			Constraints: thirdParty, Enabled: true, Worker: provGateRico,
-			Env: []byte(`{"SIFT_GATE":"gate_rico","SIFT_PROVIDER":"gate-rico","LITELLM_MODEL":"` + modelGate + `"}`)},
+			Env: []byte(`{"SIFT_GATE":"gate_rico","SIFT_PROVIDER":"gate-rico","LITELLM_MODEL":` + string(mGate) + `}`)},
 		{Name: provGateRicoLocal, Capability: capGateRico, Runtime: runtimeVPC, Activation: activationOnDemand,
 			Enabled: vpcEnabled, Worker: provGateRico, // same worker as cloud sibling
 			RunnerURL: runnerURL,

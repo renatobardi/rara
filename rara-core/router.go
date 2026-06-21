@@ -14,6 +14,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -77,9 +78,10 @@ func (rt *Router) SelectForStep(ctx context.Context, capability string, item Ite
 				}
 			}
 			if !anyKnown {
-				log.Printf("router: stepFallback %v contains no known %s provider — check for typos", check, capability)
+				log.Printf("router: stepFallback %v contains no known %s provider — check for typos; preserving policy fallback", check, capability)
+			} else {
+				policy.Fallback = stepFallback
 			}
-			policy.Fallback = stepFallback
 		}
 	}
 	ex := make(map[string]bool, len(exclude))
@@ -122,6 +124,9 @@ func rankProviders(providers []Provider, policy RoutingPolicy, item Item, now ti
 
 	eligible := make([]Provider, 0, len(providers))
 	for _, p := range providers {
+		if !p.Enabled {
+			continue
+		}
 		if exclude[p.Name] {
 			continue
 		}
@@ -153,8 +158,8 @@ func rankProviders(providers []Provider, policy RoutingPolicy, item Item, now ti
 
 // providerConstraints is the parsed shape of providers.constraints. Three keys are understood:
 // `requires` (a runtime requirement), `accepts` (the item lanes this provider can consume), and
-// `sensitivity` (a third-party tag). Unknown keys are ignored, but an unknown requirement VALUE
-// fails closed (constraintsSatisfied).
+// `sensitivity` (a third-party tag). Unknown keys fail closed (DisallowUnknownFields), as do
+// unknown requirement values.
 type providerConstraints struct {
 	Requires    string   `json:"requires"`
 	Accepts     []string `json:"accepts"`
@@ -174,9 +179,11 @@ func constraintsSatisfied(p Provider, item Item) bool {
 		return true
 	}
 	var c providerConstraints
-	if err := json.Unmarshal(p.Constraints, &c); err != nil {
-		log.Printf("constraintsSatisfied: provider %q has malformed constraints JSON: %v", p.Name, err)
-		return false // malformed JSON: fail closed
+	dec := json.NewDecoder(bytes.NewReader(p.Constraints))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&c); err != nil {
+		log.Printf("constraintsSatisfied: provider %q has invalid constraints JSON: %v", p.Name, err)
+		return false // malformed or unknown-key JSON: fail closed
 	}
 	switch c.Requires {
 	case "":

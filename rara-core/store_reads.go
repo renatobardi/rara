@@ -169,7 +169,7 @@ func (d *pgxDatabase) GetRoutingPolicy(ctx context.Context, scope string) (Routi
 		return RoutingPolicy{}, false, nil
 	}
 	if err != nil {
-		return RoutingPolicy{}, false, err
+		return RoutingPolicy{}, false, fmt.Errorf("get routing policy %q: %w", scope, err)
 	}
 	return p, true, nil
 }
@@ -570,7 +570,7 @@ func (d *pgxDatabase) ListRoutingPolicies(ctx context.Context) ([]RoutingPolicy,
 	for rows.Next() {
 		var p RoutingPolicy
 		if err := rows.Scan(&p.Scope, &p.Fallback); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("scan routing policy: %w", err)
 		}
 		out = append(out, p)
 	}

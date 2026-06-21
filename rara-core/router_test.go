@@ -237,7 +237,9 @@ func TestRouterSelectReadsPolicyAndProviders(t *testing.T) {
 	rt := NewRouter(db)
 
 	// No fallback policy: alphabetical order -> cheap wins (cheap < premium).
-	_ = db.UpsertRoutingPolicy(ctx, RoutingPolicy{Scope: policyScopeGlobal})
+	if err := db.UpsertRoutingPolicy(ctx, RoutingPolicy{Scope: policyScopeGlobal}); err != nil {
+		t.Fatal(err)
+	}
 	p, ok, err := rt.Select(ctx, capTranscrever, routerItem, routerClock, routerHealthTTL)
 	if err != nil || !ok {
 		t.Fatalf("select: ok=%v err=%v", ok, err)
@@ -247,7 +249,9 @@ func TestRouterSelectReadsPolicyAndProviders(t *testing.T) {
 	}
 
 	// A capability-scoped policy with fallback pins premium first.
-	_ = db.UpsertRoutingPolicy(ctx, RoutingPolicy{Scope: capTranscrever, Fallback: json.RawMessage(`["premium","cheap"]`)})
+	if err := db.UpsertRoutingPolicy(ctx, RoutingPolicy{Scope: capTranscrever, Fallback: json.RawMessage(`["premium","cheap"]`)}); err != nil {
+		t.Fatal(err)
+	}
 	p, ok, err = rt.Select(ctx, capTranscrever, routerItem, routerClock, routerHealthTTL)
 	if err != nil || !ok {
 		t.Fatalf("select scoped: ok=%v err=%v", ok, err)
@@ -311,7 +315,9 @@ func TestRouterSelectForStepOverridesFallback(t *testing.T) {
 	_ = db.UpsertCapability(ctx, Capability{Name: capTranscrever})
 	mustProvider(t, db, onDemand("cheap"))
 	mustProvider(t, db, onDemand("premium"))
-	_ = db.UpsertRoutingPolicy(ctx, RoutingPolicy{Scope: policyScopeGlobal})
+	if err := db.UpsertRoutingPolicy(ctx, RoutingPolicy{Scope: policyScopeGlobal}); err != nil {
+		t.Fatal(err)
+	}
 
 	rt := NewRouter(db)
 
@@ -362,23 +368,79 @@ func TestRouterSelectForStepInvalidFallbackJSON(t *testing.T) {
 }
 
 // TestRouterSelectForStepEmptyArrayFallback: an empty JSON array must not override the global
-// policy's fallback — the len(check) > 0 guard in router.go prevents it.
+// policy's fallback — the len(check) > 0 guard in router.go prevents it. Global policy prefers
+// "premium"; an empty stepFallback must preserve that, so premium wins (not alphabetical "cheap").
 func TestRouterSelectForStepEmptyArrayFallback(t *testing.T) {
 	ctx := context.Background()
 	db := newMockDatabase()
 	_ = db.UpsertCapability(ctx, Capability{Name: capTranscrever})
 	mustProvider(t, db, onDemand("cheap"))
 	mustProvider(t, db, onDemand("premium"))
-	_ = db.UpsertRoutingPolicy(ctx, RoutingPolicy{Scope: policyScopeGlobal})
+	if err := db.UpsertRoutingPolicy(ctx, RoutingPolicy{
+		Scope:    policyScopeGlobal,
+		Fallback: json.RawMessage(`["premium","cheap"]`),
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	rt := NewRouter(db)
-	// Empty array should fall through to the global policy (alphabetical keeps cheap first).
+	// Empty array should fall through to the non-empty global policy (premium first).
 	p, ok, err := rt.SelectForStep(ctx, capTranscrever, routerItem, routerClock, routerHealthTTL, json.RawMessage(`[]`))
 	if err != nil || !ok {
 		t.Fatalf("empty stepFallback: ok=%v err=%v", ok, err)
 	}
-	if p.Name != "cheap" {
-		t.Errorf("empty stepFallback should not override policy, got %q want cheap", p.Name)
+	if p.Name != "premium" {
+		t.Errorf("empty stepFallback should preserve global policy, got %q want premium", p.Name)
+	}
+}
+
+// TestRankProvidersExcludesDisabled: a disabled provider must be filtered out even
+// when passed directly to rankProviders (defense-in-depth; the DB layer also filters).
+func TestRankProvidersExcludesDisabled(t *testing.T) {
+	disabled := Provider{Name: "off", Capability: capTranscrever, Runtime: runtimeCloudRun,
+		Activation: activationOnDemand, Enabled: false}
+	enabled := Provider{Name: "on", Capability: capTranscrever, Runtime: runtimeCloudRun,
+		Activation: activationOnDemand, Enabled: true}
+	policy := RoutingPolicy{}
+	got := names(rankProviders([]Provider{disabled, enabled}, policy, routerItem, routerClock, routerHealthTTL, nil))
+	if len(got) != 1 || got[0] != "on" {
+		t.Errorf("want [on], got %v (disabled provider must be excluded)", got)
+	}
+}
+
+// TestConstraintsSatisfiedRejectsUnknownKeys: an unrecognized key in constraints must cause
+// fail-closed (provider excluded), not silently ignored.
+func TestConstraintsSatisfiedRejectsUnknownKeys(t *testing.T) {
+	p := Provider{Name: "p", Constraints: json.RawMessage(`{"unknown_security_field":"value"}`)}
+	if constraintsSatisfied(p, routerItem) {
+		t.Error("unknown constraint key should fail closed (return false), but returned true")
+	}
+}
+
+// TestRouterSelectForStepTypoFallbackPreservesGlobalPolicy: a stepFallback with all-typo
+// provider names must NOT override the global policy — the global policy ("premium" first)
+// must be preserved, so premium wins rather than falling to alphabetical (cheap).
+func TestRouterSelectForStepTypoFallbackPreservesGlobalPolicy(t *testing.T) {
+	ctx := context.Background()
+	db := newMockDatabase()
+	_ = db.UpsertCapability(ctx, Capability{Name: capTranscrever})
+	mustProvider(t, db, onDemand("cheap"))
+	mustProvider(t, db, onDemand("premium"))
+	if err := db.UpsertRoutingPolicy(ctx, RoutingPolicy{
+		Scope:    policyScopeGlobal,
+		Fallback: json.RawMessage(`["premium","cheap"]`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	rt := NewRouter(db)
+	// stepFallback names all typos — no known provider; must preserve the global policy.
+	p, ok, err := rt.SelectForStep(ctx, capTranscrever, routerItem, routerClock, routerHealthTTL, json.RawMessage(`["typo-a","typo-b"]`))
+	if err != nil || !ok {
+		t.Fatalf("SelectForStep: ok=%v err=%v", ok, err)
+	}
+	if p.Name != "premium" {
+		t.Errorf("typo stepFallback must preserve global policy (want premium), got %q", p.Name)
 	}
 }
 
