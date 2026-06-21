@@ -744,7 +744,7 @@ func TestGeminiClassifiesTransientVsPermanent(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // mockStore is the in-memory ScribeStore for handler tests: saved transcripts keyed by dedupKey,
-// a guid->enclosure map for the asr-direct-audio path, and a synthetic returned id. Error fields
+// a guid->enclosure map for the podcast lane, and a synthetic returned id. Error fields
 // force each seam to fail.
 type mockStore struct {
 	transcripts map[string]Transcript // keyed by dedupKey
@@ -928,9 +928,9 @@ func TestTranscribeSourcePermanentASRFailure(t *testing.T) {
 // transcribeHandler — the bridge-total claim-worker domain (mock store + fakes)
 // ---------------------------------------------------------------------------
 
-func runHandler(store *mockStore, acq *MockAcquirer, tr *MockTranscriber, provider, sourceRef string) (addon.Result, error) {
-	h := transcribeHandler(store, acq, tr, groqModelName, provider)
-	return h(context.Background(), addon.Item{SourceRef: sourceRef}, addon.Step{Seq: 1})
+func runHandler(store *mockStore, acq *MockAcquirer, tr *MockTranscriber, lane, sourceRef string) (addon.Result, error) {
+	h := transcribeHandler(store, acq, tr, groqModelName)
+	return h(context.Background(), addon.Item{Lane: lane, SourceRef: sourceRef}, addon.Step{Seq: 1})
 }
 
 // oneChunk wires a mock acquirer + transcriber for a source that produces a single chunk with the
@@ -943,13 +943,13 @@ func oneChunk(srcRef, chunkPath, text, lang string, segs ...Segment) (*MockAcqui
 	return acq, tr
 }
 
-// TestHandlerYouTubeHappyPath: asr-youtube builds the watch URL from the video id, transcribes, and
+// TestHandlerYouTubeHappyPath: youtube lane builds the watch URL from the video id, transcribes, and
 // saves a transcript keyed by youtube_video_id; OutputRef is the new row id.
 func TestHandlerYouTubeHappyPath(t *testing.T) {
 	store := newMockStore()
 	acq, tr := oneChunk(videoURL("vid1"), "/x/0.mp3", "olá", "pt", Segment{Start: 0, End: 1, Text: "olá"})
 
-	res, err := runHandler(store, acq, tr, provASRYouTube, "vid1")
+	res, err := runHandler(store, acq, tr, laneYouTube, "vid1")
 	if err != nil {
 		t.Fatalf("handler: %v", err)
 	}
@@ -962,15 +962,15 @@ func TestHandlerYouTubeHappyPath(t *testing.T) {
 	}
 }
 
-// TestHandlerDirectAudioReKeysToPodcast: asr-direct-audio resolves the enclosure URL from
-// podcast_episodes, transcribes it, but keys the transcript on the spine's GUID + lane=podcast (NOT
-// the enclosure URL), so the downstream gate/distill lookups chain on the same GUID.
-func TestHandlerDirectAudioReKeysToPodcast(t *testing.T) {
+// TestHandlerPodcastReKeysToPodcast: podcast lane resolves the enclosure URL from podcast_episodes,
+// transcribes it, but keys the transcript on the spine's GUID + lane=podcast (NOT the enclosure URL),
+// so the downstream gate/distill lookups chain on the same GUID.
+func TestHandlerPodcastReKeysToPodcast(t *testing.T) {
 	store := newMockStore()
 	store.enclosures["guid-42"] = "https://cdn.example.com/ep42.mp3"
 	acq, tr := oneChunk("https://cdn.example.com/ep42.mp3", "/p/0.mp3", "hello", "en", Segment{Start: 0, End: 1, Text: "hello"})
 
-	res, err := runHandler(store, acq, tr, provASRDirectAudio, "guid-42")
+	res, err := runHandler(store, acq, tr, lanePodcast, "guid-42")
 	if err != nil {
 		t.Fatalf("handler: %v", err)
 	}
@@ -988,7 +988,7 @@ func TestHandlerEmptyIsFiltered(t *testing.T) {
 	store := newMockStore()
 	acq, tr := oneChunk(videoURL("silent"), "/s/0.mp3", "", "pt")
 
-	res, err := runHandler(store, acq, tr, provASRYouTube, "silent")
+	res, err := runHandler(store, acq, tr, laneYouTube, "silent")
 	if err != nil {
 		t.Fatalf("handler: %v", err)
 	}
@@ -1004,7 +1004,7 @@ func TestHandlerFailedIsRetryableAndPersisted(t *testing.T) {
 	acq := newMockAcquirer()
 	acq.err = errors.New("yt-dlp: Video unavailable")
 
-	_, err := runHandler(store, acq, newMockTranscriber(), provASRYouTube, "vid1")
+	_, err := runHandler(store, acq, newMockTranscriber(), laneYouTube, "vid1")
 	if !errors.Is(err, addon.ErrRetryable) {
 		t.Errorf("err = %v, want wrapping addon.ErrRetryable", err)
 	}
@@ -1017,7 +1017,7 @@ func TestHandlerFailedIsRetryableAndPersisted(t *testing.T) {
 // collector may lag) → ErrRetryable, and nothing is transcribed or saved.
 func TestHandlerEnclosureNotReadyIsRetryable(t *testing.T) {
 	store := newMockStore() // no enclosure registered
-	_, err := runHandler(store, newMockAcquirer(), newMockTranscriber(), provASRDirectAudio, "guid-missing")
+	_, err := runHandler(store, newMockAcquirer(), newMockTranscriber(), lanePodcast, "guid-missing")
 	if !errors.Is(err, addon.ErrRetryable) {
 		t.Errorf("err = %v, want wrapping addon.ErrRetryable", err)
 	}
@@ -1031,7 +1031,7 @@ func TestHandlerEnclosureNotReadyIsRetryable(t *testing.T) {
 func TestHandlerRejectsNonHttpEnclosure(t *testing.T) {
 	store := newMockStore()
 	store.enclosures["guid-evil"] = "file:///etc/passwd"
-	_, err := runHandler(store, newMockAcquirer(), newMockTranscriber(), provASRDirectAudio, "guid-evil")
+	_, err := runHandler(store, newMockAcquirer(), newMockTranscriber(), lanePodcast, "guid-evil")
 	if err == nil || errors.Is(err, addon.ErrRetryable) {
 		t.Errorf("err = %v, want a terminal (non-retryable) rejection", err)
 	}
@@ -1040,9 +1040,9 @@ func TestHandlerRejectsNonHttpEnclosure(t *testing.T) {
 	}
 }
 
-// TestHandlerUnknownProvider: an unrecognized provider is a config error (terminal, not retryable).
-func TestHandlerUnknownProvider(t *testing.T) {
-	_, err := runHandler(newMockStore(), newMockAcquirer(), newMockTranscriber(), "asr-bogus", "x")
+// TestHandlerUnknownLane: an unrecognized lane is a config error (terminal, not retryable).
+func TestHandlerUnknownLane(t *testing.T) {
+	_, err := runHandler(newMockStore(), newMockAcquirer(), newMockTranscriber(), "bogus-lane", "x")
 	if err == nil || errors.Is(err, addon.ErrRetryable) {
 		t.Errorf("err = %v, want a terminal (non-retryable) error", err)
 	}
@@ -1054,7 +1054,7 @@ func TestHandlerSaveErrorPropagates(t *testing.T) {
 	store.saveErr = errors.New("neon write timeout")
 	acq, tr := oneChunk(videoURL("vid1"), "/x/0.mp3", "ok", "en", Segment{Start: 0, End: 1, Text: "ok"})
 
-	_, err := runHandler(store, acq, tr, provASRYouTube, "vid1")
+	_, err := runHandler(store, acq, tr, laneYouTube, "vid1")
 	if err == nil || !strings.Contains(err.Error(), "neon write timeout") {
 		t.Errorf("err = %v, want the save error propagated", err)
 	}
