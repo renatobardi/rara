@@ -1171,4 +1171,3 @@ func mustItem(t *testing.T, db *MockDatabase, lane, ref string, flowID int, stat
 	}
 	return id
 }
-
