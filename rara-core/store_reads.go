@@ -121,12 +121,20 @@ func (d *pgxDatabase) ListItemSteps(ctx context.Context, itemID int) ([]ItemStep
 const providerColumns = `name, capability, runtime, activation,
        constraints, enabled, heartbeat_at, last_collect_at, COALESCE(runner_url, ''), env, COALESCE(worker, ''), last_error`
 
+// maxProviderErrorLen caps last_error before it reaches the API — prevents large or
+// inadvertently-verbose runner messages from bloating responses.
+const maxProviderErrorLen = 500
+
 // scanProvider scans a single providers row using the caller's Scan function (works for both
 // pgx.Row.Scan and pgx.Rows.Scan — both accept ...any and return error).
 func scanProvider(scan func(dest ...any) error) (Provider, error) {
 	var p Provider
 	err := scan(&p.Name, &p.Capability, &p.Runtime, &p.Activation,
 		&p.Constraints, &p.Enabled, &p.HeartbeatAt, &p.LastCollectAt, &p.RunnerURL, &p.Env, &p.Worker, &p.LastError)
+	if err == nil && p.LastError != nil && len(*p.LastError) > maxProviderErrorLen {
+		truncated := (*p.LastError)[:maxProviderErrorLen]
+		p.LastError = &truncated
+	}
 	return p, err
 }
 

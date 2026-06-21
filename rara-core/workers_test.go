@@ -217,12 +217,39 @@ func TestUpsertProviderPreservesLastError(t *testing.T) {
 		t.Fatalf("UpsertProvider: %v", err)
 	}
 
-	got, _, _ := db.GetProvider(ctx, "distill")
+	got, found, err := db.GetProvider(ctx, "distill")
+	if err != nil || !found {
+		t.Fatalf("GetProvider after upsert: found=%v err=%v", found, err)
+	}
 	if got.LastError == nil || *got.LastError != errMsg {
 		t.Errorf("UpsertProvider clobbered last_error: got %v, want %q", got.LastError, errMsg)
 	}
 	if got.Enabled {
 		t.Error("UpsertProvider did not apply Enabled=false")
+	}
+}
+
+// TestProviderLastErrorTruncatedAtRead: last_error values longer than maxProviderErrorLen are
+// capped when read via the mock (mirrors the scanProvider guard that bounds API response size).
+func TestProviderLastErrorTruncatedAtRead(t *testing.T) {
+	ctx := context.Background()
+	db := newMockDatabase()
+	mustCapability(t, db, capDestilar)
+	mustProvider(t, db, Provider{Name: "distill", Capability: capDestilar, Worker: "distill",
+		Runtime: runtimeCloudRun, Activation: activationOnDemand, Enabled: true})
+
+	// Store a value longer than the cap directly (simulates a verbose runner message).
+	long := string(make([]byte, maxProviderErrorLen+100))
+	p := db.providers["distill"]
+	p.LastError = &long
+	db.providers["distill"] = p
+
+	got, _, _ := db.GetProvider(ctx, "distill")
+	if got.LastError == nil {
+		t.Fatal("last_error unexpectedly nil")
+	}
+	if len(*got.LastError) > maxProviderErrorLen {
+		t.Errorf("last_error len = %d, want ≤ %d", len(*got.LastError), maxProviderErrorLen)
 	}
 }
 

@@ -286,6 +286,8 @@ type Provider struct {
 	Worker string `json:"worker"`
 	// LastError is the most recent dispatch failure message. Written by the runner on a failed
 	// wake attempt (P0d); never written by seed/upsert. NULL when no failure has occurred.
+	// The runner MUST sanitize before writing: no tokens, no internal URLs, no stack traces.
+	// Read path caps the value to maxProviderErrorLen to bound API response size.
 	LastError *string `json:"last_error,omitempty"`
 }
 

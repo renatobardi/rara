@@ -66,6 +66,16 @@ type flowStepKey struct {
 	seq    int
 }
 
+// capProviderError mirrors the scanProvider truncation guard so MockDatabase reads are
+// consistent with the real pgxDatabase (both cap last_error at maxProviderErrorLen).
+func capProviderError(p Provider) Provider {
+	if p.LastError != nil && len(*p.LastError) > maxProviderErrorLen {
+		s := (*p.LastError)[:maxProviderErrorLen]
+		p.LastError = &s
+	}
+	return p
+}
+
 type MockDatabase struct {
 	capabilities map[string]Capability // UNIQUE(name)
 	providers    map[string]Provider   // UNIQUE(name)
@@ -418,7 +428,7 @@ func (m *MockDatabase) ListProvidersForCapability(_ context.Context, capability 
 
 func (m *MockDatabase) GetProvider(_ context.Context, name string) (Provider, bool, error) {
 	p, ok := m.providers[name]
-	return p, ok, nil
+	return capProviderError(p), ok, nil
 }
 
 func (m *MockDatabase) GetRoutingPolicy(_ context.Context, scope string) (RoutingPolicy, bool, error) {
@@ -573,7 +583,7 @@ func (m *MockDatabase) ListFlows(_ context.Context) ([]Flow, error) {
 func (m *MockDatabase) ListProviders(_ context.Context) ([]Provider, error) {
 	var out []Provider
 	for _, p := range m.providers {
-		out = append(out, p)
+		out = append(out, capProviderError(p))
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, nil
