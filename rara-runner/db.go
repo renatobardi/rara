@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
@@ -17,9 +18,10 @@ import (
 // 1000 runes covers any human-readable error message while guarding against unbounded blobs.
 const maxDispatchErrorRunes = 1000
 
-// capDispatchError truncates s to maxDispatchErrorRunes runes (not bytes) so multi-byte UTF-8
-// characters are never split.
+// capDispatchError strips invalid UTF-8 bytes (Postgres text rejects them) then truncates to
+// maxDispatchErrorRunes runes so multi-byte characters are never split at the cap boundary.
 func capDispatchError(s string) string {
+	s = strings.ToValidUTF8(s, "") // remove invalid bytes before counting runes
 	if utf8.RuneCountInString(s) <= maxDispatchErrorRunes {
 		return s
 	}

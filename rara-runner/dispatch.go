@@ -8,12 +8,12 @@ import (
 	"context"
 	"log"
 	"regexp"
+	"time"
 )
 
-// bgCtx is the context used for best-effort observability writes (StampDispatchError /
-// ClearDispatchError). These writes must not be cancelled by the pass context — if the
-// pass ctx is cancelled (shutdown signal, timeout), we still want the error recorded.
-var bgCtx = context.Background()
+// obsCtxTimeout is the deadline for best-effort observability writes (StampDispatchError /
+// ClearDispatchError). Short enough to not stall the loop; long enough for a pgx round-trip.
+const obsCtxTimeout = 5 * time.Second
 
 // bearerRe matches "Bearer <token>" patterns that net/http can echo into error strings when
 // the Authorization header is reflected back in a transport-layer error message.
@@ -103,16 +103,20 @@ func (d *Dispatcher) DispatchOnce(ctx context.Context) error {
 		}
 		if err := d.runner.Run(ctx, buildRunRequest(prov)); err != nil {
 			// Sanitize before log and DB: exported logs (GCP Logging) have the same exposure risk
-			// as the UI. Use bgCtx so a cancelled pass ctx doesn't suppress the stamp.
+			// as the UI. Fresh context: pass ctx may be cancelled; the stamp must still land.
 			msg := sanitizeDispatchMsg(err.Error())
 			log.Printf("dispatch: wake %q: %v", name, msg)
-			if serr := d.db.StampDispatchError(bgCtx, name, msg); serr != nil {
+			obsCtx, obsCancel := context.WithTimeout(context.Background(), obsCtxTimeout)
+			if serr := d.db.StampDispatchError(obsCtx, name, msg); serr != nil {
 				log.Printf("dispatch: stamp error %q: %v", name, serr) // best-effort
 			}
+			obsCancel()
 		} else {
-			if cerr := d.db.ClearDispatchError(bgCtx, name); cerr != nil {
+			obsCtx, obsCancel := context.WithTimeout(context.Background(), obsCtxTimeout)
+			if cerr := d.db.ClearDispatchError(obsCtx, name); cerr != nil {
 				log.Printf("dispatch: clear error %q: %v", name, cerr) // best-effort
 			}
+			obsCancel()
 		}
 	}
 
@@ -132,13 +136,17 @@ func (d *Dispatcher) DispatchOnce(ctx context.Context) error {
 		if err := d.runner.Run(ctx, buildRunRequest(prov)); err != nil {
 			msg := sanitizeDispatchMsg(err.Error()) // same rationale as worker loop above
 			log.Printf("dispatch: wake collector %q: %v", prov.Name, msg)
-			if serr := d.db.StampDispatchError(bgCtx, prov.Name, msg); serr != nil {
+			obsCtx, obsCancel := context.WithTimeout(context.Background(), obsCtxTimeout)
+			if serr := d.db.StampDispatchError(obsCtx, prov.Name, msg); serr != nil {
 				log.Printf("dispatch: stamp error collector %q: %v", prov.Name, serr) // best-effort
 			}
+			obsCancel()
 		} else {
-			if cerr := d.db.ClearDispatchError(bgCtx, prov.Name); cerr != nil {
+			obsCtx, obsCancel := context.WithTimeout(context.Background(), obsCtxTimeout)
+			if cerr := d.db.ClearDispatchError(obsCtx, prov.Name); cerr != nil {
 				log.Printf("dispatch: clear error collector %q: %v", prov.Name, cerr) // best-effort
 			}
+			obsCancel()
 		}
 	}
 	return nil

@@ -438,6 +438,19 @@ func TestStampDispatchErrorShortMsgUnchanged(t *testing.T) {
 	}
 }
 
+func TestCapDispatchErrorStripsInvalidUTF8(t *testing.T) {
+	// Invalid UTF-8 bytes must be removed before the string reaches Postgres (text column
+	// rejects invalid UTF-8). Use a mix of valid ASCII + invalid bytes + valid tail.
+	invalid := "prefix" + string([]byte{0xff, 0xfe}) + "suffix"
+	got := capDispatchError(invalid)
+	if !utf8.ValidString(got) {
+		t.Errorf("capDispatchError output not valid UTF-8: %q", got)
+	}
+	if strings.Contains(got, "prefix") && !strings.Contains(got, "suffix") {
+		t.Errorf("capDispatchError stripped too much: %q", got)
+	}
+}
+
 func TestSanitizeDispatchMsgRedactsBearer(t *testing.T) {
 	cases := []struct{ in, wantContains, wantAbsent string }{
 		{"cloud run token: Bearer eyJhbGci.secret123", "[REDACTED]", "eyJhbGci.secret123"},
