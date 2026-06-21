@@ -71,13 +71,15 @@ func (d *pgxDispatchDB) ListAssignedSteps(ctx context.Context) ([]AssignedStep, 
 func (d *pgxDispatchDB) GetProvider(ctx context.Context, name string) (DispatchProvider, bool, error) {
 	// env is JSONB; cast to text so we deserialize it ourselves (parseProviderEnv) — keeps the
 	// empty/'{}'/populated handling in one tested seam. COALESCE guards a NULL column.
+	// COALESCE(NULLIF(app,''),name) ensures App is never empty: falls back to name for old rows.
 	const q = `
-		SELECT name, runtime, activation, COALESCE(runner_url, ''), COALESCE(env::text, '{}')
+		SELECT name, runtime, activation, COALESCE(runner_url, ''), COALESCE(env::text, '{}'),
+		       COALESCE(NULLIF(app, ''), name)
 		FROM providers
 		WHERE name = $1`
 	var p DispatchProvider
 	var envJSON string
-	err := d.pool.QueryRow(ctx, q, name).Scan(&p.Name, &p.Runtime, &p.Activation, &p.RunnerURL, &envJSON)
+	err := d.pool.QueryRow(ctx, q, name).Scan(&p.Name, &p.Runtime, &p.Activation, &p.RunnerURL, &envJSON, &p.App)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return DispatchProvider{}, false, nil
@@ -110,7 +112,8 @@ func parseProviderEnv(raw string) (map[string]string, error) {
 
 func (d *pgxDispatchDB) ListDueCollectors(ctx context.Context) ([]DispatchProvider, error) {
 	const q = `
-		SELECT name, runtime, activation, COALESCE(runner_url, ''), COALESCE(env::text, '{}')
+		SELECT name, runtime, activation, COALESCE(runner_url, ''), COALESCE(env::text, '{}'),
+		       COALESCE(NULLIF(app, ''), name)
 		FROM providers
 		WHERE collect_cadence_seconds IS NOT NULL
 		  AND enabled = true
@@ -129,7 +132,7 @@ func (d *pgxDispatchDB) ListDueCollectors(ctx context.Context) ([]DispatchProvid
 	for rows.Next() {
 		var p DispatchProvider
 		var envJSON string
-		if err := rows.Scan(&p.Name, &p.Runtime, &p.Activation, &p.RunnerURL, &envJSON); err != nil {
+		if err := rows.Scan(&p.Name, &p.Runtime, &p.Activation, &p.RunnerURL, &envJSON, &p.App); err != nil {
 			return nil, fmt.Errorf("list due collectors scan: %w", err)
 		}
 		p.Env, err = parseProviderEnv(envJSON)
