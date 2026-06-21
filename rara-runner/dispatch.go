@@ -102,10 +102,11 @@ func (d *Dispatcher) DispatchOnce(ctx context.Context) error {
 			continue
 		}
 		if err := d.runner.Run(ctx, buildRunRequest(prov)); err != nil {
-			log.Printf("dispatch: wake %q: %v", name, err)
-			// Use bgCtx: pass ctx may be cancelled at shutdown; the error stamp must still land.
-			// runner.Run errors come from HTTP status codes / net errors — no credential values.
-			if serr := d.db.StampDispatchError(bgCtx, name, sanitizeDispatchMsg(err.Error())); serr != nil {
+			// Sanitize before log and DB: exported logs (GCP Logging) have the same exposure risk
+			// as the UI. Use bgCtx so a cancelled pass ctx doesn't suppress the stamp.
+			msg := sanitizeDispatchMsg(err.Error())
+			log.Printf("dispatch: wake %q: %v", name, msg)
+			if serr := d.db.StampDispatchError(bgCtx, name, msg); serr != nil {
 				log.Printf("dispatch: stamp error %q: %v", name, serr) // best-effort
 			}
 		} else {
@@ -129,9 +130,9 @@ func (d *Dispatcher) DispatchOnce(ctx context.Context) error {
 			continue // don't wake without stamping — throttle would be bypassed
 		}
 		if err := d.runner.Run(ctx, buildRunRequest(prov)); err != nil {
-			log.Printf("dispatch: wake collector %q: %v", prov.Name, err)
-			// Use bgCtx: same rationale as the worker loop above.
-			if serr := d.db.StampDispatchError(bgCtx, prov.Name, sanitizeDispatchMsg(err.Error())); serr != nil {
+			msg := sanitizeDispatchMsg(err.Error()) // same rationale as worker loop above
+			log.Printf("dispatch: wake collector %q: %v", prov.Name, msg)
+			if serr := d.db.StampDispatchError(bgCtx, prov.Name, msg); serr != nil {
 				log.Printf("dispatch: stamp error collector %q: %v", prov.Name, serr) // best-effort
 			}
 		} else {
