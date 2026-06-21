@@ -7,8 +7,8 @@ import (
 	"testing"
 )
 
-// fakeWorkersCore serves /v1/workers/metrics and /v1/route/preview. It records the raw query
-// string of each request in `captured` so tests can assert what params the BFF forwarded.
+// fakeWorkersCore serves /v1/workers/metrics. It records the raw query string of each request
+// in `captured` so tests can assert what params the BFF forwarded.
 func fakeWorkersCore(t *testing.T, token string) (*httptest.Server, *string) {
 	t.Helper()
 	captured := new(string)
@@ -26,13 +26,12 @@ func fakeWorkersCore(t *testing.T, token string) (*httptest.Server, *string) {
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/workers/metrics", handler(`{"workers":[]}`))
-	mux.HandleFunc("GET /v1/route/preview", handler(`{"winner":"distill-mac","candidates":[]}`))
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return srv, captured
 }
 
-// fakeWorkersCoreErr serves both endpoints with a fixed error status.
+// fakeWorkersCoreErr serves the metrics endpoint with a fixed error status.
 func fakeWorkersCoreErr(t *testing.T, token string, status int) *httptest.Server {
 	t.Helper()
 	h := func(w http.ResponseWriter, r *http.Request) {
@@ -46,21 +45,9 @@ func fakeWorkersCoreErr(t *testing.T, token string, status int) *httptest.Server
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/workers/metrics", h)
-	mux.HandleFunc("GET /v1/route/preview", h)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return srv
-}
-
-func doRoutePreview(s *server, rawQuery string) *httptest.ResponseRecorder {
-	rec := httptest.NewRecorder()
-	target := "/api/route/preview"
-	if rawQuery != "" {
-		target += "?" + rawQuery
-	}
-	req := httptest.NewRequest("GET", target, nil)
-	s.handleRoutePreview(rec, req)
-	return rec
 }
 
 func doWorkerMetrics(s *server, rawQuery string) *httptest.ResponseRecorder {
@@ -72,74 +59,6 @@ func doWorkerMetrics(s *server, rawQuery string) *httptest.ResponseRecorder {
 	req := httptest.NewRequest("GET", target, nil)
 	s.handleWorkerMetrics(rec, req)
 	return rec
-}
-
-// --- route/preview ---
-
-func TestRoutePreviewRejectsWhitespaceCapability(t *testing.T) {
-	s := &server{coreURL: "http://127.0.0.1:1", token: "x", client: http.DefaultClient}
-
-	rec := doRoutePreview(s, "capability=+++") // "+++" decodes as "   " (spaces)
-
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400 for whitespace-only capability; body=%s", rec.Code, rec.Body.String())
-	}
-	if !strings.Contains(rec.Body.String(), "capability is required") {
-		t.Errorf("body missing error message: %s", rec.Body.String())
-	}
-}
-
-func TestRoutePreviewRejectsEmptyCapability(t *testing.T) {
-	// Dead URL confirms core is never called when capability is missing.
-	s := &server{coreURL: "http://127.0.0.1:1", token: "x", client: http.DefaultClient}
-
-	rec := doRoutePreview(s, "")
-
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400; body=%s", rec.Code, rec.Body.String())
-	}
-	if !strings.Contains(rec.Body.String(), "capability is required") {
-		t.Errorf("body missing error message: %s", rec.Body.String())
-	}
-}
-
-func TestRoutePreviewProxiesCapability(t *testing.T) {
-	core, _ := fakeWorkersCore(t, "tok")
-	s := &server{coreURL: core.URL, token: "tok", client: core.Client()}
-
-	rec := doRoutePreview(s, "capability=destilar")
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
-	}
-	if !strings.Contains(rec.Body.String(), "winner") {
-		t.Errorf("body missing winner field: %s", rec.Body.String())
-	}
-}
-
-func TestRoutePreviewForwardsExcludeMultiValue(t *testing.T) {
-	core, captured := fakeWorkersCore(t, "tok")
-	s := &server{coreURL: core.URL, token: "tok", client: core.Client()}
-
-	rec := doRoutePreview(s, "capability=distill&exclude=worker-a&exclude=worker-b")
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
-	}
-	if !strings.Contains(*captured, "exclude=worker-a") || !strings.Contains(*captured, "exclude=worker-b") {
-		t.Errorf("exclude values not forwarded to core; core received query: %s", *captured)
-	}
-}
-
-func TestRoutePreviewReturns502OnCoreError(t *testing.T) {
-	core := fakeWorkersCoreErr(t, "tok", http.StatusInternalServerError)
-	s := &server{coreURL: core.URL, token: "tok", client: core.Client()}
-
-	rec := doRoutePreview(s, "capability=distill")
-
-	if rec.Code != http.StatusBadGateway {
-		t.Errorf("status = %d, want 502", rec.Code)
-	}
 }
 
 // --- workers/metrics ---
@@ -227,44 +146,6 @@ func TestWorkerMetricsRejectsNegativeDays(t *testing.T) {
 
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400; body=%s", rec.Code, rec.Body.String())
-	}
-}
-
-func TestRoutePreviewForwardsLane(t *testing.T) {
-	core, captured := fakeWorkersCore(t, "tok")
-	s := &server{coreURL: core.URL, token: "tok", client: core.Client()}
-
-	rec := doRoutePreview(s, "capability=distill&lane=fast")
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
-	}
-	if !strings.Contains(*captured, "lane=fast") {
-		t.Errorf("lane param not forwarded; core received: %q", *captured)
-	}
-}
-
-func TestRoutePreviewForwardsSensitivity(t *testing.T) {
-	core, captured := fakeWorkersCore(t, "tok")
-	s := &server{coreURL: core.URL, token: "tok", client: core.Client()}
-
-	rec := doRoutePreview(s, "capability=distill&sensitivity=public")
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
-	}
-	if !strings.Contains(*captured, "sensitivity=public") {
-		t.Errorf("sensitivity param not forwarded; core received: %q", *captured)
-	}
-}
-
-func TestRoutePreviewRejectsInvalidSensitivity(t *testing.T) {
-	s := &server{coreURL: "http://127.0.0.1:1", token: "x", client: http.DefaultClient}
-
-	rec := doRoutePreview(s, "capability=distill&sensitivity=high")
-
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400; body=%s", rec.Code, rec.Body.String())
 	}
 }
 

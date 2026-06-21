@@ -23,7 +23,6 @@ import (
 	"net/url"
 	"os"
 	"strconv"
-	"strings"
 	"time"
 )
 
@@ -607,37 +606,6 @@ func (s *server) handleSetStepHosts(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleRoutePreview proxies GET /v1/route/preview — dry-run of the router without dispatching a
-// job. Requires capability; optionally forwards lane, sensitivity, and exclude (multi-value).
-func (s *server) handleRoutePreview(w http.ResponseWriter, r *http.Request) {
-	capability := strings.TrimSpace(r.URL.Query().Get("capability"))
-	if capability == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "capability is required"})
-		return
-	}
-	q := url.Values{}
-	q.Set("capability", capability)
-	if v := r.URL.Query().Get("lane"); v != "" {
-		q.Set("lane", v)
-	}
-	if v := r.URL.Query().Get("sensitivity"); v != "" {
-		if v != "public" && v != "private" {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "sensitivity must be 'public' or 'private'"})
-			return
-		}
-		q.Set("sensitivity", v)
-	}
-	for _, ex := range r.URL.Query()["exclude"] {
-		q.Add("exclude", ex)
-	}
-	body, err := s.fetchCore(r.Context(), "/v1/route/preview?"+q.Encode())
-	if err != nil {
-		badGateway(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, json.RawMessage(body))
-}
-
 // handleWorkerMetrics proxies GET /v1/workers/metrics — per-worker step rollup for the dashboard
 // cards. Optionally forwards days=N (1–365); absent means all-time.
 func (s *server) handleWorkerMetrics(w http.ResponseWriter, r *http.Request) {
@@ -721,7 +689,6 @@ func main() {
 	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/route/preview", s.handleRoutePreview)
 	mux.HandleFunc("GET /api/workers/metrics", s.handleWorkerMetrics)
 	mux.HandleFunc("GET /api/health", s.handleCoreHealth)
 	mux.HandleFunc("GET /api/usage", s.handleCoreUsage)

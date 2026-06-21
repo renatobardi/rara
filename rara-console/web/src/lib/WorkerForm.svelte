@@ -14,8 +14,8 @@
 		capability: string;
 		runtime: string;
 		activation: string;
-		cost: number;
-		quality: number;
+		cost?: number;
+		quality?: number;
 		enabled: boolean;
 		heartbeat_at?: string;
 		constraints?: Constraints;
@@ -54,8 +54,6 @@
 	let capability = $state(untrack(() => lockedCapability ?? initial?.capability ?? ''));
 	let runtime = $state(untrack(() => initial?.runtime ?? 'local'));
 	let activation = $state(untrack(() => initial?.activation ?? 'on_demand'));
-	let cost = $state(untrack(() => String(initial?.cost ?? '0')));
-	let quality = $state(untrack(() => String(initial?.quality ?? '1')));
 	let enabled = $state(untrack(() => initial?.enabled ?? true));
 	let runnerUrl = $state(untrack(() => initial?.runner_url ?? ''));
 	let envRaw = $state(untrack(() => (initial?.env ? JSON.stringify(initial.env, null, 2) : '')));
@@ -101,10 +99,6 @@
 		if (!capability.trim()) e.capability = t.workers.formCapabilityRequired;
 		if (!VALID_RUNTIMES.includes(runtime)) e.runtime = t.workers.formRuntimeInvalid;
 		if (!VALID_ACTIVATIONS.includes(activation)) e.activation = t.workers.formActivationInvalid;
-		const c = parseFloat(cost);
-		if (isNaN(c) || c < 0) e.cost = t.workers.formCostInvalid;
-		const q = parseFloat(quality);
-		if (isNaN(q) || q < 0 || q > 1) e.quality = t.workers.formQualityInvalid;
 		if (runnerUrl.trim()) {
 			try {
 				const u = new URL(runnerUrl.trim());
@@ -159,8 +153,9 @@
 			capability: capability.trim(),
 			runtime,
 			activation,
-			cost: parseFloat(cost),
-			quality: parseFloat(quality),
+			// ponytail: pass-through until P0b drops the columns; not editable via UI
+			cost: initial?.cost ?? 0,
+			quality: initial?.quality ?? 1,
 			enabled
 		};
 
@@ -292,35 +287,6 @@
 					<option value="on_demand">on_demand</option>
 				</select>
 				{#if errors.activation}<p class={errorClass}>{errors.activation}</p>{/if}
-			</div>
-
-			<!-- Cost -->
-			<div>
-				<label class={labelClass} for="wf-cost">{t.workers.formCost}</label>
-				<input
-					id="wf-cost"
-					type="number"
-					min="0"
-					step="0.1"
-					class={fieldClass}
-					bind:value={cost}
-				/>
-				{#if errors.cost}<p class={errorClass}>{errors.cost}</p>{/if}
-			</div>
-
-			<!-- Quality -->
-			<div>
-				<label class={labelClass} for="wf-quality">{t.workers.formQuality}</label>
-				<input
-					id="wf-quality"
-					type="number"
-					min="0"
-					max="1"
-					step="0.05"
-					class={fieldClass}
-					bind:value={quality}
-				/>
-				{#if errors.quality}<p class={errorClass}>{errors.quality}</p>{/if}
 			</div>
 
 			<!-- Enabled toggle -->

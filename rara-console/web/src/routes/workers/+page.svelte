@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onMount, onDestroy } from 'svelte';
+	import { onMount } from 'svelte';
 	import { t } from '$lib/strings';
 	import WorkerForm from '$lib/WorkerForm.svelte';
 
@@ -17,8 +17,8 @@
 		capability: string;
 		runtime: string;
 		activation: string;
-		cost: number;
-		quality: number;
+		cost?: number;
+		quality?: number;
 		enabled: boolean;
 		heartbeat_at?: string;
 		constraints?: Constraints;
@@ -34,8 +34,9 @@
 
 	type RoutingPolicy = {
 		scope: string;
-		cost_weight: number;
-		quality_weight: number;
+		// ponytail: kept optional for pass-through until P0b drops the columns
+		cost_weight?: number;
+		quality_weight?: number;
 		fallback: string[];
 	};
 
@@ -58,24 +59,6 @@
 		queue: number;
 		avg_attempt: number;
 		last_activity_at?: string;
-	};
-
-	type Candidate = {
-		name: string;
-		eligible: boolean;
-		healthy: boolean;
-		reason: string;
-		cost_credit: number;
-		quality: number;
-		score: number;
-		fallback_pos: number;
-		selected: boolean;
-	};
-
-	type RoutePreview = {
-		capability: string;
-		winner: string;
-		candidates: Candidate[];
 	};
 
 	function isProvider(v: unknown): v is Provider {
@@ -134,22 +117,10 @@
 
 	// --- routing editor state ---
 	let selectedScope = $state<string>(GLOBAL_SCOPE);
-	let editCostWeight = $state(0.5);
 	let editFallback = $state<string[]>([]);
 	let routingAddWorker = $state('');
 	let routingSaving = $state(false);
 	let routingMsg = $state('');
-
-	// --- route preview state ---
-	let previewCapability = $state('');
-	let previewLane = $state('');
-	let previewSensitivity = $state('public');
-	let previewExcludes = $state<Set<string>>(new Set());
-	let previewResult = $state<RoutePreview | null>(null);
-	let previewLoading = $state(false);
-	let previewError = $state(false);
-	let previewDebounceTimer: ReturnType<typeof setTimeout> | null = null;
-	let previewAbortController: AbortController | null = null;
 
 	// ponytail: 5min stale threshold mirrors defaultHealthTTL in core router.go
 	const STALE_MS = 5 * 60 * 1000;
@@ -225,7 +196,6 @@
 	function selectScope(scope: string) {
 		selectedScope = scope;
 		const pol = policies.find((p) => p.scope === scope);
-		editCostWeight = pol ? pol.cost_weight : 0.5;
 		editFallback = pol ? (pol.fallback ?? []) : [];
 		routingMsg = '';
 		routingAddWorker = '';
@@ -252,10 +222,12 @@
 	async function saveRoutingPolicy() {
 		routingSaving = true;
 		routingMsg = '';
-		const payload = {
+		const existing = policies.find((p) => p.scope === selectedScope);
+		// ponytail: pass-through until P0b drops the columns; slider removed but weights preserved
+		const payload: RoutingPolicy = {
+			...(existing?.cost_weight !== undefined ? { cost_weight: existing.cost_weight } : {}),
+			...(existing?.quality_weight !== undefined ? { quality_weight: existing.quality_weight } : {}),
 			scope: selectedScope,
-			cost_weight: editCostWeight,
-			quality_weight: parseFloat((1 - editCostWeight).toFixed(2)),
 			fallback: editFallback
 		};
 		try {
@@ -277,56 +249,6 @@
 		} finally {
 			routingSaving = false;
 		}
-	}
-
-	function fetchPreview() {
-		if (!previewCapability) return;
-		previewAbortController?.abort();
-		previewAbortController = new AbortController();
-		const signal = previewAbortController.signal;
-		previewLoading = true;
-		previewError = false;
-		const params = new URLSearchParams({ capability: previewCapability });
-		if (previewLane) params.set('lane', previewLane);
-		params.set('sensitivity', previewSensitivity);
-		for (const name of previewExcludes) params.append('exclude', name);
-		fetch(`/api/route/preview?${params}`, { signal })
-			.then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
-			.then((d) => {
-				previewResult = d;
-				previewLoading = false;
-			})
-			.catch((err) => {
-				if (err instanceof DOMException && err.name === 'AbortError') return;
-				previewError = true;
-				previewLoading = false;
-			});
-	}
-
-	function debouncedPreview() {
-		if (previewDebounceTimer) clearTimeout(previewDebounceTimer);
-		previewDebounceTimer = setTimeout(fetchPreview, 300);
-	}
-
-	onDestroy(() => {
-		if (previewDebounceTimer) clearTimeout(previewDebounceTimer);
-		previewAbortController?.abort();
-	});
-
-	function togglePreviewExclude(name: string) {
-		const next = new Set(previewExcludes);
-		if (next.has(name)) next.delete(name);
-		else next.add(name);
-		previewExcludes = next;
-		if (previewCapability) fetchPreview();
-	}
-
-	function candidateHealth(c: Candidate): 'fresh' | 'exempt' | 'stale' {
-		if (!c.healthy) return 'stale';
-		const prov = providers.find((p) => p.name === c.name);
-		if (!prov) return 'stale'; // ponytail: unknown provider treated conservatively
-		if (prov.activation === 'on_demand') return 'exempt';
-		return 'fresh';
 	}
 
 	function fetchWorkers() {
@@ -732,8 +654,6 @@
 												<th class="py-1.5 pl-10 pr-3 font-medium">{t.workers.colName}</th>
 												<th class="py-1.5 pr-3 font-medium">{t.workers.colRuntime}</th>
 												<th class="py-1.5 pr-3 font-medium">{t.workers.colActivation}</th>
-												<th class="py-1.5 pr-3 font-medium">{t.workers.colCost}</th>
-												<th class="py-1.5 pr-3 font-medium">{t.workers.colQuality}</th>
 												<th class="py-1.5 pr-3 font-medium">{t.workers.colEnabled}</th>
 												<th class="py-1.5 pr-3"></th>
 											</tr>
@@ -744,8 +664,6 @@
 													<td class="py-2 pl-10 pr-3 font-mono">{p.name}</td>
 													<td class="py-2 pr-3 text-muted">{p.runtime}</td>
 													<td class="py-2 pr-3 text-muted">{p.activation}</td>
-													<td class="py-2 pr-3 tabular-nums">{p.cost}</td>
-													<td class="py-2 pr-3 tabular-nums">{p.quality}</td>
 													<td class="py-2 pr-3">
 														<span
 															class="inline-block rounded-full px-2 py-0.5 text-[10px] font-semibold {p.enabled
@@ -783,7 +701,7 @@
 												</tr>
 												{#if formMode === 'edit' && formInitial?.name === p.name}
 													<tr>
-														<td colspan="7" class="px-4 py-3 pl-10">
+														<td colspan="5" class="px-4 py-3 pl-10">
 															<WorkerForm
 																initial={formInitial}
 																capabilities={knownCapabilities}
@@ -827,9 +745,6 @@
 	{/if}
 </section>
 
-<!-- ── Roteamento + Simular rota (side-by-side grid) ── -->
-<div class="grid grid-cols-1 gap-6 lg:grid-cols-2">
-
 <!-- ── Routing policies editor ── -->
 <section>
 	<h2 class="mb-4 text-[15px] font-semibold">{t.workers.policiesSection}</h2>
@@ -856,26 +771,6 @@
 						<option value={scope.id}>{scope.label}</option>
 					{/each}
 				</select>
-			</div>
-
-			<!-- Slider cost↔quality -->
-			<div class="mb-5">
-				<div class="mb-1.5 flex justify-between text-[12px] font-medium text-muted">
-					<span>{t.workers.colCostWeight}: <strong class="text-text">{editCostWeight.toFixed(2)}</strong></span>
-					<span>{t.workers.colQualityWeight}: <strong class="text-text">{(1 - editCostWeight).toFixed(2)}</strong></span>
-				</div>
-				<input
-					id="routing-slider"
-					type="range"
-					min="0"
-					max="1"
-					step="0.01"
-					value={editCostWeight}
-					oninput={(e) => { editCostWeight = parseFloat((e.target as HTMLInputElement).value); }}
-					class="w-full cursor-pointer accent-text"
-					aria-label="{t.workers.colCostWeight} ↔ {t.workers.colQualityWeight}"
-				/>
-				<p class="mt-1 text-[11px] text-muted">{t.workers.policyWeightsHint}</p>
 			</div>
 
 			<!-- Fallback list -->
@@ -951,175 +846,3 @@
 		</div>
 	{/if}
 </section>
-
-<!-- ── Simular rota ── -->
-<section>
-	<h2 class="mb-4 text-[15px] font-semibold">{t.workers.previewSection}</h2>
-	<div class="rounded-xl border border-border bg-surface-2 p-5">
-
-		<!-- Selectors -->
-		<div class="mb-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
-			<!-- Capability (required) -->
-			<div>
-				<label class="mb-1 block text-[11px] font-medium text-muted" for="preview-capability">
-					{t.workers.colCapability}
-				</label>
-				<select
-					id="preview-capability"
-					bind:value={previewCapability}
-					onchange={debouncedPreview}
-					class="w-full rounded-token border border-border bg-bg px-2 py-1.5 text-[12px] outline-none focus:border-text/40"
-				>
-					<option value="">{t.workers.previewCapabilityPlaceholder}</option>
-					{#each knownCapabilities as cap}
-						<option value={cap}>{cap}</option>
-					{/each}
-				</select>
-			</div>
-
-			<!-- Lane (optional) — datalist allows predefined values + free text -->
-			<div>
-				<label class="mb-1 block text-[11px] font-medium text-muted" for="preview-lane">
-					{t.workers.previewLaneLabel}
-				</label>
-				<input
-					id="preview-lane"
-					list="preview-lane-list"
-					bind:value={previewLane}
-					oninput={debouncedPreview}
-					placeholder={t.workers.previewLanePlaceholder}
-					class="w-full rounded-token border border-border bg-bg px-2 py-1.5 text-[12px] outline-none focus:border-text/40"
-				/>
-				<datalist id="preview-lane-list">
-					{#each ['youtube', 'podcast', 'email', 'linkedin', 'url'] as lane}
-						<option value={lane}></option>
-					{/each}
-				</datalist>
-			</div>
-
-			<!-- Sensitivity (optional) -->
-			<div>
-				<label class="mb-1 block text-[11px] font-medium text-muted" for="preview-sensitivity">
-					{t.workers.previewSensitivityLabel}
-				</label>
-				<select
-					id="preview-sensitivity"
-					bind:value={previewSensitivity}
-					onchange={debouncedPreview}
-					class="w-full rounded-token border border-border bg-bg px-2 py-1.5 text-[12px] outline-none focus:border-text/40"
-				>
-					<option value="public">{t.workers.previewSensitivityPublic}</option>
-					<option value="private">{t.workers.previewSensitivityPrivate}</option>
-				</select>
-			</div>
-		</div>
-
-		<button
-			class="mb-4 cursor-pointer rounded-token border border-border bg-bg px-4 py-1.5 text-[12px] font-semibold hover:bg-hover disabled:opacity-40"
-			onclick={fetchPreview}
-			disabled={!previewCapability || previewLoading}
-		>
-			{previewLoading ? t.workers.previewSimulating : t.workers.previewSimulateBtn}
-		</button>
-
-		<!-- Results -->
-		{#if !previewCapability}
-			<p class="text-[12px] text-muted">{t.workers.previewNoCapability}</p>
-		{:else if previewLoading}
-			<p class="text-[12px] text-muted">{t.workers.previewSimulating}</p>
-		{:else if previewError}
-			<p class="text-[12px] text-red-500">{t.workers.previewError}</p>
-		{:else if previewResult}
-			{@const eligibleCandidates = (previewResult.candidates ?? []).filter((c) => c.eligible)}
-
-			{#if previewExcludes.size > 0}
-				<p class="mb-3 text-[11px] text-muted" aria-live="polite">
-					{t.workers.previewWhatIfNote}: {[...previewExcludes].join(', ')}{t.workers.previewWhatIfSuffix}
-				</p>
-			{/if}
-
-			{#if !previewResult.winner && eligibleCandidates.length === 0}
-				<p class="text-[12px] text-muted">{t.workers.previewEmpty}</p>
-			{:else}
-				<!-- Winner badge -->
-				{#if previewResult.winner}
-					<div class="mb-4 flex items-center gap-2">
-						<span class="text-[11px] font-semibold uppercase tracking-wide text-muted"
-							>{t.workers.previewWinner}</span
-						>
-						<span
-							class="rounded-full bg-green/20 px-3 py-0.5 font-mono text-[12px] font-semibold text-green"
-						>
-							{previewResult.winner}
-						</span>
-					</div>
-				{/if}
-
-				<!-- Candidates table -->
-				<div class="overflow-x-auto">
-					<table class="w-full border-collapse text-[12px]">
-						<thead>
-							<tr class="border-b border-border text-left text-[11px] text-muted">
-								<th class="pb-1.5 pr-3 font-medium">{t.workers.previewColWorker}</th>
-								<th class="pb-1.5 pr-3 font-medium">{t.workers.previewColHealth}</th>
-								<th class="pb-1.5 pr-3 font-medium">{t.workers.previewColCost}</th>
-								<th class="pb-1.5 pr-3 font-medium">{t.workers.previewColQuality}</th>
-								<th class="pb-1.5 pr-3 font-medium">{t.workers.previewColScore}</th>
-								<th class="pb-1.5 pr-3 font-medium">{t.workers.previewColPos}</th>
-								<th class="pb-1.5 pr-3 font-medium">{t.workers.previewColReason}</th>
-								<th class="pb-1.5 font-medium">{t.workers.previewColExclude}</th>
-							</tr>
-						</thead>
-						<tbody>
-							{#each (previewResult.candidates ?? []) as c}
-								{@const health = candidateHealth(c)}
-								<tr
-									class="border-b border-border/50 last:border-0 {c.selected
-										? 'bg-green/5'
-										: ''} {previewExcludes.has(c.name) ? 'opacity-40' : ''}"
-								>
-									<td class="py-1.5 pr-3 font-mono text-[11px]">{c.name}</td>
-									<td class="py-1.5 pr-3">
-										<span
-											class={health === 'fresh'
-												? 'text-green'
-												: health === 'exempt'
-													? 'text-muted'
-													: 'text-orange-400'}
-										>
-											{health === 'fresh'
-												? t.workers.previewHealthFresh
-												: health === 'exempt'
-													? t.workers.previewHealthExempt
-													: t.workers.previewHealthStale}
-										</span>
-									</td>
-									<td class="py-1.5 pr-3 tabular-nums">{Number(c.cost_credit ?? 0).toFixed(2)}</td>
-									<td class="py-1.5 pr-3 tabular-nums">{Number(c.quality ?? 0).toFixed(2)}</td>
-									<td class="py-1.5 pr-3 tabular-nums font-semibold"
-										>{c.eligible ? Number(c.score ?? 0).toFixed(2) : '—'}</td
-									>
-									<td class="py-1.5 pr-3 tabular-nums"
-										>{c.fallback_pos > 0 ? c.fallback_pos : '—'}</td
-									>
-									<td class="py-1.5 pr-3 text-[11px] text-muted">{c.reason || '—'}</td>
-									<td class="py-1.5">
-										<input
-											type="checkbox"
-											checked={previewExcludes.has(c.name)}
-											onchange={() => togglePreviewExclude(c.name)}
-											aria-label="{t.workers.previewExcludeAriaLabel} {c.name}"
-											class="cursor-pointer"
-										/>
-									</td>
-								</tr>
-							{/each}
-						</tbody>
-					</table>
-				</div>
-			{/if}
-		{/if}
-	</div>
-</section>
-
-</div><!-- end grid -->
