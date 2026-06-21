@@ -42,6 +42,12 @@ type DispatchDB interface {
 	// TouchCollectorAttempted stamps last_attempt_at = now() before each wake. Called regardless
 	// of whether the runner succeeds — the collector itself stamps last_collect_at on success.
 	TouchCollectorAttempted(ctx context.Context, name string) error
+	// StampDispatchError records a wake failure in providers.last_error (capped to
+	// maxDispatchErrorRunes runes). Called best-effort on runner.Run failure.
+	StampDispatchError(ctx context.Context, name, msg string) error
+	// ClearDispatchError sets providers.last_error = NULL on a successful wake so stale
+	// failure messages do not persist after a placement recovers.
+	ClearDispatchError(ctx context.Context, name string) error
 }
 
 // Dispatcher reads desired state from the DB and wakes providers. One wake per provider per pass
@@ -79,7 +85,14 @@ func (d *Dispatcher) DispatchOnce(ctx context.Context) error {
 			continue
 		}
 		if err := d.runner.Run(ctx, buildRunRequest(prov)); err != nil {
-			log.Printf("dispatch: wake %q: %v", name, err) // best-effort
+			log.Printf("dispatch: wake %q: %v", name, err)
+			if serr := d.db.StampDispatchError(ctx, name, err.Error()); serr != nil {
+				log.Printf("dispatch: stamp error %q: %v", name, serr) // best-effort
+			}
+		} else {
+			if cerr := d.db.ClearDispatchError(ctx, name); cerr != nil {
+				log.Printf("dispatch: clear error %q: %v", name, cerr) // best-effort
+			}
 		}
 	}
 
@@ -97,7 +110,14 @@ func (d *Dispatcher) DispatchOnce(ctx context.Context) error {
 			continue // don't wake without stamping — throttle would be bypassed
 		}
 		if err := d.runner.Run(ctx, buildRunRequest(prov)); err != nil {
-			log.Printf("dispatch: wake collector %q: %v", prov.Name, err) // best-effort; throttled by last_attempt_at
+			log.Printf("dispatch: wake collector %q: %v", prov.Name, err)
+			if serr := d.db.StampDispatchError(ctx, prov.Name, err.Error()); serr != nil {
+				log.Printf("dispatch: stamp error collector %q: %v", prov.Name, serr) // best-effort
+			}
+		} else {
+			if cerr := d.db.ClearDispatchError(ctx, prov.Name); cerr != nil {
+				log.Printf("dispatch: clear error collector %q: %v", prov.Name, cerr) // best-effort
+			}
 		}
 	}
 	return nil

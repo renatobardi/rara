@@ -7,10 +7,31 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+// maxDispatchErrorRunes is the rune cap applied to last_error before writing to Postgres.
+// 1000 runes covers any human-readable error message while guarding against unbounded blobs.
+const maxDispatchErrorRunes = 1000
+
+// capDispatchError truncates s to maxDispatchErrorRunes runes (not bytes) so multi-byte UTF-8
+// characters are never split.
+func capDispatchError(s string) string {
+	if utf8.RuneCountInString(s) <= maxDispatchErrorRunes {
+		return s
+	}
+	n := 0
+	for i := range s {
+		if n == maxDispatchErrorRunes {
+			return s[:i]
+		}
+		n++
+	}
+	return s
+}
 
 // pgxDispatchDB implements DispatchDB against a live Neon PostgreSQL pool.
 type pgxDispatchDB struct {
@@ -133,3 +154,19 @@ func (d *pgxDispatchDB) TouchCollectorAttempted(ctx context.Context, name string
 // maxProviderEnvBytes caps the JSONB we deserialize — defense-in-depth against a runaway env blob,
 // independent of the upstream JSON-object constraint. Per-run config is a handful of small vars.
 const maxProviderEnvBytes = 10240
+
+func (d *pgxDispatchDB) StampDispatchError(ctx context.Context, name, msg string) error {
+	const q = `UPDATE providers SET last_error = $2, last_attempt_at = now() WHERE name = $1`
+	if _, err := d.pool.Exec(ctx, q, name, capDispatchError(msg)); err != nil {
+		return fmt.Errorf("stamp dispatch error %q: %w", name, err)
+	}
+	return nil
+}
+
+func (d *pgxDispatchDB) ClearDispatchError(ctx context.Context, name string) error {
+	const q = `UPDATE providers SET last_error = NULL WHERE name = $1`
+	if _, err := d.pool.Exec(ctx, q, name); err != nil {
+		return fmt.Errorf("clear dispatch error %q: %w", name, err)
+	}
+	return nil
+}

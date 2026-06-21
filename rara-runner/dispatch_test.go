@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"sort"
+	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // mockDispatchDB is the in-memory fake for DispatchOnce tests.
@@ -11,11 +13,15 @@ type mockDispatchDB struct {
 	steps         []AssignedStep
 	providers     map[string]DispatchProvider
 	dueCollectors []DispatchProvider
-	attempted     map[string]int // name -> TouchCollectorAttempted call count
+	attempted     map[string]int    // name -> TouchCollectorAttempted call count
+	stampedErrors map[string]string // name -> last StampDispatchError msg
+	clearedErrors map[string]int    // name -> ClearDispatchError call count
 	listErr       error
 	getErr        error
 	collectErr    error
 	attemptErr    error
+	stampErr      error
+	clearErr      error
 }
 
 func (m *mockDispatchDB) ListAssignedSteps(_ context.Context) ([]AssignedStep, error) {
@@ -40,6 +46,22 @@ func (m *mockDispatchDB) TouchCollectorAttempted(_ context.Context, name string)
 	}
 	m.attempted[name]++
 	return m.attemptErr
+}
+
+func (m *mockDispatchDB) StampDispatchError(_ context.Context, name, msg string) error {
+	if m.stampedErrors == nil {
+		m.stampedErrors = make(map[string]string)
+	}
+	m.stampedErrors[name] = msg
+	return m.stampErr
+}
+
+func (m *mockDispatchDB) ClearDispatchError(_ context.Context, name string) error {
+	if m.clearedErrors == nil {
+		m.clearedErrors = make(map[string]int)
+	}
+	m.clearedErrors[name]++
+	return m.clearErr
 }
 
 // runOnce is a test helper that wires up a Dispatcher and calls DispatchOnce once.
@@ -303,6 +325,113 @@ func TestDispatchOnceNoDueCollectors(t *testing.T) {
 	if len(tr.called) != 0 {
 		t.Errorf("runner called %d times, want 0 when no collectors due", len(tr.called))
 	}
+}
+
+// --- StampDispatchError / ClearDispatchError ------------------------------------
+
+func TestDispatchOnceWorkerRunnerErrorStampsLastError(t *testing.T) {
+	db := &mockDispatchDB{
+		steps:     []AssignedStep{{ItemID: 1, Seq: 2, AssignedProvider: "gate-barato"}},
+		providers: map[string]DispatchProvider{"gate-barato": {Name: "gate-barato", Runtime: runtimeCloudRun}},
+	}
+	tr := &fakeTransport{err: errBoom{}}
+	if err := (&Dispatcher{db: db, runner: tr}).DispatchOnce(context.Background()); err != nil {
+		t.Fatalf("DispatchOnce: %v", err)
+	}
+	msg, ok := db.stampedErrors["gate-barato"]
+	if !ok {
+		t.Fatal("StampDispatchError not called for failed worker wake")
+	}
+	if msg == "" {
+		t.Error("StampDispatchError called with empty msg")
+	}
+}
+
+func TestDispatchOnceWorkerRunnerSuccessClearsLastError(t *testing.T) {
+	db := &mockDispatchDB{
+		steps:     []AssignedStep{{ItemID: 1, Seq: 2, AssignedProvider: "gate-barato"}},
+		providers: map[string]DispatchProvider{"gate-barato": {Name: "gate-barato", Runtime: runtimeCloudRun}},
+	}
+	runOnce(t, db)
+	if db.clearedErrors["gate-barato"] != 1 {
+		t.Errorf("ClearDispatchError called %d times, want 1 on success", db.clearedErrors["gate-barato"])
+	}
+}
+
+func TestDispatchOnceCollectorRunnerErrorStampsLastError(t *testing.T) {
+	db := &mockDispatchDB{
+		dueCollectors: []DispatchProvider{{Name: "harvest", Runtime: runtimeCloudRun}},
+	}
+	tr := &fakeTransport{err: errBoom{}}
+	if err := (&Dispatcher{db: db, runner: tr}).DispatchOnce(context.Background()); err != nil {
+		t.Fatalf("DispatchOnce: %v", err)
+	}
+	msg, ok := db.stampedErrors["harvest"]
+	if !ok {
+		t.Fatal("StampDispatchError not called for failed collector wake")
+	}
+	if msg == "" {
+		t.Error("StampDispatchError called with empty msg")
+	}
+}
+
+func TestDispatchOnceCollectorRunnerSuccessClearsLastError(t *testing.T) {
+	db := &mockDispatchDB{
+		dueCollectors: []DispatchProvider{{Name: "harvest", Runtime: runtimeCloudRun}},
+	}
+	runOnce(t, db)
+	if db.clearedErrors["harvest"] != 1 {
+		t.Errorf("ClearDispatchError called %d times, want 1 on success", db.clearedErrors["harvest"])
+	}
+}
+
+func TestDispatchOnceStampErrorIsBestEffort(t *testing.T) {
+	// A StampDispatchError failure must not stop the loop or return an error.
+	db := &mockDispatchDB{
+		steps:     []AssignedStep{{ItemID: 1, Seq: 2, AssignedProvider: "gate-barato"}},
+		providers: map[string]DispatchProvider{"gate-barato": {Name: "gate-barato", Runtime: runtimeCloudRun}},
+		stampErr:  errBoom{},
+	}
+	tr := &fakeTransport{err: errBoom{}}
+	if err := (&Dispatcher{db: db, runner: tr}).DispatchOnce(context.Background()); err != nil {
+		t.Errorf("DispatchOnce must swallow stamp errors, got %v", err)
+	}
+}
+
+func TestDispatchOnceClearErrorIsBestEffort(t *testing.T) {
+	db := &mockDispatchDB{
+		steps:     []AssignedStep{{ItemID: 1, Seq: 2, AssignedProvider: "gate-barato"}},
+		providers: map[string]DispatchProvider{"gate-barato": {Name: "gate-barato", Runtime: runtimeCloudRun}},
+		clearErr:  errBoom{},
+	}
+	if err := runOnceErr((&Dispatcher{db: db, runner: &fakeTransport{}})); err != nil {
+		t.Errorf("DispatchOnce must swallow clear errors, got %v", err)
+	}
+}
+
+func TestStampDispatchErrorTruncatesLongMsg(t *testing.T) {
+	// The pgxDispatchDB implementation must cap msg at maxDispatchErrorRunes before writing.
+	// We test the cap function directly; db.go integration is validated by the rune count.
+	longMsg := strings.Repeat("é", maxDispatchErrorRunes+10) // é = 2 bytes each
+	capped := capDispatchError(longMsg)
+	if utf8.RuneCountInString(capped) != maxDispatchErrorRunes {
+		t.Errorf("capped rune count = %d, want %d", utf8.RuneCountInString(capped), maxDispatchErrorRunes)
+	}
+	if !utf8.ValidString(capped) {
+		t.Error("capped string is not valid UTF-8")
+	}
+}
+
+func TestStampDispatchErrorShortMsgUnchanged(t *testing.T) {
+	short := "image not in allowlist"
+	if got := capDispatchError(short); got != short {
+		t.Errorf("capDispatchError(%q) = %q, want unchanged", short, got)
+	}
+}
+
+// runOnceErr is like runOnce but returns any error from DispatchOnce instead of failing.
+func runOnceErr(d *Dispatcher) error {
+	return d.DispatchOnce(context.Background())
 }
 
 type errBoom struct{}
