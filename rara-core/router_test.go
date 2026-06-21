@@ -417,6 +417,15 @@ func TestConstraintsSatisfiedRejectsUnknownKeys(t *testing.T) {
 	}
 }
 
+// TestConstraintsSatisfiedRejectsUnknownSensitivity: an unrecognized sensitivity value must
+// fail closed — same pattern as the requires field's switch statement.
+func TestConstraintsSatisfiedRejectsUnknownSensitivity(t *testing.T) {
+	p := Provider{Name: "p", Constraints: json.RawMessage(`{"sensitivity":"typo_thirdparty"}`)}
+	if constraintsSatisfied(p, routerItem) {
+		t.Error("unknown sensitivity value should fail closed (return false), but returned true")
+	}
+}
+
 // TestRouterSelectForStepTypoFallbackPreservesGlobalPolicy: a stepFallback with all-typo
 // provider names must NOT override the global policy — the global policy ("premium" first)
 // must be preserved, so premium wins rather than falling to alphabetical (cheap).

@@ -197,8 +197,15 @@ func constraintsSatisfied(p Provider, item Item) bool {
 	if len(c.Accepts) > 0 && !containsString(c.Accepts, item.Lane) {
 		return false
 	}
-	if item.Sensitivity == sensitivityPrivate && c.Sensitivity == constraintThirdParty {
-		return false
+	switch c.Sensitivity {
+	case "":
+		// no restriction
+	case constraintThirdParty:
+		if item.Sensitivity == sensitivityPrivate {
+			return false
+		}
+	default:
+		return false // unknown sensitivity value: fail closed
 	}
 	return true
 }
