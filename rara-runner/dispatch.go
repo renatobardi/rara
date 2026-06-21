@@ -7,7 +7,24 @@ package main
 import (
 	"context"
 	"log"
+	"regexp"
+	"time"
 )
+
+// obsCtxTimeout is the deadline for best-effort observability writes (StampDispatchError /
+// ClearDispatchError). Short enough to not stall the loop; long enough for a pgx round-trip.
+const obsCtxTimeout = 5 * time.Second
+
+// bearerRe matches "Bearer <token>" patterns that net/http can echo into error strings when
+// the Authorization header is reflected back in a transport-layer error message.
+var bearerRe = regexp.MustCompile(`(?i)(bearer\s+)\S+`)
+
+// sanitizeDispatchMsg redacts bearer tokens from a runner error string before it is
+// persisted to providers.last_error. The cap (maxDispatchErrorRunes) is applied here so
+// callers always get a safe, bounded string.
+func sanitizeDispatchMsg(s string) string {
+	return capDispatchError(bearerRe.ReplaceAllString(s, "${1}[REDACTED]"))
+}
 
 // AssignedStep is the minimal projection of item_steps the dispatcher needs: who is assigned and
 // to which provider. The provider's own poll loop handles item discovery; the dispatcher only wakes.
@@ -42,6 +59,12 @@ type DispatchDB interface {
 	// TouchCollectorAttempted stamps last_attempt_at = now() before each wake. Called regardless
 	// of whether the runner succeeds — the collector itself stamps last_collect_at on success.
 	TouchCollectorAttempted(ctx context.Context, name string) error
+	// StampDispatchError records a wake failure in providers.last_error (capped to
+	// maxDispatchErrorRunes runes). Called best-effort on runner.Run failure.
+	StampDispatchError(ctx context.Context, name, msg string) error
+	// ClearDispatchError sets providers.last_error = NULL on a successful wake so stale
+	// failure messages do not persist after a placement recovers.
+	ClearDispatchError(ctx context.Context, name string) error
 }
 
 // Dispatcher reads desired state from the DB and wakes providers. One wake per provider per pass
@@ -79,7 +102,21 @@ func (d *Dispatcher) DispatchOnce(ctx context.Context) error {
 			continue
 		}
 		if err := d.runner.Run(ctx, buildRunRequest(prov)); err != nil {
-			log.Printf("dispatch: wake %q: %v", name, err) // best-effort
+			// Sanitize before log and DB: exported logs (GCP Logging) have the same exposure risk
+			// as the UI. Fresh context: pass ctx may be cancelled; the stamp must still land.
+			msg := sanitizeDispatchMsg(err.Error())
+			log.Printf("dispatch: wake %q: %v", name, msg)
+			obsCtx, obsCancel := context.WithTimeout(context.Background(), obsCtxTimeout)
+			if serr := d.db.StampDispatchError(obsCtx, name, msg); serr != nil {
+				log.Printf("dispatch: stamp error %q: %v", name, serr) // best-effort
+			}
+			obsCancel()
+		} else {
+			obsCtx, obsCancel := context.WithTimeout(context.Background(), obsCtxTimeout)
+			if cerr := d.db.ClearDispatchError(obsCtx, name); cerr != nil {
+				log.Printf("dispatch: clear error %q: %v", name, cerr) // best-effort
+			}
+			obsCancel()
 		}
 	}
 
@@ -97,7 +134,19 @@ func (d *Dispatcher) DispatchOnce(ctx context.Context) error {
 			continue // don't wake without stamping — throttle would be bypassed
 		}
 		if err := d.runner.Run(ctx, buildRunRequest(prov)); err != nil {
-			log.Printf("dispatch: wake collector %q: %v", prov.Name, err) // best-effort; throttled by last_attempt_at
+			msg := sanitizeDispatchMsg(err.Error()) // same rationale as worker loop above
+			log.Printf("dispatch: wake collector %q: %v", prov.Name, msg)
+			obsCtx, obsCancel := context.WithTimeout(context.Background(), obsCtxTimeout)
+			if serr := d.db.StampDispatchError(obsCtx, prov.Name, msg); serr != nil {
+				log.Printf("dispatch: stamp error collector %q: %v", prov.Name, serr) // best-effort
+			}
+			obsCancel()
+		} else {
+			obsCtx, obsCancel := context.WithTimeout(context.Background(), obsCtxTimeout)
+			if cerr := d.db.ClearDispatchError(obsCtx, prov.Name); cerr != nil {
+				log.Printf("dispatch: clear error collector %q: %v", prov.Name, cerr) // best-effort
+			}
+			obsCancel()
 		}
 	}
 	return nil
