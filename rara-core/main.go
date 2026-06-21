@@ -252,9 +252,9 @@ type Capability struct {
 // Provider is a concrete implementation of a capability.
 type Provider struct {
 	Name          string          `json:"name"`
-	Capability    string          `json:"capability"` // must reference an existing capability (FK)
-	Runtime       string          `json:"runtime"`    // local | cloudrun | vpc
-	Activation    string          `json:"activation"` // resident | on_demand
+	Capability    string          `json:"capability"`            // must reference an existing capability (FK)
+	Runtime       string          `json:"runtime"`               // local | cloudrun | vpc
+	Activation    string          `json:"activation"`            // resident | on_demand
 	Constraints   json.RawMessage `json:"constraints,omitempty"` // "" => '{}'
 	Enabled       bool            `json:"enabled"`
 	HeartbeatAt   *time.Time      `json:"heartbeat_at,omitempty"`
@@ -338,7 +338,7 @@ func stepFallbackFromOptions(options json.RawMessage) json.RawMessage {
 
 // RoutingPolicy is an ordered fallback list scoped to a capability or globally.
 type RoutingPolicy struct {
-	Scope    string          `json:"scope"`             // 'global' or a capability name
+	Scope    string          `json:"scope"`              // 'global' or a capability name
 	Fallback json.RawMessage `json:"fallback,omitempty"` // ordered list of provider names
 }
 

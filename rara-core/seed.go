@@ -242,7 +242,7 @@ func SeedYouTubeLane(ctx context.Context, db Database) error {
 		// same block. Contrast with clip/rara-clip (Bright Data proxies do the unblock,
 		// so the host IP doesn't matter → no residential constraint on that provider).
 		{Name: provASRYouTube, Capability: capTranscrever, Runtime: runtimeLocal, Activation: activationResident,
-			Worker: provASRYouTube,
+			Worker:      provASRYouTube,
 			Constraints: []byte(`{"requires":"residential","accepts":["youtube"]}`), Enabled: true},
 	}
 	for _, p := range providers {
@@ -285,7 +285,7 @@ func SeedPodcastLane(ctx context.Context, db Database) error {
 	// transcrever: direct-audio ASR — any runtime (no residential), accepts only podcast.
 	if err := db.UpsertProvider(ctx, Provider{
 		Name: provASRDirectAudio, Capability: capTranscrever, Runtime: runtimeCloudRun, Activation: activationOnDemand,
-		Worker: provASRDirectAudio,
+		Worker:      provASRDirectAudio,
 		Constraints: []byte(`{"accepts":["podcast"]}`), Enabled: true,
 	}); err != nil {
 		return err
@@ -324,7 +324,7 @@ func SeedEmailLane(ctx context.Context, db Database) error {
 	// extrair: deterministic HTML/quote/signature cleaning — any runtime, accepts only email.
 	if err := db.UpsertProvider(ctx, Provider{
 		Name: provExtrairEmail, Capability: capExtrair, Runtime: runtimeCloudRun, Activation: activationOnDemand,
-		Worker: provExtrairEmail,
+		Worker:      provExtrairEmail,
 		Constraints: []byte(`{"accepts":["email"]}`), Enabled: true,
 	}); err != nil {
 		return err
@@ -367,7 +367,7 @@ func SeedNewsLane(ctx context.Context, db Database) error {
 	// extrair: deterministic HTML/boilerplate cleaning — any runtime, accepts only news.
 	if err := db.UpsertProvider(ctx, Provider{
 		Name: provExtrairNews, Capability: capExtrair, Runtime: runtimeCloudRun, Activation: activationOnDemand,
-		Worker: provExtrairNews,
+		Worker:      provExtrairNews,
 		Constraints: []byte(`{"accepts":["news"]}`), Enabled: true,
 	}); err != nil {
 		return err

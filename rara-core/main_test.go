@@ -1308,7 +1308,7 @@ func TestProviderRunnerURL(t *testing.T) {
 	p := Provider{
 		Name: "vpc-scribe", Capability: capTranscrever,
 		Runtime: runtimeVPC, Activation: activationResident,
-		Enabled: true,
+		Enabled:   true,
 		RunnerURL: "http://100.64.1.1:7800",
 	}
 	if err := db.UpsertProvider(ctx, p); err != nil {
@@ -1333,7 +1333,7 @@ func TestProviderEnv(t *testing.T) {
 		Name: "distill", Capability: capDestilar,
 		Runtime: runtimeCloudRun, Activation: activationOnDemand,
 		Enabled: true,
-		Env: []byte(`{"DISTILL_PROVIDER":"distill","FUTURE_KNOB":"x"}`),
+		Env:     []byte(`{"DISTILL_PROVIDER":"distill","FUTURE_KNOB":"x"}`),
 	}
 	if err := db.UpsertProvider(ctx, p); err != nil {
 		t.Fatalf("UpsertProvider: %v", err)
