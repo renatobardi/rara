@@ -648,7 +648,7 @@
 												<th class="py-1.5 pr-3 font-medium">{t.workers.colRuntime}</th>
 												<th class="py-1.5 pr-3 font-medium">{t.workers.colActivation}</th>
 												<th class="py-1.5 pr-3 font-medium">{t.workers.colEnabled}</th>
-												<th class="py-1.5 pr-3"></th>
+												<th class="py-1.5 pr-3" aria-label={t.workers.lastErrorLabel}></th>
 												<th class="py-1.5 pr-3"></th>
 											</tr>
 										</thead>

@@ -145,8 +145,6 @@
 		serverError = '';
 
 		const payload: Provider = {
-			// preserve all original fields when editing so upsert doesn't wipe them
-			...(initial ?? {}),
 			worker: worker.trim(),
 			name: name.trim(),
 			capability: capability.trim(),
@@ -155,20 +153,14 @@
 			enabled
 		};
 
-		// omit runner_url when empty
 		if (runnerUrl.trim()) payload.runner_url = runnerUrl.trim();
-		else delete payload.runner_url;
 
-		// omit env when empty
 		if (envRaw.trim()) {
 			payload.env = JSON.parse(envRaw.trim());
-		} else {
-			delete payload.env;
 		}
 
 		const constraints = buildConstraints();
 		if (constraints) payload.constraints = constraints;
-		else delete payload.constraints;
 
 		try {
 			await onSave(payload);
