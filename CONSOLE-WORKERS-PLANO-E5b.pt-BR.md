@@ -65,6 +65,12 @@ Observabilidade: `providers.last_error` (runner grava na falha; console mostra).
 `providers.app` (binário/imagem). Dispatcher mira `job = jobPrefix + app` e imagem por `app` (não pelo
 nome). Identidade do worker vem do `env` (injetado no wake). Decoupla nome ↔ targeting.
 
+### 1.7 Chaves de identidade no `env` (segurança)
+O dispatcher injeta as chaves de identidade (`SIFT_GATE`, `SIFT_PROVIDER`, etc.) automaticamente por
+`capability` + `runtime`; o operador **não as edita** na console (campos de identidade são read-only
+no form). Valores sensíveis (tokens, creds) nunca aparecem na UI nem em logs; o dispatcher sanitiza
+`providers.last_error` antes de gravar (ver `dispatch.go:sanitizeDispatchMsg`).
+
 ## 2. Inventário de varredura (grep dos nomes antigos)
 
 Termos: `gate-barato(-local)`, `gate-rico(-local)`, `asr-youtube`, `asr-direct-audio`,
@@ -96,7 +102,8 @@ Validar na branch Neon do PR; aplicar em baixa atividade; migration atômica; re
     antigos). Zero gap.
   - **Fase B (cutover+limpeza):** migration/seed flipa `providers.app` → gate/extract/transcribe +
     allowlist (ops) → próximo dispatch vai pro job novo; remove jobs/imagens órfãos.
-  - ~6 fatias (3 apps × A/B), ordem aditiva.
+  - ~6 fatias: Fase A (gate/extract/transcribe) em paralelo (aditivo, sem risco); Fase B em
+    **serial** (gate → extract → transcribe) para limitar blast radius — um app por vez.
 - **P3** — ops/runners: subir agent no Mac; operador adiciona placements vpc/mac via console.
 - **P4** — console: mostra `description`; enable/ordem por placement; `capability`/`runtime` RO no
   edit; `runner_url` só vpc/mac; mostra `last_error`; constraints travadas; sem deploy pela UI.
