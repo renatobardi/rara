@@ -244,12 +244,15 @@ func TestProviderLastErrorTruncatedAtRead(t *testing.T) {
 	p.LastError = &long
 	db.providers["distill"] = p
 
-	got, _, _ := db.GetProvider(ctx, "distill")
+	got, found, err := db.GetProvider(ctx, "distill")
+	if err != nil || !found {
+		t.Fatalf("GetProvider: found=%v err=%v", found, err)
+	}
 	if got.LastError == nil {
 		t.Fatal("last_error unexpectedly nil")
 	}
-	if len(*got.LastError) > maxProviderErrorLen {
-		t.Errorf("last_error len = %d, want ≤ %d", len(*got.LastError), maxProviderErrorLen)
+	if len([]rune(*got.LastError)) > maxProviderErrorLen {
+		t.Errorf("last_error rune count = %d, want ≤ %d", len([]rune(*got.LastError)), maxProviderErrorLen)
 	}
 }
 

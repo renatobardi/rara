@@ -67,10 +67,10 @@ type flowStepKey struct {
 }
 
 // capProviderError mirrors the scanProvider truncation guard so MockDatabase reads are
-// consistent with the real pgxDatabase (both cap last_error at maxProviderErrorLen).
+// consistent with the real pgxDatabase (both cap last_error via truncateErrorMsg).
 func capProviderError(p Provider) Provider {
-	if p.LastError != nil && len(*p.LastError) > maxProviderErrorLen {
-		s := (*p.LastError)[:maxProviderErrorLen]
+	if p.LastError != nil {
+		s := truncateErrorMsg(*p.LastError)
 		p.LastError = &s
 	}
 	return p
