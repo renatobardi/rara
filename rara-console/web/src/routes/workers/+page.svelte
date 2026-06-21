@@ -34,6 +34,9 @@
 
 	type RoutingPolicy = {
 		scope: string;
+		// ponytail: kept optional for pass-through until P0b drops the columns
+		cost_weight?: number;
+		quality_weight?: number;
 		fallback: string[];
 	};
 
@@ -219,7 +222,11 @@
 	async function saveRoutingPolicy() {
 		routingSaving = true;
 		routingMsg = '';
-		const payload = {
+		const existing = policies.find((p) => p.scope === selectedScope);
+		// ponytail: pass-through until P0b drops the columns; slider removed but weights preserved
+		const payload: RoutingPolicy = {
+			...(existing?.cost_weight !== undefined ? { cost_weight: existing.cost_weight } : {}),
+			...(existing?.quality_weight !== undefined ? { quality_weight: existing.quality_weight } : {}),
 			scope: selectedScope,
 			fallback: editFallback
 		};

@@ -153,6 +153,9 @@
 			capability: capability.trim(),
 			runtime,
 			activation,
+			// ponytail: pass-through until P0b drops the columns; not editable via UI
+			cost: initial?.cost ?? 0,
+			quality: initial?.quality ?? 1,
 			enabled
 		};
 
