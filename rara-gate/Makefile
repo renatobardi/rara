@@ -1,7 +1,7 @@
 .PHONY: help test test-verbose test-coverage test-race lint fmt clean build build-arm64 docker-build deps all
 
 help:
-	@echo "rara-sift - Makefile Commands"
+	@echo "rara-gate - Makefile Commands"
 	@echo ""
 	@echo "Testing:"
 	@echo "  make test              Run all tests"
@@ -58,26 +58,26 @@ fmt:
 # Build targets
 build:
 	@echo "Building for current OS..."
-	go build -ldflags="-w -s" -o sift-job .
-	@echo "Built: sift-job"
+	go build -ldflags="-w -s" -o gate-job .
+	@echo "Built: gate-job"
 
 # ARM64 = the VPC Oracle (Ampere) and Mac (Apple Silicon) runner hosts. Cloud Run runs amd64
 # (the default `make build` / the buildx amd64 leaf). The shipped image is multi-arch — see
 # ../DOCKER-MULTIMODULE.md; this target is just a local arm64 smoke build.
 build-arm64:
 	@echo "Building ARM64 binary..."
-	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags="-w -s" -o sift-job-arm64 .
-	@echo "Built: sift-job-arm64"
+	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags="-w -s" -o gate-job-arm64 .
+	@echo "Built: gate-job-arm64"
 
 docker-build:
 	@echo "Building Docker image..."
-	docker build -t rara-sift:latest .
-	@echo "Docker image built: rara-sift:latest"
+	docker build -t rara-gate:latest .
+	@echo "Docker image built: rara-gate:latest"
 
 # Maintenance
 clean:
 	@echo "Cleaning build artifacts..."
-	rm -f sift-job sift-job-arm64 coverage.out
+	rm -f gate-job gate-job-arm64 coverage.out
 	@echo "Clean complete"
 
 deps:

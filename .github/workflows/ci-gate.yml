@@ -1,4 +1,4 @@
-name: CI rara-sift
+name: CI rara-gate
 
 on:
   push:
@@ -6,17 +6,17 @@ on:
       - main
       - develop
     paths:
-      - 'rara-sift/**'
+      - 'rara-gate/**'
       - 'rara-addon/**'        # multi-module Dockerfile depends on the SDK — rebuild if it changes
-      - '.github/workflows/ci-sift.yml'
+      - '.github/workflows/ci-gate.yml'
   pull_request:
     branches:
       - main
       - develop
     paths:
-      - 'rara-sift/**'
+      - 'rara-gate/**'
       - 'rara-addon/**'        # multi-module Dockerfile depends on the SDK — rebuild if it changes
-      - '.github/workflows/ci-sift.yml'
+      - '.github/workflows/ci-gate.yml'
 
 jobs:
   code-quality:
@@ -32,24 +32,24 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
         with:
-          go-version-file: rara-sift/go.mod
+          go-version-file: rara-gate/go.mod
 
       - name: Cache Go modules
         uses: actions/cache@6f8efc29b200d32929f49075959781ed54ec270c # v3
         with:
           path: ~/go/pkg/mod
-          key: ${{ runner.os }}-go-sift-${{ hashFiles('rara-sift/go.sum') }}
+          key: ${{ runner.os }}-go-gate-${{ hashFiles('rara-gate/go.sum') }}
           restore-keys: |
-            ${{ runner.os }}-go-sift-
+            ${{ runner.os }}-go-gate-
 
       - name: Download dependencies
         run: |
-          cd rara-sift
+          cd rara-gate
           go mod download
 
       - name: Format check
         run: |
-          cd rara-sift
+          cd rara-gate
           if [ -n "$(gofmt -s -l .)" ]; then
             echo "❌ Code formatting issues found. Run: gofmt -w ."
             gofmt -s -d .
@@ -59,19 +59,19 @@ jobs:
 
       - name: Lint
         run: |
-          cd rara-sift
+          cd rara-gate
           go vet ./...
           echo "✅ Vet check passed"
 
       - name: Run tests
         run: |
-          cd rara-sift
+          cd rara-gate
           go test -v -race -coverprofile=coverage.out ./...
           echo "✅ Tests passed"
 
       - name: Check coverage
         run: |
-          cd rara-sift
+          cd rara-gate
           go tool cover -func=coverage.out | tail -1
           echo "✅ Coverage report generated"
 
@@ -90,11 +90,11 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
         with:
-          go-version-file: rara-sift/go.mod
+          go-version-file: rara-gate/go.mod
 
       - name: Vulnerability scan (govulncheck)
         run: |
-          cd rara-sift
+          cd rara-gate
           go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
           "$(go env GOPATH)/bin/govulncheck" ./...
 
@@ -136,10 +136,10 @@ jobs:
         timeout-minutes: 15
         with:
           context: .
-          file: rara-sift/Dockerfile
+          file: rara-gate/Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: localhost:5000/rara-sift:ci
+          tags: localhost:5000/rara-gate:ci
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -148,8 +148,8 @@ jobs:
       # those out before counting so the check stays exact without disabling provenance.
       - name: Verify manifest list has both arches
         run: |
-          docker buildx imagetools inspect localhost:5000/rara-sift:ci
-          PLATFORMS=$(docker buildx imagetools inspect localhost:5000/rara-sift:ci \
+          docker buildx imagetools inspect localhost:5000/rara-gate:ci
+          PLATFORMS=$(docker buildx imagetools inspect localhost:5000/rara-gate:ci \
             --format '{{range .Manifest.Manifests}}{{if ne .Platform.OS "unknown"}}{{.Platform.OS}}/{{.Platform.Architecture}} {{end}}{{end}}')
           echo "Platforms in manifest list: $PLATFORMS"
           echo "$PLATFORMS" | grep -qw "linux/amd64" || { echo "❌ missing linux/amd64"; exit 1; }

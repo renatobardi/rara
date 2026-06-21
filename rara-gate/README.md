@@ -1,17 +1,17 @@
-# rara-sift — the curation gate
+# rara-gate — the curation gate
 
-`rara-sift` is the **curation gate** of the rara 2.0 pipeline: a bridge-total **claim-worker** on the
-[`rara-addon`](../rara-addon) SDK. 1.0 distilled everything; 2.0 **selects** — sift decides what is
+`rara-gate` is the **curation gate** of the rara 2.0 pipeline: a bridge-total **claim-worker** on the
+[`rara-addon`](../rara-addon) SDK. 1.0 distilled everything; 2.0 **selects** — gate decides what is
 worth the next (expensive) step.
 
-It serves two capabilities, both gates, by config:
+It serves **two workers**, both gates, selected by the `SIFT_GATE` env var:
 
-- **`gate_barato`** — judges an item's **metadata** (title/channel) *before* paying for transcription.
-- **`gate_rico`** — judges the **full text** *before* paying for distillation.
+| Worker | `SIFT_GATE` value | Capability | What it judges |
+|---|---|---|---|
+| **sift** | `gate_barato` | `gate_barato` | Item **metadata** (title/channel) — cheap, runs before transcription |
+| **assay** | `gate_rico` | `gate_rico` | Item **full text** — runs before distillation |
 
-One codebase, **four providers** by deploy: `gate-barato` / `gate-barato-local` and
-`gate-rico` / `gate-rico-local` (third-party on Cloud Run, self-host on the Mac/VPC). Codebases ≪
-providers — pick the gate with `SIFT_GATE` and the provider with `SIFT_PROVIDER`.
+One binary, two workers. The dispatcher sets `SIFT_GATE` + `SIFT_PROVIDER` per execution.
 
 ## The cascade (cheap → expensive)
 
@@ -36,12 +36,12 @@ with a fake judge.
 
 The split with `rara-core` is strict:
 
-- **sift DECIDES and RECORDS.** The handler reads the live `interest_profile` + `gate_rules`
+- **gate DECIDES and RECORDS.** The handler reads the live `interest_profile` + `gate_rules`
   (rara-core's tables, **SELECT only** — the 1.0 cross-agent isolation convention) and the item's
   metadata/text (the collector/scribe domain tables), runs the cascade, and writes a
   **`gate_decisions`** row. The step's `output_ref` is that row's id.
 - **rara-core ROUTES.** The reconciler reads the latest decision and routes the item:
-  `keep → advance`, `drop → filtered`, `defer → quarantine`. sift never touches item status.
+  `keep → advance`, `drop → filtered`, `defer → quarantine`. gate never touches item status.
 
 This keeps judgement in the worker and routing in the control plane.
 
@@ -58,17 +58,17 @@ This keeps judgement in the worker and routing in the control plane.
 ```bash
 cp .env.example .env   # fill DATABASE_URL, SIFT_GATE, SIFT_PROVIDER, LITELLM_BASE_URL
 make test              # zero-I/O unit tests (pure cascade + handler with a mock store + fake judge)
-make build             # local binary (sift-job)
+make build             # local binary (gate-job)
 go run .               # drain the queue once for (SIFT_GATE, SIFT_PROVIDER) and exit (on_demand)
 ```
 
 Default is **on_demand** (drain once, exit — the woken Cloud Run job). A resident deploy (the
-`*-local` providers on the Mac/VPC) opts into the long-running loop + symmetric activation via
+`*-vpc`/`*-mac` providers on the Mac/VPC) opts into the long-running loop + symmetric activation via
 `WORK_POLL_INTERVAL` and/or `POKE_ADDR` + `POKE_TOKEN`.
 
 ## Schema
 
-sift owns **no** table of its own. It reads rara-core's `interest_profile`/`gate_rules` and the
+gate owns **no** table of its own. It reads rara-core's `interest_profile`/`gate_rules` and the
 collector/scribe domain tables, and writes rara-core's append-only `gate_decisions` (which the
 reconciler also reads to route, and rara-core also writes on a quarantine rescue). All of these live
-in the one shared Neon database — there is **no `migrations/`** here and no `database-sift.yml`.
+in the one shared Neon database — there is **no `migrations/`** here and no `database-gate.yml`.

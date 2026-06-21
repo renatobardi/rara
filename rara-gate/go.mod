@@ -1,4 +1,4 @@
-module rara-sift
+module rara-gate
 
 go 1.26.4
 
@@ -8,7 +8,7 @@ require (
 )
 
 // rara-addon is the bridge-total SDK, a sibling module in this monorepo. A replace directive (not
-// a go.work) keeps rara-sift self-contained: it builds standalone in CI (cd rara-sift && go test)
+// a go.work) keeps rara-gate self-contained: it builds standalone in CI (cd rara-gate && go test)
 // and the P2 Docker build needs the replace anyway. A local go.work (gitignored) is optional
 // ergonomics; it is never committed.
 replace rara-addon => ../rara-addon

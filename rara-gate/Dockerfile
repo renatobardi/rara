@@ -2,7 +2,7 @@
 # ROOT, not this dir, so the `replace rara-addon => ../rara-addon` in go.mod resolves inside the
 # container. ONE image, two arches: amd64 (Cloud Run) + arm64 (VPC Oracle Ampere + Mac).
 # Build with buildx from the root:
-#   docker buildx build --platform linux/amd64,linux/arm64 -f rara-sift/Dockerfile .
+#   docker buildx build --platform linux/amd64,linux/arm64 -f rara-gate/Dockerfile .
 #
 # `--platform=$BUILDPLATFORM` pins the builder stage to the native runner arch and Go cross-compiles
 # via GOARCH=$TARGETARCH — no QEMU for the (slow) compile; only the tiny final alpine stage runs
@@ -18,25 +18,25 @@ RUN apk add --no-cache git
 
 # 1) the sibling SDK first (the `replace` target), 2) this module's go.mod/go.sum.
 COPY rara-addon/ ./rara-addon/
-COPY rara-sift/go.mod rara-sift/go.sum ./rara-sift/
+COPY rara-gate/go.mod rara-gate/go.sum ./rara-gate/
 
-WORKDIR /build/rara-sift
+WORKDIR /build/rara-gate
 RUN go mod download
 
-# Go sources only — rara-sift has no go:embed assets.
-COPY rara-sift/*.go ./
+# Go sources only — rara-gate has no go:embed assets.
+COPY rara-gate/*.go ./
 
 # Static, cross-compiled binary for the target arch (set by buildx per --platform entry).
-RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -ldflags="-w -s" -o /sift-job .
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -ldflags="-w -s" -o /gate-job .
 
-FROM alpine:3.21
+FROM alpine:3.21@sha256:48b0309ca019d89d40f670aa1bc06e426dc0931948452e8491e3d65087abc07d
 
 RUN apk add --no-cache ca-certificates
 
 WORKDIR /app
 
-COPY --from=builder /sift-job /app/sift-job
+COPY --from=builder /gate-job /app/gate-job
 
 USER nobody
 
-ENTRYPOINT ["/app/sift-job"]
+ENTRYPOINT ["/app/gate-job"]

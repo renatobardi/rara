@@ -1,4 +1,4 @@
-// rara-sift — the curation gate, a bridge-total claim-worker on the rara-addon SDK.
+// rara-gate — the curation gate, a bridge-total claim-worker on the rara-addon SDK.
 //
 // 1.0 distilled everything; 2.0 SELECTS. A gate is a capability: `gate_barato` judges an item's
 // METADATA before paying for transcription, `gate_rico` judges the full TEXT before paying for
@@ -924,7 +924,7 @@ func main() {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
 	defer pool.Close()
-	log.Printf("rara-sift worker %s/%s ready", gate, provider)
+	log.Printf("rara-gate worker %s/%s ready", gate, provider)
 
 	ac := addon.Config{
 		Capability:   gate,
@@ -936,7 +936,7 @@ func main() {
 		PokeToken:    os.Getenv("POKE_TOKEN"),
 	}
 	if err := addon.Run(ctx, ac, siftHandler(&appDB{pool: pool}, gate, judge)); err != nil {
-		log.Fatalf("sift worker %s/%s: %v", gate, provider, err)
+		log.Fatalf("rara-gate worker %s/%s: %v", gate, provider, err)
 	}
-	log.Printf("rara-sift worker %s/%s: queue drained", gate, provider)
+	log.Printf("rara-gate worker %s/%s: queue drained", gate, provider)
 }

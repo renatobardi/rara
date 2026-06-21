@@ -1,5 +1,6 @@
-sift-job
-rara-sift
+gate-job
+gate-job-arm64
+rara-gate
 coverage.out
 *.out
 .env
