@@ -14,8 +14,6 @@
 		capability: string;
 		runtime: string;
 		activation: string;
-		cost?: number;
-		quality?: number;
 		enabled: boolean;
 		heartbeat_at?: string;
 		constraints?: Constraints;
@@ -153,9 +151,6 @@
 			capability: capability.trim(),
 			runtime,
 			activation,
-			// ponytail: pass-through until P0b drops the columns; not editable via UI
-			cost: initial?.cost ?? 0,
-			quality: initial?.quality ?? 1,
 			enabled
 		};
 
@@ -173,10 +168,6 @@
 		const constraints = buildConstraints();
 		if (constraints) payload.constraints = constraints;
 		else delete payload.constraints;
-
-		// latency_ms is a dead field — never send it
-		// ponytail: delete even if it came from GET (server ignores it but keeps payload clean)
-		delete (payload as Record<string, unknown>).latency_ms;
 
 		try {
 			await onSave(payload);

@@ -17,8 +17,6 @@
 		capability: string;
 		runtime: string;
 		activation: string;
-		cost?: number;
-		quality?: number;
 		enabled: boolean;
 		heartbeat_at?: string;
 		last_error?: string;
@@ -35,9 +33,6 @@
 
 	type RoutingPolicy = {
 		scope: string;
-		// ponytail: kept optional for pass-through until P0b drops the columns
-		cost_weight?: number;
-		quality_weight?: number;
 		fallback: string[];
 	};
 
@@ -224,10 +219,7 @@
 		routingSaving = true;
 		routingMsg = '';
 		const existing = policies.find((p) => p.scope === selectedScope);
-		// ponytail: pass-through until P0b drops the columns; slider removed but weights preserved
 		const payload: RoutingPolicy = {
-			...(existing?.cost_weight !== undefined ? { cost_weight: existing.cost_weight } : {}),
-			...(existing?.quality_weight !== undefined ? { quality_weight: existing.quality_weight } : {}),
 			scope: selectedScope,
 			fallback: editFallback
 		};
@@ -359,7 +351,7 @@
 			// env must stay: full-record upsert, omitting it would set env={} in the DB.
 			const dto = {
 				worker: workerName, name: p.name, capability: p.capability, runtime: p.runtime,
-				activation: p.activation, cost: p.cost, quality: p.quality,
+				activation: p.activation,
 				enabled: !p.enabled, constraints: p.constraints,
 				runner_url: p.runner_url, env: p.env
 			};
