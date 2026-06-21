@@ -50,14 +50,13 @@ const (
 
 // capTranscrever is the logical task this app serves (the capability name in the schema; never
 // renamed). One app, two providers selected by env — the handler picks the fetch strategy by
-// provider/lane:
-//   - asr-youtube: residential-IP YouTube download (yt-dlp), runs on the Mac;
-//   - asr-direct-audio: a plain CDN enclosure download (podcast), runs anywhere (cloud/VPC).
+// item lane:
+//   - youtube: residential-IP YouTube download (yt-dlp), runs on the Mac (caption-mac);
+//   - podcast: plain CDN enclosure download, runs anywhere (echo-cloud).
 const (
-	capTranscrever     = "transcrever"
-	provASRYouTube     = "asr-youtube"
-	provASRDirectAudio = "asr-direct-audio"
-	lanePodcast        = "podcast" // transcripts.source_type for a podcast (the spine's lane)
+	capTranscrever = "transcrever"
+	laneYouTube    = "youtube" // item.Lane for a YouTube video
+	lanePodcast    = "podcast" // item.Lane for a podcast episode; also transcripts.source_type
 )
 
 const (
@@ -190,7 +189,7 @@ type Config struct {
 //   - SaveTranscript upserts the transcript + its segments and returns the row id (the OutputRef
 //     recorded on the step).
 //   - EnclosureURL resolves a podcast episode's direct audio URL from podcast_episodes (the
-//     rara-dial collector's domain table, SELECT only) — used by the asr-direct-audio provider.
+//     rara-dial collector's domain table, SELECT only) — used by the podcast lane.
 type ScribeStore interface {
 	SaveTranscript(ctx context.Context, t Transcript, segs []Segment) (int, error)
 	EnclosureURL(ctx context.Context, guid string) (string, bool, error)
@@ -519,14 +518,14 @@ type fetchTarget struct {
 	keyYoutubeID  string // transcripts.youtube_video_id ("" => NULL, for non-youtube)
 }
 
-// resolveTarget maps (provider, item) to a fetchTarget. asr-youtube builds the watch URL from the
-// video id; asr-direct-audio resolves the podcast episode's enclosure URL from podcast_episodes.
-func resolveTarget(ctx context.Context, store ScribeStore, provider string, item addon.Item) (fetchTarget, error) {
-	switch provider {
-	case provASRYouTube:
+// resolveTarget maps an item to a fetchTarget by item.Lane. laneYouTube builds the watch URL from
+// the video id; lanePodcast resolves the podcast episode's enclosure URL from podcast_episodes.
+func resolveTarget(ctx context.Context, store ScribeStore, item addon.Item) (fetchTarget, error) {
+	switch item.Lane {
+	case laneYouTube:
 		url := videoURL(item.SourceRef) // item.SourceRef is the youtube_video_id
 		return fetchTarget{source: Source{Type: "youtube", Ref: url}, keySourceType: "youtube", keySourceRef: url, keyYoutubeID: item.SourceRef}, nil
-	case provASRDirectAudio:
+	case lanePodcast:
 		enclosure, found, err := store.EnclosureURL(ctx, item.SourceRef) // item.SourceRef is the episode GUID
 		if err != nil {
 			return fetchTarget{}, fmt.Errorf("transcrever %s: enclosure: %w", item.SourceRef, err)
@@ -545,7 +544,7 @@ func resolveTarget(ctx context.Context, store ScribeStore, provider string, item
 		// enclosure URL — so the downstream gate/distill lookups chain on the same GUID.
 		return fetchTarget{source: Source{Type: "url", Ref: enclosure}, keySourceType: lanePodcast, keySourceRef: item.SourceRef, keyYoutubeID: ""}, nil
 	default:
-		return fetchTarget{}, fmt.Errorf("transcrever: unknown provider %q", provider)
+		return fetchTarget{}, fmt.Errorf("transcrever %s: unknown lane %q", item.SourceRef, item.Lane)
 	}
 }
 
@@ -564,15 +563,15 @@ func validateFetchURL(raw string) error {
 
 // transcribeHandler is the domain logic behind addon.Run: transcribe ONE claimed item. The SDK
 // owns claim/heartbeat/result/requeue/poke; this only does the work — resolve the fetch target by
-// provider, download + ASR (transcribeSource), persist the transcript, report the OutputRef.
+// item lane, download + ASR (transcribeSource), persist the transcript, report the OutputRef.
 //
 // A failed transcription (download or ASR) is persisted for observability and surfaced as
 // addon.ErrRetryable, so the SDK requeues up to MaxAttempts — covering transiently-unavailable
 // audio; a persistent failure still terminates after the bounded retries. An 'empty' transcript
 // (no speech) is benign no-content: the item is curated out (Filtered).
-func transcribeHandler(store ScribeStore, acq AudioAcquirer, tr Transcriber, engineName, provider string) addon.Handler {
+func transcribeHandler(store ScribeStore, acq AudioAcquirer, tr Transcriber, engineName string) addon.Handler {
 	return func(ctx context.Context, item addon.Item, step addon.Step) (addon.Result, error) {
-		target, err := resolveTarget(ctx, store, provider, item)
+		target, err := resolveTarget(ctx, store, item)
 		if err != nil {
 			return addon.Result{}, err
 		}
@@ -580,7 +579,7 @@ func transcribeHandler(store ScribeStore, acq AudioAcquirer, tr Transcriber, eng
 		srcCtx, cancel := context.WithTimeout(ctx, sourceTimeout)
 		t, segs := transcribeSource(srcCtx, acq, tr, engineName, target.source)
 		cancel()
-		// Re-key to the spine contract: the provider/lane decides the keying, not the fetch URL.
+		// Re-key to the spine contract: the lane decides the keying, not the fetch URL.
 		t.SourceType, t.SourceRef, t.YoutubeVideoID = target.keySourceType, target.keySourceRef, target.keyYoutubeID
 
 		saveCtx, cancelSave := context.WithTimeout(ctx, saveTimeout)
@@ -728,7 +727,7 @@ var downloadClient = &http.Client{
 }
 
 // downloadDirect streams a direct media URL to dest and returns dest. Used for podcast enclosures
-// (asr-direct-audio): a plain http(s) GET is lighter than yt-dlp and has no extra protocol surface.
+// (podcast lane): a plain http(s) GET is lighter than yt-dlp and has no extra protocol surface.
 // Only http(s) reaches here (validated in resolveTarget).
 func downloadDirect(ctx context.Context, rawURL, dest string) (string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
@@ -1344,10 +1343,10 @@ func buildScribePoolConfig(dbURL string) (*pgxpool.Config, error) {
 
 // main wires the bridge-total claim-worker: the SDK (addon.Run) owns the queue protocol; this
 // process only supplies the transcrever domain (transcribeHandler). It serves ONE provider
-// (SCRIBE_PROVIDER: asr-youtube on the Mac with a residential IP, or asr-direct-audio for podcast
+// (SCRIBE_PROVIDER: caption-mac on the Mac with a residential IP, or echo-cloud for podcast
 // enclosures anywhere) so it claims only the steps the reconciler routed to it. Default is
 // on_demand (drain once and exit); a resident deploy opts into the long-running loop + symmetric
-// activation via WORK_POLL_INTERVAL and/or POKE_ADDR + POKE_TOKEN. (The Mac's asr-youtube runs
+// activation via WORK_POLL_INTERVAL and/or POKE_ADDR + POKE_TOKEN. (The Mac's caption-mac runs
 // resident under launchd — that wiring is deploy, not code.)
 func main() {
 	cfg := loadConfig()
@@ -1356,7 +1355,7 @@ func main() {
 	}
 	provider := os.Getenv("SCRIBE_PROVIDER")
 	if provider == "" {
-		log.Fatalf("SCRIBE_PROVIDER is required (the provider this worker serves: %s | %s)", provASRYouTube, provASRDirectAudio)
+		log.Fatalf("SCRIBE_PROVIDER is required (the provider name this worker serves, e.g. caption-mac or echo-cloud)")
 	}
 
 	tr, engineName, err := NewTranscriber(cfg)
@@ -1400,7 +1399,7 @@ func main() {
 	defer pool.Close()
 	log.Printf("rara-scribe worker %s/%s ready [engine %s]", capTranscrever, provider, engineName)
 
-	// One acquirer serves both providers: yt-dlp downloads a YouTube watch URL (with cookies, on the
+	// One acquirer serves both lanes: yt-dlp downloads a YouTube watch URL (with cookies, on the
 	// residential-IP Mac) or a plain enclosure URL (no cookies needed) the same way.
 	// Binary paths come from FFMPEG_BIN/YT_DLP_BIN env vars; default to bare names (PATH-resolved),
 	// which works in Cloud Run where the Dockerfile installs them system-wide.
@@ -1420,7 +1419,7 @@ func main() {
 		PokeAddr:     os.Getenv("POKE_ADDR"),
 		PokeToken:    os.Getenv("POKE_TOKEN"),
 	}
-	if err := addon.Run(ctx, ac, transcribeHandler(&appDB{pool: pool}, acq, tr, engineName, provider)); err != nil {
+	if err := addon.Run(ctx, ac, transcribeHandler(&appDB{pool: pool}, acq, tr, engineName)); err != nil {
 		log.Fatalf("scribe worker %s/%s: %v", capTranscrever, provider, err)
 	}
 	log.Printf("rara-scribe worker %s/%s: queue drained", capTranscrever, provider)
