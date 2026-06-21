@@ -218,13 +218,13 @@ func TestValidateListenAddrRejectsWildcard(t *testing.T) {
 func TestParseAllowlist(t *testing.T) {
 	const (
 		pathA = "us-docker.pkg.dev/p/r/rara-distill"
-		pathB = "us-docker.pkg.dev/p/r/rara-sift"
+		pathB = "us-docker.pkg.dev/p/r/rara-gate"
 	)
-	got, err := parseAllowlist("rara-distill=" + pathA + ", rara-sift=" + pathB)
+	got, err := parseAllowlist("rara-distill=" + pathA + ", rara-gate=" + pathB)
 	if err != nil {
 		t.Fatalf("parseAllowlist: %v", err)
 	}
-	if got["rara-distill"] != pathA || got["rara-sift"] != pathB {
+	if got["rara-distill"] != pathA || got["rara-gate"] != pathB {
 		t.Fatalf("parsed wrong: %v", got)
 	}
 	for _, bad := range []string{

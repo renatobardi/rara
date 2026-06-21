@@ -1,32 +1,27 @@
-name: Deploy rara-sift
+name: Deploy rara-gate
 
-# GATED — manual dispatch only (NO push:main). rara-sift is a 2.0 claim-worker (the curation
-# cascade): it only runs once the reconciler (VPC, a future phase) routes `gate_*` item_steps to
-# its provider.
+# GATED — manual dispatch only (NO push:main). rara-gate is a 2.0 claim-worker (the curation
+# gate): it only runs once the reconciler routes `gate_*` item_steps to its provider.
 #
-# This is the MULTI-ARCH proof-of-concept (F2 of ATIVACAO-UNIFICADA.pt-BR.md): unlike the other
-# SDK workers — which still build single-arch via _reusable-deploy-worker.yml + Cloud Build — sift
-# builds ONE multi-arch image with `docker buildx` (amd64 for Cloud Run + arm64 for VPC/Mac, both
-# Ampere/Apple-Silicon) and pushes a manifest list to Artifact Registry. Cloud Run pulls the amd64
-# leaf automatically. This file is the replicable pattern the other apps copy later (do NOT yet
-# touch the shared reusable workflow — that would migrate everyone at once). See DOCKER-MULTIMODULE.md.
+# ONE image, TWO workers (sift=gate_barato, assay=gate_rico) → ONE consolidated Cloud Run Job
+# (`rara-gate`). The dispatcher sets SIFT_GATE + SIFT_PROVIDER per execution override — one job
+# serves both workers. (The legacy per-worker jobs rara-gate-barato and rara-gate-rico remain
+# untouched until P2b-gate-B flips providers.app.)
 #
-# ONE image, TWO providers → TWO Cloud Run Jobs (rara-gate-barato + rara-gate-rico), each with its
-# own SIFT_GATE/SIFT_PROVIDER. The image is built once (the `build` job) and deployed twice (the
-# `deploy` matrix) — an improvement over the old build-per-matrix-entry. Job name =
-# CLOUD_RUN_JOB_PREFIX(rara-) + provider (what the Activator wakes). Both wire LITELLM_* (rico's
-# judge needs it; barato reads but never calls — uniform is simpler).
+# Multi-arch image: amd64 (Cloud Run) + arm64 (VPC Oracle Ampere + Mac Apple Silicon). The image
+# is built once (the `build` job) then the `deploy` job creates/updates the consolidated job.
+# See DOCKER-MULTIMODULE.md and CONSOLE-WORKERS-PLANO-E5b.pt-BR.md §4/P2b.
 on:
   workflow_dispatch:
     inputs:
       run_after_deploy:
-        description: 'Execute the jobs once right after deploying (off by default — the worker needs its provider env set first)'
+        description: 'Execute the job once right after deploying (off by default — the worker needs its provider env set first)'
         required: false
         default: false
         type: boolean
 
 env:
-  IMAGE: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/rara/rara-sift:${{ github.sha }}
+  IMAGE: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/rara/rara-gate:${{ github.sha }}
 
 jobs:
   build:
@@ -69,7 +64,7 @@ jobs:
         uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6
         with:
           context: .
-          file: rara-sift/Dockerfile
+          file: rara-gate/Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ env.IMAGE }}
@@ -90,20 +85,15 @@ jobs:
           echo "✅ manifest list has exactly linux/amd64 + linux/arm64"
 
   deploy:
-    name: Deploy Cloud Run Job
+    name: Deploy consolidated Cloud Run Job (rara-gate)
     needs: build
     runs-on: ubuntu-latest
     permissions:
       contents: read
       id-token: write
-    strategy:
-      matrix:
-        include:
-          - { provider: gate-barato, gate: gate_barato }
-          - { provider: gate-rico,   gate: gate_rico }
     env:
       REGION: ${{ vars.GCP_REGION }}
-      JOB_NAME: rara-${{ matrix.provider }}
+      JOB_NAME: rara-gate
       GCP_PROJECT: ${{ vars.GCP_PROJECT_ID }}
     steps:
       - name: Authenticate to Google Cloud
@@ -118,17 +108,17 @@ jobs:
 
       - name: Deploy Cloud Run Job
         env:
-          SIFT_GATE: ${{ matrix.gate }}
-          SIFT_PROVIDER: ${{ matrix.provider }}
           LITELLM_BASE_URL: ${{ vars.LITELLM_BASE_URL }}
         run: |
-          # Update first, create if absent (avoids a describe→create/update TOCTOU race).
-          # DATABASE_URL is the shared contract DB; LITELLM_API_KEY is sift-specific.
+          # Consolidated job: SIFT_GATE + SIFT_PROVIDER are injected per execution via dispatcher
+          # overrides (not baked in at deploy time). Default placeholders are set here so the job
+          # definition is valid; the dispatcher always overrides them on each run.
+          #
           # NOTE: groq-fast hardcoded (llama-3.1-8b-instant) — gates are a simple JSON judge and
           # don't need the 70b; keeping them on groq-fast avoids quota contention with distill
           # (groq-llama/70b). vars.LITELLM_MODEL=gemini-flash is spend-capped → ignored.
           SECRETS="DATABASE_URL=database-url:latest,LITELLM_API_KEY=litellm-api-key:latest"
-          ENV_VARS="SIFT_GATE=$SIFT_GATE,SIFT_PROVIDER=$SIFT_PROVIDER,LITELLM_BASE_URL=$LITELLM_BASE_URL,LITELLM_MODEL=groq-fast"
+          ENV_VARS="SIFT_GATE=gate_barato,SIFT_PROVIDER=gate-barato,LITELLM_BASE_URL=$LITELLM_BASE_URL,LITELLM_MODEL=groq-fast"
           COMMON_ARGS="--image $IMAGE --region $REGION --project $GCP_PROJECT --set-secrets $SECRETS --set-env-vars $ENV_VARS --max-retries 0 --task-timeout 3600s --memory 512Mi --cpu 1"
 
           UPDATE_ERR=$(gcloud run jobs update "$JOB_NAME" $COMMON_ARGS 2>&1) && echo "$UPDATE_ERR" || {
