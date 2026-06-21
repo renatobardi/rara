@@ -339,6 +339,49 @@ func TestMigrationNoCrossAgentTables(t *testing.T) {
 	}
 }
 
+// readMigration018 loads the P1a app-column migration.
+func readMigration018(t *testing.T) string {
+	t.Helper()
+	b, err := os.ReadFile("migrations/018_provider_app.sql")
+	if err != nil {
+		t.Fatalf("read migration 018: %v", err)
+	}
+	return string(b)
+}
+
+// TestMigration018ProviderApp asserts the P1a app-targeting column: a nullable
+// VARCHAR(48) added to providers with an idempotent backfill (app = name),
+// touching no foreign tables.
+func TestMigration018ProviderApp(t *testing.T) {
+	sql := readMigration018(t)
+	if !strings.Contains(sql, "ALTER TABLE providers") {
+		t.Error("migration 018 must alter the providers table")
+	}
+	if !strings.Contains(sql, "ADD COLUMN IF NOT EXISTS app") {
+		t.Fatal("migration 018 must add app idempotently (ADD COLUMN IF NOT EXISTS)")
+	}
+	// Nullable: no NOT NULL on the ADD COLUMN line.
+	colIdx := strings.Index(sql, "ADD COLUMN IF NOT EXISTS app")
+	if colIdx == -1 {
+		t.Fatal("ADD COLUMN IF NOT EXISTS app not found in migration 018")
+	}
+	stmt := sql[colIdx:min(colIdx+80, len(sql))]
+	if strings.Contains(stmt, "NOT NULL") {
+		t.Errorf("app must be nullable on add, got: %q", stmt)
+	}
+	// Idempotent backfill: UPDATE guarded by app IS NULL OR app = ''.
+	if !strings.Contains(sql, "WHERE app IS NULL") {
+		t.Error("migration 018 must have an idempotent backfill guarded on app IS NULL")
+	}
+	// Backfill seeds app = name (simple equality, no suffix stripping).
+	if !strings.Contains(sql, "SET app = name") {
+		t.Error("migration 018 backfill must set app = name")
+	}
+	if strings.Contains(sql, "CREATE TABLE") {
+		t.Error("migration 018 should only alter providers, not create tables")
+	}
+}
+
 // readMigration014 loads the E1 provider worker-column migration.
 func readMigration014(t *testing.T) string {
 	t.Helper()

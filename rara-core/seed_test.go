@@ -502,6 +502,78 @@ func TestSeedWorkerRoundTrip(t *testing.T) {
 	}
 }
 
+// TestSeedAppRoundTrip asserts UpsertProvider + GetProvider preserves App.
+func TestSeedAppRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	db := newMockDatabase()
+	if err := seedCapabilities(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	p := Provider{
+		Name: "distill", Capability: capDestilar, Runtime: runtimeCloudRun,
+		Activation: activationOnDemand, Enabled: true, Worker: "distill", App: "distill",
+	}
+	if err := db.UpsertProvider(ctx, p); err != nil {
+		t.Fatalf("UpsertProvider: %v", err)
+	}
+	got, ok, err := db.GetProvider(ctx, "distill")
+	if err != nil || !ok {
+		t.Fatalf("GetProvider: ok=%v err=%v", ok, err)
+	}
+	if got.App != "distill" {
+		t.Errorf("App = %q, want %q", got.App, "distill")
+	}
+}
+
+// TestSeedAppDefaultsToName asserts that upserting with App="" stores app = name.
+func TestSeedAppDefaultsToName(t *testing.T) {
+	ctx := context.Background()
+	db := newMockDatabase()
+	if err := seedCapabilities(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	p := Provider{
+		Name: "distill", Capability: capDestilar, Runtime: runtimeCloudRun,
+		Activation: activationOnDemand, Enabled: true, Worker: "distill",
+		// App intentionally empty — guard must default it to Name
+	}
+	if err := db.UpsertProvider(ctx, p); err != nil {
+		t.Fatalf("UpsertProvider: %v", err)
+	}
+	got := db.providers["distill"]
+	if got.App != "distill" {
+		t.Errorf("App = %q, want %q (guard must default App to Name)", got.App, "distill")
+	}
+}
+
+// TestSeedAppEqualsNameForAllProviders asserts every seeded provider has App == Name
+// (the P1a invariant: app = name as long as app/name haven't diverged yet).
+func TestSeedAppEqualsNameForAllProviders(t *testing.T) {
+	t.Setenv("DISTILL_MODEL", "groq-llama")
+	t.Setenv("GATE_MODEL", "groq-fast")
+
+	ctx := context.Background()
+	db := newMockDatabase()
+
+	seedFns := []func(context.Context, Database) error{
+		SeedYouTubeLane,
+		SeedPodcastLane,
+		SeedEmailLane,
+		SeedNewsLane,
+		SeedLinkedInLane,
+	}
+	for _, fn := range seedFns {
+		if err := fn(ctx, db); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+	}
+	for name, p := range db.providers {
+		if p.App != name {
+			t.Errorf("provider %q: App = %q, want %q", name, p.App, name)
+		}
+	}
+}
+
 // TestSeedVPCLocalProvidersGetRunnerURLFromEnv guards against re-seed zeroing runner_url on
 // the three VPC on_demand providers. runner_url is the tailnet endpoint the dispatcher POSTs
 // to wake a worker; zeroing it causes "no transport path" dispatch failures.
