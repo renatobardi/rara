@@ -493,6 +493,17 @@ func TestBuildRunRequestFallsBackToNameWhenAppEmpty(t *testing.T) {
 	}
 }
 
+func TestBuildRunRequestFallsBackToNameWhenAppWhitespaceOnly(t *testing.T) {
+	// Whitespace-only App would produce an invalid job/image target; treat it the same as empty.
+	for _, ws := range []string{" ", "\t", "  \t  "} {
+		prov := DispatchProvider{Name: "harvest", App: ws, Runtime: runtimeCloudRun}
+		req := buildRunRequest(prov)
+		if req.App != "harvest" {
+			t.Errorf("App=%q: req.App = %q, want harvest (whitespace must fall back to Name)", ws, req.App)
+		}
+	}
+}
+
 func TestDispatchOnceObservabilityStampsByProviderName(t *testing.T) {
 	// Observability stamps (StampDispatchError / ClearDispatchError) must use prov.Name —
 	// the DB key — not prov.App. App drives job/image routing; Name drives record-keeping.

@@ -8,6 +8,7 @@ import (
 	"context"
 	"log"
 	"regexp"
+	"strings"
 	"time"
 )
 
@@ -163,7 +164,7 @@ func buildRunRequest(prov DispatchProvider) RunRequest {
 			env[k] = v
 		}
 	}
-	app := prov.App
+	app := strings.TrimSpace(prov.App)
 	if app == "" {
 		app = prov.Name // ponytail: defensive fallback; COALESCE(NULLIF(app,''),name) in SQL prevents this in production
 	}
