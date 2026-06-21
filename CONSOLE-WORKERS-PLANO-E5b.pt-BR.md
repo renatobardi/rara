@@ -68,8 +68,11 @@ nome). Identidade do worker vem do `env` (injetado no wake). Decoupla nome ↔ t
 ### 1.7 Chaves de identidade no `env` (segurança)
 O dispatcher injeta as chaves de identidade (`SIFT_GATE`, `SIFT_PROVIDER`, etc.) automaticamente por
 `capability` + `runtime`; o operador **não as edita** na console (campos de identidade são read-only
-no form). Valores sensíveis (tokens, creds) nunca aparecem na UI nem em logs; o dispatcher sanitiza
-`providers.last_error` antes de gravar (ver `dispatch.go:sanitizeDispatchMsg`).
+no form). Esses valores são **nomes de roteamento** (ex: `gate_barato`, `gate-barato`) — não são
+secrets e podem aparecer em logs normalmente. Valores sensíveis de verdade (DATABASE_URL,
+LITELLM_API_KEY) chegam ao job via Cloud Run Secret Manager, nunca como plain env no dispatch;
+`dispatch.go:sanitizeDispatchMsg` redacta bearer tokens que o `net/http` pode ecoar em erros de
+HTTP — scope intencional, não omissão.
 
 ## 2. Inventário de varredura (grep dos nomes antigos)
 
