@@ -84,9 +84,22 @@ distill=identidade ✓), workers/deploy, jobs/imagens, allowlist, docs, mermaid,
 `rara-gate-rico`, `rara-asr-direct-audio`, `rara-extrair-*`); secrets/vars que referenciam nomes
 antigos; logs estruturados com prefixo antigo (quebram alertas pós-cutover).
 
+### 2.1 Responsabilidades de varredura GCP
+
+| Superfície | Quando | Rollback |
+|---|---|---|
+| Imagens AR órfãs (`rara-sift`, `rara-glean`, `rara-scribe`) | Pós-cutover B de cada app | Reabilitar job antigo; não apagar imagem até P6 |
+| Jobs CR antigos (`rara-gate-barato/rico`, `rara-extrair-*`) | Pós-cutover B | Reabilitar job antigo; desabilitar job novo |
+| Secrets/vars no dispatcher (allowlist, env do runner) | Pré-cutover B (code review do PR) | Descartar PR |
+| Logs/alertas com prefixo antigo | Pós-cutover B | Atualizar filtros; nenhum item é perdido |
+
 ## 3. Cutover (sem alias → janela coordenada)
-Validar na branch Neon do PR; aplicar em baixa atividade; migration atômica; redeploy coordenado;
-**residents precisam restart** (env no startup); rollback via revert + restore Neon.
+Validar na branch Neon do PR; aplicar em baixa atividade (fora de pico, preferencialmente madrugada
+BRT); migration atômica; redeploy coordenado; **residents precisam restart** (`launchd unload/load`
+no Mac, `systemctl restart` na VPC) pois leem `providers.app` no startup; rollback = revert do PR +
+restore Neon da branch de validação. Se Phase B de um app falhar parcialmente (alguns items já
+roteados pelo job novo): desabilitar `providers.enabled` do novo provider até estabilizar, os items
+ficam em espera sem perda — o dispatcher skipa providers desabilitados.
 
 ## 4. Fases
 
