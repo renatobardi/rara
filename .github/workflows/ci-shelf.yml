@@ -26,6 +26,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
 
       - name: Setup Go
         uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
@@ -83,6 +85,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
+          persist-credentials: false
           fetch-depth: 0
 
       - name: Setup Go
@@ -100,3 +103,60 @@ jobs:
         uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  docker-build:
+    name: Docker build (multi-arch amd64 + arm64)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    # Local registry so buildx can push the manifest list and we can inspect it — no GCP creds
+    # needed. PR-time proof that the multi-arch image builds and the manifest list carries both
+    # arches. Context = rara-shelf (single-module, no SDK dependency). See DOCKER-MULTIMODULE.md.
+    services:
+      registry:
+        image: registry:2@sha256:ac0192b549007e22998eb74e8d8488dcfe70f1489520c3b144a6047ac5efbe90
+        ports:
+          - 5000:5000
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+
+      # QEMU only emulates the tiny final alpine stage; the Go compile cross-builds natively.
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@29109295f81e9208d7d86ff1c6c12d2833863392 # v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3
+        with:
+          driver-opts: network=host
+
+      - name: Build and push to local registry (amd64 + arm64)
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6
+        timeout-minutes: 15
+        with:
+          context: rara-shelf
+          file: rara-shelf/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: localhost:5000/rara-shelf:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Acceptance check: the manifest list MUST carry EXACTLY linux/amd64 + linux/arm64.
+      # build-push-action v6 also emits attestation entries (platform: unknown/unknown); filter
+      # those out before counting so the check stays exact without disabling provenance.
+      - name: Verify manifest list has both arches
+        run: |
+          docker buildx imagetools inspect localhost:5000/rara-shelf:ci
+          PLATFORMS=$(docker buildx imagetools inspect localhost:5000/rara-shelf:ci \
+            --format '{{range .Manifest.Manifests}}{{if ne .Platform.OS "unknown"}}{{.Platform.OS}}/{{.Platform.Architecture}} {{end}}{{end}}')
+          echo "Platforms in manifest list: $PLATFORMS"
+          echo "$PLATFORMS" | grep -qw "linux/amd64" || { echo "❌ missing linux/amd64"; exit 1; }
+          echo "$PLATFORMS" | grep -qw "linux/arm64" || { echo "❌ missing linux/arm64"; exit 1; }
+          COUNT=$(echo "$PLATFORMS" | wc -w)
+          [ "$COUNT" -eq 2 ] || { echo "❌ expected exactly 2 real platforms, found $COUNT: $PLATFORMS"; exit 1; }
+          echo "✅ manifest list has exactly linux/amd64 + linux/arm64"

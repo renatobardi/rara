@@ -1,4 +1,6 @@
-FROM golang:1.26-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.26-alpine@sha256:3ad57304ad93bbec8548a0437ad9e06a455660655d9af011d58b993f6f615648 AS builder
+ARG TARGETOS
+ARG TARGETARCH
 
 WORKDIR /build
 
@@ -9,13 +11,11 @@ RUN go mod download
 
 COPY . .
 
-# Build a static binary for the build platform (amd64 on Cloud Build),
-# which is what Cloud Run runs. No hardcoded GOARCH cross-compile.
-RUN CGO_ENABLED=0 GOOS=linux go build \
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build \
     -ldflags="-w -s" \
     -o etl-job .
 
-FROM alpine:3.21
+FROM alpine:3.21@sha256:48b0309ca019d89d40f670aa1bc06e426dc0931948452e8491e3d65087abc07d
 
 RUN apk add --no-cache ca-certificates
 
