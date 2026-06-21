@@ -38,7 +38,7 @@ type AssignedStep struct {
 // DispatchProvider carries the routing fields the dispatcher needs to build a RunRequest.
 type DispatchProvider struct {
 	Name       string
-	App        string            // Cloud Run job / agent image key; equals Name today, decoupled in P1b
+	App        string // Cloud Run job / agent image key; equals Name today, decoupled in P1b
 	Runtime    string
 	Activation string
 	RunnerURL  string            // rara-runner agent tailnet URL; empty for Cloud Run providers
