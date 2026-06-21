@@ -446,8 +446,11 @@ func TestCapDispatchErrorStripsInvalidUTF8(t *testing.T) {
 	if !utf8.ValidString(got) {
 		t.Errorf("capDispatchError output not valid UTF-8: %q", got)
 	}
-	if strings.Contains(got, "prefix") && !strings.Contains(got, "suffix") {
-		t.Errorf("capDispatchError stripped too much: %q", got)
+	if !strings.Contains(got, "prefix") {
+		t.Errorf("capDispatchError stripped valid prefix bytes: %q", got)
+	}
+	if !strings.Contains(got, "suffix") {
+		t.Errorf("capDispatchError stripped valid suffix bytes: %q", got)
 	}
 }
 
