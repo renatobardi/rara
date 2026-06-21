@@ -1253,8 +1253,12 @@ func TestListAssignedSteps(t *testing.T) {
 
 	_ = db.UpsertCapability(ctx, Capability{Name: capTranscrever})
 	_ = db.UpsertCapability(ctx, Capability{Name: capDestilar})
-	_ = db.UpsertProvider(ctx, Provider{Name: "p1", Capability: capTranscrever, Runtime: runtimeCloudRun, Activation: activationOnDemand, Enabled: true})
-	_ = db.UpsertProvider(ctx, Provider{Name: "p2", Capability: capTranscrever, Runtime: runtimeVPC, Activation: activationResident, Enabled: true})
+	if err := db.UpsertProvider(ctx, Provider{Name: "p1", Capability: capTranscrever, Runtime: runtimeCloudRun, Activation: activationOnDemand, Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.UpsertProvider(ctx, Provider{Name: "p2", Capability: capTranscrever, Runtime: runtimeVPC, Activation: activationResident, Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
 	flowID, _ := db.UpsertFlow(ctx, Flow{Name: "test", SourceType: "youtube", Enabled: true})
 	itemID, _ := db.UpsertItem(ctx, Item{Lane: "youtube", SourceRef: "v1", FlowID: flowID, Status: itemDiscovered})
 
@@ -1282,7 +1286,9 @@ func TestListAssignedStepsInsertionOrder(t *testing.T) {
 	ctx := context.Background()
 	db := newMockDatabase()
 	_ = db.UpsertCapability(ctx, Capability{Name: capTranscrever})
-	_ = db.UpsertProvider(ctx, Provider{Name: "p1", Capability: capTranscrever, Runtime: runtimeCloudRun, Activation: activationOnDemand, Enabled: true})
+	if err := db.UpsertProvider(ctx, Provider{Name: "p1", Capability: capTranscrever, Runtime: runtimeCloudRun, Activation: activationOnDemand, Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
 	flowID, _ := db.UpsertFlow(ctx, Flow{Name: "test", SourceType: "youtube", Enabled: true})
 	id1, _ := db.UpsertItem(ctx, Item{Lane: "youtube", SourceRef: "v1", FlowID: flowID, Status: itemDiscovered})
 	id2, _ := db.UpsertItem(ctx, Item{Lane: "youtube", SourceRef: "v2", FlowID: flowID, Status: itemDiscovered})

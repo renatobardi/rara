@@ -120,7 +120,7 @@ func (rt *Router) policyFor(ctx context.Context, capability string) (RoutingPoli
 func rankProviders(providers []Provider, policy RoutingPolicy, item Item, now time.Time, healthTTL time.Duration, exclude map[string]bool) []Provider {
 	fbPos := fallbackPositions(policy.Fallback)
 
-	eligible := providers[:0:0]
+	eligible := make([]Provider, 0, len(providers))
 	for _, p := range providers {
 		if exclude[p.Name] {
 			continue
@@ -175,6 +175,7 @@ func constraintsSatisfied(p Provider, item Item) bool {
 	}
 	var c providerConstraints
 	if err := json.Unmarshal(p.Constraints, &c); err != nil {
+		log.Printf("constraintsSatisfied: provider %q has malformed constraints JSON: %v", p.Name, err)
 		return false // malformed JSON: fail closed
 	}
 	switch c.Requires {

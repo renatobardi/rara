@@ -214,7 +214,7 @@ func buildTools(core *Core) []mcpTool {
 		},
 		{
 			Name: "rara_upsert_provider", Description: "Create or update a provider (idempotent on name).",
-			InputSchema: schemaObject(`{"name":{"type":"string"},"capability":{"type":"string"},"runtime":{"type":"string"},"activation":{"type":"string"},"constraints":{"type":"object"},"enabled":{"type":"boolean"}}`, "name", "capability", "runtime", "activation", "enabled"),
+			InputSchema: schemaObject(`{"name":{"type":"string"},"capability":{"type":"string"},"runtime":{"type":"string"},"activation":{"type":"string"},"constraints":{"type":"object"},"enabled":{"type":"boolean"}}`, "name", "capability", "runtime", "activation", "constraints", "enabled"),
 			Handler:     upsertHandler(func(ctx context.Context, p Provider) error { return core.UpsertProvider(ctx, p) }),
 		},
 		{
