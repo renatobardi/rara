@@ -479,43 +479,16 @@ func TestSeedWorkerGrouping(t *testing.T) {
 	}
 }
 
-// TestSeedWorkerRoundTrip asserts UpsertProvider + GetProvider preserves Worker.
-func TestSeedWorkerRoundTrip(t *testing.T) {
+// TestSeedWorkerAndAppRoundTrip asserts UpsertProvider + GetProvider preserves both
+// Worker and App, and that the App guard defaults App to Name when left empty.
+func TestSeedWorkerAndAppRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	db := newMockDatabase()
 	if err := seedCapabilities(ctx, db); err != nil {
 		t.Fatal(err)
 	}
-	p := Provider{
-		Name: "distill", Capability: capDestilar, Runtime: runtimeCloudRun,
-		Activation: activationOnDemand, Enabled: true, Worker: "distill",
-	}
-	if err := db.UpsertProvider(ctx, p); err != nil {
-		t.Fatalf("UpsertProvider: %v", err)
-	}
-	got, ok, err := db.GetProvider(ctx, "distill")
-	if err != nil || !ok {
-		t.Fatalf("GetProvider: ok=%v err=%v", ok, err)
-	}
-	if got.Worker != "distill" {
-		t.Errorf("Worker = %q, want %q", got.Worker, "distill")
-	}
-}
 
-// newAppTestDB returns a MockDatabase pre-seeded with capabilities (shared setup for App tests).
-func newAppTestDB(t *testing.T) (context.Context, *MockDatabase) {
-	t.Helper()
-	ctx := context.Background()
-	db := newMockDatabase()
-	if err := seedCapabilities(ctx, db); err != nil {
-		t.Fatal(err)
-	}
-	return ctx, db
-}
-
-// TestSeedAppRoundTrip asserts UpsertProvider + GetProvider preserves App.
-func TestSeedAppRoundTrip(t *testing.T) {
-	ctx, db := newAppTestDB(t)
+	// Explicit App: round-trip preserves both Worker and App.
 	p := Provider{
 		Name: "distill", Capability: capDestilar, Runtime: runtimeCloudRun,
 		Activation: activationOnDemand, Enabled: true, Worker: "distill", App: "distill",
@@ -527,25 +500,23 @@ func TestSeedAppRoundTrip(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("GetProvider: ok=%v err=%v", ok, err)
 	}
+	if got.Worker != "distill" {
+		t.Errorf("Worker = %q, want %q", got.Worker, "distill")
+	}
 	if got.App != "distill" {
 		t.Errorf("App = %q, want %q", got.App, "distill")
 	}
-}
 
-// TestSeedAppDefaultsToName asserts that upserting with App="" stores app = name.
-func TestSeedAppDefaultsToName(t *testing.T) {
-	ctx, db := newAppTestDB(t)
-	p := Provider{
+	// Empty App: guard must default it to Name.
+	p2 := Provider{
 		Name: "distill", Capability: capDestilar, Runtime: runtimeCloudRun,
 		Activation: activationOnDemand, Enabled: true, Worker: "distill",
-		// App intentionally empty — guard must default it to Name
 	}
-	if err := db.UpsertProvider(ctx, p); err != nil {
-		t.Fatalf("UpsertProvider: %v", err)
+	if err := db.UpsertProvider(ctx, p2); err != nil {
+		t.Fatalf("UpsertProvider (empty App): %v", err)
 	}
-	got := db.providers["distill"]
-	if got.App != "distill" {
-		t.Errorf("App = %q, want %q (guard must default App to Name)", got.App, "distill")
+	if db.providers["distill"].App != "distill" {
+		t.Errorf("App guard: got %q, want %q", db.providers["distill"].App, "distill")
 	}
 }
 
