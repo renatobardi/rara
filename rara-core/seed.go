@@ -118,7 +118,7 @@ func seedSharedProviders(ctx context.Context, db Database) error {
 		{Name: provDistillLocal, Capability: capDestilar, Runtime: runtimeVPC, Activation: activationOnDemand,
 			Enabled: vpcEnabled, Worker: provDistill, // same worker as cloud sibling
 			RunnerURL: runnerURL,
-			Env:       []byte(`{"DISTILL_PROVIDER":"distill-local","CURATE_ENGINE":"litellm","LITELLM_MODEL":"` + modelDistill + `"}`)},
+			Env:       []byte(`{"DISTILL_PROVIDER":"distill-local"}`)}, // model/engine from host LiteLLM config
 		// gate_barato / gate_rico: cascade gates (rules -> profile -> LLM-judge).
 		{Name: provGateBarato, Capability: capGateBarato, Runtime: runtimeCloudRun, Activation: activationOnDemand,
 			Constraints: thirdParty, Enabled: true, Worker: provGateBarato,

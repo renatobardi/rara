@@ -113,7 +113,7 @@ func TestSeedSharedProviderEnv(t *testing.T) {
 		provGateRico:        `{"SIFT_GATE":"gate_rico","SIFT_PROVIDER":"gate-rico","LITELLM_MODEL":"groq-fast"}`,
 		provGateRicoLocal:   `{"SIFT_GATE":"gate_rico","SIFT_PROVIDER":"gate-rico-local"}`,
 		provDistill:         `{"DISTILL_PROVIDER":"distill","LITELLM_MODEL":"groq-llama"}`,
-		provDistillLocal:    `{"DISTILL_PROVIDER":"distill-local","CURATE_ENGINE":"litellm","LITELLM_MODEL":"groq-llama"}`,
+		provDistillLocal:    `{"DISTILL_PROVIDER":"distill-local"}`, // model/engine from host LiteLLM config
 	}
 	for name, wantEnv := range want {
 		if got := string(db.providers[name].Env); got != wantEnv {
