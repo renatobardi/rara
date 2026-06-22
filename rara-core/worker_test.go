@@ -48,7 +48,7 @@ func TestClaimNoDoubleClaimFIFO(t *testing.T) {
 
 // TestClaimProviderIsolation: with two pending steps of one capability assigned to DIFFERENT
 // providers, each worker claims only the step routed to its own provider — never the sibling's.
-// This is what keeps two transcrever providers (asr-youtube on the Mac, asr-direct-audio on Cloud
+// This is what keeps two transcrever providers (caption-mac on the Mac, echo-cloud on Cloud
 // Run) from stealing each other's work, and a private item from being pulled by a third party.
 func TestClaimProviderIsolation(t *testing.T) {
 	ctx := context.Background()

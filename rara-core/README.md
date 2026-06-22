@@ -76,7 +76,7 @@ distill — by orchestrating the existing 1.0 workers through the control tables
 changing any worker's domain logic. Phase 1 ships:
 
 - **Lane config seed** ([seed.go](seed.go)): the YouTube lane as data — capabilities,
-  four providers (`harvest`/`shelf` = collectors, `asr-youtube` = scribe on the Mac
+  four providers (`harvest`/`shelf` = collectors, `caption-mac` = transcriber on the Mac
   with the residential constraint, `distill` = Cloud Run), one `youtube` flow and its
   five ordered steps (`coletar → gate_barato → transcrever → gate_rico → destilar`).
 - **Spine ingest** ([ingest.go](ingest.go)): populates `items` from
