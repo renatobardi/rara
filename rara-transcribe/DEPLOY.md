@@ -1,8 +1,7 @@
-# rara-scribe — Operations notes
+# rara-transcribe — Operations notes
 
-> **Cloud Run removed.** rara-scribe previously ran as a Cloud Run Job, but YouTube blocks
-> 100% of downloads from GCP datacenter IPs ("Sign in to confirm you're not a bot").
-> The agent now runs locally on the Mac via `launchd`.
+> The `caption` worker (asr-youtube) runs locally on the Mac via `launchd` — YouTube blocks
+> datacenter IPs. The `echo` worker (asr-direct-audio) runs as Cloud Run Job `rara-transcribe`.
 > **See [README.md](README.md) for installation and usage.**
 
 ---
@@ -35,13 +34,10 @@ WHERE updated_at > NOW() - INTERVAL '1 day';
 ## GCP cleanup
 
 ```bash
-export PROJECT_ID=oute-rara
+export PROJECT_ID=YOUR_PROJECT_ID  # replace with your GCP project ID
 
-# Delete the Cloud Run Job
-gcloud run jobs delete rara-scribe --region us-central1 --project "${PROJECT_ID}"
-
-# Optional: delete the cookies secret (no longer needed locally)
-# gcloud secrets delete yt-dlp-cookies --project "${PROJECT_ID}"
+# Delete the Cloud Run Job (old echo job, after P2b-transcribe-B cutover)
+gcloud run jobs delete rara-asr-direct-audio --region us-central1 --project "${PROJECT_ID}"
 
 # groq-api-key and database-url remain — used by the other agents
 ```

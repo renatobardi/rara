@@ -5,6 +5,6 @@
 --
 -- Counting: incremented on each 'failed' save, reset to 0 on a 'done' save
 -- (handled in SaveTranscript's ON CONFLICT clause). Existing rows start at 0.
-ALTER TABLE transcripts ADD COLUMN IF NOT EXISTS attempt_count INT NOT NULL DEFAULT 0;
+ALTER TABLE transcripts ADD COLUMN IF NOT EXISTS attempt_count INT NOT NULL DEFAULT 0 CHECK (attempt_count >= 0);
 
 COMMENT ON COLUMN transcripts.attempt_count IS 'Failed transcription attempts; reset to 0 on success. Rows past the retry cap are skipped by PendingVideos.';

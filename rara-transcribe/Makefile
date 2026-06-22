@@ -1,7 +1,7 @@
 .PHONY: help test test-verbose test-coverage test-race lint fmt clean build run install-local deps all
 
 help:
-	@echo "rara-scribe - Makefile Commands"
+	@echo "rara-transcribe - Makefile Commands"
 	@echo ""
 	@echo "Local execution:"
 	@echo "  make run               Build and run one batch (requires .env)"
@@ -54,8 +54,8 @@ fmt:
 
 build:
 	@echo "Building for current OS..."
-	go build -ldflags="-w -s" -o scribe-job .
-	@echo "Built: scribe-job"
+	go build -ldflags="-w -s" -o transcribe-job .
+	@echo "Built: transcribe-job"
 
 # Claim & drain the transcrever queue for SCRIBE_PROVIDER, then exit. Requires a .env in this
 # directory (copy .env.example → .env and fill in your values, incl. SCRIBE_PROVIDER).
@@ -65,8 +65,8 @@ run: build
 		echo "  cp .env.example .env && \$$EDITOR .env"; \
 		exit 1; \
 	fi
-	@echo "Running scribe worker (drain once)..."
-	@set -a; . ./.env; set +a; ./scribe-job
+	@echo "Running transcribe worker (drain once)..."
+	@set -a; . ./.env; set +a; ./transcribe-job
 
 # Install the binary as a macOS launchd agent that runs daily at 02:00.
 # Re-run after `make build` to update the installed binary.
@@ -75,7 +75,7 @@ install-local:
 
 clean:
 	@echo "Cleaning build artifacts..."
-	rm -f scribe-job coverage.out
+	rm -f transcribe-job coverage.out
 	@echo "Clean complete"
 
 deps:

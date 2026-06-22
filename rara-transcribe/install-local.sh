@@ -55,8 +55,8 @@ if [ ! -f "$INSTALL_DIR/.env" ]; then
     YT_DLP_REAL=$(command -v yt-dlp)
     FFMPEG_REAL=$(command -v ffmpeg)
     sed \
-        -e "s|YT_DLP_BIN=.*|YT_DLP_BIN=$YT_DLP_REAL|" \
-        -e "s|FFMPEG_BIN=.*|FFMPEG_BIN=$FFMPEG_REAL|" \
+        -e "s@YT_DLP_BIN=.*@YT_DLP_BIN=$YT_DLP_REAL@" \
+        -e "s@FFMPEG_BIN=.*@FFMPEG_BIN=$FFMPEG_REAL@" \
         .env.example > "$INSTALL_DIR/.env"
     echo ""
     echo "!! REQUIRED STEP: edit the file before continuing:"

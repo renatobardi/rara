@@ -1,5 +1,5 @@
 -- migrations/001_initial_schema.sql
--- Initial schema for rara-scribe
+-- Initial schema for rara-transcribe
 -- Description: Store high-quality transcripts (native language) for the videos
 --   collected by rara-harvest (channel_videos) and rara-shelf (playlist_videos).
 --   Isolated from the other agents: its own tables in the same Neon database.
@@ -9,14 +9,14 @@
 -- files or arbitrary URLs it is NULL — each is stored as a distinct row.
 CREATE TABLE IF NOT EXISTS transcripts (
     id               SERIAL PRIMARY KEY,
-    source_type      VARCHAR(16)  NOT NULL,                 -- 'youtube' | 'local' | 'url'
+    source_type      VARCHAR(16)  NOT NULL CHECK (source_type IN ('youtube', 'podcast')),  -- 'youtube' | 'podcast'
     youtube_video_id VARCHAR(50)  UNIQUE,                   -- set only for youtube sources
     source_ref       TEXT         NOT NULL,                 -- watch url, page url or file path
     language         VARCHAR(10),                           -- native language detected (e.g. 'pt', 'en')
     engine           VARCHAR(48)  NOT NULL,                 -- e.g. 'groq/whisper-large-v3'
     transcript       TEXT,                                  -- full text, native language
-    duration_seconds INT,
-    status           VARCHAR(16)  NOT NULL DEFAULT 'done',  -- 'done' | 'failed'
+    duration_seconds INT          CHECK (duration_seconds IS NULL OR duration_seconds >= 0),
+    status           VARCHAR(16)  NOT NULL DEFAULT 'done' CHECK (status IN ('done', 'failed')),  -- 'done' | 'failed'
     error            TEXT,                                  -- failure reason when status = 'failed'
     created_at       TIMESTAMPTZ  DEFAULT CURRENT_TIMESTAMP,
     updated_at       TIMESTAMPTZ  DEFAULT CURRENT_TIMESTAMP
@@ -31,9 +31,9 @@ CREATE INDEX IF NOT EXISTS idx_transcripts_status ON transcripts(status);
 CREATE TABLE IF NOT EXISTS transcript_segments (
     id            SERIAL PRIMARY KEY,
     transcript_id INT           NOT NULL REFERENCES transcripts(id) ON DELETE CASCADE,
-    seq           INT           NOT NULL,                   -- order of the segment in the video
-    start_seconds NUMERIC(10,3) NOT NULL,                   -- global start offset (seconds)
-    end_seconds   NUMERIC(10,3) NOT NULL,                   -- global end offset (seconds)
+    seq           INT           NOT NULL CHECK (seq >= 0),          -- order of the segment in the video
+    start_seconds NUMERIC(10,3) NOT NULL CHECK (start_seconds >= 0),      -- global start offset (seconds)
+    end_seconds   NUMERIC(10,3) NOT NULL CHECK (end_seconds >= start_seconds),  -- global end offset (seconds)
     text          TEXT          NOT NULL,
     UNIQUE (transcript_id, seq)
 );
@@ -60,7 +60,7 @@ CREATE TRIGGER trg_transcripts_updated_at
 -- Documentation
 COMMENT ON TABLE transcripts IS 'High-quality transcripts (native language) for collected videos';
 COMMENT ON TABLE transcript_segments IS 'Timestamped segments per transcript (global offsets)';
-COMMENT ON COLUMN transcripts.source_type IS 'youtube | local | url';
+COMMENT ON COLUMN transcripts.source_type IS 'youtube | podcast';
 COMMENT ON COLUMN transcripts.youtube_video_id IS 'YouTube video id; global idempotency key, NULL for non-youtube sources';
 COMMENT ON COLUMN transcripts.engine IS 'ASR engine used, e.g. groq/whisper-large-v3 or gemini/gemini-2.5-flash';
 COMMENT ON COLUMN transcripts.status IS 'done | failed';
