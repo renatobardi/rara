@@ -1423,3 +1423,33 @@ func TestActivateInterestProfileSwap(t *testing.T) {
 		t.Error("a rejected activation must not mutate the current active")
 	}
 }
+
+func TestSeedYouTubeLaneCaptionAppIsTranscribe(t *testing.T) {
+	ctx := context.Background()
+	db := newMockDatabase()
+	if err := SeedYouTubeLane(ctx, db); err != nil {
+		t.Fatalf("SeedYouTubeLane: %v", err)
+	}
+	p, ok, err := db.GetProvider(ctx, provASRYouTube)
+	if err != nil || !ok {
+		t.Fatalf("GetProvider(%q): ok=%v err=%v", provASRYouTube, ok, err)
+	}
+	if p.App != "transcribe" {
+		t.Errorf("caption-mac App = %q, want %q", p.App, "transcribe")
+	}
+}
+
+func TestSeedPodcastLaneEchoAppIsTranscribe(t *testing.T) {
+	ctx := context.Background()
+	db := newMockDatabase()
+	if err := SeedPodcastLane(ctx, db); err != nil {
+		t.Fatalf("SeedPodcastLane: %v", err)
+	}
+	p, ok, err := db.GetProvider(ctx, provASRDirectAudio)
+	if err != nil || !ok {
+		t.Fatalf("GetProvider(%q): ok=%v err=%v", provASRDirectAudio, ok, err)
+	}
+	if p.App != "transcribe" {
+		t.Errorf("echo-cloud App = %q, want %q", p.App, "transcribe")
+	}
+}
