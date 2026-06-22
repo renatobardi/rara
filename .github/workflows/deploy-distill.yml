@@ -69,7 +69,9 @@ jobs:
           file: rara-distill/Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: ${{ env.IMAGE }}
+          tags: |
+            ${{ env.IMAGE }}
+            ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/rara/rara-distill:latest
 
       # Acceptance check: the manifest list MUST carry exactly linux/amd64 + linux/arm64.
       # build-push-action v6 also emits attestation entries (platform: unknown/unknown); filter
