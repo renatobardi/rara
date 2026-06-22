@@ -68,7 +68,7 @@ build-arm64:
 
 docker-build:
 	@echo "Building Docker image..."
-	docker build -t rara-extract:latest .
+	docker build -f rara-extract/Dockerfile -t rara-extract:latest ..
 	@echo "Docker image built: rara-extract:latest"
 
 # Maintenance

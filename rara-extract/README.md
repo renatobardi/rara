@@ -26,8 +26,7 @@ Per claimed item:
 
 1. **Read** the raw body from the collector's domain table (a cross-app **SELECT**, the 1.0 isolation
    convention — read a sibling's table, never call it), dispatching by lane.
-2. **Clean** it with the lane's **pure, deterministic** cleaner (`cleanEmailText` / `cleanPostText` /
-   `cleanNewsText`).
+2. **Clean** it with the lane's **pure, deterministic** cleaner (`cleanEmailText` / `cleanPostText`).
 3. **Upsert** the cleaned text into `transcripts` (`UPDATE` else `INSERT`, idempotent on
    `(source_ref, source_type)`) and return its id as the step's `output_ref`.
 
@@ -48,10 +47,10 @@ The cleaning is **pure** (zero I/O), so the whole normalization policy is unit-t
 ## Run
 
 ```bash
-export DATABASE_URL=...                # the shared Neon database
 export GLEAN_PROVIDER=extrair-email    # or extrair-linkedin, extrair-news
 make test              # zero-I/O unit tests (pure cleaners + handler with a mock store)
 make build             # local binary (extract-job)
+export DATABASE_URL=...                # the shared Neon database (not needed for make test)
 go run .               # drain the queue once for (extrair, GLEAN_PROVIDER) and exit (on_demand)
 ```
 

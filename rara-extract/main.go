@@ -360,7 +360,7 @@ func main() {
 		PokeToken:    os.Getenv("POKE_TOKEN"),
 	}
 	if err := addon.Run(ctx, ac, gleanHandler(&appDB{pool: pool})); err != nil {
-		log.Fatalf("glean worker %s/%s: %v", capExtrair, provider, err)
+		log.Fatalf("rara-extract worker %s/%s: %v", capExtrair, provider, err)
 	}
 	log.Printf("rara-extract worker %s/%s: queue drained", capExtrair, provider)
 }

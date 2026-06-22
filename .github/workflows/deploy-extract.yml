@@ -160,6 +160,8 @@ jobs:
       - name: Execute job once
         if: ${{ inputs.run_after_deploy }}
         run: |
+          echo "⚠️ Running with GLEAN_PROVIDER=PLACEHOLDER_PROVIDER — dispatcher must override via env."
+          echo "This execution will FAIL unless a dispatcher override is provided."
           gcloud run jobs execute "$JOB_NAME" \
             --region "$REGION" \
             --project "$GCP_PROJECT" \
