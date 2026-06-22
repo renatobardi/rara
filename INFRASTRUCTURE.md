@@ -89,9 +89,9 @@ Cloud Run Job by injecting the provider name as an env override per execution
 
 The dispatcher calls `gcloud run jobs execute --update-env-vars …`, which translates to the
 `run.jobs.runWithOverrides` permission. `run.jobs.run` alone is not enough: without the override
-permission, Cloud Run silently ignores the env vars and the job starts with `PLACEHOLDER_PROVIDER`,
-the worker never claims an item, and those items stay stuck (visible as stalled `last_error` on
-placements `sift-cloud`, `assay-cloud`, `glean-cloud`, `winnow-cloud`, `scrub-cloud`, `echo-cloud`).
+permission, Cloud Run returns HTTP 403 PERMISSION_DENIED and the execution never starts. The
+symptom is a dispatch error in `rara-runner-dispatch` logs, not a silent failure — check those
+logs first (see the `journalctl` command below) before investigating item state.
 
 **Required IAM on the dispatcher SA** (the GCP credential used by `rara-runner dispatch` on the VPC):
 
