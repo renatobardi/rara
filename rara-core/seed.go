@@ -338,7 +338,7 @@ func SeedEmailLane(ctx context.Context, db Database) error {
 	// extrair: deterministic HTML/quote/signature cleaning — accepts only email.
 	if err := db.UpsertProvider(ctx, Provider{
 		Name: provExtrairEmail, Capability: capExtrair, Runtime: runtimeCloudRun, Activation: activationOnDemand,
-		Worker: "winnow", App: "extrair-email", Description: "Normalizador — e-mail",
+		Worker: "winnow", App: "extract", Description: "Normalizador — e-mail",
 		Constraints: []byte(`{"accepts":["email"]}`), Enabled: true,
 	}); err != nil {
 		return err
@@ -379,7 +379,7 @@ func SeedNewsLane(ctx context.Context, db Database) error {
 	// extrair: deterministic HTML/boilerplate cleaning — accepts only news.
 	if err := db.UpsertProvider(ctx, Provider{
 		Name: provExtrairNews, Capability: capExtrair, Runtime: runtimeCloudRun, Activation: activationOnDemand,
-		Worker: "glean", App: "extrair-news", Description: "Normalizador — feed (artigo)",
+		Worker: "glean", App: "extract", Description: "Normalizador — feed (artigo)",
 		Constraints: []byte(`{"accepts":["news"]}`), Enabled: true,
 	}); err != nil {
 		return err

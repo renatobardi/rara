@@ -209,7 +209,7 @@ func SeedLinkedInLane(ctx context.Context, db Database) error {
 	// extrair: deterministic post normalization — accepts only linkedin.
 	if err := db.UpsertProvider(ctx, Provider{
 		Name: provExtrairLinked, Capability: capExtrair, Runtime: runtimeCloudRun, Activation: activationOnDemand,
-		Worker: "scrub", App: "extrair-linkedin", Description: "Normalizador — post LinkedIn",
+		Worker: "scrub", App: "extract", Description: "Normalizador — post LinkedIn",
 		Constraints: []byte(`{"accepts":["linkedin"]}`), Enabled: true,
 	}); err != nil {
 		return err

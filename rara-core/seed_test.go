@@ -562,6 +562,8 @@ func TestSeedAllProvidersHaveApp(t *testing.T) {
 		provGateRicoLocal:   "gate",
 		provASRYouTube:      "asr-youtube",
 		provASRDirectAudio:  "asr-direct-audio",
+		provExtrairEmail:    "extract",
+		provExtrairNews:     "extract",
 	}
 	for name, wantA := range wantApp {
 		if p := db.providers[name]; p.App != wantA {
