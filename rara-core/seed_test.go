@@ -526,8 +526,8 @@ func TestSeedWorkerAndAppRoundTrip(t *testing.T) {
 }
 
 // TestSeedAllProvidersHaveApp asserts every seeded provider has a non-empty App (the
-// dispatch target that P1b decoupled from Name). After P1b, App holds the pre-rename
-// deploy key (the old provider name) while Name is the new <worker>-<runtime> codename.
+// dispatch target that P1b decoupled from Name). After P2b-gate-B, gate providers
+// (sift/assay) share the consolidated 'gate' app; Name remains the <worker>-<runtime> codename.
 func TestSeedAllProvidersHaveApp(t *testing.T) {
 	t.Setenv("DISTILL_MODEL", "groq-llama")
 	t.Setenv("GATE_MODEL", "groq-fast")
@@ -552,14 +552,14 @@ func TestSeedAllProvidersHaveApp(t *testing.T) {
 			t.Errorf("provider %q: App is empty; every provider must have a dispatch target", name)
 		}
 	}
-	// Spot-check: App is the old deploy key, not the new codename.
+	// Spot-check: App is the consolidated job/image name for dispatch.
 	wantApp := map[string]string{
 		provDistill:         "distill",
 		provDistillLocal:    "distill-local",
-		provGateBarato:      "gate-barato",
-		provGateBaratoLocal: "gate-barato-local",
-		provGateRico:        "gate-rico",
-		provGateRicoLocal:   "gate-rico-local",
+		provGateBarato:      "gate",
+		provGateBaratoLocal: "gate",
+		provGateRico:        "gate",
+		provGateRicoLocal:   "gate",
 		provASRYouTube:      "asr-youtube",
 		provASRDirectAudio:  "asr-direct-audio",
 	}
