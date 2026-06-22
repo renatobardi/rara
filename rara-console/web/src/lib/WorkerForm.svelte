@@ -161,7 +161,9 @@
 			capability: capability.trim(),
 			runtime,
 			activation,
-			enabled
+			enabled,
+			// preserve description on edit (not editable in form; upsert would clear it otherwise)
+			...(initial?.description ? { description: initial.description } : {})
 		};
 
 		if (runtime !== 'cloudrun' && runnerUrl.trim()) payload.runner_url = runnerUrl.trim();

@@ -350,12 +350,12 @@
 		saveMsg = '';
 		try {
 			// ponytail: explicit DTO — omit heartbeat_at (core preserves it from DB on upsert).
-			// env must stay: full-record upsert, omitting it would set env={} in the DB.
+			// description/env must stay: full-record upsert, omitting them would clear the DB columns.
 			const dto = {
 				worker: workerName, name: p.name, capability: p.capability, runtime: p.runtime,
 				activation: p.activation,
 				enabled: !p.enabled, constraints: p.constraints,
-				runner_url: p.runner_url, env: p.env
+				runner_url: p.runner_url, env: p.env, description: p.description
 			};
 			const optimistic: Provider = { ...p, worker: workerName, enabled: !p.enabled };
 			const res = await fetch('/api/placements', {
@@ -393,7 +393,8 @@
 		formMode = 'add';
 		formLockedWorker = w.name;
 		formLockedCapability = w.capability;
-		formLockedConstraints = w.placements[0]?.constraints ?? null;
+		// any placement carries the worker's constraints (per-worker invariant in the data model)
+		formLockedConstraints = w.placements.find((p) => p.constraints)?.constraints ?? null;
 		saveMsg = '';
 		// ensure worker row is expanded so the inline form is visible
 		const next = new Set(expandedWorkers);
