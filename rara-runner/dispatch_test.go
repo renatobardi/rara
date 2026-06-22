@@ -176,7 +176,7 @@ func TestDispatchOnceMultipleProviders(t *testing.T) {
 			{ItemID: 1, Seq: 3, AssignedProvider: "caption-mac"},
 		},
 		providers: map[string]DispatchProvider{
-			"sift-cloud": {Name: "sift-cloud", Runtime: runtimeCloudRun},
+			"sift-cloud":  {Name: "sift-cloud", Runtime: runtimeCloudRun},
 			"caption-mac": {Name: "caption-mac", Runtime: runtimeLocal, RunnerURL: "http://mac.tailnet:8473"},
 		},
 	}
@@ -307,8 +307,8 @@ func TestDispatchOnceCollectorsAndWorkersInSamePass(t *testing.T) {
 		woken[i] = r.App
 	}
 	sort.Strings(woken)
-	if woken[0] != "sift-cloud" || woken[1] != "harvest" {
-		t.Errorf("woken = %v, want [sift-cloud harvest]", woken)
+	if woken[0] != "harvest" || woken[1] != "sift-cloud" {
+		t.Errorf("woken = %v, want [harvest sift-cloud]", woken)
 	}
 }
 
