@@ -28,7 +28,7 @@ rara-core now exposes a **control surface** — MCP over HTTP — so a person or
 - **Auth** ([surface.go](surface.go)): a single service token (`Authorization: Bearer
   $SURFACE_TOKEN`), constant-time, **fail-closed** — an unset token refuses to serve. `/healthz`
   is the only open route.
-- **LinkedIn lane** ([linkedin.go](linkedin.go)): a `manual-inbox` collector — `POST
+- **LinkedIn lane** ([linkedin.go](linkedin.go)): a `stash` collector — `POST
   /v1/linkedin/inbox` (or the `rara_submit_linkedin_post` tool) takes a post's URL + text, upserts
   it into `linkedin_posts` and discovers the spine item (lane=linkedin, sensitivity=public). The
   flow uses `extrair` (the post is already text), pinned with `accepts:["linkedin"]`. The
@@ -76,7 +76,7 @@ distill — by orchestrating the existing 1.0 workers through the control tables
 changing any worker's domain logic. Phase 1 ships:
 
 - **Lane config seed** ([seed.go](seed.go)): the YouTube lane as data — capabilities,
-  four providers (`harvest`/`shelf` = collectors, `caption-mac` = transcriber on the Mac
+  four providers (`harvest`/`shelf` = collectors, `caption` = transcriber on the Mac
   with the residential constraint, `distill` = Cloud Run), one `youtube` flow and its
   five ordered steps (`coletar → gate_barato → transcrever → gate_rico → destilar`).
 - **Spine ingest** ([ingest.go](ingest.go)): populates `items` from
@@ -91,7 +91,7 @@ changing any worker's domain logic. Phase 1 ships:
   no double-claim. The claim moves the step `pending → running`.
 - **Worker shims** ([worker.go](worker.go), [runners.go](runners.go)): a thin adapter
   that translates an `item_steps` assignment into the existing binary's current
-  entrypoint (`scribe --source <url> --limit 1`; an idempotent `distill` batch drain)
+  entrypoint (`transcribe --source <url> --limit 1`; an idempotent `distill` batch drain)
   and writes the produced domain row id back as `output_ref`. Scribe/distill domain
   logic is untouched.
 - **Pass-through gates** (superseded in Phase 3): in Phase 1 `gate_barato`/`gate_rico` always
@@ -121,10 +121,10 @@ core-job status                    # health check: control tables reachable
 ```
 
 rara-core no longer runs a `work` role: every capability is its own bridge-total claim-worker
-app on the [rara-addon](../rara-addon) SDK — `transcrever` ([rara-scribe](../rara-scribe)),
+app on the [rara-addon](../rara-addon) SDK — `transcrever` ([rara-transcribe](../rara-transcribe)),
 `destilar` ([rara-distill](../rara-distill)), the curation gates `gate_barato`/`gate_rico`
-([rara-sift](../rara-sift)), and the already-text extractor `extrair`
-([rara-glean](../rara-glean)). The core only **routes** and **activates** them through the
+([rara-gate](../rara-gate)), and the already-text extractor `extrair`
+([rara-extract](../rara-extract)). The core only **routes** and **activates** them through the
 contract tables; it never executes a capability.
 
 The reconciler also mounts the surface in-process when run with `--loop` and `SURFACE_ADDR`
@@ -175,7 +175,7 @@ applied to Neon by `database-core.yml` on merge to `main` (and validated inside 
 rara-core is designed to run **always-on in the VPC** (the reconciler must stay awake
 while the Mac sleeps and Cloud Run scales to zero): `core-job reconcile --loop`. The
 worker shims run where their domain binary lives — `work --capability transcrever`
-alongside scribe on the Mac, `work --capability destilar` and the gate workers
+alongside the transcribe worker on the Mac, `work --capability destilar` and the gate workers
 (`gate_barato`/`gate_rico`) as woken Cloud Run jobs. The gate workers reach the VPC LiteLLM
 gateway for the LLM-judge.
 

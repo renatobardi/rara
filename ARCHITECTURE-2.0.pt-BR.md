@@ -95,15 +95,15 @@ orquestrador + dono do contrato/SDK. Detalhe completo em [ADDON-CONTRACT](./ADDO
   **`(capability, assigned_provider)`** (isola provider-a-provider).
 - **Um app serve vários providers** por config (codebases ≪ providers).
 - **Apps** (nome evocativo, estilo 1.0): `core` (orquestra) · coletores `harvest` `shelf` `feed`
-  `dial`(podcast) `courier`(email) `clip`(linkedin) · workers `scribe`(transcrever) `glean`(extrair)
-  `sift`(gates) `distill`(destila) `hone`(revise/aprendizado). Metáfora: colher → peneirar →
+  `dial`(podcast) `courier`(email) `clip`(linkedin) · workers `transcribe`(transcrever) `extract`(extrair)
+  `gate`(gates) `distill`(destila) `hone`(revise/aprendizado). Metáfora: colher → peneirar →
   destilar, e afiar o gosto. **Nomes de capability no banco não mudam** — só o nome do app é
   evocativo.
 
 ## 6. Curadoria: dois portões + aprendizado
 
 - **Dois portões cost-aware:** `gate_barato` em metadata (antes de transcrever), `gate_rico` no
-  texto (antes de destilar). Cada um é a capability do app **`sift`**.
+  texto (antes de destilar). Cada um é a capability do app **`gate`**.
 - **Cascata barato→caro:** regras (allow/deny) → match de `interest_profile` → LLM-judge só no meio
   duvidoso. Resultado: keep → avança; drop → `filtered`; **defer → quarentena** (combate cold-start).
 - **Aprendizado (`hone`):** reescrita **híbrida** do `interest_profile` — motor determinístico decide
@@ -116,7 +116,7 @@ orquestrador + dono do contrato/SDK. Detalhe completo em [ADDON-CONTRACT](./ADDO
 
 Duas camadas (detalhe em [INFERENCE-ROUTING](./INFERENCE-ROUTING.pt-BR.md)):
 
-- **Router do rara = ONDE** (host): pros workers de LLM (`sift`, `distill`), a cadeia de custo é
+- **Router do rara = ONDE** (host): pros workers de LLM (`gate`, `distill`), a cadeia de custo é
   **VPC → (Mac futuro) → Cloud Run**. Os `*-local` (VPC) têm custo menor e qualidade igual ao
   cloud (mesmo modelo), então o router os escolhe primeiro; Cloud Run entra só quando o VPC está
   offline. O slot do Mac entrará no meio quando o agente Mac for provisionado.
@@ -130,7 +130,7 @@ Duas camadas (detalhe em [INFERENCE-ROUTING](./INFERENCE-ROUTING.pt-BR.md)):
 Coletores que fazem **scraping direto** de sites com bot-detection (Akamai, anti-scraping) são
 **Mac-exclusivos por constraint hard**, sem fallback pra datacenter:
 
-- **`asr-youtube`** (`requires: residential`): yt-dlp baixa o áudio do YouTube — bloqueado em IPs
+- **`caption`** (`requires: residential`): yt-dlp baixa o áudio do YouTube — bloqueado em IPs
   de datacenter. Roda só no Mac (`runtime=local`). O router é **fail-closed**: se o Mac estiver
   offline, o item aguarda em vez de cair pro Cloud Run/VPC (que tomariam bloqueio de qualquer forma).
   Não modelar como "preferir local + fallback cloud".
@@ -149,8 +149,8 @@ constraint.
 | Host | Roda | 
 |---|---|
 | **VPC Oracle** (always-on) | `core` + `console` + `runner` (dispatch + agent) + workers VPC-local (via Docker) + LiteLLM container |
-| **Mac** (residente) | `scribe`/asr-youtube (launchd, IP residencial) |
-| **GCP Cloud Run** (on_demand) | coletores + `sift` + `distill` + `scribe`/asr-direct + `glean` + `hone` + LiteLLM Service |
+| **Mac** (residente) | `caption` (rara-transcribe, launchd, IP residencial) |
+| **GCP Cloud Run** (on_demand) | coletores + `gate` + `distill` + `echo` (rara-transcribe) + `extract` + `hone` + LiteLLM Service |
 | **Neon** | estado · config · domínio (de tudo) |
 
 Detalhes de deploy em [INFRASTRUCTURE.md](./INFRASTRUCTURE.md).
@@ -196,17 +196,17 @@ Binários nativos arm64, sem Docker. Deploy: rsync + SSH + systemd (`deploy-core
 | `rara-dial` | dial | coletar (podcasts) |
 | `rara-courier` | courier | coletar (email) |
 | `rara-clip` | clip | coletar (LinkedIn via Bright Data) |
-| `rara-gate-barato`, `rara-gate-rico` | sift | gate_barato / gate_rico |
+| `rara-gate` | gate | gate_barato / gate_rico |
 | `rara-distill` | distill | destilar |
-| `rara-asr-direct-audio` | scribe | transcrever (áudio via URL direta) |
-| `rara-extrair-email`, `rara-extrair-linkedin`, `rara-extrair-news` | glean | extrair |
+| `rara-transcribe` | transcribe | transcrever (áudio via URL direta, echo) |
+| `rara-extract` (winnow / scrub / glean) | extract | extrair |
 | `rara-hone` | hone | revise (Cloud Scheduler diário) |
 
-Cloud Run **Service** `litellm`: gateway de inferência para os workers cloud (escala a zero). Workers 2.0 (sift, distill, scribe, glean) usam imagens multi-arch (`buildx`, amd64 + arm64) — um manifest list serve Cloud Run e VPC.
+Cloud Run **Service** `litellm`: gateway de inferência para os workers cloud (escala a zero). Workers 2.0 (gate, distill, transcribe, extract) usam imagens multi-arch (`buildx`, amd64 + arm64) — um manifest list serve Cloud Run e VPC.
 
 ### Mac (native, launchd)
 
-`asr-youtube` (rara-scribe): launchd `com.rara.scribe`, diário 02:00. yt-dlp + ffmpeg nativos. IP residencial é constraint hard — sem fallback para datacenter.
+`caption` (rara-transcribe): launchd `com.rara.transcribe`, diário 02:00. yt-dlp + ffmpeg nativos. IP residencial é constraint hard — sem fallback para datacenter.
 
 ### Neon (Postgres)
 

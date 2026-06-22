@@ -182,7 +182,7 @@ Layout: sidebar 260px (`#171717`) + conteúdo (`#212121`), topbar translúcida. 
    CRUD das `gate_rules` (allow/deny) + amostra das decisões recentes (o que passou/caiu e por
    qual camada). É onde você **treina** o gosto.
 6. **Fontes & Flows** — lista de flows, os `flow_steps` como pipeline visual com toggles por passo,
-   ligar/desligar lanes, e o **formulário manual-inbox do LinkedIn** (cola URL+texto).
+   ligar/desligar lanes, e o **formulário stash do LinkedIn** (cola URL+texto).
 7. **Providers & Roteamento** — registry de providers (capability, runtime, activation,
    custo/qualidade, constraints, heartbeat/saúde) + editor de `routing_policies` (slider
    custo⇄qualidade, ordem de fallback) + board de saúde.
@@ -274,7 +274,7 @@ deploy), e as telas preenchem conforme os endpoints da Fase 5 entram.
 | **C0 — Fundação** | scaffold `rara-console` (Go + embed + SvelteKit), tokens Kura no Tailwind, shell sidebar+topbar, auth (Tailscale), deploy systemd+borda na VPC, `/healthz` lendo o rara-core | nada (pode começar já) |
 | **C1 — Ver** | Visão geral (KPIs) + Pipeline (board + detalhe do item), read-only | endpoints de leitura de estado (Fase 5) |
 | **C2 — Agir** | Quarentena (keep/drop) + Distillations (thumbs) — o human-in-the-loop | endpoints feedback/quarentena (Fase 5; funções já existem da Fase 3) |
-| **C3 — Treinar** | Curadoria (perfil + regras) + Fontes/Flows (toggles) + LinkedIn manual-inbox | endpoints de config (Fase 5) |
+| **C3 — Treinar** | Curadoria (perfil + regras) + Fontes/Flows (toggles) + LinkedIn stash | endpoints de config (Fase 5) |
 | **C4 — Afinar** | Providers & Roteamento (saúde + policy) + Auditoria + ⌘K + polish (toasts, transições, selo hanko) | — |
 
 ---

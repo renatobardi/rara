@@ -21,7 +21,7 @@ see `ARCHITECTURE.md`.
 | **rara-runner-dispatch** | VPC Oracle | systemd | always-on; reads `item_steps` + collectors, wakes workers by transport |
 | **rara-runner-agent** | VPC Oracle | systemd | always-on; HTTP daemon → `docker run` for VPC-local workers |
 | **LiteLLM (VPC)** | VPC Oracle | Docker container | serves VPC-local workers (groq models, bridge `172.17.0.1:4010`) |
-| **rara-scribe / asr-youtube** | Mac | launchd | residential IP; daily 02:00; yt-dlp + ffmpeg native |
+| **rara-transcribe / caption** | Mac | launchd | residential IP; daily 02:00; yt-dlp + ffmpeg native |
 | **Cloud Run Jobs** (collectors + workers) | GCP | Cloud Run Job | on-demand; dispatched via `jobs:run` by rara-runner-dispatch |
 | **LiteLLM (cloud)** | GCP | Cloud Run Service | gateway for Cloud Run workers; scales to zero |
 | **Neon** | managed | PostgreSQL | shared state for all components |
@@ -88,22 +88,22 @@ with an allowlist check on the image path; fail-closed (Bearer + allowlist).
 
 ---
 
-## Mac (rara-scribe / asr-youtube)
+## Mac (rara-transcribe / caption)
 
-`asr-youtube` runs natively under `launchd` — not containerized by design (residential IP +
+`caption` runs natively under `launchd` — not containerized by design (residential IP +
 yt-dlp needs frequent updates outside of a fixed image).
 
 ```
-~/.rara-scribe/
-  rara-scribe          # compiled binary
+~/.rara-transcribe/
+  rara-transcribe      # compiled binary
   .env                 # DATABASE_URL, GROQ_API_KEY, SCRIBE_PROVIDER, YT_DLP_BIN, FFMPEG_BIN, ...
   run.sh               # prepends Homebrew PATH; sources .env; execs binary
-~/Library/LaunchAgents/com.rara.scribe.plist   # daily 02:00
-~/Library/Logs/rara-scribe/{output,error}.log
+~/Library/LaunchAgents/com.rara.transcribe.plist   # daily 02:00
+~/Library/Logs/rara-transcribe/{output,error}.log
 ```
 
-Secrets are in `~/.rara-scribe/.env` (gitignored). No deploy workflow — installed and updated
-manually with `make build && bash install-local.sh` from the `rara-scribe` directory.
+Secrets are in `~/.rara-transcribe/.env` (gitignored). No deploy workflow — installed and updated
+manually with `make build && bash install-local.sh` from the `rara-transcribe` directory.
 
 ---
 
@@ -128,10 +128,10 @@ Job name = `rara-` + provider name (what the dispatcher wakes).
 | `rara-dial` | dial | coletar (podcasts) |
 | `rara-courier` | courier | coletar (email) |
 | `rara-clip` | clip | coletar (LinkedIn via Bright Data proxies) |
-| `rara-gate-barato`, `rara-gate-rico` | sift | gate_barato / gate_rico |
+| `rara-gate` | gate | gate_barato / gate_rico |
 | `rara-distill` | distill | destilar (llama-3.3-70b via LiteLLM) |
-| `rara-asr-direct-audio` | scribe | transcrever (audio via direct URL, no residential IP needed) |
-| `rara-extrair-email`, `rara-extrair-linkedin`, `rara-extrair-news` | glean | extrair |
+| `rara-transcribe` | transcribe | transcrever (echo/audio via direct URL, no residential IP needed) |
+| `rara-extract` (winnow / scrub / glean) | extract | extrair |
 | `rara-hone` | hone | revise (triggered by Cloud Scheduler daily) |
 
 Workers built with `docker buildx` produce multi-arch manifest lists (amd64 + arm64). Cloud Run
@@ -186,10 +186,10 @@ Path-filtered per agent — a change to `rara-core/**` only triggers core's work
 |----------|---------|
 | `deploy-harvest.yml`, `deploy-shelf.yml`, `deploy-feed.yml` | push to `main` + `workflow_dispatch` |
 | `deploy-dial.yml`, `deploy-courier.yml`, `deploy-clip.yml`, `deploy-hone.yml` | push to `main` + `workflow_dispatch` |
-| `deploy-sift.yml`, `deploy-distill.yml`, `deploy-scribe.yml`, `deploy-glean.yml` | `workflow_dispatch` only |
+| `deploy-gate.yml`, `deploy-distill.yml`, `deploy-transcribe.yml`, `deploy-extract.yml` | `workflow_dispatch` only |
 | `deploy-litellm.yml` | push to `main` (path: `rara-distill/litellm/**`) + `workflow_dispatch` |
 
-The 2.0 claim-workers (sift, distill, scribe, glean) are manual-dispatch only because they only
+The 2.0 claim-workers (gate, distill, transcribe, extract) are manual-dispatch only because they only
 do work once the reconciler routes `item_steps` to their provider — deploying them on every push
 would be noise.
 

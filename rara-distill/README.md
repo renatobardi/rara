@@ -1,6 +1,6 @@
 # rara-distill
 
-Curates the raw transcripts produced by [rara-scribe](../rara-scribe) into
+Curates the raw transcripts produced by [rara-transcribe](../rara-transcribe) into
 **knowledge documents ready for RAG ingestion**, using a Fabric-style library of
 editable Markdown patterns. Reads upstream (`transcripts`), writes its own isolated
 table (`distillations`) in the same Neon database. The **Kura** "second brain"
@@ -27,7 +27,7 @@ isolation: rara-distill never calls Kura.
   `playlist_videos`, and `flow_steps` (the per-item recipe config). The CONTRACT tables
   (`item_steps`/`providers`/`items`) are handled by the SDK's `PgxStore`.
 - **Runtime**: one provider per deploy (`DISTILL_PROVIDER`, e.g. `distill` on Cloud Run /
-  `distill-local` on the VPC). on_demand by default (drain once and exit, the woken Cloud Run Job);
+  `distill-vpc` on the VPC). on_demand by default (drain once and exit, the woken Cloud Run Job);
   resident + symmetric activation via `WORK_POLL_INTERVAL` / `POKE_ADDR`.
 
 ## How it works
@@ -168,7 +168,7 @@ go run .                      # claim & drain the destilar queue for DISTILL_PRO
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `DATABASE_URL` | — (required) | Neon connection string (shared) |
-| `DISTILL_PROVIDER` | — (required) | the provider this worker serves (e.g. `distill` \| `distill-local`); the SDK claims its steps by `(destilar, this provider)` |
+| `DISTILL_PROVIDER` | — (required) | the provider this worker serves (e.g. `distill` \| `distill-vpc`); the SDK claims its steps by `(destilar, this provider)` |
 | `WORK_POLL_INTERVAL` | (unset → on_demand) | resident safety-net poll cadence (Go duration or bare seconds) |
 | `POKE_ADDR` / `POKE_TOKEN` | (unset) | tailnet poke listener (`POST /poke`, Bearer) for symmetric activation |
 | `CURATE_ENGINE` | `gemini` | `gemini` \| `claude` \| `groq` \| `litellm` |

@@ -5,7 +5,7 @@ catalogs each episode (an RSS `<item>` carrying an audio enclosure) into its own
 
 Like every rara agent it shares nothing but the Neon database and never calls another agent. The
 control plane (`rara-core`) reads `podcast_episodes` to build the items spine
-(`lane=podcast`, `source_ref=guid`), and the `asr-direct-audio` worker reads `enclosure_url` to
+(`lane=podcast`, `source_ref=guid`), and the `echo` worker reads `enclosure_url` to
 transcribe the episode — both cross-agent SELECTs, never writes.
 
 ## Tables (`migrations/001_initial_schema.sql`)
@@ -29,5 +29,5 @@ episodes upsert on `guid`, so a re-poll never duplicates and refreshes edited me
 The RSS parse (`parseRSS`) and the collector loop (`run`) are pure over two seams — a `Fetcher`
 (HTTP) and a `Database` (Neon) — so the whole logic is unit-tested with zero I/O (`make test`).
 Only audio enclosures are kept; an item with no GUID falls back to its enclosure URL as the
-stable id. Pipeline downstream (gates, transcription via `asr-direct-audio`, distillation) is
+stable id. Pipeline downstream (gates, transcription via `echo`, distillation) is
 driven entirely by `rara-core`.

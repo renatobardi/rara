@@ -9,13 +9,13 @@ sua onda. Companheiro de [DEPLOY-PHASES.pt-BR.md](./DEPLOY-PHASES.pt-BR.md) e
 |---|:---:|:---:|:---:|
 | **core** — orquestra + surface | **1** | — | — |
 | **dial** — podcast (RSS de áudio) | — | **2** | — |
-| **scribe** — transcrever | — | **2** · asr-direct-audio | **3** · asr-youtube |
-| **sift** — curadoria (gate_barato/rico) | — | **2** · terceiro | **3** · `*-local` |
-| **distill** — destila | — | **2** · terceiro | **3** · distill-local |
+| **transcribe** — transcrever | — | **2** · echo | **3** · caption |
+| **gate** — curadoria (gate_barato/rico) | — | **2** · sift/terceiro | **3** · `*-local` |
+| **distill** — destila | — | **2** · terceiro | **3** · distill-vpc |
 | **harvest** — canais YouTube | — | **3** | — |
 | **shelf** — playlists YouTube | — | **3** | — |
 | **courier** — email (Gmail) | — | **4** | — |
-| **glean** — extrair (email/linkedin) | — | **4** | — |
+| **extract** — extrair (email/linkedin/news) | — | **4** | — |
 | **feed** — news | — | **4** | — |
 | **clip** — linkedin | — | **4** | — |
 | **hone** — aprendizado (revise) | **5** | — | — |
@@ -28,16 +28,16 @@ sua onda. Companheiro de [DEPLOY-PHASES.pt-BR.md](./DEPLOY-PHASES.pt-BR.md) e
 | Onda | O que sobe | Marco |
 |---|---|---|
 | **1 — cérebro** | `core` (VPC) + Tailscale | orquestrador + superfície vivos; nada processa ainda |
-| **2 — 1ª raia usável** | LiteLLM + `dial` + `scribe`(nuvem) + `sift`(nuvem) + `distill`(nuvem) | **podcast público ponta a ponta — já dá pra usar**, sem depender do Mac |
-| **3 — Mac entra** | Ollama + `scribe`(Mac) + `sift`(local) + `distill`(local) + `harvest` + `shelf` | YouTube ponta a ponta + base do conteúdo privado |
-| **4 — raias restantes** | `courier` + `glean` + `feed` + `clip` | email, extração, news e linkedin no ar |
+| **2 — 1ª raia usável** | LiteLLM + `dial` + `transcribe`(nuvem/echo) + `gate`(nuvem) + `distill`(nuvem) | **podcast público ponta a ponta — já dá pra usar**, sem depender do Mac |
+| **3 — Mac entra** | Ollama + `transcribe`(Mac/caption) + `gate`(local) + `distill-vpc` + `harvest` + `shelf` | YouTube ponta a ponta + base do conteúdo privado |
+| **4 — raias restantes** | `courier` + `extract` + `feed` + `clip` | email, extração, news e linkedin no ar |
 | **5 — aprendizado** | `hone` (cron na VPC) | o loop de feedback fecha (só faz sentido com feedback acumulado) |
 
 ## Roteamento de LLM (custo): Mac primeiro
 
 A matriz acima é **placement** (onde a app *pode* rodar). O **custo** do LLM é decidido por uma
 camada à parte — a `routing_policy` (ver [INFERENCE-ROUTING.pt-BR.md](./INFERENCE-ROUTING.pt-BR.md)):
-para `sift` e `distill`, o router prefere **Mac (assinatura CLI, ~grátis) → VPC (Ollama) → Cloud Run
+para `gate` e `distill`, o router prefere **Mac (assinatura CLI, ~grátis) → VPC (Ollama) → Cloud Run
 (API paga)**. Mac acordado → barato; Mac dormindo → fallback. É config no console, não mexe no
 placement. No bring-up (onda 2, sem Mac) o smoke usa Cloud Run/API; quando o Mac entra (onda 3) a
 policy flipa pra Mac-first.

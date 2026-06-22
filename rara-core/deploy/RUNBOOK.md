@@ -146,5 +146,5 @@ curl -s -H "Authorization: Bearer ${TOKEN}" \
   rely on the OS firewall (`ufw allow in on tailscale0 to any port 8080`).
 - Cloud Run activation (`CLOUD_RUN_*`) and tailnet pokes (`POKE_AUTH_TOKEN`) are commented
   out in env.example — wire them in a follow-up phase (P2 activators).
-- rara-scribe (local Mac) and Cloud Run workers continue running unaffected. The reconciler
+- rara-transcribe (local Mac) and Cloud Run workers continue running unaffected. The reconciler
   only routes steps; it does not manage those processes.

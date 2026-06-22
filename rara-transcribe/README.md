@@ -7,8 +7,8 @@ Replaces weak YouTube auto-captions with specialist ASR. **Two workers, one app:
 
 | Worker | Provider | Placement | How |
 |--------|----------|-----------|-----|
-| **caption** | `asr-youtube` | Mac only (residential IP) | yt-dlp downloads video audio |
-| **echo** | `asr-direct-audio` | cloud / VPC / Mac | Fetches enclosure URL over HTTP |
+| **caption** | `caption` | Mac only (residential IP) | yt-dlp downloads video audio |
+| **echo** | `echo` | cloud / VPC / Mac | Fetches enclosure URL over HTTP |
 
 Own tables in the same Neon database (isolated from the other agents).
 
@@ -23,8 +23,8 @@ never decides *what* to transcribe.
 One binary serves **two workers**, selected by `SCRIBE_PROVIDER`; the handler picks the fetch
 strategy by provider/lane:
 
-- **`asr-youtube`** (`caption`, residential-IP Mac): builds the watch URL from the item's video id.
-- **`asr-direct-audio`** (`echo`, anywhere): resolves the episode's enclosure URL from
+- **`caption`** (residential-IP Mac): builds the watch URL from the item's video id.
+- **`echo`** (anywhere): resolves the episode's enclosure URL from
   `podcast_episodes` and re-keys the transcript to the spine's GUID + `source_type=podcast`.
 
 Per claimed item: 1) resolve the fetch target; 2) `yt-dlp` downloads the audio and `ffmpeg`
@@ -86,7 +86,7 @@ name is `whispercpp/whisper-large-v3` even when a chunk fell back to Groq).
 | Var | Required | Default | Description |
 |-----|----------|---------|-------------|
 | `DATABASE_URL` | yes | — | Neon PostgreSQL (shared) |
-| `SCRIBE_PROVIDER` | yes | — | provider this worker serves: `asr-youtube` (caption) \| `asr-direct-audio` (echo); the SDK claims its steps by `(transcrever, this provider)` |
+| `SCRIBE_PROVIDER` | yes | — | provider this worker serves: `caption` \| `echo`; the SDK claims its steps by `(transcrever, this provider)` |
 | `WORK_POLL_INTERVAL` | no | (unset → on_demand) | resident safety-net poll cadence (Go duration or bare seconds) |
 | `POKE_ADDR` / `POKE_TOKEN` | no | (unset) | tailnet poke listener (`POST /poke`, Bearer) for symmetric activation |
 | `TRANSCRIBE_ENGINE` | no | `groq` | `groq`, `gemini` or `local` |
@@ -115,8 +115,8 @@ make run           # build + claim/drain the queue once for SCRIBE_PROVIDER (req
 
 ## Cloud Run Job
 
-The `echo` worker (asr-direct-audio) runs as Cloud Run Job `rara-transcribe` (deployed by
-`deploy-transcribe.yml`). The `caption` worker (asr-youtube) runs natively on the Mac via
+The `echo` worker runs as Cloud Run Job `rara-transcribe` (deployed by
+`deploy-transcribe.yml`). The `caption` worker runs natively on the Mac via
 launchd — a rebuild of the binary there is required after any rename (manual step, P2b-transcribe-B).
 
 ## Migrations

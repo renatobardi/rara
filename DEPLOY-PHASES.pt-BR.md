@@ -23,19 +23,19 @@ Legenda: 🟦 código (Claude Code) · 🟧 ops/provisionamento · ✅ critério
 
 - **P1a — Extrair o SDK `rara-addon`** do `worker.go` + `ClaimPendingStep` + heartbeat + listener de
   poke. **Corrigir o claim** pra `(capability, assigned_provider)` — hoje filtra só por capability,
-  o que deixaria um item privado atribuído ao `distill-local` ser pego pelo worker de terceiro.
+  o que deixaria um item privado atribuído ao `distill-vpc` ser pego pelo worker de terceiro.
 - **P1b — Activators reais**: Cloud Run Jobs `run` (hoje é `logActivator` noop) + o **poke simétrico**
   no tailnet; `pull` + polling de fallback continuam.
 - **P1c — Separar as capacidades em apps** que usam o SDK: mover os runners nativos (gate, revise,
   asr-direct, extract, podcast/email/linkedin) pra apps próprios; adaptar os 1.0
-  (harvest/shelf/feed/scribe/distill) pro contrato em vez do cron+fila deles.
+  (harvest/shelf/feed/transcribe/distill) pro contrato em vez do cron+fila deles.
 - **⚠️ Gate do deploy (OBRIGATÓRIO na adaptação de um agente 1.0):** ao importar `rara-addon`, o
   `deploy-X.yml` do agente quebra no `docker build` (ele empacota só o módulo, e o `replace
   ../rara-addon` não está no contexto). No MESMO PR da adaptação, gate o deploy pra
   `workflow_dispatch` (remove o `push: main`); o binário 1.0 segue rodando onde já está. (distill
   já gated — PR #47.) Coletores (producers) que NÃO importam `rara-addon` não quebram. O rework
   multi-módulo + reativação fica pro P2.
-- **Config**: `gate-*-local`/`distill-local` → `runtime=local` (Mac); conferir
+- **Config**: `sift-local`/`distill-vpc` → `runtime=local` (Mac); conferir
   `activation`/`accepts`/`sensitivity` no seed.
 - TDD por app; PRs; CI verde.
 
@@ -45,10 +45,10 @@ orquestrador atribui e (P1b) acorda.
 ## P2 — Imagem + CI/CD de deploy 🟦🟧
 
 - **Imagem por app** (bridge-total — cada capability é um app que usa o SDK `rara-addon`):
-  **amd64** p/ Cloud Run; **binário nativo arm64** p/ VPC (`core`) e Mac (`scribe`, `*-local`).
+  **amd64** p/ Cloud Run; **binário nativo arm64** p/ VPC (`core`) e Mac (`transcribe`, `*-local`).
 - **Docker multi-módulo + reativar deploys gated:** cada Dockerfile de app que importa `rara-addon`
   copia `rara-addon` + o app no contexto do build (hoje empacota só o módulo). Fazer o padrão UMA
-  vez, reusar, e **reativar os triggers** dos deploys que foram gated no P1c (distill, scribe, …),
+  vez, reusar, e **reativar os triggers** dos deploys que foram gated no P1c (distill, transcribe, …),
   agora já no formato claim-worker (env `*_PROVIDER`, sem `*_SOURCE`/news-lane/`*_BATCH_SIZE`).
 - **`deploy-*.yml` por app**: build+push (Cloud Build → Artifact Registry); `gcloud run jobs
   replace` pros apps de Cloud Run; update da VPC via **Tailscale SSH** (`core`); Mac via
@@ -87,16 +87,16 @@ responde local.
 ## P5 — Runners no Cloud Run (on_demand) 🟧
 
 - Criar os **Cloud Run Jobs** (um por app, cada um sua imagem usando o SDK): coletores
-  (`harvest`, `shelf`, `feed`, `dial`, `courier`, `clip`), `scribe`(asr-direct), `glean`,
-  `sift`(3rd), `distill`(3rd).
+  (`harvest`, `shelf`, `feed`, `dial`, `courier`, `clip`), `transcribe`(echo/asr-direct), `extract`,
+  `gate`(sift/3rd), `distill`(3rd).
 - Conceder `run.jobs.run` à SA do reconciler; wire dos OAuth/keys (Gmail, Bright Data).
 
 ✅ o orquestrador **acorda** um job (Activator real) e ele claima/processa um item de teste.
 
 ## P6 — Mac (residencial/privado) 🟧
 
-- **launchd**: `scribe`/asr-youtube (re-apontado pra claimar de `item_steps`), `sift`-local,
-  `distill`-local + o **listener de poke**; Ollama + shim CLI já no ar (P4).
+- **launchd**: `caption` (re-apontado pra claimar de `item_steps`), `sift-vpc`,
+  `distill-vpc` + o **listener de poke**; Ollama + shim CLI já no ar (P4).
 - Providers `*-local`/`*-mac` em `runtime=local`.
 
 ✅ o Mac dá **heartbeat**; o poke do orquestrador chega quando ele está acordado; o LLM roteia

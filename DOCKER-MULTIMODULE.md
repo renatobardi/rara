@@ -1,7 +1,7 @@
 # Multi-module Docker build for SDK workers
 
-Workers that import the `rara-addon` SDK (`rara-distill`, `rara-sift`, `rara-scribe`,
-`rara-glean`) couple to it via a **`replace rara-addon => ../rara-addon`** in their `go.mod`
+Workers that import the `rara-addon` SDK (`rara-distill`, `rara-gate`, `rara-transcribe`,
+`rara-extract`) couple to it via a **`replace rara-addon => ../rara-addon`** in their `go.mod`
 (deliberately not a committed `go.work` — that would break the siblings' isolated CI). The
 replace points one directory up, so the build needs *two* modules on disk: the app and its
 sibling SDK.
@@ -46,9 +46,9 @@ ENTRYPOINT ["/app/<app>-job"]
 ```
 
 Only copy the `go:embed` directories that the app actually has — `rara-distill` embeds
-`patterns/contexts/strategies`; `sift`, `glean`, and the cloud `scribe` have none.
+`patterns/contexts/strategies`; `gate`, `extract`, and the cloud `transcribe` have none.
 
-## Multi-arch (the `rara-sift` pattern)
+## Multi-arch (the `rara-gate` pattern)
 
 The shipped artifact is **one image, two arches** — `amd64` for Cloud Run (the only x86 host) and
 `arm64` for the VPC Oracle (Ampere) and Mac (Apple Silicon) runner hosts, which both `docker run`
@@ -68,10 +68,10 @@ docker buildx build --platform linux/amd64,linux/arm64 \
 docker buildx imagetools inspect "$IMAGE"   # must list amd64 + arm64
 ```
 
-`rara-sift` is the first app on this pattern (`deploy-sift.yml` builds the manifest list once in a
+`rara-gate` is the first app on this pattern (`deploy-gate.yml` builds the manifest list once in a
 `build` job, then deploys its Cloud Run Jobs from it in a `deploy` matrix). The other SDK workers
-(`distill`/`glean`/`scribe`) are **not migrated yet** — they still build single-arch via the shared
-`_reusable-deploy-worker.yml` + Cloud Build below. Copy the `deploy-sift.yml` shape to migrate them
+(`distill`/`extract`/`transcribe`) are **not migrated yet** — they still build single-arch via the shared
+`_reusable-deploy-worker.yml` + Cloud Build below. Copy the `deploy-gate.yml` shape to migrate them
 (do not change the shared reusable workflow until they all move at once).
 
 ## Cloud Build (single-arch — pre-migration apps)
@@ -98,7 +98,7 @@ independent of `make` — it reproduces the same `../rara-addon` layout inside t
 
 Each `ci-<app>.yml` has a `docker-build` job that builds the multi-module image on every PR without
 GCP creds. Pre-migration apps run `docker build -f rara-<app>/Dockerfile .` (single-arch, build
-only). `ci-sift.yml` is the multi-arch reference: it buildx-builds **both** arches and pushes to a
+only). `ci-gate.yml` is the multi-arch reference: it buildx-builds **both** arches and pushes to a
 throwaway `registry:2` service container, then `docker buildx imagetools inspect` asserts the
 manifest list carries amd64 + arm64 — the PR-time proof of the F2 acceptance.
 
@@ -106,6 +106,6 @@ manifest list carries amd64 + arm64 — the PR-time proof of the F2 acceptance.
 
 `deploy-<app>.yml` is `workflow_dispatch`-only (gated, no `push: main`) until the lane-activation
 wave. Per-provider env (e.g. `DISTILL_PROVIDER`, `SIFT_GATE`, `SCRIBE_PROVIDER`) and app-specific
-secrets are wired in there — see each deploy file's comments. `deploy-sift.yml` is self-contained
+secrets are wired in there — see each deploy file's comments. `deploy-gate.yml` is self-contained
 (buildx multi-arch → manifest list in Artifact Registry → deploy); the rest still call
 `_reusable-deploy-worker.yml` (single-arch Cloud Build) until migrated.
