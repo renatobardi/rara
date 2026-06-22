@@ -896,3 +896,43 @@ func TestCaptionStashUnchangedByVPCSeed(t *testing.T) {
 		t.Errorf("stash: Activation=%q, want %q", stash.Activation, activationResident)
 	}
 }
+
+// TestCollectorAcceptsConstraints verifies that every scheduled collector provider carries an
+// accepts constraint restricting it to its own lane. This prevents cross-lane assignment if
+// the item router ever evaluates coletar steps, and makes the capColetar routing policy safe
+// to group all collectors in a single fallback list.
+func TestCollectorAcceptsConstraints(t *testing.T) {
+	ctx := context.Background()
+	db := newMockDatabase()
+	for _, fn := range allSeedFns {
+		if err := fn(ctx, db); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+	}
+
+	// Each scheduled collector must declare exactly which lane it accepts.
+	wantAccepts := map[string]string{
+		provHarvest:          `{"accepts":["youtube"]}`,
+		provHarvestLocal:     `{"accepts":["youtube"]}`,
+		provShelf:            `{"accepts":["youtube"]}`,
+		provShelfLocal:       `{"accepts":["youtube"]}`,
+		provDial:             `{"accepts":["podcast"]}`,
+		provDialLocal:        `{"accepts":["podcast"]}`,
+		provFeed:             `{"accepts":["news"]}`,
+		provFeedLocal:        `{"accepts":["news"]}`,
+		provCourier:          `{"accepts":["email"]}`,
+		provCourierLocal:     `{"accepts":["email"]}`,
+		provBrightDataLinked: `{"accepts":["linkedin"]}`,
+		provClipLocal:        `{"accepts":["linkedin"]}`,
+	}
+	for name, wantConstraints := range wantAccepts {
+		p, ok := db.providers[name]
+		if !ok {
+			t.Errorf("collector %q not seeded", name)
+			continue
+		}
+		if got := string(p.Constraints); got != wantConstraints {
+			t.Errorf("collector %q: Constraints=%q, want %q", name, got, wantConstraints)
+		}
+	}
+}

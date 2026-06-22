@@ -204,10 +204,9 @@ func seedSharedConfig(ctx context.Context, db Database) error {
 		//
 		// capColetar: the item already exists when the reconciler runs (coletar is auto-satisfied),
 		// so this policy is never consulted for per-item routing. It controls the dispatcher's
-		// collector-wake preference order (VPC provider before cloud for each worker). Collectors
-		// without accepts constraints (harvest, shelf, dial, feed, courier) are never selected by
-		// the item router — each is woken by the dispatcher's ListDueCollectors path, which uses
-		// collect_cadence_seconds (not routing_policies) to find due providers.
+		// collector-wake preference order (VPC provider before cloud for each worker). Each
+		// collector has an accepts constraint (e.g. ["youtube"], ["podcast"]) that narrows the
+		// dispatcher's ListDueCollectors path; the routing policy is the wake priority order.
 		{capColetar, fallbackJSON(
 			provHarvestLocal, provHarvest,
 			provShelfLocal, provShelf,
@@ -304,15 +303,19 @@ func SeedYouTubeLane(ctx context.Context, db Database) error {
 		// coletar: YouTube Data API (key) and OAuth playlists — cheap, fast metadata reads.
 		{Name: provHarvest, Capability: capColetar, Runtime: runtimeCloudRun, Activation: activationOnDemand,
 			Enabled: true, Worker: "harvest", App: "harvest", Description: "Coletor de canais (YouTube)",
+			Constraints: []byte(`{"accepts":["youtube"]}`),
 			CollectCadenceSeconds: intPtr(86400), RetryIntervalSeconds: intPtr(1800)},
 		{Name: provHarvestLocal, Capability: capColetar, Runtime: runtimeVPC, Activation: activationOnDemand,
 			Enabled: vpcEnabled, Worker: "harvest", App: "harvest", Description: "Coletor de canais (YouTube)",
+			Constraints: []byte(`{"accepts":["youtube"]}`),
 			RunnerURL: runnerURL, CollectCadenceSeconds: intPtr(86400), RetryIntervalSeconds: intPtr(1800)},
 		{Name: provShelf, Capability: capColetar, Runtime: runtimeCloudRun, Activation: activationOnDemand,
 			Enabled: true, Worker: "shelf", App: "shelf", Description: "Coletor de playlists (YouTube)",
+			Constraints: []byte(`{"accepts":["youtube"]}`),
 			CollectCadenceSeconds: intPtr(86400), RetryIntervalSeconds: intPtr(1800)},
 		{Name: provShelfLocal, Capability: capColetar, Runtime: runtimeVPC, Activation: activationOnDemand,
 			Enabled: vpcEnabled, Worker: "shelf", App: "shelf", Description: "Coletor de playlists (YouTube)",
+			Constraints: []byte(`{"accepts":["youtube"]}`),
 			RunnerURL: runnerURL, CollectCadenceSeconds: intPtr(86400), RetryIntervalSeconds: intPtr(1800)},
 		// transcrever: scribe (local Whisper) resident on the Mac. YouTube blocks audio download
 		// from datacenter IPs — HARD residential constraint with NO datacenter fallback.
@@ -352,9 +355,11 @@ func SeedPodcastLane(ctx context.Context, db Database) error {
 	for _, p := range []Provider{
 		{Name: provDial, Capability: capColetar, Runtime: runtimeCloudRun, Activation: activationOnDemand,
 			Enabled: true, Worker: "dial", App: "dial", Description: "Coletor de podcasts (RSS)",
+			Constraints: []byte(`{"accepts":["podcast"]}`),
 			CollectCadenceSeconds: intPtr(86400), RetryIntervalSeconds: intPtr(1800)},
 		{Name: provDialLocal, Capability: capColetar, Runtime: runtimeVPC, Activation: activationOnDemand,
 			Enabled: vpcEnabled, Worker: "dial", App: "dial", Description: "Coletor de podcasts (RSS)",
+			Constraints: []byte(`{"accepts":["podcast"]}`),
 			RunnerURL: runnerURL, CollectCadenceSeconds: intPtr(86400), RetryIntervalSeconds: intPtr(1800)},
 	} {
 		if err := db.UpsertProvider(ctx, p); err != nil {
@@ -400,9 +405,11 @@ func SeedEmailLane(ctx context.Context, db Database) error {
 	for _, p := range []Provider{
 		{Name: provCourier, Capability: capColetar, Runtime: runtimeCloudRun, Activation: activationOnDemand,
 			Enabled: true, Worker: "courier", App: "courier", Description: "Coletor de e-mail (Gmail)",
+			Constraints: []byte(`{"accepts":["email"]}`),
 			CollectCadenceSeconds: intPtr(21600), RetryIntervalSeconds: intPtr(1800)},
 		{Name: provCourierLocal, Capability: capColetar, Runtime: runtimeVPC, Activation: activationOnDemand,
 			Enabled: vpcEnabled, Worker: "courier", App: "courier", Description: "Coletor de e-mail (Gmail)",
+			Constraints: []byte(`{"accepts":["email"]}`),
 			RunnerURL: runnerURL, CollectCadenceSeconds: intPtr(21600), RetryIntervalSeconds: intPtr(1800)},
 	} {
 		if err := db.UpsertProvider(ctx, p); err != nil {
@@ -452,9 +459,11 @@ func SeedNewsLane(ctx context.Context, db Database) error {
 	for _, p := range []Provider{
 		{Name: provFeed, Capability: capColetar, Runtime: runtimeCloudRun, Activation: activationOnDemand,
 			Enabled: true, Worker: "feed", App: "feed", Description: "Coletor de feeds (RSS/HN/HTML)",
+			Constraints: []byte(`{"accepts":["news"]}`),
 			CollectCadenceSeconds: intPtr(21600), RetryIntervalSeconds: intPtr(1800)},
 		{Name: provFeedLocal, Capability: capColetar, Runtime: runtimeVPC, Activation: activationOnDemand,
 			Enabled: vpcEnabled, Worker: "feed", App: "feed", Description: "Coletor de feeds (RSS/HN/HTML)",
+			Constraints: []byte(`{"accepts":["news"]}`),
 			RunnerURL: runnerURL, CollectCadenceSeconds: intPtr(21600), RetryIntervalSeconds: intPtr(1800)},
 	} {
 		if err := db.UpsertProvider(ctx, p); err != nil {
