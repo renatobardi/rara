@@ -102,8 +102,8 @@ orquestrador + dono do contrato/SDK. Detalhe completo em [ADDON-CONTRACT](./ADDO
 
 ## 6. Curadoria: dois portões + aprendizado
 
-- **Dois portões cost-aware:** `gate_barato` em metadata (antes de transcrever), `gate_rico` no
-  texto (antes de destilar). Cada um é a capability do app **`gate`**.
+- **Dois portões cost-aware:** `gate_barato` (worker **`sift`**) em metadata (antes de transcrever),
+  `gate_rico` (worker **`assay`**) no texto (antes de destilar). Ambos rodam no app **`rara-gate`**.
 - **Cascata barato→caro:** regras (allow/deny) → match de `interest_profile` → LLM-judge só no meio
   duvidoso. Resultado: keep → avança; drop → `filtered`; **defer → quarentena** (combate cold-start).
 - **Aprendizado (`hone`):** reescrita **híbrida** do `interest_profile` — motor determinístico decide
@@ -196,7 +196,7 @@ Binários nativos arm64, sem Docker. Deploy: rsync + SSH + systemd (`deploy-core
 | `rara-dial` | dial | coletar (podcasts) |
 | `rara-courier` | courier | coletar (email) |
 | `rara-clip` | clip | coletar (LinkedIn via Bright Data) |
-| `rara-gate` | gate | gate_barato / gate_rico |
+| `rara-gate` | gate | gate_barato (sift) / gate_rico (assay) |
 | `rara-distill` | distill | destilar |
 | `rara-transcribe` | transcribe | transcrever (áudio via URL direta, echo) |
 | `rara-extract` (winnow / scrub / glean) | extract | extrair |
