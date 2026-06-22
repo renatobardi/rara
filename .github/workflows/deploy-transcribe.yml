@@ -13,6 +13,8 @@ name: Deploy rara-transcribe (echo/echo-cloud, cloud)
 #
 # The caption worker (caption-mac) runs natively on the Mac (residential IP, launchd) and is NOT
 # deployed here. The Mac binary rebuild is a manual step (P2b-transcribe-B).
+permissions: {}
+
 on:
   workflow_dispatch:
     inputs:

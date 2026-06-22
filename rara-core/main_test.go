@@ -912,11 +912,17 @@ func TestProviderUpsertDefaultsWorkerToName(t *testing.T) {
 func TestProviderUpsertIdempotent(t *testing.T) {
 	ctx := context.Background()
 	db := newMockDatabase()
-	_ = db.UpsertCapability(ctx, Capability{Name: capTranscrever})
+	if err := db.UpsertCapability(ctx, Capability{Name: capTranscrever}); err != nil {
+		t.Fatalf("UpsertCapability: %v", err)
+	}
 	p := Provider{Name: "caption-mac", Capability: capTranscrever, Runtime: runtimeLocal, Activation: activationResident, Enabled: true}
-	_ = db.UpsertProvider(ctx, p)
+	if err := db.UpsertProvider(ctx, p); err != nil {
+		t.Fatalf("first UpsertProvider: %v", err)
+	}
 	p.Enabled = false // toggle
-	_ = db.UpsertProvider(ctx, p)
+	if err := db.UpsertProvider(ctx, p); err != nil {
+		t.Fatalf("second UpsertProvider: %v", err)
+	}
 	if len(db.providers) != 1 {
 		t.Fatalf("UNIQUE(name) not honored: %d rows", len(db.providers))
 	}

@@ -163,6 +163,12 @@ func TestSeedLinkedInLane(t *testing.T) {
 	if !ok || inbox.Capability != capColetar {
 		t.Fatalf("stash = %+v, want a coletar provider", inbox)
 	}
+	if inbox.App != "stash" {
+		t.Errorf("stash App = %q, want %q", inbox.App, "stash")
+	}
+	if inbox.Worker != "stash" {
+		t.Errorf("stash Worker = %q, want %q", inbox.Worker, "stash")
+	}
 	ex, ok := db.providers[provExtrairLinked]
 	if !ok {
 		t.Fatalf("provider %q not seeded", provExtrairLinked)

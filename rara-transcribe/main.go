@@ -1420,7 +1420,7 @@ func main() {
 		PokeToken:    os.Getenv("POKE_TOKEN"),
 	}
 	if err := addon.Run(ctx, ac, transcribeHandler(&appDB{pool: pool}, acq, tr, engineName)); err != nil {
-		log.Fatalf("scribe worker %s/%s: %v", capTranscrever, provider, err)
+		log.Fatalf("rara-transcribe worker %s/%s: %v", capTranscrever, provider, err)
 	}
 	log.Printf("rara-transcribe worker %s/%s: queue drained", capTranscrever, provider)
 }
