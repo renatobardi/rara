@@ -66,6 +66,8 @@ jobs:
 
       # MULTI-MODULE context = repo root so `replace rara-addon => ../rara-addon` resolves; the
       # Dockerfile lives in the app dir and is selected with `file:`. See DOCKER-MULTIMODULE.md.
+      # :latest is intentional — the VPC/Mac agent runs `docker run --pull=always <image>` (no tag)
+      # and resolves :latest. The Cloud Run Job references :<sha> so :latest never affects it.
       - name: Build and push manifest list
         uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6
         with:
