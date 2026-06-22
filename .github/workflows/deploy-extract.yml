@@ -120,10 +120,7 @@ jobs:
         uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
 
       - name: Deploy Cloud Run Job
-        env:
-          GLEAN_RUNTIME_SERVICE_ACCOUNT: ${{ vars.GLEAN_RUNTIME_SERVICE_ACCOUNT }}
         run: |
-          : "${GLEAN_RUNTIME_SERVICE_ACCOUNT:?GLEAN_RUNTIME_SERVICE_ACCOUNT var must be set in the repository}"
           # Consolidated job: GLEAN_PROVIDER is injected per execution via dispatcher overrides
           # (not baked in at deploy time). Default placeholder is set here so the job definition
           # is valid; the dispatcher always overrides it on each run.
@@ -140,7 +137,6 @@ jobs:
             --project "$GCP_PROJECT"
             --set-secrets "$SECRETS"
             --set-env-vars "$ENV_VARS"
-            --service-account "$GLEAN_RUNTIME_SERVICE_ACCOUNT"
             --max-retries 0
             --task-timeout 3600s
             --memory 512Mi
@@ -151,7 +147,7 @@ jobs:
           gcloud run jobs update "$JOB_NAME" "${COMMON_ARGS[@]}" 2>"$STDERR_FILE" && rm -f "$STDERR_FILE" || {
             STDERR=$(cat "$STDERR_FILE"); rm -f "$STDERR_FILE"
             echo "$STDERR"
-            echo "$STDERR" | grep -qi "not found\|does not exist\|cannot be found" || \
+            echo "$STDERR" | grep -qiE "not found|does not exist|could not be found|cannot be found" || \
               { echo "❌ update failed for unexpected reason (not 'not found')"; exit 1; }
             echo "Job not found — creating for the first time..."
             gcloud run jobs create "$JOB_NAME" "${COMMON_ARGS[@]}"

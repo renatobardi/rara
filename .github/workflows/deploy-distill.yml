@@ -129,7 +129,7 @@ jobs:
 
           UPDATE_ERR=$(gcloud run jobs update "$JOB_NAME" $COMMON_ARGS 2>&1) && echo "$UPDATE_ERR" || {
             echo "$UPDATE_ERR"
-            echo "$UPDATE_ERR" | grep -qi "not found\|does not exist\|cannot be found" || \
+            echo "$UPDATE_ERR" | grep -qiE "not found|does not exist|could not be found|cannot be found" || \
               { echo "❌ update failed for unexpected reason (not 'not found')"; exit 1; }
             echo "Job not found — creating for the first time..."
             gcloud run jobs create "$JOB_NAME" $COMMON_ARGS
