@@ -42,7 +42,7 @@ This runs containers on a personal machine (the Mac), so the trust boundary is t
 |---|---|---|
 | `RUNNER_ADDR` | ✅ | Tailnet bind `host:port` (never `0.0.0.0`/`:port`). |
 | `RUNNER_TOKEN` | ✅ | Shared tailnet Bearer; empty ⇒ all requests rejected. |
-| `RUNNER_ALLOWED_IMAGES` | ✅ | `app=image,app2=image2`; each image **must** be pinned by digest (`@sha256:`). A duplicate app or an unpinned image fails startup. |
+| `RUNNER_ALLOWED_IMAGES` | ✅ | `app=image,app2=image2`; **`app` must equal `providers.app`** (bare name, e.g. `distill` not `rara-distill`) — the dispatcher sends `req.App = providers.app`, so a key mismatch silently fails every wake. Each image must be pinned by digest (`@sha256:`). A duplicate app or an unpinned image fails startup. |
 | `RUNNER_DOCKER_BIN` | — | Launcher binary; default `docker`. Must be `docker`, `podman`, or an absolute path (a relative name is refused so PATH can't be hijacked). `podman` is rootless — a container escape stays in the user namespace instead of reaching the host as root. |
 | `RUNNER_WORKER_ENV_FILE` | — | Path to a `KEY=VAL` file with host-side secrets and config (e.g. `DATABASE_URL`, `LITELLM_BASE_URL`) injected into **every** container started by this agent. **Must have restrictive permissions (`chmod 600` or `640`)** — the file contains secrets. The body's `env` is merged on top — body wins on conflict, so the caller can override non-secret config but secrets only live on the host. Missing file or empty var → no base env (doesn't fail). Format: one `KEY=VAL` per line; `#` comments and blank lines are ignored; values may contain `=`. |
 | `DOCKER_CONFIG` | — | Directory containing `config.json` with Docker registry credentials. Required when the service runs under systemd with `ProtectHome=true` (the default), which blocks `~/.docker/`. Set to `/etc/rara-runner/docker` and copy the credentials there — see [deploy/agent.env.example](deploy/agent.env.example). |
@@ -54,7 +54,7 @@ See [.env.example](.env.example).
 ```bash
 make test          # zero-I/O unit tests (container launcher is a fake)
 make build         # ./rara-runner
-RUNNER_ADDR=100.x.x.x:8473 RUNNER_TOKEN=… RUNNER_ALLOWED_IMAGES=rara-distill=…@sha256:… \
+RUNNER_ADDR=100.x.x.x:8473 RUNNER_TOKEN=… RUNNER_ALLOWED_IMAGES=distill=…@sha256:… \
   ./rara-runner agent
 ```
 
@@ -188,13 +188,16 @@ The allowlist maps an app name to a **bare registry path** (no tag, no digest). 
 `:latest` at run time and pulls with `--pull=always` — the allowlist controls *which* images can
 run, not which version.
 
+**The key must equal `providers.app`** (bare name — e.g. `distill`, not `rara-distill`). The
+dispatcher sends `req.App = providers.app`, so a key mismatch → `"app not in allowlist"` → wake fails.
+
 ```
-RUNNER_ALLOWED_IMAGES=rara-distill=us-central1-docker.pkg.dev/PROJECT/rara/rara-distill
+RUNNER_ALLOWED_IMAGES=distill=us-central1-docker.pkg.dev/PROJECT/rara/rara-distill
 ```
 
 Multiple workers:
 ```
-RUNNER_ALLOWED_IMAGES=rara-distill=us-central1-docker.pkg.dev/PROJECT/rara/rara-distill,rara-gate=us-central1-docker.pkg.dev/PROJECT/rara/rara-gate
+RUNNER_ALLOWED_IMAGES=distill=us-central1-docker.pkg.dev/PROJECT/rara/rara-distill,gate=us-central1-docker.pkg.dev/PROJECT/rara/rara-gate
 ```
 
 To confirm a worker image has an `arm64` layer before adding a Mac placement:
