@@ -65,7 +65,11 @@ jobs:
           file: rara-courier/Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: ${{ env.IMAGE }}
+          # :<sha> — imutável, usado pelo Cloud Run. :latest — mutável, puxado pelo agent VPC/Mac
+          # via `docker run --pull=always` (intencional; ver #198).
+          tags: |
+            ${{ env.IMAGE }}
+            ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/rara/rara-courier:latest
 
       - name: Verify manifest list has both arches
         run: |
