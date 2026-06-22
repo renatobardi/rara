@@ -41,18 +41,18 @@ Prerequisites: `yt-dlp` and `ffmpeg` installed (most likely via Homebrew).
 ```bash
 cd rara-transcribe
 
-# First run: creates ~/.rara-scribe/.env from template and exits with instructions
+# First run: creates ~/.rara-transcribe/.env from template and exits with instructions
 bash install-local.sh
 
 # Fill in the values (DATABASE_URL and GROQ_API_KEY are required)
-$EDITOR ~/.rara-scribe/.env
+$EDITOR ~/.rara-transcribe/.env
 
 # Actual install (compiles binary + activates launchd agent)
 bash install-local.sh
 ```
 
 The agent is scheduled **daily at 02:00**. The Mac processes the backlog overnight.
-To change the schedule, edit `~/Library/LaunchAgents/com.rara.scribe.plist`.
+To change the schedule, edit `~/Library/LaunchAgents/com.rara.transcribe.plist`.
 
 ## Daily usage
 
@@ -61,7 +61,7 @@ To change the schedule, edit `~/Library/LaunchAgents/com.rara.scribe.plist`.
 cd rara-transcribe && make run
 
 # Watch logs in real time (Go logs to stderr → error.log; output.log stays empty)
-tail -f ~/Library/Logs/rara-scribe/error.log
+tail -f ~/Library/Logs/rara-transcribe/error.log
 ```
 
 The binary is configured entirely by env (no CLI flags). `SCRIBE_PROVIDER` selects the

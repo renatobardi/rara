@@ -1,21 +1,21 @@
 #!/usr/bin/env bash
-# install-local.sh — installs rara-scribe as a launchd agent on macOS.
+# install-local.sh — installs rara-transcribe as a launchd agent on macOS.
 # Run once to set up; re-run after `make build` to update the binary.
 #
-# Usage: bash install-local.sh (from the rara-scribe/ directory)
+# Usage: bash install-local.sh (from the rara-transcribe/ directory)
 set -euo pipefail
 
-INSTALL_DIR="$HOME/.rara-scribe"
-PLIST_PATH="$HOME/Library/LaunchAgents/com.rara.scribe.plist"
-LOG_DIR="$HOME/Library/Logs/rara-scribe"
-LABEL="com.rara.scribe"
+INSTALL_DIR="$HOME/.rara-transcribe"
+PLIST_PATH="$HOME/Library/LaunchAgents/com.rara.transcribe.plist"
+LOG_DIR="$HOME/Library/Logs/rara-transcribe"
+LABEL="com.rara.transcribe"
 
 # ---------------------------------------------------------------------------
-# 0. Directory guard — must be run from rara-scribe/
+# 0. Directory guard — must be run from rara-transcribe/
 # ---------------------------------------------------------------------------
 if [ ! -f "go.mod" ] || [ ! -f ".env.example" ]; then
-    echo "!! Run this script from the rara-scribe/ directory:"
-    echo "   cd rara-scribe && bash install-local.sh"
+    echo "!! Run this script from the rara-transcribe/ directory:"
+    echo "   cd rara-transcribe && bash install-local.sh"
     echo "   (or: make install-local)"
     exit 1
 fi
@@ -73,9 +73,9 @@ fi
 # 4. Build the binary
 # ---------------------------------------------------------------------------
 echo ""
-echo "==> Building rara-scribe..."
-go build -ldflags="-w -s" -o "$INSTALL_DIR/rara-scribe" .
-echo "   Binary: $INSTALL_DIR/rara-scribe"
+echo "==> Building rara-transcribe..."
+go build -ldflags="-w -s" -o "$INSTALL_DIR/transcribe-job" .
+echo "   Binary: $INSTALL_DIR/transcribe-job"
 
 # ---------------------------------------------------------------------------
 # 5. Wrapper script called by launchd
@@ -91,7 +91,7 @@ set +a
 # "\$@" forwards CLI flags so a manual run can override the .env defaults, e.g.
 #   bash run.sh --engine local --limit 20
 # while the scheduled launchd run (no args) uses the .env engine/BATCH_SIZE.
-exec "$INSTALL_DIR/rara-scribe" "\$@"
+exec "$INSTALL_DIR/transcribe-job" "\$@"
 WRAPPER
 chmod +x "$INSTALL_DIR/run.sh"
 
@@ -147,10 +147,10 @@ launchctl load "$PLIST_PATH"
 # 8. Final instructions
 # ---------------------------------------------------------------------------
 echo ""
-echo "✅ rara-scribe installed and scheduled (daily at 02:00)."
+echo "✅ rara-transcribe installed and scheduled (daily at 02:00)."
 echo ""
 echo "   Config:  $INSTALL_DIR/.env"
-echo "   Binary:  $INSTALL_DIR/rara-scribe"
+echo "   Binary:  $INSTALL_DIR/transcribe-job"
 echo "   Logs:    $LOG_DIR/"
 echo "   Plist:   $PLIST_PATH"
 echo ""
@@ -159,7 +159,7 @@ echo "  Force a run now:     launchctl start $LABEL"
 echo "  Manual local run:    bash $INSTALL_DIR/run.sh --engine local --limit 20"
 echo "  Watch logs (live):   tail -f $LOG_DIR/error.log   # Go logs to stderr, not output.log"
 echo "  Stop service:        launchctl unload $PLIST_PATH"
-echo "  Update binary:       cd rara-scribe && make build && bash install-local.sh"
+echo "  Update binary:       cd rara-transcribe && make build && bash install-local.sh"
 echo ""
 echo "Validate in Neon after the first run:"
 echo "  SELECT status, COUNT(*) FROM transcripts GROUP BY status;"
