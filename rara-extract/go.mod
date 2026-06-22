@@ -1,4 +1,4 @@
-module rara-glean
+module rara-extract
 
 go 1.26.4
 
@@ -8,7 +8,7 @@ require (
 )
 
 // rara-addon is the bridge-total SDK, a sibling module in this monorepo. A replace directive (not
-// a go.work) keeps rara-glean self-contained: it builds standalone in CI (cd rara-glean && go test)
+// a go.work) keeps rara-extract self-contained: it builds standalone in CI (cd rara-extract && go test)
 // and the P2 Docker build needs the replace anyway. A local go.work (gitignored) is optional
 // ergonomics; it is never committed.
 replace rara-addon => ../rara-addon

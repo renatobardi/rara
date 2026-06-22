@@ -1,0 +1,169 @@
+name: CI rara-extract
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+    paths:
+      - 'rara-extract/**'
+      - 'rara-addon/**'        # multi-module Dockerfile depends on the SDK — rebuild if it changes
+      - '.github/workflows/ci-extract.yml'
+  pull_request:
+    branches:
+      - main
+      - develop
+    paths:
+      - 'rara-extract/**'
+      - 'rara-addon/**'        # multi-module Dockerfile depends on the SDK — rebuild if it changes
+      - '.github/workflows/ci-extract.yml'
+
+# Cancel in-progress runs on the same branch/PR — avoids wasting runners on intermediate commits.
+concurrency:
+  group: ci-extract-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  code-quality:
+    name: Code Quality & Tests
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+
+      - name: Setup Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
+        with:
+          go-version-file: rara-extract/go.mod
+
+      - name: Cache Go modules
+        uses: actions/cache@6f8efc29b200d32929f49075959781ed54ec270c # v3
+        with:
+          path: ~/go/pkg/mod
+          key: ${{ runner.os }}-go-extract-${{ hashFiles('rara-extract/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-extract-
+
+      - name: Download dependencies
+        run: |
+          cd rara-extract
+          go mod download
+
+      - name: Format check
+        run: |
+          cd rara-extract
+          if [ -n "$(gofmt -s -l .)" ]; then
+            echo "❌ Code formatting issues found. Run: gofmt -w ."
+            gofmt -s -d .
+            exit 1
+          fi
+          echo "✅ Code format OK"
+
+      - name: Lint
+        run: |
+          cd rara-extract
+          go vet ./...
+          echo "✅ Vet check passed"
+
+      - name: Run tests
+        run: |
+          cd rara-extract
+          go test -v -race -coverprofile=coverage.out ./...
+          echo "✅ Tests passed"
+
+      - name: Check coverage
+        run: |
+          cd rara-extract
+          go tool cover -func=coverage.out | tail -1
+          echo "✅ Coverage report generated"
+
+  security:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
+        with:
+          go-version-file: rara-extract/go.mod
+
+      - name: Vulnerability scan (govulncheck)
+        run: |
+          cd rara-extract
+          go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
+          "$(go env GOPATH)/bin/govulncheck" ./...
+
+      - name: Secret scan (gitleaks)
+        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  docker-build:
+    name: Docker build (multi-module, multi-arch)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    # Local registry so buildx can push the manifest list and we can inspect it — no GCP creds
+    # needed. This is the PR-time proof that the multi-arch image builds (amd64 + arm64) and that
+    # `replace ../rara-addon` resolves with the repo root as context. See DOCKER-MULTIMODULE.md.
+    services:
+      registry:
+        image: registry:2@sha256:ac0192b549007e22998eb74e8d8488dcfe70f1489520c3b144a6047ac5efbe90
+        ports:
+          - 5000:5000
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+
+      # QEMU only emulates the tiny final alpine stage; the Go compile cross-builds natively.
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@29109295f81e9208d7d86ff1c6c12d2833863392 # v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3
+        with:
+          driver-opts: network=host
+
+      - name: Build and push to local registry (amd64 + arm64)
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6
+        timeout-minutes: 15
+        with:
+          context: .
+          file: rara-extract/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: localhost:5000/rara-extract:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Acceptance check: the manifest list MUST carry EXACTLY linux/amd64 + linux/arm64.
+      # build-push-action v6 also emits attestation entries (platform: unknown/unknown); filter
+      # those out before counting so the check stays exact without disabling provenance.
+      - name: Verify manifest list has both arches
+        run: |
+          docker buildx imagetools inspect localhost:5000/rara-extract:ci
+          PLATFORMS=$(docker buildx imagetools inspect localhost:5000/rara-extract:ci \
+            --format '{{range .Manifest.Manifests}}{{if ne .Platform.OS "unknown"}}{{.Platform.OS}}/{{.Platform.Architecture}} {{end}}{{end}}')
+          echo "Platforms in manifest list: $PLATFORMS"
+          echo "$PLATFORMS" | grep -qw "linux/amd64" || { echo "❌ missing linux/amd64"; exit 1; }
+          echo "$PLATFORMS" | grep -qw "linux/arm64" || { echo "❌ missing linux/arm64"; exit 1; }
+          COUNT=$(echo "$PLATFORMS" | wc -w)
+          [ "$COUNT" -eq 2 ] || { echo "❌ expected exactly 2 real platforms, found $COUNT: $PLATFORMS"; exit 1; }
+          echo "✅ manifest list has exactly linux/amd64 + linux/arm64"

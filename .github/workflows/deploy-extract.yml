@@ -1,31 +1,34 @@
-name: Deploy rara-glean
+name: Deploy rara-extract
 
-# GATED — manual dispatch only (NO push:main). rara-glean is a 2.0 claim-worker (the
+# GATED — manual dispatch only (NO push:main). rara-extract is a 2.0 claim-worker (the
 # already-text extractor): it only runs once the reconciler routes an `extrair` item_step to
 # its provider.
 #
-# ONE image, THREE providers → THREE Cloud Run Jobs (rara-extrair-email, rara-extrair-linkedin,
-# rara-extrair-news), each with its own GLEAN_PROVIDER. Extraction is deterministic
-# (HTML/boilerplate cleaning, no LLM), so each job wires only the shared DATABASE_URL.
-# The image is built once (the `build` job) and deployed three times (the `deploy` matrix) —
-# an improvement over the old Cloud Build approach which rebuilt per matrix entry. This follows
-# the MULTI-ARCH pattern introduced in deploy-sift.yml: buildx + manifest list (amd64 for
-# Cloud Run + arm64 for VPC/Mac). See DOCKER-MULTIMODULE.md.
+# ONE image, THREE workers (glean=news, winnow=email, scrub=linkedin) → ONE consolidated Cloud Run
+# Job (`rara-extract`). The dispatcher sets GLEAN_PROVIDER per execution override — one job serves
+# all three workers. (The legacy per-worker jobs rara-extrair-email, rara-extrair-linkedin, and
+# rara-extrair-news remain untouched until P2b-extract-B flips providers.app.)
+#
+# Multi-arch image: amd64 (Cloud Run) + arm64 (VPC Oracle Ampere + Mac Apple Silicon). The image
+# is built once (the `build` job) then the `deploy` job creates/updates the consolidated job.
+# See DOCKER-MULTIMODULE.md and CONSOLE-WORKERS-PLANO-E5b.pt-BR.md §4/P2b.
 on:
   workflow_dispatch:
     inputs:
       run_after_deploy:
-        description: 'Execute the jobs once right after deploying (off by default — the worker needs its provider env set first)'
+        description: 'Execute the job once right after deploying (off by default — the worker needs its provider env set first)'
         required: false
         default: false
         type: boolean
 
+# Only one deployment can run at a time — concurrent workflow_dispatch triggers could race on the
+# same Cloud Run Job resource and leave state inconsistent.
 concurrency:
-  group: deploy-glean
+  group: deploy-extract
   cancel-in-progress: false
 
 env:
-  IMAGE: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/rara/rara-glean:${{ github.sha }}
+  IMAGE: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/rara/rara-extract:${{ github.sha }}
 
 jobs:
   build:
@@ -72,7 +75,7 @@ jobs:
         uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6
         with:
           context: .
-          file: rara-glean/Dockerfile
+          file: rara-extract/Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ env.IMAGE }}
@@ -94,20 +97,16 @@ jobs:
 
   deploy:
     if: github.ref_name == github.event.repository.default_branch
-    name: Deploy Cloud Run Job
+    name: Deploy consolidated Cloud Run Job (rara-extract)
     needs: build
     runs-on: ubuntu-latest
     environment: production
     permissions:
       contents: read
       id-token: write
-    strategy:
-      fail-fast: false
-      matrix:
-        provider: [extrair-email, extrair-linkedin, extrair-news]
     env:
       REGION: ${{ vars.GCP_REGION }}
-      JOB_NAME: rara-${{ matrix.provider }}
+      JOB_NAME: rara-extract
       GCP_PROJECT: ${{ vars.GCP_PROJECT_ID }}
     steps:
       - name: Authenticate to Google Cloud
@@ -122,15 +121,19 @@ jobs:
 
       - name: Deploy Cloud Run Job
         env:
-          GLEAN_PROVIDER: ${{ matrix.provider }}
           GLEAN_RUNTIME_SERVICE_ACCOUNT: ${{ vars.GLEAN_RUNTIME_SERVICE_ACCOUNT }}
         run: |
           : "${GLEAN_RUNTIME_SERVICE_ACCOUNT:?GLEAN_RUNTIME_SERVICE_ACCOUNT var must be set in the repository}"
-          # Update first, create if absent (avoids a describe→create/update TOCTOU race).
-          # DATABASE_URL is the shared contract DB. Extraction is deterministic (no LLM),
-          # so no model key or extra secrets — only GLEAN_PROVIDER distinguishes the jobs.
+          # Consolidated job: GLEAN_PROVIDER is injected per execution via dispatcher overrides
+          # (not baked in at deploy time). Default placeholder is set here so the job definition
+          # is valid; the dispatcher always overrides it on each run.
+          #
+          # GLEAN_PROVIDER=PLACEHOLDER_PROVIDER is intentionally invalid: the dispatcher ALWAYS
+          # overrides it per execution. If the job runs without a dispatcher override (e.g. via
+          # run_after_deploy=true or a manual gcloud execute) it will fail fast on unrecognised
+          # provider — correct behaviour; silent wrong-queue processing would be worse.
           SECRETS="DATABASE_URL=database-url:latest"
-          ENV_VARS="GLEAN_PROVIDER=$GLEAN_PROVIDER"
+          ENV_VARS="GLEAN_PROVIDER=PLACEHOLDER_PROVIDER"
           COMMON_ARGS=(
             --image "$IMAGE"
             --region "$REGION"
@@ -157,6 +160,8 @@ jobs:
       - name: Execute job once
         if: ${{ inputs.run_after_deploy }}
         run: |
+          echo "⚠️ Running with GLEAN_PROVIDER=PLACEHOLDER_PROVIDER — dispatcher must override via env."
+          echo "This execution will FAIL unless a dispatcher override is provided."
           gcloud run jobs execute "$JOB_NAME" \
             --region "$REGION" \
             --project "$GCP_PROJECT" \

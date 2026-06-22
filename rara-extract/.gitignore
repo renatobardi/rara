@@ -1,6 +1,6 @@
-glean-job
-glean-job-arm64
-rara-glean
+extract-job
+extract-job-arm64
+rara-extract
 coverage.out
 *.out
 .env

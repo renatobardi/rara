@@ -1,4 +1,4 @@
-// rara-glean — the already-text extractor, a bridge-total claim-worker on the rara-addon SDK.
+// rara-extract — the already-text extractor, a bridge-total claim-worker on the rara-addon SDK.
 //
 // Some lanes arrive as text, not audio: an email body, a pasted LinkedIn post. They need no ASR —
 // they need NORMALIZATION. `extrair` is that to-text capability: strip the noise the source carries
@@ -348,7 +348,7 @@ func main() {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
 	defer pool.Close()
-	log.Printf("rara-glean worker %s/%s ready", capExtrair, provider)
+	log.Printf("rara-extract worker %s/%s ready", capExtrair, provider)
 
 	ac := addon.Config{
 		Capability:   capExtrair,
@@ -360,7 +360,7 @@ func main() {
 		PokeToken:    os.Getenv("POKE_TOKEN"),
 	}
 	if err := addon.Run(ctx, ac, gleanHandler(&appDB{pool: pool})); err != nil {
-		log.Fatalf("glean worker %s/%s: %v", capExtrair, provider, err)
+		log.Fatalf("rara-extract worker %s/%s: %v", capExtrair, provider, err)
 	}
-	log.Printf("rara-glean worker %s/%s: queue drained", capExtrair, provider)
+	log.Printf("rara-extract worker %s/%s: queue drained", capExtrair, provider)
 }
