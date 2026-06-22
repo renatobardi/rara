@@ -23,6 +23,7 @@
 		constraints?: Constraints;
 		runner_url?: string;
 		env?: Record<string, string>;
+		description?: string;
 	};
 
 	type Worker = {
@@ -110,6 +111,7 @@
 	let formInitial = $state<Provider | null>(null);
 	let formLockedWorker = $state<string | null>(null);
 	let formLockedCapability = $state<string | null>(null);
+	let formLockedConstraints = $state<Constraints | null>(null);
 
 	// --- routing editor state ---
 	let selectedScope = $state<string>(GLOBAL_SCOPE);
@@ -382,6 +384,7 @@
 		formMode = 'add';
 		formLockedWorker = null;
 		formLockedCapability = null;
+		formLockedConstraints = null;
 		saveMsg = '';
 	}
 
@@ -390,6 +393,7 @@
 		formMode = 'add';
 		formLockedWorker = w.name;
 		formLockedCapability = w.capability;
+		formLockedConstraints = w.placements[0]?.constraints ?? null;
 		saveMsg = '';
 		// ensure worker row is expanded so the inline form is visible
 		const next = new Set(expandedWorkers);
@@ -402,6 +406,7 @@
 		formMode = 'edit';
 		formLockedWorker = null;
 		formLockedCapability = null;
+		formLockedConstraints = null;
 		saveMsg = '';
 	}
 
@@ -410,6 +415,7 @@
 		formInitial = null;
 		formLockedWorker = null;
 		formLockedCapability = null;
+		formLockedConstraints = null;
 	}
 
 	async function saveWorker(payload: Provider) {
@@ -632,7 +638,9 @@
 							<td class="px-2 py-2.5 text-center text-[11px] text-muted select-none">
 								{expanded ? '▲' : '▼'}
 							</td>
-							<td class="px-4 py-2.5 font-mono text-[12px] font-semibold">{w.name}</td>
+							<td class="px-4 py-2.5 font-mono text-[12px] font-semibold">
+								{w.name}{#if w.placements[0]?.description}<span class="font-sans font-normal text-muted"> — {w.placements[0].description}</span>{/if}
+							</td>
 							<td class="px-4 py-2.5 text-muted">{w.capability}</td>
 							<td class="px-4 py-2.5 tabular-nums text-muted">
 								{w.placements.length} {t.workers.placementsCount}
@@ -722,6 +730,7 @@
 											<WorkerForm
 												lockedWorker={w.name}
 												lockedCapability={w.capability}
+												lockedConstraints={formLockedConstraints}
 												capabilities={knownCapabilities}
 												onSave={saveWorker}
 												onCancel={closeForm}
