@@ -572,6 +572,39 @@ func TestSeedAllProvidersHaveApp(t *testing.T) {
 	}
 }
 
+// TestVPCRunnerURLValidation verifies that vpcRunner() only enables VPC mode for valid bare
+// http/https URLs, rejecting credentials-embedded URLs, non-http schemes, and query strings —
+// the dispatcher POSTs to runner_url with a Bearer token so malformed URLs must be rejected at
+// seed time, not stored silently.
+func TestVPCRunnerURLValidation(t *testing.T) {
+	cases := []struct {
+		env     string
+		wantURL string
+		enabled bool
+	}{
+		{"http://100.66.254.24:9000", "http://100.66.254.24:9000", true},
+		{"https://runner.tailnet:8080", "https://runner.tailnet:8080", true},
+		{"", "", false},                                         // unset → disabled
+		{"ftp://runner:9000", "", false},                        // wrong scheme
+		{"http://user:pass@runner:9000", "", false},             // embedded credentials
+		{"http://runner:9000?key=val", "", false},               // query string
+		{"http://runner:9000#frag", "", false},                  // fragment
+		{"not-a-url", "", false},                                // not a URL
+	}
+	for _, tc := range cases {
+		t.Run(tc.env, func(t *testing.T) {
+			t.Setenv("RUNNER_LOCAL_URL", tc.env)
+			gotURL, gotEnabled := vpcRunner()
+			if gotEnabled != tc.enabled {
+				t.Errorf("env=%q: enabled=%v, want %v", tc.env, gotEnabled, tc.enabled)
+			}
+			if gotURL != tc.wantURL {
+				t.Errorf("env=%q: url=%q, want %q", tc.env, gotURL, tc.wantURL)
+			}
+		})
+	}
+}
+
 // TestSeedVPCLocalProvidersGetRunnerURLFromEnv guards against re-seed zeroing runner_url on
 // the three VPC on_demand providers. runner_url is the tailnet endpoint the dispatcher POSTs
 // to wake a worker; zeroing it causes "no transport path" dispatch failures.
@@ -639,10 +672,56 @@ var allSeedFns = []func(context.Context, Database) error{
 	SeedYouTubeLane, SeedPodcastLane, SeedEmailLane, SeedNewsLane, SeedLinkedInLane,
 }
 
+// assertVPCMirrorsCloud checks that a VPC provider is correctly seeded as a clone of its cloud
+// sibling: same Worker/App/Capability/Constraints/Description/cadence/retry, runtime=vpc,
+// activation=on_demand, Enabled=true, RunnerURL=wantURL.
+func assertVPCMirrorsCloud(t *testing.T, vpcName, cloudName string, vpc, cloud Provider, wantURL string) {
+	t.Helper()
+	if !vpc.Enabled {
+		t.Errorf("provider %q: Enabled=false with RUNNER_LOCAL_URL set", vpcName)
+	}
+	if vpc.Runtime != runtimeVPC {
+		t.Errorf("provider %q: Runtime=%q, want %q", vpcName, vpc.Runtime, runtimeVPC)
+	}
+	if vpc.Activation != activationOnDemand {
+		t.Errorf("provider %q: Activation=%q, want %q", vpcName, vpc.Activation, activationOnDemand)
+	}
+	if vpc.RunnerURL != wantURL {
+		t.Errorf("provider %q: RunnerURL=%q, want %q", vpcName, vpc.RunnerURL, wantURL)
+	}
+	if vpc.Worker != cloud.Worker {
+		t.Errorf("provider %q: Worker=%q, want %q (same as cloud sibling)", vpcName, vpc.Worker, cloud.Worker)
+	}
+	if vpc.App != cloud.App {
+		t.Errorf("provider %q: App=%q, want %q (same as cloud sibling)", vpcName, vpc.App, cloud.App)
+	}
+	if vpc.Capability != cloud.Capability {
+		t.Errorf("provider %q: Capability=%q, want %q (same as cloud sibling)", vpcName, vpc.Capability, cloud.Capability)
+	}
+	if string(vpc.Constraints) != string(cloud.Constraints) {
+		t.Errorf("provider %q: Constraints=%q, want %q (same as cloud sibling)", vpcName, vpc.Constraints, cloud.Constraints)
+	}
+	if vpc.Description != cloud.Description {
+		t.Errorf("provider %q: Description=%q, want %q (same as cloud sibling)", vpcName, vpc.Description, cloud.Description)
+	}
+	// Scheduling fields: collectors carry cadence/retry so the dispatcher can wake the VPC
+	// variant on the same schedule as the cloud one.
+	cadenceEqual := (vpc.CollectCadenceSeconds == nil) == (cloud.CollectCadenceSeconds == nil) &&
+		(vpc.CollectCadenceSeconds == nil || *vpc.CollectCadenceSeconds == *cloud.CollectCadenceSeconds)
+	if !cadenceEqual {
+		t.Errorf("provider %q: CollectCadenceSeconds mismatch with cloud sibling %q", vpcName, cloudName)
+	}
+	retryEqual := (vpc.RetryIntervalSeconds == nil) == (cloud.RetryIntervalSeconds == nil) &&
+		(vpc.RetryIntervalSeconds == nil || *vpc.RetryIntervalSeconds == *cloud.RetryIntervalSeconds)
+	if !retryEqual {
+		t.Errorf("provider %q: RetryIntervalSeconds mismatch with cloud sibling %q", vpcName, cloudName)
+	}
+}
+
 // TestSeedNewVPCProvidersWithRunnerURL verifies that all per-lane VPC provider variants are
-// seeded enabled=true, runtime=vpc, activation=on_demand, RunnerURL filled, and with the same
-// Worker/App/Capability/Constraints/Description as their cloud sibling, when RUNNER_LOCAL_URL is
-// set (TestMain sets it globally for the test binary).
+// seeded enabled=true, runtime=vpc, activation=on_demand, RunnerURL filled, and mirror their
+// cloud sibling's Worker/App/Capability/Constraints/Description/cadence/retry, when
+// RUNNER_LOCAL_URL is set (TestMain sets it globally for the test binary).
 func TestSeedNewVPCProvidersWithRunnerURL(t *testing.T) {
 	const wantURL = "http://test-runner:8080" // value from TestMain
 
@@ -654,11 +733,7 @@ func TestSeedNewVPCProvidersWithRunnerURL(t *testing.T) {
 		}
 	}
 
-	type pairCheck struct {
-		vpc   string
-		cloud string
-	}
-	pairs := []pairCheck{
+	pairs := [][2]string{
 		{provHarvestLocal, provHarvest},
 		{provShelfLocal, provShelf},
 		{provDialLocal, provDial},
@@ -672,43 +747,18 @@ func TestSeedNewVPCProvidersWithRunnerURL(t *testing.T) {
 	}
 
 	for _, p := range pairs {
-		vpc, vpcOK := db.providers[p.vpc]
-		cloud, cloudOK := db.providers[p.cloud]
+		vpcName, cloudName := p[0], p[1]
+		vpc, vpcOK := db.providers[vpcName]
+		cloud, cloudOK := db.providers[cloudName]
 		if !vpcOK {
-			t.Errorf("provider %q not seeded", p.vpc)
+			t.Errorf("provider %q not seeded", vpcName)
 			continue
 		}
 		if !cloudOK {
-			t.Errorf("cloud sibling %q not seeded (precondition)", p.cloud)
+			t.Errorf("cloud sibling %q not seeded (precondition)", cloudName)
 			continue
 		}
-		if !vpc.Enabled {
-			t.Errorf("provider %q: Enabled=false with RUNNER_LOCAL_URL set", p.vpc)
-		}
-		if vpc.Runtime != runtimeVPC {
-			t.Errorf("provider %q: Runtime=%q, want %q", p.vpc, vpc.Runtime, runtimeVPC)
-		}
-		if vpc.Activation != activationOnDemand {
-			t.Errorf("provider %q: Activation=%q, want %q", p.vpc, vpc.Activation, activationOnDemand)
-		}
-		if vpc.RunnerURL != wantURL {
-			t.Errorf("provider %q: RunnerURL=%q, want %q", p.vpc, vpc.RunnerURL, wantURL)
-		}
-		if vpc.Worker != cloud.Worker {
-			t.Errorf("provider %q: Worker=%q, want %q (same as cloud sibling)", p.vpc, vpc.Worker, cloud.Worker)
-		}
-		if vpc.App != cloud.App {
-			t.Errorf("provider %q: App=%q, want %q (same as cloud sibling)", p.vpc, vpc.App, cloud.App)
-		}
-		if vpc.Capability != cloud.Capability {
-			t.Errorf("provider %q: Capability=%q, want %q (same as cloud sibling)", p.vpc, vpc.Capability, cloud.Capability)
-		}
-		if string(vpc.Constraints) != string(cloud.Constraints) {
-			t.Errorf("provider %q: Constraints=%q, want %q (same as cloud sibling)", p.vpc, vpc.Constraints, cloud.Constraints)
-		}
-		if vpc.Description != cloud.Description {
-			t.Errorf("provider %q: Description=%q, want %q (same as cloud sibling)", p.vpc, vpc.Description, cloud.Description)
-		}
+		assertVPCMirrorsCloud(t, vpcName, cloudName, vpc, cloud, wantURL)
 	}
 }
 

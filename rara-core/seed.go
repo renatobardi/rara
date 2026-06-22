@@ -17,6 +17,7 @@ import (
 	"context"
 	"encoding/json"
 	"log"
+	"net/url"
 	"os"
 )
 
@@ -98,10 +99,20 @@ func seedCapabilities(ctx context.Context, db Database) error {
 // the cloud ones are woken via Cloud Run Jobs `run`; the VPC ones are woken by rara-runner
 // (POST /run on the tailnet). on_demand is health-exempt at selection time.
 // vpcRunner returns the runner URL and whether VPC on_demand providers should be enabled.
-// All VPC provider seeding gates on this pair; the log warning lives in seedSharedProviders.
-func vpcRunner() (url string, enabled bool) {
-	url = os.Getenv("RUNNER_LOCAL_URL")
-	return url, url != ""
+// Validates that RUNNER_LOCAL_URL is a safe http/https URL (no credentials, no query/fragment)
+// before enabling VPC mode — the URL is persisted to providers.runner_url and the dispatcher
+// POSTs to it with a Bearer token, so a malformed or credential-embedded URL is rejected here.
+func vpcRunner() (rawURL string, enabled bool) {
+	raw := os.Getenv("RUNNER_LOCAL_URL")
+	if raw == "" {
+		return "", false
+	}
+	u, err := url.Parse(raw)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		log.Printf("seed: RUNNER_LOCAL_URL=%q is not a valid bare http/https URL — VPC providers seeded as disabled", raw)
+		return "", false
+	}
+	return raw, true
 }
 
 func seedSharedProviders(ctx context.Context, db Database) error {
@@ -189,7 +200,14 @@ func seedSharedConfig(ctx context.Context, db Database) error {
 		{capGateBarato, fallbackJSON(provGateBaratoLocal, provGateBarato)},
 		{capGateRico, fallbackJSON(provGateRicoLocal, provGateRico)},
 		{capDestilar, fallbackJSON(provDistillLocal, provDistill)},
-		// Per-lane workers — VPC before cloud, lane isolation preserved by accepts constraints.
+		// Per-lane workers — VPC before cloud.
+		//
+		// capColetar: the item already exists when the reconciler runs (coletar is auto-satisfied),
+		// so this policy is never consulted for per-item routing. It controls the dispatcher's
+		// collector-wake preference order (VPC provider before cloud for each worker). Collectors
+		// without accepts constraints (harvest, shelf, dial, feed, courier) are never selected by
+		// the item router — each is woken by the dispatcher's ListDueCollectors path, which uses
+		// collect_cadence_seconds (not routing_policies) to find due providers.
 		{capColetar, fallbackJSON(
 			provHarvestLocal, provHarvest,
 			provShelfLocal, provShelf,
