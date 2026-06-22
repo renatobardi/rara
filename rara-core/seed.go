@@ -97,6 +97,13 @@ func seedCapabilities(ctx context.Context, db Database) error {
 // constraint, so it always stays on the VPC variant. Both cloud and VPC variants are on_demand:
 // the cloud ones are woken via Cloud Run Jobs `run`; the VPC ones are woken by rara-runner
 // (POST /run on the tailnet). on_demand is health-exempt at selection time.
+// vpcRunner returns the runner URL and whether VPC on_demand providers should be enabled.
+// All VPC provider seeding gates on this pair; the log warning lives in seedSharedProviders.
+func vpcRunner() (url string, enabled bool) {
+	url = os.Getenv("RUNNER_LOCAL_URL")
+	return url, url != ""
+}
+
 func seedSharedProviders(ctx context.Context, db Database) error {
 	thirdParty := []byte(`{"sensitivity":"third_party"}`)
 	// env = the per-run NON-secret config each worker IMAGE reads from its environment (confirmed
@@ -115,8 +122,7 @@ func seedSharedProviders(ctx context.Context, db Database) error {
 	if modelGate == "" {
 		log.Fatalf("seed: GATE_MODEL is required")
 	}
-	runnerURL := os.Getenv("RUNNER_LOCAL_URL")
-	vpcEnabled := runnerURL != "" // VPC on_demand providers need a runner URL; disable if unset
+	runnerURL, vpcEnabled := vpcRunner()
 	if !vpcEnabled {
 		log.Print("seed: RUNNER_LOCAL_URL not set — VPC on_demand providers seeded as disabled")
 	}
@@ -274,8 +280,7 @@ func SeedYouTubeLane(ctx context.Context, db Database) error {
 	if err := seedSharedProviders(ctx, db); err != nil {
 		return err
 	}
-	runnerURL := os.Getenv("RUNNER_LOCAL_URL")
-	vpcEnabled := runnerURL != ""
+	runnerURL, vpcEnabled := vpcRunner()
 	// YouTube-specific providers.
 	providers := []Provider{
 		// coletar: YouTube Data API (key) and OAuth playlists — cheap, fast metadata reads.
@@ -324,8 +329,7 @@ func SeedPodcastLane(ctx context.Context, db Database) error {
 	if err := seedSharedProviders(ctx, db); err != nil {
 		return err
 	}
-	runnerURL := os.Getenv("RUNNER_LOCAL_URL")
-	vpcEnabled := runnerURL != ""
+	runnerURL, vpcEnabled := vpcRunner()
 	// coletar: rara-dial — woken on cadence; reads enabled podcast_feeds from the DB (F5).
 	for _, p := range []Provider{
 		{Name: provDial, Capability: capColetar, Runtime: runtimeCloudRun, Activation: activationOnDemand,
@@ -373,8 +377,7 @@ func SeedEmailLane(ctx context.Context, db Database) error {
 	if err := seedSharedProviders(ctx, db); err != nil {
 		return err
 	}
-	runnerURL := os.Getenv("RUNNER_LOCAL_URL")
-	vpcEnabled := runnerURL != ""
+	runnerURL, vpcEnabled := vpcRunner()
 	// coletar: rara-courier — woken on cadence; Gmail OAuth credentials from Secret Manager.
 	for _, p := range []Provider{
 		{Name: provCourier, Capability: capColetar, Runtime: runtimeCloudRun, Activation: activationOnDemand,
@@ -426,8 +429,7 @@ func SeedNewsLane(ctx context.Context, db Database) error {
 	if err := seedSharedProviders(ctx, db); err != nil {
 		return err
 	}
-	runnerURL := os.Getenv("RUNNER_LOCAL_URL")
-	vpcEnabled := runnerURL != ""
+	runnerURL, vpcEnabled := vpcRunner()
 	// coletar: rara-feed — woken on cadence; reads enabled feed_sources from DB on each wake.
 	for _, p := range []Provider{
 		{Name: provFeed, Capability: capColetar, Runtime: runtimeCloudRun, Activation: activationOnDemand,

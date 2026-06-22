@@ -27,7 +27,6 @@ import (
 	"fmt"
 	"html"
 	"log"
-	"os"
 	"regexp"
 	"strings"
 )
@@ -184,8 +183,7 @@ func SeedLinkedInLane(ctx context.Context, db Database) error {
 	if err := seedSharedProviders(ctx, db); err != nil {
 		return err
 	}
-	runnerURL := os.Getenv("RUNNER_LOCAL_URL")
-	vpcEnabled := runnerURL != ""
+	runnerURL, vpcEnabled := vpcRunner()
 	// coletar: TWO collectors write the same linkedin_posts table behind the same contract.
 	// Like every other lane's collector neither is actually routed (coletar is auto-satisfied
 	// by the reconciler — the item already exists once a post is collected); the rows are seeded
