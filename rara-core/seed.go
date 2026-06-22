@@ -122,7 +122,7 @@ func seedSharedProviders(ctx context.Context, db Database) error {
 			Description: "Destilador (LLM)",
 			Env:         []byte(`{"DISTILL_PROVIDER":"distill-cloud","LITELLM_MODEL":` + string(mDistill) + `}`)},
 		{Name: provDistillLocal, Capability: capDestilar, Runtime: runtimeVPC, Activation: activationOnDemand,
-			Enabled: vpcEnabled, Worker: "distill", App: "distill-local",
+			Enabled: vpcEnabled, Worker: "distill", App: "distill",
 			Description: "Destilador (LLM)",
 			RunnerURL:   runnerURL,
 			Env:         []byte(`{"DISTILL_PROVIDER":"distill-vpc"}`)}, // model/engine from host LiteLLM config

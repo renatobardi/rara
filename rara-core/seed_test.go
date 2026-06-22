@@ -555,7 +555,7 @@ func TestSeedAllProvidersHaveApp(t *testing.T) {
 	// Spot-check: App is the consolidated job/image name for dispatch.
 	wantApp := map[string]string{
 		provDistill:         "distill",
-		provDistillLocal:    "distill-local",
+		provDistillLocal:    "distill",
 		provGateBarato:      "gate",
 		provGateBaratoLocal: "gate",
 		provGateRico:        "gate",
