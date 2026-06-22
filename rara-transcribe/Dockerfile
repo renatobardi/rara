@@ -2,7 +2,7 @@
 # ROOT, not this dir, so the `replace rara-addon => ../rara-addon` in go.mod resolves inside the
 # container. ONE image, two arches: amd64 (Cloud Run) + arm64 (VPC Oracle Ampere + Mac).
 # Build with buildx from the root:
-#   docker buildx build --platform linux/amd64,linux/arm64 -f rara-scribe/Dockerfile .
+#   docker buildx build --platform linux/amd64,linux/arm64 -f rara-transcribe/Dockerfile .
 #
 # `--platform=$BUILDPLATFORM` pins the builder stage to the native runner arch and Go cross-compiles
 # via GOARCH=$TARGETARCH — no QEMU for the (slow) compile; only the tiny final alpine stage runs
@@ -23,16 +23,16 @@ RUN apk add --no-cache git
 
 # 1) the sibling SDK first (the `replace` target), 2) this module's go.mod/go.sum.
 COPY rara-addon/ ./rara-addon/
-COPY rara-scribe/go.mod rara-scribe/go.sum ./rara-scribe/
+COPY rara-transcribe/go.mod rara-transcribe/go.sum ./rara-transcribe/
 
-WORKDIR /build/rara-scribe
+WORKDIR /build/rara-transcribe
 RUN go mod download
 
-# Go sources only — rara-scribe has no go:embed assets.
-COPY rara-scribe/*.go ./
+# Go sources only — rara-transcribe has no go:embed assets.
+COPY rara-transcribe/*.go ./
 
 # Static, cross-compiled binary for the target arch (set by buildx per --platform entry).
-RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -ldflags="-w -s" -o /scribe-job .
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -ldflags="-w -s" -o /transcribe-job .
 
 FROM alpine:3.21@sha256:48b0309ca019d89d40f670aa1bc06e426dc0931948452e8491e3d65087abc07d
 
@@ -43,8 +43,8 @@ RUN apk add --no-cache ca-certificates ffmpeg
 
 WORKDIR /app
 
-COPY --from=builder /scribe-job /app/scribe-job
+COPY --from=builder /transcribe-job /app/transcribe-job
 
 USER nobody
 
-ENTRYPOINT ["/app/scribe-job"]
+ENTRYPOINT ["/app/transcribe-job"]

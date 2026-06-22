@@ -1,17 +1,18 @@
-name: Deploy rara-scribe (asr-direct-audio, cloud)
+name: Deploy rara-transcribe (echo/asr-direct-audio, cloud)
 
-# GATED — manual dispatch only (NO push:main). rara-scribe is a 2.0 bridge-total claim-worker
+# GATED — manual dispatch only (NO push:main). rara-transcribe is a 2.0 bridge-total claim-worker
 # (`transcrever`): it only runs once the reconciler routes transcription steps to its provider.
-# Job name = CLOUD_RUN_JOB_PREFIX(rara-) + provider(asr-direct-audio) = rara-asr-direct-audio
-# (what the Activator wakes). Downloads the enclosure over HTTP and transcribes via Groq — needs
-# GROQ_API_KEY in addition to DATABASE_URL.
+# This deploy targets the echo worker (asr-direct-audio).
+# Job name = rara-transcribe (new consolidated job; old rara-asr-direct-audio remains until P2b-B).
+# Downloads the enclosure over HTTP and transcribes via Groq — needs GROQ_API_KEY in addition to
+# DATABASE_URL.
 #
 # MULTI-ARCH (mirrors deploy-distill.yml): builds ONE image with `docker buildx`
 # (amd64 for Cloud Run + arm64 for VPC Oracle Ampere + Mac) and pushes a manifest list to
 # Artifact Registry. Cloud Run pulls the amd64 leaf automatically. See DOCKER-MULTIMODULE.md.
 #
-# The asr-youtube provider runs natively on the Mac (residential IP, launchd) and is NOT deployed
-# here.
+# The caption worker (asr-youtube) runs natively on the Mac (residential IP, launchd) and is NOT
+# deployed here. The Mac binary rebuild is a manual step (P2b-transcribe-B).
 on:
   workflow_dispatch:
     inputs:
@@ -22,7 +23,7 @@ on:
         type: boolean
 
 env:
-  IMAGE: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/rara/rara-scribe:${{ github.sha }}
+  IMAGE: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/rara/rara-transcribe:${{ github.sha }}
 
 jobs:
   build:
@@ -67,7 +68,7 @@ jobs:
         uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6
         with:
           context: .
-          file: rara-scribe/Dockerfile
+          file: rara-transcribe/Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ env.IMAGE }}
@@ -88,7 +89,7 @@ jobs:
           echo "✅ manifest list has exactly linux/amd64 + linux/arm64"
 
   deploy:
-    name: Deploy Cloud Run Job
+    name: Deploy Cloud Run Job (rara-transcribe)
     needs: build
     runs-on: ubuntu-latest
     permissions:
@@ -96,7 +97,7 @@ jobs:
       id-token: write
     env:
       REGION: ${{ vars.GCP_REGION }}
-      JOB_NAME: rara-asr-direct-audio
+      JOB_NAME: rara-transcribe
       GCP_PROJECT: ${{ vars.GCP_PROJECT_ID }}
     steps:
       - name: Authenticate to Google Cloud
@@ -112,8 +113,8 @@ jobs:
       - name: Deploy Cloud Run Job
         run: |
           # Update first, create if absent (avoids a describe→create/update TOCTOU race).
-          # DATABASE_URL is the shared contract DB; GROQ_API_KEY is scribe-specific (ASR engine).
-          # SCRIBE_PROVIDER=asr-direct-audio matches the provider seed in the DB.
+          # DATABASE_URL is the shared contract DB; GROQ_API_KEY is transcribe-specific (ASR engine).
+          # SCRIBE_PROVIDER=asr-direct-audio matches the provider seed in the DB (unchanged until P2b-B).
           SECRETS="DATABASE_URL=database-url:latest,GROQ_API_KEY=groq-api-key:latest"
           ENV_VARS="SCRIBE_PROVIDER=asr-direct-audio,TRANSCRIBE_ENGINE=groq"
           COMMON_ARGS="--image $IMAGE --region $REGION --project $GCP_PROJECT --set-secrets $SECRETS --set-env-vars $ENV_VARS --max-retries 0 --task-timeout 3600s --memory 512Mi --cpu 1"

@@ -1,4 +1,4 @@
-name: CI rara-scribe
+name: CI rara-transcribe
 
 on:
   push:
@@ -6,17 +6,17 @@ on:
       - main
       - develop
     paths:
-      - 'rara-scribe/**'
+      - 'rara-transcribe/**'
       - 'rara-addon/**'        # multi-module Dockerfile depends on the SDK — rebuild if it changes
-      - '.github/workflows/ci-scribe.yml'
+      - '.github/workflows/ci-transcribe.yml'
   pull_request:
     branches:
       - main
       - develop
     paths:
-      - 'rara-scribe/**'
+      - 'rara-transcribe/**'
       - 'rara-addon/**'        # multi-module Dockerfile depends on the SDK — rebuild if it changes
-      - '.github/workflows/ci-scribe.yml'
+      - '.github/workflows/ci-transcribe.yml'
 
 jobs:
   code-quality:
@@ -32,24 +32,24 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
         with:
-          go-version-file: rara-scribe/go.mod
+          go-version-file: rara-transcribe/go.mod
 
       - name: Cache Go modules
         uses: actions/cache@6f8efc29b200d32929f49075959781ed54ec270c # v3
         with:
           path: ~/go/pkg/mod
-          key: ${{ runner.os }}-go-scribe-${{ hashFiles('rara-scribe/go.sum') }}
+          key: ${{ runner.os }}-go-transcribe-${{ hashFiles('rara-transcribe/go.sum') }}
           restore-keys: |
-            ${{ runner.os }}-go-scribe-
+            ${{ runner.os }}-go-transcribe-
 
       - name: Download dependencies
         run: |
-          cd rara-scribe
+          cd rara-transcribe
           go mod download
 
       - name: Format check
         run: |
-          cd rara-scribe
+          cd rara-transcribe
           if [ -n "$(gofmt -s -l .)" ]; then
             echo "❌ Code formatting issues found. Run: gofmt -w ."
             gofmt -s -d .
@@ -59,19 +59,19 @@ jobs:
 
       - name: Lint
         run: |
-          cd rara-scribe
+          cd rara-transcribe
           go vet ./...
           echo "✅ Vet check passed"
 
       - name: Run tests
         run: |
-          cd rara-scribe
+          cd rara-transcribe
           go test -v -race -coverprofile=coverage.out ./...
           echo "✅ Tests passed"
 
       - name: Check coverage
         run: |
-          cd rara-scribe
+          cd rara-transcribe
           go tool cover -func=coverage.out | tail -1
           echo "✅ Coverage report generated"
 
@@ -90,11 +90,11 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
         with:
-          go-version-file: rara-scribe/go.mod
+          go-version-file: rara-transcribe/go.mod
 
       - name: Vulnerability scan (govulncheck)
         run: |
-          cd rara-scribe
+          cd rara-transcribe
           go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
           "$(go env GOPATH)/bin/govulncheck" ./...
 
@@ -104,7 +104,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   docker-build:
-    name: Docker build (multi-module)
+    name: Docker build (multi-arch manifest)
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -113,9 +113,26 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
 
-      # Build only, no push — proves the multi-module Dockerfile compiles on every PR
-      # without GCP credentials. Context is the repo root so `replace ../rara-addon`
-      # resolves. This is the asr-direct CLOUD image; asr-youtube builds natively on the Mac.
-      # See DOCKER-MULTIMODULE.md.
-      - name: Build image
-        run: docker build -f rara-scribe/Dockerfile .
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@29109295f81e9208d7d86ff1c6c12d2833863392 # v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3
+
+      # Build only (no push) — proves the multi-module Dockerfile compiles for both arches on
+      # every PR without GCP credentials. Context is the repo root so `replace ../rara-addon`
+      # resolves. This is the echo (asr-direct-audio) CLOUD image; caption (asr-youtube) builds
+      # natively on the Mac. See DOCKER-MULTIMODULE.md.
+      - name: Build multi-arch image (amd64 + arm64)
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6
+        with:
+          context: .
+          file: rara-transcribe/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: false
+
+      - name: Verify multi-arch build succeeded
+        run: |
+          # The buildx step above exits non-zero if either platform fails to compile.
+          # Full manifest-list inspect (with registry push) is done in deploy-transcribe.yml.
+          echo "✅ Multi-arch build succeeded for linux/amd64 + linux/arm64"

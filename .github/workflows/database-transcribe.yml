@@ -1,19 +1,19 @@
-name: Database rara-scribe
+name: Database rara-transcribe
 
 on:
   push:
     branches:
       - main
     paths:
-      - 'rara-scribe/migrations/**'
-      - 'rara-scribe/cleanup.sql'
-      - '.github/workflows/database-scribe.yml'
+      - 'rara-transcribe/migrations/**'
+      - 'rara-transcribe/cleanup.sql'
+      - '.github/workflows/database-transcribe.yml'
   pull_request:
     branches:
       - main
     paths:
-      - 'rara-scribe/migrations/**'
-      - 'rara-scribe/cleanup.sql'
+      - 'rara-transcribe/migrations/**'
+      - 'rara-transcribe/cleanup.sql'
   workflow_dispatch:
     inputs:
       action:
@@ -59,11 +59,11 @@ jobs:
 
       - name: Check migration files
         run: |
-          if [ ! -d "rara-scribe/migrations" ]; then
+          if [ ! -d "rara-transcribe/migrations" ]; then
             echo "❌ migrations directory not found"
             exit 1
           fi
-          MIGRATION_COUNT=$(ls -1 rara-scribe/migrations/*.sql 2>/dev/null | wc -l)
+          MIGRATION_COUNT=$(ls -1 rara-transcribe/migrations/*.sql 2>/dev/null | wc -l)
           echo "Found $MIGRATION_COUNT migration files"
           if [ "$MIGRATION_COUNT" -eq 0 ]; then
             echo "❌ No migration files found"
@@ -74,7 +74,7 @@ jobs:
         run: |
           # Execute each migration inside a transaction and roll it back, so the
           # SQL is genuinely parsed/planned by Postgres without persisting changes.
-          for file in rara-scribe/migrations/*.sql; do
+          for file in rara-transcribe/migrations/*.sql; do
             echo "Validating: $(basename "$file")"
             { echo "BEGIN;"; cat "$file"; echo "ROLLBACK;"; } \
               | psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -q \
@@ -115,7 +115,7 @@ jobs:
       - name: Apply migrations
         run: |
           echo "Applying migrations..."
-          for migration in rara-scribe/migrations/*.sql; do
+          for migration in rara-transcribe/migrations/*.sql; do
             if [ -f "$migration" ]; then
               echo "Running: $(basename $migration)..."
               psql "$DATABASE_URL" -f "$migration" || exit 1

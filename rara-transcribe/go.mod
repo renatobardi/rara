@@ -1,4 +1,4 @@
-module rara-scribe
+module rara-transcribe
 
 go 1.26.4
 
@@ -8,7 +8,7 @@ require (
 )
 
 // rara-addon is the bridge-total SDK, a sibling module in this monorepo. A replace directive (not
-// a go.work) keeps rara-scribe self-contained: it builds standalone in CI (cd rara-scribe && go
+// a go.work) keeps rara-transcribe self-contained: it builds standalone in CI (cd rara-transcribe && go
 // test) and the P2 image/launchd build needs the replace anyway. A local go.work (gitignored) is
 // optional ergonomics; it is never committed.
 replace rara-addon => ../rara-addon
