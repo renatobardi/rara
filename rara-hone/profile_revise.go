@@ -431,7 +431,7 @@ func templateNarrative(p revisedStructured) string {
 }
 
 // defaultKeepThreshold is the profile-match keep threshold the reviser falls back to when a
-// profile's weights carry no valid keep_threshold. It must match rara-sift's cascade default (the
+// profile's weights carry no valid keep_threshold. It must match rara-gate's cascade default (the
 // gate app reads the value back out of weights); they are independent copies of one tuned constant.
 const defaultKeepThreshold = 0.6
 
@@ -458,7 +458,7 @@ func parseStringArray(raw json.RawMessage) []string {
 }
 
 // keepThresholdFromWeights reads weights.keep_threshold, defaulting when absent/invalid (mirrors
-// rara-sift's parseProfile rule).
+// rara-gate's parseProfile rule).
 func keepThresholdFromWeights(raw json.RawMessage) float64 {
 	if len(raw) > 0 {
 		var w struct {

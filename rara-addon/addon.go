@@ -17,7 +17,7 @@
 //
 // The claim is by **(capability, assigned_provider)**, never capability alone. With several
 // providers per capability (the *-local vs third-party split), filtering on the assigned provider
-// is what keeps a PRIVATE item routed to, say, distill-local from being pulled by a third-party
+// is what keeps a PRIVATE item routed to, say, distill-vpc from being pulled by a third-party
 // worker. That provider-to-provider isolation is the contract's whole point; it is enforced in
 // Store.Claim and exercised by the SDK tests.
 //

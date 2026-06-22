@@ -574,7 +574,7 @@ func (c *Core) WorkerMetrics(ctx context.Context, since *time.Time) ([]WorkerMet
 	return metrics, nil
 }
 
-// SubmitLinkedIn is the manual-inbox collector (deliverable #3): upsert the post + discover the
+// SubmitLinkedIn is the stash collector (deliverable #3): upsert the post + discover the
 // spine item. Returns the item id.
 func (c *Core) SubmitLinkedIn(ctx context.Context, p LinkedInPost) (int, error) {
 	id, err := SubmitLinkedInPost(ctx, c.db, c.inbox, p)

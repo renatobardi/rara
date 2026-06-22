@@ -169,7 +169,7 @@ type providerConstraints struct {
 // constraintsSatisfied reports whether a provider's constraints allow it to serve item.
 // Three independent gates, all of which must pass:
 //
-//  1. requires (runtime): e.g. asr-youtube declares {"requires":"residential"} — only runtime=local
+//  1. requires (runtime): e.g. caption-mac declares {"requires":"residential"} — only runtime=local
 //     qualifies. Fail-closed: an unrecognized requirement value makes the provider ineligible.
 //  2. accepts (source matching): when a provider declares `accepts`, the item's lane must be listed.
 //     A provider with no `accepts` serves any lane.

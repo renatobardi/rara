@@ -314,7 +314,7 @@ func SeedPodcastLane(ctx context.Context, db Database) error {
 }
 
 // SeedEmailLane writes the Email lane: shared capabilities/providers/config plus the email
-// extractor (extrair-email) and the email flow. The lane template swaps `transcrever` for
+// extractor (winnow-cloud) and the email flow. The lane template swaps `transcrever` for
 // `extrair` (the source is already text — clean HTML/signature/quoted-reply instead of
 // transcribing audio); everything else mirrors the other lanes. Email content is PRIVATE, so
 // IngestEmail stamps items sensitivity=private and the router (slice c) keeps them off
@@ -352,7 +352,7 @@ func SeedEmailLane(ctx context.Context, db Database) error {
 }
 
 // SeedNewsLane writes the News lane: shared capabilities/providers/config plus the news extractor
-// (extrair-news) and the news flow. Like email, the source is already text (feed articles from
+// (glean-cloud) and the news flow. Like email, the source is already text (feed articles from
 // rara-feed: HN/RSS/html), so the lane swaps `transcrever` for `extrair` (clean HTML/boilerplate
 // instead of transcribing audio). News is PUBLIC, so IngestFeed stamps items sensitivity=public.
 //

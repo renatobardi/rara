@@ -78,15 +78,15 @@ func runOnce(t *testing.T, db DispatchDB) *fakeTransport {
 
 func TestDispatchOnceWakesAssignedProviders(t *testing.T) {
 	db := &mockDispatchDB{
-		steps:     []AssignedStep{{ItemID: 1, Seq: 2, Capability: "gate_barato", AssignedProvider: "gate-barato"}},
-		providers: map[string]DispatchProvider{"gate-barato": {Name: "gate-barato", Runtime: runtimeCloudRun}},
+		steps:     []AssignedStep{{ItemID: 1, Seq: 2, Capability: "gate_barato", AssignedProvider: "sift-cloud"}},
+		providers: map[string]DispatchProvider{"sift-cloud": {Name: "sift-cloud", Runtime: runtimeCloudRun}},
 	}
 	tr := runOnce(t, db)
 	if len(tr.called) != 1 {
 		t.Errorf("runner called %d times, want 1", len(tr.called))
 	}
-	if tr.called[0].App != "gate-barato" {
-		t.Errorf("app = %q, want gate-barato", tr.called[0].App)
+	if tr.called[0].App != "sift-cloud" {
+		t.Errorf("app = %q, want sift-cloud", tr.called[0].App)
 	}
 }
 
@@ -95,8 +95,8 @@ func TestDispatchOncePassesProviderEnv(t *testing.T) {
 	// (Cloud Run overrides / docker -e) injects it. Without this, host providers wake with no config.
 	env := map[string]string{"DISTILL_RECIPE": "opus", "LITELLM_MODEL": "gemini-flash"}
 	db := &mockDispatchDB{
-		steps:     []AssignedStep{{ItemID: 1, Seq: 2, AssignedProvider: "gate-barato"}},
-		providers: map[string]DispatchProvider{"gate-barato": {Name: "gate-barato", Runtime: runtimeCloudRun, Env: env}},
+		steps:     []AssignedStep{{ItemID: 1, Seq: 2, AssignedProvider: "sift-cloud"}},
+		providers: map[string]DispatchProvider{"sift-cloud": {Name: "sift-cloud", Runtime: runtimeCloudRun, Env: env}},
 	}
 	tr := runOnce(t, db)
 	if len(tr.called) != 1 {
@@ -123,8 +123,8 @@ func TestDispatchOnceEnvWithSpecialChars(t *testing.T) {
 		"METACHAR": "val$ue;|`",
 	}
 	db := &mockDispatchDB{
-		steps:     []AssignedStep{{ItemID: 1, Seq: 2, AssignedProvider: "gate-barato"}},
-		providers: map[string]DispatchProvider{"gate-barato": {Name: "gate-barato", Runtime: runtimeCloudRun, Env: env}},
+		steps:     []AssignedStep{{ItemID: 1, Seq: 2, AssignedProvider: "sift-cloud"}},
+		providers: map[string]DispatchProvider{"sift-cloud": {Name: "sift-cloud", Runtime: runtimeCloudRun, Env: env}},
 	}
 	tr := runOnce(t, db)
 	if len(tr.called) != 1 {
@@ -142,8 +142,8 @@ func TestDispatchOnceEmptyEnvStillWakes(t *testing.T) {
 	// Both nil Env and explicit empty map must wake normally — no panic, no env injected.
 	for _, provEnv := range []map[string]string{nil, {}} {
 		db := &mockDispatchDB{
-			steps:     []AssignedStep{{ItemID: 1, Seq: 2, AssignedProvider: "gate-barato"}},
-			providers: map[string]DispatchProvider{"gate-barato": {Name: "gate-barato", Runtime: runtimeCloudRun, Env: provEnv}},
+			steps:     []AssignedStep{{ItemID: 1, Seq: 2, AssignedProvider: "sift-cloud"}},
+			providers: map[string]DispatchProvider{"sift-cloud": {Name: "sift-cloud", Runtime: runtimeCloudRun, Env: provEnv}},
 		}
 		tr := runOnce(t, db)
 		if len(tr.called) != 1 {
@@ -158,26 +158,26 @@ func TestDispatchOnceEmptyEnvStillWakes(t *testing.T) {
 func TestDispatchOnceCoalescesPerProvider(t *testing.T) {
 	db := &mockDispatchDB{
 		steps: []AssignedStep{
-			{ItemID: 1, Seq: 2, Capability: "gate_barato", AssignedProvider: "gate-barato"},
-			{ItemID: 2, Seq: 2, Capability: "gate_barato", AssignedProvider: "gate-barato"},
+			{ItemID: 1, Seq: 2, Capability: "gate_barato", AssignedProvider: "sift-cloud"},
+			{ItemID: 2, Seq: 2, Capability: "gate_barato", AssignedProvider: "sift-cloud"},
 		},
-		providers: map[string]DispatchProvider{"gate-barato": {Name: "gate-barato", Runtime: runtimeCloudRun}},
+		providers: map[string]DispatchProvider{"sift-cloud": {Name: "sift-cloud", Runtime: runtimeCloudRun}},
 	}
 	tr := runOnce(t, db)
 	if len(tr.called) != 1 {
-		t.Errorf("gate-barato called %d times, want 1 (coalesced per pass)", len(tr.called))
+		t.Errorf("sift-cloud called %d times, want 1 (coalesced per pass)", len(tr.called))
 	}
 }
 
 func TestDispatchOnceMultipleProviders(t *testing.T) {
 	db := &mockDispatchDB{
 		steps: []AssignedStep{
-			{ItemID: 1, Seq: 2, AssignedProvider: "gate-barato"},
-			{ItemID: 1, Seq: 3, AssignedProvider: "asr-youtube"},
+			{ItemID: 1, Seq: 2, AssignedProvider: "sift-cloud"},
+			{ItemID: 1, Seq: 3, AssignedProvider: "caption-mac"},
 		},
 		providers: map[string]DispatchProvider{
-			"gate-barato": {Name: "gate-barato", Runtime: runtimeCloudRun},
-			"asr-youtube": {Name: "asr-youtube", Runtime: runtimeLocal, RunnerURL: "http://mac.tailnet:8473"},
+			"sift-cloud": {Name: "sift-cloud", Runtime: runtimeCloudRun},
+			"caption-mac": {Name: "caption-mac", Runtime: runtimeLocal, RunnerURL: "http://mac.tailnet:8473"},
 		},
 	}
 	tr := runOnce(t, db)
@@ -189,8 +189,8 @@ func TestDispatchOnceMultipleProviders(t *testing.T) {
 		woken[i] = r.App
 	}
 	sort.Strings(woken)
-	if woken[0] != "asr-youtube" || woken[1] != "gate-barato" {
-		t.Errorf("woken = %v, want [asr-youtube gate-barato]", woken)
+	if woken[0] != "caption-mac" || woken[1] != "sift-cloud" {
+		t.Errorf("woken = %v, want [caption-mac sift-cloud]", woken)
 	}
 }
 
@@ -294,8 +294,8 @@ func TestDispatchOnceSkipsRunWhenStampFails(t *testing.T) {
 func TestDispatchOnceCollectorsAndWorkersInSamePass(t *testing.T) {
 	// Collectors and assigned workers are both dispatched in the same DispatchOnce pass.
 	db := &mockDispatchDB{
-		steps:         []AssignedStep{{ItemID: 1, Seq: 2, AssignedProvider: "gate-barato"}},
-		providers:     map[string]DispatchProvider{"gate-barato": {Name: "gate-barato", Runtime: runtimeCloudRun}},
+		steps:         []AssignedStep{{ItemID: 1, Seq: 2, AssignedProvider: "sift-cloud"}},
+		providers:     map[string]DispatchProvider{"sift-cloud": {Name: "sift-cloud", Runtime: runtimeCloudRun}},
 		dueCollectors: []DispatchProvider{{Name: "harvest", Runtime: runtimeCloudRun}},
 	}
 	tr := runOnce(t, db)
@@ -307,8 +307,8 @@ func TestDispatchOnceCollectorsAndWorkersInSamePass(t *testing.T) {
 		woken[i] = r.App
 	}
 	sort.Strings(woken)
-	if woken[0] != "gate-barato" || woken[1] != "harvest" {
-		t.Errorf("woken = %v, want [gate-barato harvest]", woken)
+	if woken[0] != "sift-cloud" || woken[1] != "harvest" {
+		t.Errorf("woken = %v, want [sift-cloud harvest]", woken)
 	}
 }
 
@@ -331,14 +331,14 @@ func TestDispatchOnceNoDueCollectors(t *testing.T) {
 
 func TestDispatchOnceWorkerRunnerErrorStampsLastError(t *testing.T) {
 	db := &mockDispatchDB{
-		steps:     []AssignedStep{{ItemID: 1, Seq: 2, AssignedProvider: "gate-barato"}},
-		providers: map[string]DispatchProvider{"gate-barato": {Name: "gate-barato", Runtime: runtimeCloudRun}},
+		steps:     []AssignedStep{{ItemID: 1, Seq: 2, AssignedProvider: "sift-cloud"}},
+		providers: map[string]DispatchProvider{"sift-cloud": {Name: "sift-cloud", Runtime: runtimeCloudRun}},
 	}
 	tr := &fakeTransport{err: errBoom{}}
 	if err := (&Dispatcher{db: db, runner: tr}).DispatchOnce(context.Background()); err != nil {
 		t.Fatalf("DispatchOnce: %v", err)
 	}
-	msg, ok := db.stampedErrors["gate-barato"]
+	msg, ok := db.stampedErrors["sift-cloud"]
 	if !ok {
 		t.Fatal("StampDispatchError not called for failed worker wake")
 	}
@@ -349,12 +349,12 @@ func TestDispatchOnceWorkerRunnerErrorStampsLastError(t *testing.T) {
 
 func TestDispatchOnceWorkerRunnerSuccessClearsLastError(t *testing.T) {
 	db := &mockDispatchDB{
-		steps:     []AssignedStep{{ItemID: 1, Seq: 2, AssignedProvider: "gate-barato"}},
-		providers: map[string]DispatchProvider{"gate-barato": {Name: "gate-barato", Runtime: runtimeCloudRun}},
+		steps:     []AssignedStep{{ItemID: 1, Seq: 2, AssignedProvider: "sift-cloud"}},
+		providers: map[string]DispatchProvider{"sift-cloud": {Name: "sift-cloud", Runtime: runtimeCloudRun}},
 	}
 	runOnce(t, db)
-	if db.clearedErrors["gate-barato"] != 1 {
-		t.Errorf("ClearDispatchError called %d times, want 1 on success", db.clearedErrors["gate-barato"])
+	if db.clearedErrors["sift-cloud"] != 1 {
+		t.Errorf("ClearDispatchError called %d times, want 1 on success", db.clearedErrors["sift-cloud"])
 	}
 }
 
@@ -389,15 +389,15 @@ func TestDispatchOnceStampErrorIsBestEffort(t *testing.T) {
 	// A StampDispatchError failure must not stop the loop or return an error.
 	// We also verify StampDispatchError was actually called (not silently skipped).
 	db := &mockDispatchDB{
-		steps:     []AssignedStep{{ItemID: 1, Seq: 2, AssignedProvider: "gate-barato"}},
-		providers: map[string]DispatchProvider{"gate-barato": {Name: "gate-barato", Runtime: runtimeCloudRun}},
+		steps:     []AssignedStep{{ItemID: 1, Seq: 2, AssignedProvider: "sift-cloud"}},
+		providers: map[string]DispatchProvider{"sift-cloud": {Name: "sift-cloud", Runtime: runtimeCloudRun}},
 		stampErr:  errBoom{},
 	}
 	tr := &fakeTransport{err: errBoom{}}
 	if err := (&Dispatcher{db: db, runner: tr}).DispatchOnce(context.Background()); err != nil {
 		t.Errorf("DispatchOnce must swallow stamp errors, got %v", err)
 	}
-	if _, ok := db.stampedErrors["gate-barato"]; !ok {
+	if _, ok := db.stampedErrors["sift-cloud"]; !ok {
 		t.Error("StampDispatchError was not called despite runner failure")
 	}
 }
@@ -406,15 +406,15 @@ func TestDispatchOnceClearErrorIsBestEffort(t *testing.T) {
 	// A ClearDispatchError failure must not stop the loop or return an error.
 	// We also verify ClearDispatchError was actually called (not silently skipped).
 	db := &mockDispatchDB{
-		steps:     []AssignedStep{{ItemID: 1, Seq: 2, AssignedProvider: "gate-barato"}},
-		providers: map[string]DispatchProvider{"gate-barato": {Name: "gate-barato", Runtime: runtimeCloudRun}},
+		steps:     []AssignedStep{{ItemID: 1, Seq: 2, AssignedProvider: "sift-cloud"}},
+		providers: map[string]DispatchProvider{"sift-cloud": {Name: "sift-cloud", Runtime: runtimeCloudRun}},
 		clearErr:  errBoom{},
 	}
 	if err := runOnceErr((&Dispatcher{db: db, runner: &fakeTransport{}})); err != nil {
 		t.Errorf("DispatchOnce must swallow clear errors, got %v", err)
 	}
-	if db.clearedErrors["gate-barato"] != 1 {
-		t.Errorf("ClearDispatchError called %d times, want 1 despite clearErr", db.clearedErrors["gate-barato"])
+	if db.clearedErrors["sift-cloud"] != 1 {
+		t.Errorf("ClearDispatchError called %d times, want 1 despite clearErr", db.clearedErrors["sift-cloud"])
 	}
 }
 

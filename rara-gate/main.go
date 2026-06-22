@@ -889,7 +889,7 @@ func buildSiftPoolConfig(dbURL string) (*pgxpool.Config, error) {
 }
 
 // tiers by config: SIFT_GATE picks the capability (gate_barato | gate_rico), SIFT_PROVIDER picks
-// the concrete provider it serves (gate-barato | gate-barato-local | gate-rico | gate-rico-local)
+// the concrete provider it serves (sift-cloud | sift-vpc | assay-cloud | assay-vpc)
 // so it claims only the steps the reconciler routed to it. Default is on_demand (drain once and
 // exit, the woken Cloud Run job); a resident deploy opts into the long-running loop + symmetric
 // activation via WORK_POLL_INTERVAL and/or POKE_ADDR + POKE_TOKEN.
@@ -904,7 +904,7 @@ func main() {
 	}
 	provider := os.Getenv("SIFT_PROVIDER")
 	if provider == "" {
-		log.Fatalf("SIFT_PROVIDER is required (the provider this worker serves, e.g. gate-barato | gate-barato-local)")
+		log.Fatalf("SIFT_PROVIDER is required (the provider this worker serves, e.g. sift-cloud | sift-vpc)")
 	}
 
 	judge, err := newLiteLLMJudge()

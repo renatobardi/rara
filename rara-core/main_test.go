@@ -874,7 +874,7 @@ func TestCapabilityUpsertIdempotent(t *testing.T) {
 func TestProviderRequiresCapability(t *testing.T) {
 	ctx := context.Background()
 	db := newMockDatabase()
-	p := Provider{Name: "asr-youtube", Capability: capTranscrever, Runtime: runtimeLocal, Activation: activationResident}
+	p := Provider{Name: "caption-mac", Capability: capTranscrever, Runtime: runtimeLocal, Activation: activationResident}
 	if err := db.UpsertProvider(ctx, p); !errors.Is(err, errFKViolation) {
 		t.Fatalf("provider with missing capability should fail FK, got %v", err)
 	}
@@ -899,13 +899,13 @@ func TestProviderUpsertDefaultsWorkerToName(t *testing.T) {
 	ctx := context.Background()
 	db := newMockDatabase()
 	_ = db.UpsertCapability(ctx, Capability{Name: capTranscrever})
-	p := Provider{Name: "asr-youtube", Capability: capTranscrever, Runtime: runtimeLocal, Activation: activationResident}
+	p := Provider{Name: "caption-mac", Capability: capTranscrever, Runtime: runtimeLocal, Activation: activationResident}
 	// Worker deliberately left empty — guard must default it to Name.
 	if err := db.UpsertProvider(ctx, p); err != nil {
 		t.Fatalf("upsert: %v", err)
 	}
-	if got := db.providers["asr-youtube"].Worker; got != "asr-youtube" {
-		t.Errorf("Worker = %q, want %q", got, "asr-youtube")
+	if got := db.providers["caption-mac"].Worker; got != "caption-mac" {
+		t.Errorf("Worker = %q, want %q", got, "caption-mac")
 	}
 }
 
@@ -913,14 +913,14 @@ func TestProviderUpsertIdempotent(t *testing.T) {
 	ctx := context.Background()
 	db := newMockDatabase()
 	_ = db.UpsertCapability(ctx, Capability{Name: capTranscrever})
-	p := Provider{Name: "asr-youtube", Capability: capTranscrever, Runtime: runtimeLocal, Activation: activationResident, Enabled: true}
+	p := Provider{Name: "caption-mac", Capability: capTranscrever, Runtime: runtimeLocal, Activation: activationResident, Enabled: true}
 	_ = db.UpsertProvider(ctx, p)
 	p.Enabled = false // toggle
 	_ = db.UpsertProvider(ctx, p)
 	if len(db.providers) != 1 {
 		t.Fatalf("UNIQUE(name) not honored: %d rows", len(db.providers))
 	}
-	if db.providers["asr-youtube"].Enabled {
+	if db.providers["caption-mac"].Enabled {
 		t.Errorf("upsert should replace enabled flag")
 	}
 }

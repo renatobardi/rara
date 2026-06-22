@@ -121,7 +121,7 @@ jobs:
 
       # Build only (no push) — proves the multi-module Dockerfile compiles for both arches on
       # every PR without GCP credentials. Context is the repo root so `replace ../rara-addon`
-      # resolves. This is the echo (asr-direct-audio) CLOUD image; caption (asr-youtube) builds
+      # resolves. This is the echo (echo-cloud) CLOUD image; caption (caption-mac) builds
       # natively on the Mac. See DOCKER-MULTIMODULE.md.
       - name: Build multi-arch image (amd64 + arm64)
         uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6

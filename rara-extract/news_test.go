@@ -8,7 +8,7 @@ import (
 	addon "rara-addon"
 )
 
-// TestExtrairNewsIsValidProvider: extrair-news joins email/linkedin as a recognized provider.
+// TestExtrairNewsIsValidProvider: glean-cloud joins winnow-cloud/scrub-cloud as a recognized provider.
 func TestExtrairNewsIsValidProvider(t *testing.T) {
 	if !isValidProvider(provExtrairNews) {
 		t.Errorf("%q should be a valid GLEAN_PROVIDER", provExtrairNews)

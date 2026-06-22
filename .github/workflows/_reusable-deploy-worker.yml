@@ -17,12 +17,12 @@ on:
         required: true
         type: string
       job_name:
-        description: 'Cloud Run Job name = CLOUD_RUN_JOB_PREFIX + provider name the Activator wakes (e.g. rara-gate-rico). Defaults to app.'
+        description: 'Cloud Run Job name = CLOUD_RUN_JOB_PREFIX + app name the Activator wakes (e.g. rara-gate). Defaults to app.'
         required: false
         default: ''
         type: string
       env_vars:
-        description: 'Comma-separated KEY=VALUE for --set-env-vars (e.g. SIFT_GATE=gate_rico,SIFT_PROVIDER=gate-rico). Values must not contain commas.'
+        description: 'Comma-separated KEY=VALUE for --set-env-vars (e.g. SIFT_GATE=gate_rico,SIFT_PROVIDER=assay-cloud). Values must not contain commas.'
         required: false
         default: ''
         type: string

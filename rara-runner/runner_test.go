@@ -55,7 +55,7 @@ func TestDispatchRunnerRoutesCloudRun(t *testing.T) {
 	cr, host := &fakeTransport{}, &fakeTransport{}
 	d := dispatchRunner{cloudRun: cr, host: host}
 
-	if err := d.Run(context.Background(), RunRequest{App: "gate-barato", Runtime: runtimeCloudRun}); err != nil {
+	if err := d.Run(context.Background(), RunRequest{App: "sift-cloud", Runtime: runtimeCloudRun}); err != nil {
 		t.Fatal(err)
 	}
 	if len(cr.called) != 1 {
@@ -70,7 +70,7 @@ func TestDispatchRunnerRoutesHostRunner(t *testing.T) {
 	cr, host := &fakeTransport{}, &fakeTransport{}
 	d := dispatchRunner{cloudRun: cr, host: host}
 
-	req := RunRequest{App: "asr-youtube", Runtime: runtimeLocal, RunnerURL: "http://mac.tailnet:8473"}
+	req := RunRequest{App: "caption-mac", Runtime: runtimeLocal, RunnerURL: "http://mac.tailnet:8473"}
 	if err := d.Run(context.Background(), req); err != nil {
 		t.Fatal(err)
 	}
@@ -104,11 +104,11 @@ func TestCloudRunTransportFiresJobsRun(t *testing.T) {
 	doer := &fakeHTTPDoer{status: http.StatusOK}
 	tr := &cloudRunTransport{project: "proj", region: "us-central1", http: doer, token: staticToken("tok123")}
 
-	req := RunRequest{App: "gate-barato", Runtime: runtimeCloudRun}
+	req := RunRequest{App: "sift-cloud", Runtime: runtimeCloudRun}
 	if err := tr.Run(context.Background(), req); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	wantURL := "https://run.googleapis.com/v2/projects/proj/locations/us-central1/jobs/gate-barato:run"
+	wantURL := "https://run.googleapis.com/v2/projects/proj/locations/us-central1/jobs/sift-cloud:run"
 	if got := doer.gotReq.URL.String(); got != wantURL {
 		t.Errorf("url = %s, want %s", got, wantURL)
 	}
@@ -120,18 +120,18 @@ func TestCloudRunTransportFiresJobsRun(t *testing.T) {
 func TestCloudRunTransportJobPrefix(t *testing.T) {
 	doer := &fakeHTTPDoer{}
 	tr := &cloudRunTransport{project: "p", region: "r", jobPrefix: "rara-", http: doer, token: staticToken("t")}
-	if err := tr.Run(context.Background(), RunRequest{App: "gate-barato", Runtime: runtimeCloudRun}); err != nil {
+	if err := tr.Run(context.Background(), RunRequest{App: "gate", Runtime: runtimeCloudRun}); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(doer.gotReq.URL.String(), "/jobs/rara-gate-barato:run") {
-		t.Errorf("url = %s, want job rara-gate-barato", doer.gotReq.URL.String())
+	if !strings.Contains(doer.gotReq.URL.String(), "/jobs/rara-gate:run") {
+		t.Errorf("url = %s, want job rara-gate", doer.gotReq.URL.String())
 	}
 }
 
 func TestCloudRunTransportSendsEnvOverrides(t *testing.T) {
 	doer := &fakeHTTPDoer{status: http.StatusOK}
 	tr := &cloudRunTransport{project: "p", region: "r", http: doer, token: staticToken("t")}
-	req := RunRequest{App: "gate-barato", Runtime: runtimeCloudRun, Env: map[string]string{"ITEM_STEP_ID": "42"}}
+	req := RunRequest{App: "sift-cloud", Runtime: runtimeCloudRun, Env: map[string]string{"ITEM_STEP_ID": "42"}}
 	if err := tr.Run(context.Background(), req); err != nil {
 		t.Fatal(err)
 	}
@@ -146,7 +146,7 @@ func TestCloudRunTransportSendsEnvOverrides(t *testing.T) {
 func TestCloudRunTransportEmptyEnvUsesDefaultBody(t *testing.T) {
 	doer := &fakeHTTPDoer{status: http.StatusOK}
 	tr := &cloudRunTransport{project: "p", region: "r", http: doer, token: staticToken("t")}
-	if err := tr.Run(context.Background(), RunRequest{App: "gate-barato", Runtime: runtimeCloudRun}); err != nil {
+	if err := tr.Run(context.Background(), RunRequest{App: "sift-cloud", Runtime: runtimeCloudRun}); err != nil {
 		t.Fatal(err)
 	}
 	if doer.gotBody != "{}" {
@@ -176,7 +176,7 @@ func TestHostRunnerTransportPostsRun(t *testing.T) {
 	doer := &fakeHTTPDoer{status: http.StatusAccepted}
 	tr := &hostRunnerTransport{token: "secret", http: doer}
 
-	req := RunRequest{App: "asr-youtube", Runtime: runtimeLocal, RunnerURL: "http://mac.tailnet:8473"}
+	req := RunRequest{App: "caption-mac", Runtime: runtimeLocal, RunnerURL: "http://mac.tailnet:8473"}
 	if err := tr.Run(context.Background(), req); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -186,7 +186,7 @@ func TestHostRunnerTransportPostsRun(t *testing.T) {
 	if got := doer.gotReq.Header.Get("Authorization"); got != "Bearer secret" {
 		t.Errorf("authorization = %q, want Bearer secret", got)
 	}
-	if !strings.Contains(doer.gotBody, `"asr-youtube"`) {
+	if !strings.Contains(doer.gotBody, `"caption-mac"`) {
 		t.Errorf("body = %q, want app name in body", doer.gotBody)
 	}
 }

@@ -26,7 +26,7 @@ func (f *fakeLinkedInStore) UpsertLinkedInPost(_ context.Context, p LinkedInPost
 
 // ---------------------------------------------------------------------------
 // postHasContent — the collector's emptiness gate, pure + zero I/O. The full to-text cleaning
-// now lives in the rara-glean app (with its own tests); the core keeps only this predicate.
+// now lives in the rara-extract app (with its own tests); the core keeps only this predicate.
 // ---------------------------------------------------------------------------
 
 func TestPostHasContent(t *testing.T) {
@@ -151,7 +151,7 @@ func TestSubmitLinkedInPostRequiresSeededFlow(t *testing.T) {
 // Seed + reconcile.
 // ---------------------------------------------------------------------------
 
-// TestSeedLinkedInLane: the manual-inbox collector, the extrair-linkedin provider (accepts
+// TestSeedLinkedInLane: the stash collector, the scrub-cloud provider (accepts
 // linkedin), and the linkedin flow that swaps transcrever for extrair.
 func TestSeedLinkedInLane(t *testing.T) {
 	ctx := context.Background()
@@ -161,20 +161,20 @@ func TestSeedLinkedInLane(t *testing.T) {
 	}
 	inbox, ok := db.providers[provManualInbox]
 	if !ok || inbox.Capability != capColetar {
-		t.Fatalf("manual-inbox = %+v, want a coletar provider", inbox)
+		t.Fatalf("stash = %+v, want a coletar provider", inbox)
 	}
 	ex, ok := db.providers[provExtrairLinked]
 	if !ok {
 		t.Fatalf("provider %q not seeded", provExtrairLinked)
 	}
 	if ex.Capability != capExtrair {
-		t.Errorf("extrair-linkedin capability = %q, want extrair", ex.Capability)
+		t.Errorf("scrub-cloud capability = %q, want extrair", ex.Capability)
 	}
 	if ex.App != "extract" {
-		t.Errorf("extrair-linkedin App = %q, want %q", ex.App, "extract")
+		t.Errorf("scrub-cloud App = %q, want %q", ex.App, "extract")
 	}
 	if got := string(ex.Constraints); got != `{"accepts":["linkedin"]}` {
-		t.Errorf("extrair-linkedin constraints = %q, want accepts=[linkedin]", got)
+		t.Errorf("scrub-cloud constraints = %q, want accepts=[linkedin]", got)
 	}
 	f, ok := db.flows[linkedinFlowName]
 	if !ok || f.SourceType != laneLinkedIn {
@@ -295,7 +295,7 @@ func TestIngestLinkedInNormalizesURL(t *testing.T) {
 	}
 }
 
-// TestIngestLinkedInPaddedURLConvergesWithManualInbox: manual-inbox submits a clean URL;
+// TestIngestLinkedInPaddedURLConvergesWithStash: stash submits a clean URL;
 // rara-clip stores the same URL with padding. IngestLinkedIn must normalize and collapse
 // onto the single existing spine item — the cross-producer convergence invariant.
 func TestIngestLinkedInPaddedURLConvergesWithManualInbox(t *testing.T) {
@@ -312,7 +312,7 @@ func TestIngestLinkedInPaddedURLConvergesWithManualInbox(t *testing.T) {
 	store := newFakeLinkedInStore()
 	const clean = "https://linkedin.com/posts/convergence"
 
-	// Manual-inbox: clean URL → spine item.
+	// Stash: clean URL → spine item.
 	if _, err := SubmitLinkedInPost(ctx, db, store, LinkedInPost{
 		URL: clean, Author: "Alice", Text: "Convergence test.",
 	}); err != nil {
@@ -349,7 +349,7 @@ func TestIngestLinkedInSkipsDisabledLane(t *testing.T) {
 	}
 }
 
-// TestIngestLinkedInManualAndBrightDataConverge: a post submitted via the manual-inbox
+// TestIngestLinkedInManualAndBrightDataConverge: a post submitted via the stash
 // (SubmitLinkedInPost) and the same URL arriving via the Bright Data bulk source
 // (IngestLinkedIn) converge to exactly ONE spine item — DiscoverItem is idempotent.
 func TestIngestLinkedInManualAndBrightDataConverge(t *testing.T) {
@@ -431,9 +431,9 @@ func TestSeedLinkedInLanePreservesOperatorEnable(t *testing.T) {
 	}
 }
 
-// TestReconcileLinkedInRoutesToExtrairLinkedin: the linkedin flow routes the to-text step to
-// the extrair-linkedin provider (not the email extractor), and once it completes the item
-// reaches to_text; gate_rico for a PUBLIC post routes to the VPC-first gate (gate-rico-local),
+// TestReconcileLinkedInRoutesToScrubCloud: the linkedin flow routes the to-text step to
+// the scrub-cloud provider (not the email extractor), and once it completes the item
+// reaches to_text; gate_rico for a PUBLIC post routes to the VPC-first gate (assay-vpc),
 // because the per-capability routing policy pins local before cloud for all public traffic.
 func TestReconcileLinkedInRoutesToExtrairLinkedin(t *testing.T) {
 	ctx := context.Background()
@@ -457,7 +457,7 @@ func TestReconcileLinkedInRoutesToExtrairLinkedin(t *testing.T) {
 	}
 	s, ok := stepBySeq(db, itemID, 3)
 	if !ok || s.Capability != capExtrair || s.AssignedProvider != provExtrairLinked {
-		t.Fatalf("to-text step = %+v, want extrair+extrair-linkedin", s)
+		t.Fatalf("to-text step = %+v, want extrair+scrub-cloud", s)
 	}
 	completeStep(t, db, itemID, 3, "transcript-linkedin-1")
 	if err := r.ReconcileOnce(ctx); err != nil { // assign gate_rico
@@ -467,7 +467,7 @@ func TestReconcileLinkedInRoutesToExtrairLinkedin(t *testing.T) {
 		t.Errorf("item status = %q, want to_text after extrair", got)
 	}
 	if g, ok := stepBySeq(db, itemID, 4); !ok || g.AssignedProvider != provGateRicoLocal {
-		t.Errorf("gate_rico step = %+v, want pending+gate-rico-local (VPC-first, public item)", g)
+		t.Errorf("gate_rico step = %+v, want pending+assay-vpc (VPC-first, public item)", g)
 	}
 }
 

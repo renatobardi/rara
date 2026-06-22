@@ -93,7 +93,7 @@ func TestReconcileEmailRoutesSelfHost(t *testing.T) {
 }
 
 // TestReconcilePublicPrefersVPCFirst: a PUBLIC item (youtube) routes its LLM steps to the
-// VPC-resident providers first (gate-barato-local, gate-rico-local, distill-local). The
+// VPC-resident providers first (sift-vpc, assay-vpc, distill-vpc). The
 // per-capability routing_policies pin the local-before-cloud fallback order, overriding the
 // cost/quality score that would otherwise prefer the cloud variants.
 func TestReconcilePublicPrefersVPCFirst(t *testing.T) {

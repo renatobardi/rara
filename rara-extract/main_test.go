@@ -277,7 +277,7 @@ func TestIsValidProvider(t *testing.T) {
 			t.Errorf("%q should be a valid provider", ok)
 		}
 	}
-	for _, bad := range []string{"", "extrair", "transcrever", "gate-rico"} {
+	for _, bad := range []string{"", "extrair", "transcrever", "assay-cloud"} {
 		if isValidProvider(bad) {
 			t.Errorf("%q should not be a valid provider", bad)
 		}
