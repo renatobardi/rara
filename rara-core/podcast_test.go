@@ -153,8 +153,8 @@ func TestReconcilePodcastRoutesDirectAudio(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if s := db.itemSteps[itemStepKey{podID, 3}]; s.Status != stepPending || s.AssignedProvider != provASRDirectAudio {
-		t.Errorf("podcast transcrever = %+v, want pending+%s", s, provASRDirectAudio)
+	if s := db.itemSteps[itemStepKey{podID, 3}]; s.Status != stepPending || s.AssignedProvider != provEchoLocal {
+		t.Errorf("podcast transcrever = %+v, want pending+%s (VPC-first routing)", s, provEchoLocal)
 	}
 	if s := db.itemSteps[itemStepKey{ytID, 3}]; s.Status != stepPending || s.AssignedProvider != provASRYouTube {
 		t.Errorf("youtube transcrever = %+v, want pending+%s (unchanged)", s, provASRYouTube)

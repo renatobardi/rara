@@ -38,6 +38,9 @@ const (
 	provManualInbox      = "stash"       // coletar — manual post submission via surface (fallback)
 	provBrightDataLinked = "clip-cloud"  // coletar — Bright Data crawl via rara-clip
 	provExtrairLinked    = "scrub-cloud" // extrair — LinkedIn post normalizer (accepts linkedin)
+	// VPC variants — seeded disabled until RUNNER_LOCAL_URL is set.
+	provClipLocal  = "clip-vpc"
+	provScrubLocal = "scrub-vpc"
 )
 
 // LinkedInPost is one manually-submitted post: its canonical URL (the spine's natural key)
@@ -180,6 +183,7 @@ func SeedLinkedInLane(ctx context.Context, db Database) error {
 	if err := seedSharedProviders(ctx, db); err != nil {
 		return err
 	}
+	runnerURL, vpcEnabled := vpcRunner()
 	// coletar: TWO collectors write the same linkedin_posts table behind the same contract.
 	// Like every other lane's collector neither is actually routed (coletar is auto-satisfied
 	// by the reconciler — the item already exists once a post is collected); the rows are seeded
@@ -191,28 +195,35 @@ func SeedLinkedInLane(ctx context.Context, db Database) error {
 	//                         dispatcher every 6h (collect_cadence_seconds=21600, F5).
 	// The Bright Data swap changes only WHO fills linkedin_posts; the flow/extractor/gates never
 	// change (ARCHITECTURE-2.0: "swap collector behind the same contract, flow unchanged").
-	if err := db.UpsertProvider(ctx, Provider{
-		Name: provManualInbox, Capability: capColetar, Runtime: runtimeVPC, Activation: activationResident,
-		Worker: "stash", App: "stash", Description: "Submissão manual (LinkedIn)",
-		Constraints: []byte(`{"accepts":["linkedin"]}`), Enabled: true,
-	}); err != nil {
-		return err
-	}
-	if err := db.UpsertProvider(ctx, Provider{
-		Name: provBrightDataLinked, Capability: capColetar, Runtime: runtimeCloudRun, Activation: activationOnDemand,
-		Worker: "clip", App: "clip", Description: "Coletor de posts (LinkedIn)",
-		Constraints: []byte(`{"accepts":["linkedin"]}`), Enabled: true,
-		CollectCadenceSeconds: intPtr(21600), RetryIntervalSeconds: intPtr(1800),
-	}); err != nil {
-		return err
+	for _, p := range []Provider{
+		{Name: provManualInbox, Capability: capColetar, Runtime: runtimeVPC, Activation: activationResident,
+			Worker: "stash", App: "stash", Description: "Submissão manual (LinkedIn)",
+			Constraints: []byte(`{"accepts":["linkedin"]}`), Enabled: true},
+		{Name: provBrightDataLinked, Capability: capColetar, Runtime: runtimeCloudRun, Activation: activationOnDemand,
+			Worker: "clip", App: "clip", Description: "Coletor de posts (LinkedIn)",
+			Constraints: []byte(`{"accepts":["linkedin"]}`), Enabled: true,
+			CollectCadenceSeconds: intPtr(21600), RetryIntervalSeconds: intPtr(1800)},
+		{Name: provClipLocal, Capability: capColetar, Runtime: runtimeVPC, Activation: activationOnDemand,
+			Worker: "clip", App: "clip", Description: "Coletor de posts (LinkedIn)",
+			Constraints: []byte(`{"accepts":["linkedin"]}`), RunnerURL: runnerURL, Enabled: vpcEnabled,
+			CollectCadenceSeconds: intPtr(21600), RetryIntervalSeconds: intPtr(1800)},
+	} {
+		if err := db.UpsertProvider(ctx, p); err != nil {
+			return err
+		}
 	}
 	// extrair: deterministic post normalization — accepts only linkedin.
-	if err := db.UpsertProvider(ctx, Provider{
-		Name: provExtrairLinked, Capability: capExtrair, Runtime: runtimeCloudRun, Activation: activationOnDemand,
-		Worker: "scrub", App: "extract", Description: "Normalizador — post LinkedIn",
-		Constraints: []byte(`{"accepts":["linkedin"]}`), Enabled: true,
-	}); err != nil {
-		return err
+	for _, p := range []Provider{
+		{Name: provExtrairLinked, Capability: capExtrair, Runtime: runtimeCloudRun, Activation: activationOnDemand,
+			Worker: "scrub", App: "extract", Description: "Normalizador — post LinkedIn",
+			Constraints: []byte(`{"accepts":["linkedin"]}`), Enabled: true},
+		{Name: provScrubLocal, Capability: capExtrair, Runtime: runtimeVPC, Activation: activationOnDemand,
+			Worker: "scrub", App: "extract", Description: "Normalizador — post LinkedIn",
+			Constraints: []byte(`{"accepts":["linkedin"]}`), RunnerURL: runnerURL, Enabled: vpcEnabled},
+	} {
+		if err := db.UpsertProvider(ctx, p); err != nil {
+			return err
+		}
 	}
 	// Preserve the operator's enable across re-seeds; default to disabled on first seed.
 	// LinkedIn ships opt-in: lighting the lane is a deliberate operator action, not a default.

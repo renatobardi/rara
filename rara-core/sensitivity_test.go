@@ -65,12 +65,13 @@ func TestReconcileEmailRoutesSelfHost(t *testing.T) {
 	}
 	runGate(t, db, itemID, 2, gateBarato, decisionKeep)
 
-	// extrair: deterministic local cleaning (no third-party model) -> the email extractor.
+	// extrair: VPC-first routing picks winnow-vpc (no third-party sensitivity tag — eligible for
+	// private content; VPC-first fallback ordering puts it before winnow-cloud).
 	if err := r.ReconcileOnce(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if s := db.itemSteps[itemStepKey{itemID, 3}]; s.AssignedProvider != provExtrairEmail {
-		t.Errorf("extrair provider = %q, want %s", s.AssignedProvider, provExtrairEmail)
+	if s := db.itemSteps[itemStepKey{itemID, 3}]; s.AssignedProvider != provWinnowLocal {
+		t.Errorf("extrair provider = %q, want %s (VPC-first routing)", s.AssignedProvider, provWinnowLocal)
 	}
 	completeStep(t, db, itemID, 3, "transcript-email-1")
 

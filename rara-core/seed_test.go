@@ -145,10 +145,10 @@ func TestSeedIdempotent(t *testing.T) {
 	if got := db.flows[youtubeFlowName].ID; got != id1 {
 		t.Errorf("flow id changed on re-seed: %d -> %d", id1, got)
 	}
-	// 6 shared work providers (sift-cloud/vpc, assay-cloud/vpc, distill-cloud/vpc) + 3
-	// YouTube-specific (harvest-cloud, shelf-cloud, caption-mac).
-	if len(db.providers) != 9 {
-		t.Errorf("expected 9 providers after re-seed, got %d", len(db.providers))
+	// 6 shared LLM providers (sift-cloud/vpc, assay-cloud/vpc, distill-cloud/vpc) + 5
+	// YouTube-specific (harvest-cloud, harvest-vpc, shelf-cloud, shelf-vpc, caption-mac).
+	if len(db.providers) != 11 {
+		t.Errorf("expected 11 providers after re-seed, got %d", len(db.providers))
 	}
 	if len(db.flowSteps) != 5 {
 		t.Errorf("expected 5 flow steps after re-seed, got %d", len(db.flowSteps))
@@ -572,6 +572,39 @@ func TestSeedAllProvidersHaveApp(t *testing.T) {
 	}
 }
 
+// TestVPCRunnerURLValidation verifies that vpcRunner() only enables VPC mode for valid bare
+// http/https URLs, rejecting credentials-embedded URLs, non-http schemes, and query strings —
+// the dispatcher POSTs to runner_url with a Bearer token so malformed URLs must be rejected at
+// seed time, not stored silently.
+func TestVPCRunnerURLValidation(t *testing.T) {
+	cases := []struct {
+		env     string
+		wantURL string
+		enabled bool
+	}{
+		{"http://100.66.254.24:9000", "http://100.66.254.24:9000", true},
+		{"https://runner.tailnet:8080", "https://runner.tailnet:8080", true},
+		{"", "", false},                             // unset → disabled
+		{"ftp://runner:9000", "", false},            // wrong scheme
+		{"http://user:pass@runner:9000", "", false}, // embedded credentials
+		{"http://runner:9000?key=val", "", false},   // query string
+		{"http://runner:9000#frag", "", false},      // fragment
+		{"not-a-url", "", false},                    // not a URL
+	}
+	for _, tc := range cases {
+		t.Run(tc.env, func(t *testing.T) {
+			t.Setenv("RUNNER_LOCAL_URL", tc.env)
+			gotURL, gotEnabled := vpcRunner()
+			if gotEnabled != tc.enabled {
+				t.Errorf("env=%q: enabled=%v, want %v", tc.env, gotEnabled, tc.enabled)
+			}
+			if gotURL != tc.wantURL {
+				t.Errorf("env=%q: url=%q, want %q", tc.env, gotURL, tc.wantURL)
+			}
+		})
+	}
+}
+
 // TestSeedVPCLocalProvidersGetRunnerURLFromEnv guards against re-seed zeroing runner_url on
 // the three VPC on_demand providers. runner_url is the tailnet endpoint the dispatcher POSTs
 // to wake a worker; zeroing it causes "no transport path" dispatch failures.
@@ -630,6 +663,276 @@ func TestSeedProviderDescriptions(t *testing.T) {
 	for name, want := range wantDesc {
 		if p := db.providers[name]; p.Description != want {
 			t.Errorf("provider %q: Description = %q, want %q", name, p.Description, want)
+		}
+	}
+}
+
+// allSeedFns is every lane seeder, used by tests that need the full provider universe.
+var allSeedFns = []func(context.Context, Database) error{
+	SeedYouTubeLane, SeedPodcastLane, SeedEmailLane, SeedNewsLane, SeedLinkedInLane,
+}
+
+// assertVPCMirrorsCloud checks that a VPC provider is correctly seeded as a clone of its cloud
+// sibling: same Worker/App/Capability/Constraints/Description/cadence/retry, runtime=vpc,
+// activation=on_demand, Enabled=true, RunnerURL=wantURL.
+func assertVPCMirrorsCloud(t *testing.T, vpcName, cloudName string, vpc, cloud Provider, wantURL string) {
+	t.Helper()
+	if !vpc.Enabled {
+		t.Errorf("provider %q: Enabled=false with RUNNER_LOCAL_URL set", vpcName)
+	}
+	if vpc.Runtime != runtimeVPC {
+		t.Errorf("provider %q: Runtime=%q, want %q", vpcName, vpc.Runtime, runtimeVPC)
+	}
+	if vpc.Activation != activationOnDemand {
+		t.Errorf("provider %q: Activation=%q, want %q", vpcName, vpc.Activation, activationOnDemand)
+	}
+	if vpc.RunnerURL != wantURL {
+		t.Errorf("provider %q: RunnerURL=%q, want %q", vpcName, vpc.RunnerURL, wantURL)
+	}
+	if vpc.Worker != cloud.Worker {
+		t.Errorf("provider %q: Worker=%q, want %q (same as cloud sibling)", vpcName, vpc.Worker, cloud.Worker)
+	}
+	if vpc.App != cloud.App {
+		t.Errorf("provider %q: App=%q, want %q (same as cloud sibling)", vpcName, vpc.App, cloud.App)
+	}
+	if vpc.Capability != cloud.Capability {
+		t.Errorf("provider %q: Capability=%q, want %q (same as cloud sibling)", vpcName, vpc.Capability, cloud.Capability)
+	}
+	if string(vpc.Constraints) != string(cloud.Constraints) {
+		t.Errorf("provider %q: Constraints=%q, want %q (same as cloud sibling)", vpcName, vpc.Constraints, cloud.Constraints)
+	}
+	if vpc.Description != cloud.Description {
+		t.Errorf("provider %q: Description=%q, want %q (same as cloud sibling)", vpcName, vpc.Description, cloud.Description)
+	}
+	// Scheduling fields: collectors carry cadence/retry so the dispatcher can wake the VPC
+	// variant on the same schedule as the cloud one.
+	cadenceEqual := (vpc.CollectCadenceSeconds == nil) == (cloud.CollectCadenceSeconds == nil) &&
+		(vpc.CollectCadenceSeconds == nil || *vpc.CollectCadenceSeconds == *cloud.CollectCadenceSeconds)
+	if !cadenceEqual {
+		t.Errorf("provider %q: CollectCadenceSeconds mismatch with cloud sibling %q", vpcName, cloudName)
+	}
+	retryEqual := (vpc.RetryIntervalSeconds == nil) == (cloud.RetryIntervalSeconds == nil) &&
+		(vpc.RetryIntervalSeconds == nil || *vpc.RetryIntervalSeconds == *cloud.RetryIntervalSeconds)
+	if !retryEqual {
+		t.Errorf("provider %q: RetryIntervalSeconds mismatch with cloud sibling %q", vpcName, cloudName)
+	}
+}
+
+// TestSeedNewVPCProvidersWithRunnerURL verifies that all per-lane VPC provider variants are
+// seeded enabled=true, runtime=vpc, activation=on_demand, RunnerURL filled, and mirror their
+// cloud sibling's Worker/App/Capability/Constraints/Description/cadence/retry, when
+// RUNNER_LOCAL_URL is set (TestMain sets it globally for the test binary).
+func TestSeedNewVPCProvidersWithRunnerURL(t *testing.T) {
+	const wantURL = "http://test-runner:8080" // value from TestMain
+
+	ctx := context.Background()
+	db := newMockDatabase()
+	for _, fn := range allSeedFns {
+		if err := fn(ctx, db); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+	}
+
+	pairs := [][2]string{
+		{provHarvestLocal, provHarvest},
+		{provShelfLocal, provShelf},
+		{provDialLocal, provDial},
+		{provFeedLocal, provFeed},
+		{provCourierLocal, provCourier},
+		{provClipLocal, provBrightDataLinked},
+		{provEchoLocal, provASRDirectAudio},
+		{provWinnowLocal, provExtrairEmail},
+		{provGleanLocal, provExtrairNews},
+		{provScrubLocal, provExtrairLinked},
+	}
+
+	for _, p := range pairs {
+		vpcName, cloudName := p[0], p[1]
+		vpc, vpcOK := db.providers[vpcName]
+		cloud, cloudOK := db.providers[cloudName]
+		if !vpcOK {
+			t.Errorf("provider %q not seeded", vpcName)
+			continue
+		}
+		if !cloudOK {
+			t.Errorf("cloud sibling %q not seeded (precondition)", cloudName)
+			continue
+		}
+		assertVPCMirrorsCloud(t, vpcName, cloudName, vpc, cloud, wantURL)
+	}
+}
+
+// TestSeedNewVPCProvidersDisabledWithoutRunnerURL verifies that all per-lane VPC provider
+// variants are seeded enabled=false when RUNNER_LOCAL_URL is empty.
+func TestSeedNewVPCProvidersDisabledWithoutRunnerURL(t *testing.T) {
+	t.Setenv("RUNNER_LOCAL_URL", "") // override TestMain's value
+
+	ctx := context.Background()
+	db := newMockDatabase()
+	for _, fn := range allSeedFns {
+		if err := fn(ctx, db); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+	}
+
+	allVPC := []string{
+		provHarvestLocal, provShelfLocal, provDialLocal, provFeedLocal,
+		provCourierLocal, provClipLocal, provEchoLocal,
+		provWinnowLocal, provGleanLocal, provScrubLocal,
+		// existing LLM VPC providers must also stay disabled
+		provDistillLocal, provGateBaratoLocal, provGateRicoLocal,
+	}
+	for _, name := range allVPC {
+		p, ok := db.providers[name]
+		if !ok {
+			t.Errorf("provider %q not seeded", name)
+			continue
+		}
+		if p.Enabled {
+			t.Errorf("provider %q: Enabled=true without RUNNER_LOCAL_URL; must be disabled until OPS sets the env", name)
+		}
+	}
+}
+
+// TestVPCFirstRoutingPolicyNewWorkers verifies that each affected capability has a routing
+// policy with the VPC variant before its cloud sibling, and that the lane-isolation constraints
+// are preserved (the accepts filter keeps workers separated even when all are in one policy).
+func TestVPCFirstRoutingPolicyNewWorkers(t *testing.T) {
+	ctx := context.Background()
+	db := newMockDatabase()
+	for _, fn := range allSeedFns {
+		if err := fn(ctx, db); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+	}
+
+	type pair struct{ vpc, cloud string }
+	cases := []struct {
+		capability string
+		pairs      []pair
+	}{
+		{capColetar, []pair{
+			{provHarvestLocal, provHarvest},
+			{provShelfLocal, provShelf},
+			{provDialLocal, provDial},
+			{provFeedLocal, provFeed},
+			{provCourierLocal, provCourier},
+			{provClipLocal, provBrightDataLinked},
+		}},
+		{capTranscrever, []pair{
+			{provEchoLocal, provASRDirectAudio},
+		}},
+		{capExtrair, []pair{
+			{provWinnowLocal, provExtrairEmail},
+			{provGleanLocal, provExtrairNews},
+			{provScrubLocal, provExtrairLinked},
+		}},
+	}
+
+	for _, tc := range cases {
+		pol, ok, err := db.GetRoutingPolicy(ctx, tc.capability)
+		if err != nil || !ok {
+			t.Errorf("routing policy for %q: ok=%v err=%v", tc.capability, ok, err)
+			continue
+		}
+		var fallback []string
+		if err := json.Unmarshal(pol.Fallback, &fallback); err != nil || len(fallback) == 0 {
+			t.Errorf("%q fallback %q: want non-empty JSON array", tc.capability, pol.Fallback)
+			continue
+		}
+		pos := make(map[string]int, len(fallback))
+		for i, name := range fallback {
+			pos[name] = i
+		}
+		for _, p := range tc.pairs {
+			vpcIdx, vpcOK := pos[p.vpc]
+			cloudIdx, cloudOK := pos[p.cloud]
+			if !vpcOK {
+				t.Errorf("%q fallback: %q not found", tc.capability, p.vpc)
+				continue
+			}
+			if !cloudOK {
+				t.Errorf("%q fallback: %q not found", tc.capability, p.cloud)
+				continue
+			}
+			if vpcIdx >= cloudIdx {
+				t.Errorf("%q fallback: %q (pos %d) must come before %q (pos %d)", tc.capability, p.vpc, vpcIdx, p.cloud, cloudIdx)
+			}
+		}
+	}
+}
+
+// TestCaptionStashUnchangedByVPCSeed verifies that the residential caption-mac provider and
+// the vpc-resident stash provider are not given a VPC placement (they are already correct and
+// excluded from this migration wave).
+func TestCaptionStashUnchangedByVPCSeed(t *testing.T) {
+	ctx := context.Background()
+	db := newMockDatabase()
+	for _, fn := range allSeedFns {
+		if err := fn(ctx, db); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+	}
+
+	// caption-mac must stay runtime=local / activation=resident (residential constraint — no VPC).
+	caption := db.providers[provASRYouTube]
+	if caption.Runtime != runtimeLocal {
+		t.Errorf("caption-mac: Runtime=%q, want %q (must stay residential-local)", caption.Runtime, runtimeLocal)
+	}
+	if caption.Activation != activationResident {
+		t.Errorf("caption-mac: Activation=%q, want %q", caption.Activation, activationResident)
+	}
+	// No "caption-vpc" placement must exist.
+	if _, exists := db.providers["caption-vpc"]; exists {
+		t.Error("caption-vpc must NOT be seeded (residential constraint requires Mac IP)")
+	}
+
+	// stash must stay runtime=vpc / activation=resident (it is already VPC surface — no on_demand twin).
+	stash := db.providers[provManualInbox]
+	if stash.Runtime != runtimeVPC {
+		t.Errorf("stash: Runtime=%q, want %q", stash.Runtime, runtimeVPC)
+	}
+	if stash.Activation != activationResident {
+		t.Errorf("stash: Activation=%q, want %q", stash.Activation, activationResident)
+	}
+}
+
+// TestCollectorAcceptsConstraints verifies that every scheduled collector provider carries an
+// accepts constraint restricting it to its own lane. This prevents cross-lane assignment if
+// the item router ever evaluates coletar steps, and makes the capColetar routing policy safe
+// to group all collectors in a single fallback list.
+func TestCollectorAcceptsConstraints(t *testing.T) {
+	ctx := context.Background()
+	db := newMockDatabase()
+	for _, fn := range allSeedFns {
+		if err := fn(ctx, db); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+	}
+
+	// Each scheduled collector must declare exactly which lane it accepts.
+	wantAccepts := map[string]string{
+		provHarvest:          `{"accepts":["youtube"]}`,
+		provHarvestLocal:     `{"accepts":["youtube"]}`,
+		provShelf:            `{"accepts":["youtube"]}`,
+		provShelfLocal:       `{"accepts":["youtube"]}`,
+		provDial:             `{"accepts":["podcast"]}`,
+		provDialLocal:        `{"accepts":["podcast"]}`,
+		provFeed:             `{"accepts":["news"]}`,
+		provFeedLocal:        `{"accepts":["news"]}`,
+		provCourier:          `{"accepts":["email"]}`,
+		provCourierLocal:     `{"accepts":["email"]}`,
+		provBrightDataLinked: `{"accepts":["linkedin"]}`,
+		provClipLocal:        `{"accepts":["linkedin"]}`,
+	}
+	for name, wantConstraints := range wantAccepts {
+		p, ok := db.providers[name]
+		if !ok {
+			t.Errorf("collector %q not seeded", name)
+			continue
+		}
+		if got := string(p.Constraints); got != wantConstraints {
+			t.Errorf("collector %q: Constraints=%q, want %q", name, got, wantConstraints)
 		}
 	}
 }
