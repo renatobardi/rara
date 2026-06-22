@@ -182,25 +182,25 @@ RUNNER_ADDR=$(grep RUNNER_ADDR ~/.rara-runner/agent.env | cut -d= -f2); curl -s 
 tail -f ~/Library/Logs/rara-runner-agent/error.log
 ```
 
-#### RUNNER_ALLOWED_IMAGES — use the manifest-list digest
+#### RUNNER_ALLOWED_IMAGES — bare registry path, no digest
 
-Workers that run on the Mac need an `arm64` container. Pin the **manifest-list** digest (not a
-per-platform digest) so the same image entry works on both the VPC (arm64) and Cloud Run (amd64).
+The allowlist maps an app name to a **bare registry path** (no tag, no digest). The agent appends
+`:latest` at run time and pulls with `--pull=always` — the allowlist controls *which* images can
+run, not which version.
 
+```
+RUNNER_ALLOWED_IMAGES=rara-distill=us-central1-docker.pkg.dev/PROJECT/rara/rara-distill
+```
+
+Multiple workers:
+```
+RUNNER_ALLOWED_IMAGES=rara-distill=us-central1-docker.pkg.dev/PROJECT/rara/rara-distill,rara-gate=us-central1-docker.pkg.dev/PROJECT/rara/rara-gate
+```
+
+To confirm a worker image has an `arm64` layer before adding a Mac placement:
 ```bash
-# Get the manifest-list digest for the latest tagged image:
-gcloud artifacts docker images list REGISTRY/IMAGE --include-tags --filter='tags:*' \
-  --sort-by="~UPDATE_TIME" --format='value(version)' --limit=1
-
-# Validate multi-arch (should list both linux/amd64 and linux/arm64):
-docker manifest inspect REGISTRY/IMAGE@sha256:DIGEST | \
+docker manifest inspect us-central1-docker.pkg.dev/PROJECT/rara/IMAGE:latest | \
   python3 -c "import sys,json; [print(m['platform']) for m in json.load(sys.stdin).get('manifests', [])]"
-```
-
-Example `agent.env` entry:
-
-```
-RUNNER_ALLOWED_IMAGES=rara-distill=us-docker.pkg.dev/PROJECT/rara/rara-distill@sha256:DIGEST
 ```
 
 #### Update binary after a code change
