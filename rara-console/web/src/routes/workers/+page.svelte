@@ -398,7 +398,7 @@
 		// any placement carries the worker's constraints (per-worker invariant in the data model)
 		formLockedConstraints = w.placements.find((p) => p.constraints)?.constraints ?? null;
 		// inherit app from existing siblings so the new placement doesn't fall back to app=name
-		formLockedApp = w.placements[0]?.app ?? null;
+		formLockedApp = w.placements[0]?.app || null;
 		saveMsg = '';
 		// ensure worker row is expanded so the inline form is visible
 		const next = new Set(expandedWorkers);
@@ -602,6 +602,7 @@
 		<div class="mb-4">
 			<WorkerForm
 				initial={null}
+				lockedApp={null}
 				capabilities={knownCapabilities}
 				onSave={saveWorker}
 				onCancel={closeForm}
@@ -721,6 +722,7 @@
 														<td colspan="6" class="px-4 py-3 pl-10">
 															<WorkerForm
 																initial={formInitial}
+																lockedApp={null}
 																capabilities={knownCapabilities}
 																onSave={saveWorker}
 																onCancel={closeForm}

@@ -34,7 +34,7 @@
 		/** Constraints of the worker being extended (add-placement mode — restricts runtime options). */
 		lockedConstraints?: Constraints | null;
 		/** App binary inherited from sibling placements (add-placement mode — sent as-is, not shown). */
-		lockedApp?: string | null;
+		lockedApp: string | null;
 		onSave: (p: Provider) => Promise<void>;
 		onCancel: () => void;
 	};
@@ -159,11 +159,14 @@
 		submitting = true;
 		serverError = '';
 
+		// Inherit app: locked value (add-placement) takes precedence, then existing record (edit)
+		const appValue = lockedApp != null ? lockedApp : initial?.app;
+		const appField = appValue ? { app: appValue } : {};
+
 		const payload: Provider = {
 			worker: worker.trim(),
 			name: name.trim(),
-			// round-trip app: inherit from siblings (add-placement) or from existing record (edit)
-			...(lockedApp != null ? { app: lockedApp } : initial?.app ? { app: initial.app } : {}),
+			...appField,
 			capability: capability.trim(),
 			runtime,
 			activation,
