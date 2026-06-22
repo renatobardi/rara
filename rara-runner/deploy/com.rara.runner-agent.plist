@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Template — absolute paths must match the user's $HOME.
+     install-agent-mac.sh generates and installs the real plist.
+     To edit a live install: stop the agent, edit
+     ~/Library/LaunchAgents/com.rara.runner-agent.plist, reload. -->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.rara.runner-agent</string>
+
+    <!-- Wrapper script sources ~/.rara-runner/agent.env and execs rara-runner agent.
+         launchd does not expand shell variables in ProgramArguments, so the real
+         plist uses the expanded $HOME path written by install-agent-mac.sh. -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/YOUR_USER/.rara-runner/run-agent.sh</string>
+    </array>
+
+    <!-- Resident HTTP daemon: keep alive across crashes, start at login. -->
+    <key>KeepAlive</key>
+    <true/>
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/YOUR_USER/Library/Logs/rara-runner-agent/output.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/YOUR_USER/Library/Logs/rara-runner-agent/error.log</string>
+</dict>
+</plist>

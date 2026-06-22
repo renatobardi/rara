@@ -143,3 +143,107 @@ Then run the workflow: `gh workflow run deploy-runner.yml`.
 
 The workflow deploys dispatch and agent in one step — both services are enabled and started (or
 restarted if already running).
+
+### `agent` on Mac (launchd)
+
+The same `rara-runner agent` binary runs on a personal Mac as a resident `launchd` daemon. This is
+the runtime for `*-mac` placements (e.g. `caption-mac`, `distill-mac`). The Mac agent is installed
+manually — there is no deploy workflow for it.
+
+#### Prerequisites
+
+| Tool | Why | Install |
+|---|---|---|
+| Docker Desktop | Executes worker containers | <https://www.docker.com/products/docker-desktop/> or `brew install --cask docker` |
+| Tailscale | Agent binds on the tailnet only | <https://tailscale.com/download> |
+| Go (for building) | `install-agent-mac.sh` cross-compiles the binary | `brew install go` |
+
+#### First bring-up
+
+```bash
+# 1. Build and install (from the rara-runner/ directory).
+#    On first run the script creates ~/.rara-runner/agent.env and exits — fill in the vars, then run again.
+cd rara-runner && bash install-agent-mac.sh
+
+# 2. Fill in ~/.rara-runner/agent.env:
+#      RUNNER_ADDR             — Mac's Tailscale IP and port, e.g. 100.x.x.x:8473
+#      RUNNER_TOKEN            — shared Bearer token (must match RUNNER_TOKEN on dispatch)
+#      RUNNER_ALLOWED_IMAGES   — app=image@sha256:DIGEST pairs (multi-arch manifest digest, see below)
+#      RUNNER_WORKER_ENV_FILE  — path to KEY=VAL file with host-side secrets (DATABASE_URL, etc.)
+$EDITOR ~/.rara-runner/agent.env
+chmod 600 ~/.rara-runner/agent.env
+
+# 3. Run again — builds the binary and starts the launchd daemon.
+bash install-agent-mac.sh
+
+# 4. Validate.
+launchctl list | grep rara.runner          # PID must be present, exit code absent
+curl -s http://$(grep RUNNER_ADDR ~/.rara-runner/agent.env | cut -d= -f2)/healthz
+tail -f ~/Library/Logs/rara-runner-agent/error.log
+```
+
+#### RUNNER_ALLOWED_IMAGES — use the manifest-list digest
+
+Workers that run on the Mac need an `arm64` container. Pin the **manifest-list** digest (not a
+per-platform digest) so the same image entry works on both the VPC (arm64) and Cloud Run (amd64).
+
+```bash
+# Get the manifest-list digest for the latest tagged image:
+gcloud artifacts docker images list REGISTRY/IMAGE --include-tags --filter='tags:*' \
+  --sort-by="~UPDATE_TIME" --format='value(version)' --limit=1
+
+# Validate multi-arch (should list both linux/amd64 and linux/arm64):
+docker manifest inspect REGISTRY/IMAGE@sha256:DIGEST | \
+  python3 -c "import sys,json; [print(m['platform']) for m in json.load(sys.stdin)['manifests']]"
+```
+
+Example `agent.env` entry:
+
+```
+RUNNER_ALLOWED_IMAGES=rara-distill=us-docker.pkg.dev/PROJECT/rara/rara-distill@sha256:DIGEST
+```
+
+#### Update binary after a code change
+
+```bash
+cd rara-runner && make build && bash install-agent-mac.sh
+```
+
+The script reloads the launchd agent automatically (`launchctl unload` + `load`).
+
+---
+
+## Runbook: adding a placement via the console
+
+A **placement** is a `(worker, runtime, host)` row in `providers`. It tells the dispatcher where
+to run a worker and how to reach the runner agent for that host. Config lives in the console — the
+pipeline ships the artefact (image + agent allowlist); the console config enables the route.
+
+**Prerequisites (before clicking "Add placement" in the console):**
+
+| For `cloudrun` | For `vpc` | For `local` (Mac) |
+|---|---|---|
+| Cloud Run job exists for the app | `rara-runner agent` running on the VPC VM | `rara-runner agent` running on the Mac (see above) |
+| GCP job name configured in dispatch | Agent reachable from dispatch on the tailnet | Agent reachable from dispatch on the tailnet |
+| — | App listed in `RUNNER_ALLOWED_IMAGES` on that host | App listed in `RUNNER_ALLOWED_IMAGES` on that Mac |
+
+**Steps:**
+
+1. Open the console → Workers → click the target worker.
+2. Click **"Adicionar placement"** (Add placement).
+3. Fill in the form:
+   - `runtime`: `cloudrun`, `vpc`, or `local` (Mac)
+   - `runner_url`: URL of the agent on that host (`http://100.x.x.x:8473`). Not required for `cloudrun`.
+   - `enabled`: toggle on to activate immediately.
+   - `fallback` (order): lower number = tried first in the routing chain.
+   - `env` overrides: non-secret per-run config (e.g. `DISTILL_RECIPE=opus`). Secrets come from the host's `RUNNER_WORKER_ENV_FILE`, never from this field.
+4. Save. The dispatcher picks up the new provider on its next reconcile cycle (≤ 5 s).
+
+**Caption constraint (Mac-only workers):** `caption` workers are pinned to `local` runtime — the
+UI locks the runtime field to `local` and other runtimes are disabled. This reflects the hard
+constraint that YouTube audio downloads require a residential IP.
+
+**Failure visibility:** if the placement is enabled but the artefact is missing (image not in
+allowlist, job doesn't exist, agent unreachable), the dispatch attempt fails and writes to
+`providers.last_error`. The console shows `last_error` on the worker card — check it first when a
+placement isn't getting work.
