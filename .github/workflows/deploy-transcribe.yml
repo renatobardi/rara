@@ -114,9 +114,9 @@ jobs:
         run: |
           # Update first, create if absent (avoids a describe→create/update TOCTOU race).
           # DATABASE_URL is the shared contract DB; GROQ_API_KEY is transcribe-specific (ASR engine).
-          # SCRIBE_PROVIDER=asr-direct-audio matches the provider seed in the DB (unchanged until P2b-B).
+          # SCRIBE_PROVIDER is intentionally a placeholder — the dispatcher always overrides it per execution.
           SECRETS="DATABASE_URL=database-url:latest,GROQ_API_KEY=groq-api-key:latest"
-          ENV_VARS="SCRIBE_PROVIDER=asr-direct-audio,TRANSCRIBE_ENGINE=groq"
+          ENV_VARS="SCRIBE_PROVIDER=PLACEHOLDER_PROVIDER,TRANSCRIBE_ENGINE=groq"
           COMMON_ARGS="--image $IMAGE --region $REGION --project $GCP_PROJECT --set-secrets $SECRETS --set-env-vars $ENV_VARS --max-retries 0 --task-timeout 3600s --memory 512Mi --cpu 1"
 
           UPDATE_ERR=$(gcloud run jobs update "$JOB_NAME" $COMMON_ARGS 2>&1) && echo "$UPDATE_ERR" || {

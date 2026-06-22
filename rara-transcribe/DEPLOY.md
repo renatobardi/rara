@@ -44,7 +44,7 @@ gcloud run jobs delete rara-asr-direct-audio --region us-central1 --project "${P
 
 ## Switching to Gemini (future)
 
-If/when you migrate to Gemini, edit `~/.rara-scribe/.env`:
+If/when you migrate to Gemini, edit `~/.rara-transcribe/.env`:
 
 ```bash
 TRANSCRIBE_ENGINE=gemini
