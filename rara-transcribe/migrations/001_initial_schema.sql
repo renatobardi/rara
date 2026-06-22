@@ -16,7 +16,7 @@ CREATE TABLE IF NOT EXISTS transcripts (
     engine           VARCHAR(48)  NOT NULL,                 -- e.g. 'groq/whisper-large-v3'
     transcript       TEXT,                                  -- full text, native language
     duration_seconds INT          CHECK (duration_seconds IS NULL OR duration_seconds >= 0),
-    status           VARCHAR(16)  NOT NULL DEFAULT 'done' CHECK (status IN ('done', 'failed')),  -- 'done' | 'failed'
+    status           VARCHAR(16)  NOT NULL DEFAULT 'done' CHECK (status IN ('done', 'failed', 'empty')),  -- 'done' | 'failed' | 'empty'
     error            TEXT,                                  -- failure reason when status = 'failed'
     created_at       TIMESTAMPTZ  DEFAULT CURRENT_TIMESTAMP,
     updated_at       TIMESTAMPTZ  DEFAULT CURRENT_TIMESTAMP
@@ -63,5 +63,5 @@ COMMENT ON TABLE transcript_segments IS 'Timestamped segments per transcript (gl
 COMMENT ON COLUMN transcripts.source_type IS 'youtube | podcast';
 COMMENT ON COLUMN transcripts.youtube_video_id IS 'YouTube video id; global idempotency key, NULL for non-youtube sources';
 COMMENT ON COLUMN transcripts.engine IS 'ASR engine used, e.g. groq/whisper-large-v3 or gemini/gemini-2.5-flash';
-COMMENT ON COLUMN transcripts.status IS 'done | failed';
+COMMENT ON COLUMN transcripts.status IS 'done | failed | empty';
 COMMENT ON COLUMN transcript_segments.start_seconds IS 'Global start offset in seconds (reindexed across chunks)';
