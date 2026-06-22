@@ -1,7 +1,7 @@
 # rara-transcribe — Operations notes
 
-> The `caption` worker (asr-youtube) runs locally on the Mac via `launchd` — YouTube blocks
-> datacenter IPs. The `echo` worker (asr-direct-audio) runs as Cloud Run Job `rara-transcribe`.
+> The `caption` worker runs locally on the Mac via `launchd` — YouTube blocks
+> datacenter IPs. The `echo` worker runs as Cloud Run Job `rara-transcribe`.
 > **See [README.md](README.md) for installation and usage.**
 
 ---
@@ -37,7 +37,7 @@ WHERE updated_at > NOW() - INTERVAL '1 day';
 export PROJECT_ID=YOUR_PROJECT_ID  # replace with your GCP project ID
 
 # Delete the Cloud Run Job (old echo job, after P2b-transcribe-B cutover)
-gcloud run jobs delete rara-asr-direct-audio --region us-central1 --project "${PROJECT_ID}"
+gcloud run jobs delete rara-transcribe --region us-central1 --project "${PROJECT_ID}"
 
 # groq-api-key and database-url remain — used by the other agents
 ```

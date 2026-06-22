@@ -5,8 +5,8 @@ LinkedIn via **Bright Data** and catalogs each into its own domain table, `linke
 
 Like every rara agent it shares nothing but the Neon database and never calls another agent. The
 control plane (`rara-core`) reads `linkedin_posts` to build the items spine
-(`lane=linkedin`, `source_ref=url`, **`sensitivity=public`**), and the `extrair-linkedin` worker
-(`rara-glean`) reads `body` to clean it into a to-text artifact — both cross-agent SELECTs, never
+(`lane=linkedin`, `source_ref=url`, **`sensitivity=public`**), and the `scrub` worker
+(`rara-extract`) reads `body` to clean it into a to-text artifact — both cross-agent SELECTs, never
 writes. rara-clip writes **only** its domain table; it never touches the spine.
 
 ## Two producers, one contract table

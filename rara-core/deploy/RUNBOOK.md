@@ -15,7 +15,19 @@ One-time setup for the Oracle ARM VM (Ubuntu 22.04 aarch64). After this, every
 
 ## Step 1 — Install Tailscale on the VM
 
+> **⚠️ Security note:** inspect the install script before piping to `sh` in a
+> production environment. Alternatively use the package manager (reproducible,
+> no remote execution):
+> ```bash
+> curl -fsSL https://pkgs.tailscale.com/stable/ubuntu/jammy.noarmor.gpg \
+>   | sudo tee /usr/share/keyrings/tailscale-archive-keyring.gpg >/dev/null
+> curl -fsSL https://pkgs.tailscale.com/stable/ubuntu/jammy.tailscale-keyring.list \
+>   | sudo tee /etc/apt/sources.list.d/tailscale.list
+> sudo apt-get update && sudo apt-get install -y tailscale
+> ```
+
 ```bash
+# Quick path (same as Tailscale docs — inspect script first if in doubt):
 curl -fsSL https://tailscale.com/install.sh | sh
 sudo tailscale up --authkey=<tskey-auth-...>
 tailscale ip -4          # note this address — you need it for SURFACE_ADDR
@@ -118,10 +130,11 @@ TAILSCALE_IP=100.x.x.x
 # Liveness probe (no auth required)
 curl -s http://${TAILSCALE_IP}:8080/healthz
 
-# Authenticated check
-TOKEN=$(grep '^SURFACE_TOKEN=' /etc/rara-core/env | cut -d= -f2-)
-curl -s -H "Authorization: Bearer ${TOKEN}" \
-  http://${TAILSCALE_IP}:8080/capabilities | jq .
+# Authenticated check — source env in a subshell to avoid leaking token to
+# bash history. Never assign the token to a variable in an interactive session.
+(set -a; source /etc/rara-core/env; set +a
+ curl -s -H "Authorization: Bearer ${SURFACE_TOKEN}" \
+   http://${TAILSCALE_IP}:8080/capabilities | jq .)
 ```
 
 ---
@@ -141,10 +154,14 @@ curl -s -H "Authorization: Bearer ${TOKEN}" \
 
 ## Notes
 
+- **Never commit `/etc/rara-core/env`** — it contains `DATABASE_URL` and `SURFACE_TOKEN`.
+  `env.example` is the only safe file to version. After any manual credential operation
+  in an interactive shell, clear history: `history -c` or prepend the command with a
+  space (requires `HISTCONTROL=ignorespace`).
 - The surface is **Tailscale-only**. The Oracle public IP firewall should block port 8080.
   Add an ingress rule allowing 8080 from `100.64.0.0/10` (Tailscale CGNAT range) only, or
   rely on the OS firewall (`ufw allow in on tailscale0 to any port 8080`).
 - Cloud Run activation (`CLOUD_RUN_*`) and tailnet pokes (`POKE_AUTH_TOKEN`) are commented
   out in env.example — wire them in a follow-up phase (P2 activators).
-- rara-scribe (local Mac) and Cloud Run workers continue running unaffected. The reconciler
+- rara-transcribe (local Mac) and Cloud Run workers continue running unaffected. The reconciler
   only routes steps; it does not manage those processes.

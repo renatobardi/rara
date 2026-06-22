@@ -11,7 +11,7 @@ top-level Makefile — agents are isolated by design and build/test independentl
 
 The agents fall into two generations:
 
-- **1.0 workers** — `rara-harvest`, `rara-shelf`, `rara-scribe`, `rara-distill`, `rara-feed`,
+- **1.0 workers** — `rara-harvest`, `rara-shelf`, `rara-transcribe`, `rara-distill`, `rara-feed`,
   `rara-dial`, `rara-courier`. Each collects/transcribes/curates and is decoupled from the others
   **only through the database** — a worker reads another's table, never calls it.
 - **2.0 control plane** — `rara-core` (binary `core-job`) decides *what runs next, where, and
@@ -70,7 +70,7 @@ SDK-coupled workers is P2 — not done yet.)
 - **Config is environment-only** — required vars fail fast with `log.Fatalf`. See each agent's
   `.env.example`. Pluggable engines are chosen by env (`TRANSCRIBE_ENGINE`, `CURATE_ENGINE`,
   `DISTILL_SOURCE`, `SCRAPE_PROVIDER`, …) behind an interface seam, never an `if` on a provider name.
-- **One deliberate runtime split:** every agent is a Cloud Run Job *except* `rara-scribe`, which
+- **One deliberate runtime split:** every agent is a Cloud Run Job *except* `rara-transcribe`, which
   runs on a local Mac via `launchd` — YouTube blocks audio downloads from datacenter IPs, so it
   needs a residential IP. `core-job reconcile --loop` is meant to run always-on in the VPC.
 
@@ -82,12 +82,12 @@ In `.github/workflows/`, each agent gets its own trio, triggered only when its p
 - `database-<agent>.yml` — applies that agent's `migrations/` to Neon on merge to `main`; on a PR
   it validates inside `BEGIN; … ROLLBACK;` (never commits). Migrations apply regardless of where the
   agent's binary runs (even local scribe).
-- `deploy-<agent>.yml` — builds the image and deploys the Cloud Run Job (none for scribe). Cloud Run
+- `deploy-<agent>.yml` — builds the image and deploys the Cloud Run Job (none for transcribe). Cloud Run
   runs **amd64**; the SDK workers are migrating to a single multi-arch image (amd64 for Cloud Run +
-  arm64 for the VPC/Mac runner hosts) — `rara-sift` is the first (see `DOCKER-MULTIMODULE.md`).
+  arm64 for the VPC/Mac runner hosts) — `rara-gate` is the first (see `DOCKER-MULTIMODULE.md`).
 
 Auth to GCP is Workload Identity Federation (no SA key files); secrets live in GCP Secret Manager,
-except scribe which reads `~/.rara-scribe/.env`. When adding an agent, copy an existing agent's
+except transcribe which reads `~/.rara-transcribe/.env`. When adding an agent, copy an existing agent's
 Makefile + the three workflow files and adapt the path filters.
 
 ## Code review loop (CodeRabbit reports → Claude Code fixes)

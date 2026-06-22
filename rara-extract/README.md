@@ -7,16 +7,16 @@ an **email body**, a pasted **LinkedIn post**, a **news article** — so they ne
 and distill judge.
 
 `extrair` is that capability — a **peer of `transcrever`**, not a special case. Its output lands in
-the **same `transcripts` store** rara-scribe writes, keyed on `(source_ref, source_type)`, so
+the **same `transcripts` store** rara-transcribe writes, keyed on `(source_ref, source_type)`, so
 `gate_rico` and distill consume an extracted email exactly like a transcript.
 
 One app, **three workers** by lane (`GLEAN_PROVIDER`):
 
 | Worker | Provider (`GLEAN_PROVIDER`) | Lane | Description |
 |---|---|---|---|
-| **glean** | `extrair-news` | news | Normalizador — notícia |
-| **winnow** | `extrair-email` | email | Normalizador — e-mail |
-| **scrub** | `extrair-linkedin` | linkedin | Normalizador — post LinkedIn |
+| **glean** | `glean` | news | Normalizador — notícia |
+| **winnow** | `winnow` | email | Normalizador — e-mail |
+| **scrub** | `scrub` | linkedin | Normalizador — post LinkedIn |
 
 The handler dispatches by `item.Lane` — one codebase, three workers. Codebases ≪ providers.
 
@@ -47,7 +47,7 @@ The cleaning is **pure** (zero I/O), so the whole normalization policy is unit-t
 ## Run
 
 ```bash
-export GLEAN_PROVIDER=extrair-email    # or extrair-linkedin, extrair-news
+export GLEAN_PROVIDER=winnow    # or scrub, glean
 make test              # zero-I/O unit tests (pure cleaners + handler with a mock store)
 make build             # local binary (extract-job)
 export DATABASE_URL=...                # the shared Neon database (not needed for make test)
@@ -61,6 +61,6 @@ the long-running loop + symmetric activation via `WORK_POLL_INTERVAL` and/or `PO
 ## Schema
 
 `rara-extract` owns **no** table of its own. It **reads** the collectors' `emails` / `linkedin_posts`
-/ `news_items` and **writes** the to-text owner's (rara-scribe's) shared `transcripts` table — the
+/ `news_items` and **writes** the to-text owner's (rara-transcribe's) shared `transcripts` table — the
 universal to-text store, shared by design. All live in the one shared Neon database, so there is
 **no `migrations/`** here and no `database-extract.yml`.

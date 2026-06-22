@@ -13,7 +13,7 @@ Isso dá isolamento total: cada addon tem seu processo, seu deploy, sua versão 
 em qualquer linguagem.
 
 > Um mesmo **app** pode servir **vários providers** por configuração/deploy (ex.: o app `gate`
-> roda como `gate-barato` na nuvem e `gate-barato-local` no Mac). Codebases ≪ providers.
+> roda como `sift` na nuvem e `sift-local` no Mac). Codebases ≪ providers.
 
 ## Dois tipos de addon
 
@@ -35,7 +35,7 @@ Segue o **protocolo de claim**:
    ```
    > Importante: o claim é por **(capability, assigned_provider)** — não só por capability. Com
    > múltiplos providers por capability (que já temos: `*-local` vs terceiro), filtrar por
-   > `assigned_provider` é o que garante que um item **privado** atribuído ao `distill-local` não
+   > `assigned_provider` é o que garante que um item **privado** atribuído ao `distill-vpc` não
    > seja pego pelo worker de terceiro. *(Hoje o `ClaimPendingStep` filtra só por capability — isso
    > precisa virar `(capability, assigned_provider)` na extração do SDK.)*
 3. **Run** — lê o item / a linha de domínio (transcript, texto, metadata), faz o trabalho.
@@ -63,8 +63,8 @@ papel dela, não inconsistência de arquitetura.
 
 | Formato | Peças | Importa `rara-addon`? | Como roda | Ativação | Deploya em |
 |---|---|---|---|---|---|
-| **Claim-worker** | distill, sift, scribe, glean | **Sim** (`addon.Run`) | Claima `item_steps` por `(capability, provider)`; heartbeat; result | **Roteado por item** pelo reconciler: poke (residente) / Cloud Run `run` (on_demand) | **Os 3, de verdade** — mesmo binário; o host é config do provider row (`*-mac`/`*-vpc`/`*-cloud`) |
-| **Producer/coletor** | dial, feed, shelf, harvest, courier, clip | Não | Varre a fonte, faz upsert na tabela de domínio, sai; o core dá `ingest` na spine | **Cadência** (Cloud Scheduler / launchd / systemd timer) — não é acordado pelo reconciler | Os 3, mas a colocação é **forçada por restrição** (ex.: harvest/scribe-youtube = Mac por IP residencial), não roteada |
+| **Claim-worker** | distill, gate, transcribe, extract | **Sim** (`addon.Run`) | Claima `item_steps` por `(capability, provider)`; heartbeat; result | **Roteado por item** pelo reconciler: poke (residente) / Cloud Run `run` (on_demand) | **Os 3, de verdade** — mesmo binário; o host é config do provider row (`*-mac`/`*-vpc`/`*-cloud`) |
+| **Producer/coletor** | dial, feed, shelf, harvest, courier, clip | Não | Varre a fonte, faz upsert na tabela de domínio, sai; o core dá `ingest` na spine | **Cadência** (Cloud Scheduler / launchd / systemd timer) — não é acordado pelo reconciler | Os 3, mas a colocação é **forçada por restrição** (ex.: harvest/transcribe-youtube = Mac por IP residencial), não roteada |
 | **Timer** | hone | Não | Run-once-and-exit periódico (revisa o `interest_profile`) | systemd timer | VPC por natureza (perto do core, sempre disponível) |
 
 **Por que não dá pra unificar tudo em "claim-worker roteável":** um producer **cria** itens (descobre
@@ -85,7 +85,7 @@ Um módulo Go pequeno, extraído do atual `worker.go` + `ClaimPendingStep` + hea
 worker Go fica:
 
 ```go
-addon.Run(addon.Config{Capability: "destilar", Provider: "distill-local", DB: db},
+addon.Run(addon.Config{Capability: "destilar", Provider: "distill-vpc", DB: db},
     func(ctx, item, step) (addon.Result, error) {
         // só a lógica de domínio; claim/heartbeat/result/poke são do SDK
     })
@@ -97,7 +97,7 @@ HTTP). O `rara-core` não sabe nem se importa em que linguagem o addon está.
 ## Os apps (codebases independentes)
 
 **Convenção de nome:** o **app** ganha um nome evocativo de palavra única, no estilo dos 1.0
-(`harvest`/`scribe`/`distill`); o **provider** segue descritivo (`asr-youtube`, `distill-local`).
+(`harvest`/`transcribe`/`distill`); o **provider** também recebe nome evocativo (`caption`, `distill-vpc`).
 A cadeia lê como ofício: colher → peneirar → destilar, e afiar o gosto. Um app **serve vários
 providers** por config (codebases ≪ providers).
 
@@ -109,18 +109,18 @@ providers** por config (codebases ≪ providers).
 | `rara-feed` | coletar → feed (news) | coletor | Cloud Run |
 | `rara-dial` | coletar → podcast (RSS de áudio) | coletor | Cloud Run |
 | `rara-courier` | coletar → email (Gmail) | coletor | Cloud Run |
-| `rara-clip` | coletar → linkedin (manual-inbox + brightdata) | coletor | Cloud Run + superfície |
-| `rara-scribe` | transcrever → asr-youtube (Mac) + asr-direct-audio (Cloud Run) | worker | Mac + Cloud Run |
-| `rara-glean` | extrair → extrair-email + extrair-linkedin | worker | Cloud Run |
-| `rara-sift` | gate_barato + gate_rico → terceiro + `*-local` | worker | Cloud Run + Mac |
-| `rara-distill` | destilar → distill (terceiro) + distill-local | worker | Cloud Run + Mac |
+| `rara-clip` | coletar → linkedin (stash + brightdata) | coletor | Cloud Run + superfície |
+| `rara-transcribe` | transcrever → caption (Mac) + echo (Cloud Run) | worker | Mac + Cloud Run |
+| `rara-extract` | extrair → winnow (email) + scrub (linkedin) | worker | Cloud Run |
+| `rara-gate` | gate_barato + gate_rico → sift (terceiro) + `*-local` | worker | Cloud Run + Mac |
+| `rara-distill` | destilar → distill (terceiro) + distill-vpc | worker | Cloud Run + Mac |
 | `rara-hone` | revise → interest_profile (aprendizado) | timer (run-once) | VPC |
 
-Nomes novos: **dial** (podcast), **courier** (email), **clip** (linkedin), **glean** (extrair),
-**sift** (curadoria/gates), **hone** (revise). Os 1.0 (harvest/shelf/feed/scribe/distill) **adotam o
-contrato/SDK** em vez do cron+fila próprios; `scribe` e `distill` ganham um provider novo cada
-(asr-direct-audio e distill-local). Os runners nativos que estavam dentro do `rara-core` (gates →
-`sift`, revise → `hone`, e os coletores novos) saem pra esses apps.
+Nomes novos: **dial** (podcast), **courier** (email), **clip** (linkedin), **extract** (extrair),
+**gate** (curadoria/gates), **hone** (revise). Os 1.0 (harvest/shelf/feed/transcribe/distill) **adotam o
+contrato/SDK** em vez do cron+fila próprios; `transcribe` e `distill` ganham um provider novo cada
+(echo e distill-vpc). Os runners nativos que estavam dentro do `rara-core` (gates →
+`gate`, revise → `hone`, e os coletores novos) saem pra esses apps.
 
 > Os **nomes de capability** no banco (`coletar`/`transcrever`/`extrair`/`gate_barato`/`gate_rico`/
 > `destilar`) **não mudam** — são a tarefa lógica, já no schema/seed. Só o nome do **app** é
@@ -140,5 +140,5 @@ Nada de lógica de capability. O orquestrador nunca executa trabalho — só dec
 O P1 das fases de deploy deixa de ser "ajustes no core" e passa a ser **a reestruturação**:
 (1) extrair o SDK `rara-addon` (com o claim por `(capability, assigned_provider)` corrigido);
 (2) mover os runners nativos (gates, revise, asr-direct, extract, novos coletores) pra apps que usam
-o SDK; (3) adaptar os 1.0 (harvest/shelf/feed/scribe/distill) pro contrato; (4) os Activators reais
+o SDK; (3) adaptar os 1.0 (harvest/shelf/feed/transcribe/distill) pro contrato; (4) os Activators reais
 (Cloud Run `run` + poke). A lógica de domínio é preservada — só muda de casa.

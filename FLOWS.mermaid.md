@@ -145,7 +145,7 @@ flowchart LR
   Y2["YouTube playlists<br/>shelf · OAuth"] --> G1
   PC["Podcast<br/>coletor RSS"] --> G1
   EM["Email<br/>Gmail API · OAuth"] --> G1
-  LI["LinkedIn<br/>manual-inbox → Bright Data"] --> G1
+  LI["LinkedIn<br/>stash → Bright Data"] --> G1
   NW["News<br/>feed · RSS/HN/HTML"] --> G1
   subgraph TPL["Template comum"]
     direction LR
@@ -163,9 +163,9 @@ O router ordena por custo ou qualidade e respeita constraints duras.
 ```mermaid
 flowchart TD
   CAP["capability: transcrever"] --> ROUTER{"router<br/>custo ⇄ qualidade<br/>+ constraints + fallback"}
-  ROUTER -->|exige residencial| P1["asr-youtube<br/>Local Mac · grátis · alta q"]
-  ROUTER -->|qualquer runtime| P2["asr-direct-audio<br/>Cloud Run · $ · rápido"]
-  ROUTER -->|self-host| P3["asr-vpc<br/>VPC · $$ · isolado"]
+  ROUTER -->|exige residencial| P1["caption<br/>Local Mac · grátis · alta q"]
+  ROUTER -->|qualquer runtime| P2["echo<br/>Cloud Run · $ · rápido"]
+  ROUTER -->|self-host| P3["echo-vpc<br/>VPC · $$ · isolado"]
   P1 -.->|claim| N["Neon (item_steps)"]
   P2 -.->|claim| N
   P3 -.->|claim| N

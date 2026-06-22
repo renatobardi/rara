@@ -18,7 +18,7 @@ isolated tables. Two agents **collect** video references, one **transcribes** th
         writes channel_videos    writes playlist_videos    reads both,
                 │                        │            writes transcripts
    ┌────────────┴───────┐   ┌────────────┴───────┐   ┌────┴──────────────┐
-   │   rara-harvest     │   │    rara-shelf      │   │    rara-scribe    │
+   │   rara-harvest     │   │    rara-shelf      │   │  rara-transcribe  │
    │  Cloud Run Job     │   │   Cloud Run Job    │   │  local Mac/launchd│
    │  (datacenter IP)   │   │   (datacenter IP)  │   │ (residential IP)  │
    └────────┬───────────┘   └────────┬───────────┘   └────────┬──────────┘
@@ -34,15 +34,15 @@ isolated tables. Two agents **collect** video references, one **transcribes** th
 2. **rara-shelf** discovers the owner's own playlists via OAuth and upserts every video into
    `playlist_videos` (unique per `(playlist_id, youtube_video_id)` — the same video can live in
    multiple playlists).
-3. **rara-scribe** treats `channel_videos ∪ playlist_videos` as its work queue. For each video
+3. **rara-transcribe** treats `channel_videos ∪ playlist_videos` as its work queue. For each video
    without a `done` transcript, it downloads the audio, runs ASR, and writes a `transcripts`
    header row plus N `transcript_segments` (timestamped) in a single transaction.
 
-The collectors and the transcriber are decoupled by the database: scribe never calls harvest or
-shelf, it just reads their tables.
+The collectors and the transcriber are decoupled by the database: the transcribe worker never calls
+harvest or shelf, it just reads their tables.
 
 4. **rara-distill** is the fourth agent and follows exactly that pattern — it reads the
-   `transcripts` produced by scribe (plus the collector tables for titles) and curates each one,
+   `transcripts` produced by the transcribe worker (plus the collector tables for titles) and curates each one,
    via an LLM and a Fabric-style library of Markdown patterns, into a knowledge document written
    to its own `distillations` table. It captures structure in a single ("compile once") pass:
    `content` (human Markdown), `structured` (queryable concepts/insights/entities/claims) and a
@@ -50,7 +50,7 @@ shelf, it just reads their tables.
    SurrealDB-backed) consumes `distillations` later to build its own RAG (chunk + embed + vector
    index). distill never calls Kura — total isolation; the contract is just the table.
 
-Unlike scribe, distill downloads no audio (it only reads Neon and calls an LLM HTTP API), so a
+Unlike the transcribe worker, distill downloads no audio (it only reads Neon and calls an LLM HTTP API), so a
 datacenter IP is fine and it runs as a Cloud Run Job like the collectors.
 
 5. **rara-feed** is a second collector, but of **text news** rather than video. It reads its work
@@ -60,20 +60,20 @@ datacenter IP is fine and it runs as a Cloud Run Job like the collectors.
    exactly like transcripts — `url → source_key`, `COALESCE(body, excerpt) → transcript`,
    `source_type='news'` — and curates each with a fixed `summarize_news` + `software-ai` recipe.
    The two lanes are separate Cloud Run Jobs so news can never starve the transcript backlog. As
-   with scribe→distill, the coupling is just the table: distill never calls feed.
+   with transcribe→distill, the coupling is just the table: distill never calls feed.
 
-## Why scribe runs locally
+## Why the transcribe worker runs locally
 
 harvest and shelf hit the YouTube **Data API** (JSON, key/OAuth) — datacenter IPs are fine, so
-they run as serverless Cloud Run Jobs. scribe instead downloads **audio** with `yt-dlp`, and
-YouTube blocks audio downloads from GCP datacenter IPs with a bot-check ("Sign in to confirm
-you're not a bot"), regardless of cookies. A residential IP (the owner's Mac) is not blocked, so
-scribe runs locally via `launchd` on a daily schedule. This is the single deliberate runtime
-divergence in the system.
+they run as serverless Cloud Run Jobs. The transcribe worker instead downloads **audio** with
+`yt-dlp`, and YouTube blocks audio downloads from GCP datacenter IPs with a bot-check ("Sign in
+to confirm you're not a bot"), regardless of cookies. A residential IP (the owner's Mac) is not
+blocked, so the transcribe worker runs locally via `launchd` on a daily schedule. This is the
+single deliberate runtime divergence in the system.
 
 ## Per-agent design
 
-| | rara-harvest | rara-shelf | rara-scribe | rara-distill |
+| | rara-harvest | rara-shelf | rara-transcribe | rara-distill |
 |---|---|---|---|---|
 | **Purpose** | latest videos from external channels | catalog owner's playlists | transcribe collected videos | curate transcripts → RAG material |
 | **Auth** | API key (public) | OAuth refresh token (private) | whisper.cpp (local); Groq key (fallback) | LLM API key (Gemini/Claude/Groq) |
@@ -98,7 +98,7 @@ rara-feed is the upstream for distill's news lane (see step 5 of the data flow).
 - **Idempotency**: all writes are upserts (`ON CONFLICT`), so any agent is safe to re-run.
 - **Isolation**: tables, migrations, CI, and (for collectors) deploy workflows are per-agent.
   Even the `updated_at` trigger functions are namespaced (`set_updated_at` / `shelf_set_updated_at`
-  / `scribe_set_updated_at` / `distill_set_updated_at` / `feed_set_updated_at`) to avoid collisions
+  / `transcribe_set_updated_at` / `distill_set_updated_at` / `feed_set_updated_at`) to avoid collisions
   in the shared database.
 
 ## Database schema (high level)
@@ -125,9 +125,9 @@ rara-feed is the upstream for distill's news lane (see step 5 of the data flow).
 - **Go 1.26** — minimal, fast, single binary per agent.
 - **Neon PostgreSQL** — serverless Postgres, free tier, shared across agents.
 - **GCP Cloud Run Jobs** — harvest + shelf + distill runtime (amd64 images via Cloud Build).
-- **launchd** — scribe runtime on macOS (daily schedule, local logs).
-- **yt-dlp + ffmpeg** — audio acquisition and resampling for scribe.
-- **Groq `whisper-large-v3` / Gemini `gemini-2.5-flash`** — pluggable ASR engines (scribe).
+- **launchd** — transcribe worker runtime on macOS (daily schedule, local logs).
+- **yt-dlp + ffmpeg** — audio acquisition and resampling for the transcribe worker.
+- **Groq `whisper-large-v3` / Gemini `gemini-2.5-flash`** — pluggable ASR engines (transcribe).
 - **Gemini / Claude / Groq** — pluggable curation LLMs (distill), via each provider's
   native JSON mode.
 

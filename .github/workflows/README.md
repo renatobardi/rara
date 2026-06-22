@@ -9,14 +9,14 @@ to one agent never triggers another's pipeline.
 |----------|-------|-------------|---------|
 | `ci.yml` | rara-harvest | `rara-harvest/**` | Code quality, tests, security scan |
 | `ci-shelf.yml` | rara-shelf | `rara-shelf/**` | Code quality, tests, security scan |
-| `ci-scribe.yml` | rara-scribe | `rara-scribe/**` | Code quality, tests, security scan |
+| `ci-transcribe.yml` | rara-transcribe | `rara-transcribe/**` | Code quality, tests, security scan |
 | `ci-distill.yml` | rara-distill | `rara-distill/**` | Code quality, tests, security scan |
 | `ci-feed.yml` | rara-feed | `rara-feed/**` | Code quality, tests, security scan |
 | `ci-core.yml` | rara-core | `rara-core/**` | Code quality, tests, security scan |
-| `ci-glean.yml` | rara-glean | `rara-glean/**`, `rara-addon/**` | Code quality, tests, security scan |
+| `ci-extract.yml` | rara-extract | `rara-extract/**`, `rara-addon/**` | Code quality, tests, security scan |
 | `database.yml` | rara-harvest | `rara-harvest/migrations/**` | Validate + apply migrations |
 | `database-shelf.yml` | rara-shelf | `rara-shelf/migrations/**` | Validate + apply migrations |
-| `database-scribe.yml` | rara-scribe | `rara-scribe/migrations/**` | Validate + apply migrations |
+| `database-transcribe.yml` | rara-transcribe | `rara-transcribe/migrations/**` | Validate + apply migrations |
 | `database-distill.yml` | rara-distill | `rara-distill/migrations/**` | Validate + apply migrations |
 | `database-feed.yml` | rara-feed | `rara-feed/migrations/**` | Validate + apply migrations |
 | `database-core.yml` | rara-core | `rara-core/migrations/**` | Validate + apply migrations |
@@ -25,8 +25,8 @@ to one agent never triggers another's pipeline.
 | `deploy-distill.yml` | rara-distill | `rara-distill/**` | Build image + deploy Cloud Run Job |
 | `deploy-feed.yml` | rara-feed | `rara-feed/**` | Build image + deploy Cloud Run Job |
 
-> **rara-scribe has no deploy workflow.** It runs locally on a Mac via `launchd`, not on Cloud
-> Run. Updating it is `cd rara-scribe && make build && bash install-local.sh` — there is no image
+> **rara-transcribe has no deploy workflow for the caption worker.** The caption worker runs locally on a Mac via `launchd`, not on Cloud
+> Run. Updating it is `cd rara-transcribe && make build && bash install-local.sh` — there is no image
 > build or deploy step. Its CI and migration workflows still run in GitHub Actions.
 >
 > **rara-feed has a full pipeline** (CI + Database + Deploy), same as harvest, shelf, and distill.
@@ -35,7 +35,7 @@ to one agent never triggers another's pipeline.
 > and scaffold; the reconciler is not built. rara-core will run always-on in the VPC (not as a
 > Cloud Run Job), so its deploy workflow lands with the reconciler in a later phase.
 >
-> **rara-glean (and rara-sift) have CI only.** They are new bridge-total claim-workers that own no
+> **rara-extract (and rara-gate) have CI only.** They are new bridge-total claim-workers that own no
 > table of their own (they read/write the shared Neon schema), so there is no `database-*.yml`; the
 > Cloud Run deploy workflow lands in a later phase (no gate yet).
 
@@ -57,7 +57,7 @@ Manages schema changes for one agent's `migrations/`.
 - **On merge to `main`** — applies new migrations in order to Neon, then verifies.
 
 Migrations are idempotent (`IF NOT EXISTS` / `ON CONFLICT`), so re-runs are safe. Note that
-migrations apply to Neon regardless of where the agent runs — scribe's `database-scribe.yml`
+migrations apply to Neon regardless of where the agent runs — transcribe's `database-transcribe.yml`
 keeps its tables in sync even though the agent itself runs on a local Mac.
 
 ### Deploy (`deploy*.yml`)

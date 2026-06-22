@@ -300,7 +300,7 @@ rara-harvest/
 
 **rara-harvest** is the first agent in the **rara** ecosystem of autonomous data collection applications. Other production agents:
 - **rara-shelf** — catalogs the owner's own YouTube playlists (OAuth)
-- **rara-scribe** — transcribes collected videos with Groq/Gemini ASR (runs locally)
+- **rara-transcribe** — transcribes collected videos with Groq/Gemini ASR (runs locally)
 
 See the [root README](../README.md) for the full ecosystem overview.
 

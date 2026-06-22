@@ -155,8 +155,8 @@ Cada fase é um slice no fluxo Claude Code + TDD (harness fluente sobre `MockDat
 - **F6 — Aposentar o legado.**
   - ✅ **poke-only removido** — `activator.go` saiu no F4; `PokeURL` removido do struct/queries/env.example
     de `rara-core` (nenhum provider tinha `poke_url` preenchido; coluna nullable fica como tombstone no DB).
-  - 🔒 **launchd batch do Mac** (`asr-youtube` daily 02:00) — bloqueado até Mac agent up
-    (Docker/Colima + `rara-runner` no Mac). `asr-youtube` tem `runner_url=null`; poll é o único caminho.
+  - 🔒 **launchd batch do Mac** (`caption` daily 02:00) — bloqueado até Mac agent up
+    (Docker/Colima + `rara-runner` no Mac). `caption` tem `runner_url=null`; poll é o único caminho.
   - 🔒 **Cloud Schedulers ad-hoc** (7× harvest/shelf/dial/courier/clip/feed/hone via `jobs:run` direto)
     — bloqueado por F5 (coletores pelo dispatcher).
 

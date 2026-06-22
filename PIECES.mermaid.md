@@ -25,7 +25,7 @@ flowchart TB
     direction LR
     COL["coletar<br/><i>harvest · shelf · dial<br/>courier · clip · feed</i>"]
     G1{"gate_barato<br/>(sift)"}
-    TX["transcrever | extrair<br/><i>scribe · glean</i>"]
+    TX["transcrever | extrair<br/><i>transcribe · extract</i>"]
     G2{"gate_rico<br/>(sift)"}
     DS["destilar<br/><i>distill</i>"]
     OUT["✦ distillations"]
@@ -67,12 +67,12 @@ flowchart TB
     CONS["rara-console"]
   end
   subgraph MAC["Mac — launchd, residencial"]
-    SCY["scribe · asr-youtube<br/><i>daily 02:00</i>"]
+    SCY["transcribe · caption<br/><i>daily 02:00</i>"]
   end
   subgraph CR["GCP Cloud Run — on_demand + 7 Cloud Schedulers"]
     direction TB
     COLs["coletores: harvest · shelf · dial · courier · clip · feed"]
-    WRK["scribe·asr-direct · glean · sift (gate-barato/rico) · distill · distill-news · hone"]
+    WRK["transcribe·echo · extract · gate (gate_barato/rico) · distill · distill-news · hone"]
     LL["LiteLLM (Service) — groq · gemini · deepseek"]
   end
   NEON[("Neon — estado (control) + domínio<br/>único ponto de acoplamento")]
@@ -100,10 +100,10 @@ flowchart LR
     feed["feed → coletar · news · CloudRun"]
   end
   subgraph WORK["Workers (SDK rara-addon — claim-workers)"]
-    scribe["scribe → transcrever · asr-youtube (Mac) + asr-direct (CloudRun)"]
-    glean["glean → extrair · email/linkedin/news · CloudRun"]
-    sift["sift → gate_barato + gate_rico · 3rd (CloudRun) + *-local (Mac)"]
-    distill["distill → destilar · 3rd (CloudRun) + local (Mac)"]
+    transcribe["transcribe → transcrever · caption (Mac) + echo (CloudRun)"]
+    glean["extract → extrair · winnow/email + scrub/linkedin + glean/news · CloudRun"]
+    sift["gate → gate_barato + gate_rico · sift/3rd (CloudRun) + *-local (Mac)"]
+    distill["distill → destilar · distill/3rd (CloudRun) + distill-vpc (Mac)"]
   end
   subgraph PERIOD["Periódico"]
     hone["hone → revise · cron (CloudRun + Scheduler)"]

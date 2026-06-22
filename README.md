@@ -22,8 +22,8 @@ The agents fall into two generations:
 The two generations converge via the **bridge-total split**: workers are being rewritten from batch
 drivers into per-item **claim-workers** on the shared `rara-addon` SDK
 (`addon.Run(Config{Capability, Provider}, handler)` over a pgxpool) — the handler does only the
-domain work, the SDK owns the contract tables. `rara-scribe`, `rara-distill`, `rara-glean`,
-`rara-sift`, and `rara-clip` are already on the SDK; the rest are still batch drivers.
+domain work, the SDK owns the contract tables. `rara-transcribe`, `rara-distill`, `rara-extract`,
+`rara-gate`, and `rara-clip` are already on the SDK; the rest are still batch drivers.
 
 Read [ARCHITECTURE.md](./ARCHITECTURE.md) (1.0) and
 [ARCHITECTURE-2.0.pt-BR.md](./ARCHITECTURE-2.0.pt-BR.md) (2.0 control plane) for the full design.
@@ -74,16 +74,16 @@ All collectors run as **GCP Cloud Run Jobs** (daily) except where noted in their
 
 | Agent | Does | Reads → Writes | Engine seam | Tests |
 |-------|------|----------------|-------------|-------|
-| **rara-scribe** (`scribe-job`) | ASR — native-language transcripts (yt-dlp + ffmpeg + Whisper) | video/episode tables → `transcripts`, `transcript_segments` | `TRANSCRIBE_ENGINE` = local \| groq \| gemini | 43 |
-| **rara-glean** (`glean-job`) | Normalize text-lane inputs into the to-text store | `emails`, `linkedin_posts` → `transcripts` | `GLEAN_PROVIDER` = extrair-email \| extrair-linkedin | 20 |
-| **rara-sift** (`sift-job`) | Curation gate — keep/drop/defer via rules → profile → LLM-judge cascade | `interest_profile`, `gate_rules`, `items` → `gate_decisions` | `SIFT_GATE` = gate_barato \| gate_rico | 20 |
+| **rara-transcribe** (`transcribe-job`) | ASR — native-language transcripts (yt-dlp + ffmpeg + Whisper) | video/episode tables → `transcripts`, `transcript_segments` | `TRANSCRIBE_ENGINE` = local \| groq \| gemini | 43 |
+| **rara-extract** (`extract-job`) | Normalize text-lane inputs into the to-text store | `emails`, `linkedin_posts` → `transcripts` | `GLEAN_PROVIDER` = winnow \| scrub \| glean | 20 |
+| **rara-gate** (`gate-job`) | Curation gate — keep/drop/defer via rules → profile → LLM-judge cascade | `interest_profile`, `gate_rules`, `items` → `gate_decisions` | `SIFT_GATE` = gate_barato \| gate_rico | 20 |
 | **rara-distill** (`distill-job`) | Curate transcripts into RAG-ready knowledge docs (Fabric-style patterns) | `transcripts` → `distillations` | `CURATE_ENGINE` = gemini \| claude \| groq \| litellm | 43 |
 | **rara-hone** (`hone-job`) | Learning loop — turn feedback into a revised interest profile | `feedback`, `distillations` → `interest_profile` | LiteLLM narrator + deterministic engine | 19 |
 
-**Runtime split:** every agent is a Cloud Run Job *except* `rara-scribe` (and the resident
+**Runtime split:** every agent is a Cloud Run Job *except* `rara-transcribe` (and the resident
 claim-workers it neighbours), which can run on a **local Mac via `launchd`** — YouTube blocks audio
 downloads from datacenter IPs, so transcription needs a residential IP. `rara-core reconcile --loop`
-runs always-on in the VPC. SDK claim-workers (`scribe`, `glean`, `sift`, `distill`) run either
+runs always-on in the VPC. SDK claim-workers (`transcribe`, `extract`, `gate`, `distill`) run either
 `on_demand` (Cloud Run, activated by core) or **resident** (poll + poke), chosen by env.
 
 The **Kura** "second brain" (separate project) consumes `distillations` to build its own RAG — total
@@ -134,12 +134,12 @@ changes:
   binary runs (even local scribe).
 - `deploy-<agent>.yml` — builds the image and deploys the Cloud Run Job (Cloud Run runs **amd64**).
   Most SDK claim-workers share `_reusable-deploy-worker.yml` (single-arch via Cloud Build);
-  `rara-sift` is the first on a single **multi-arch** image (amd64 for Cloud Run + arm64 for the
+  `rara-gate` is the first on a single **multi-arch** image (amd64 for Cloud Run + arm64 for the
   VPC/Mac runner hosts) built with `docker buildx` — see `DOCKER-MULTIMODULE.md`.
-  `deploy-litellm.yml` ships the inference router. No deploy for scribe when it runs locally.
+  `deploy-litellm.yml` ships the inference router. No deploy for the transcribe worker when it runs locally.
 
 Auth to GCP is **Workload Identity Federation** (no SA key files); secrets live in **GCP Secret
-Manager** (except scribe, which reads `~/.rara-scribe/.env`). When adding an agent, copy an existing
+Manager** (except transcribe, which reads `~/.rara-transcribe/.env`). When adding an agent, copy an existing
 agent's Makefile + the three workflow files and adapt the path filters.
 
 ## Infrastructure
@@ -153,7 +153,7 @@ agent's Makefile + the three workflow files and adapt the path filters.
 | **Always-on control plane** | `rara-core` on an Oracle VPS via `systemd` (not Cloud Run) |
 | **Inference** | LiteLLM router (`deploy-litellm.yml`) fronts the curation/gate LLMs |
 | **Auth to GCP** | Workload Identity Federation — no SA key files |
-| **Secrets** | GCP Secret Manager; local `~/.rara-scribe/.env` for scribe |
+| **Secrets** | GCP Secret Manager; local `~/.rara-transcribe/.env` for transcribe |
 | **CI/CD** | GitHub Actions — path-filtered per agent, actions pinned by SHA |
 
 See [INFRASTRUCTURE.md](./INFRASTRUCTURE.md) for the full layout,
