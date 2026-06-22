@@ -40,10 +40,10 @@ func TestSeedPodcastLane(t *testing.T) {
 		t.Fatalf("provider %q not seeded", provASRDirectAudio)
 	}
 	if p.Capability != capTranscrever || p.Runtime != runtimeCloudRun || p.Activation != activationOnDemand {
-		t.Errorf("asr-direct-audio = {%s,%s,%s}, want {transcrever,cloudrun,on_demand}", p.Capability, p.Runtime, p.Activation)
+		t.Errorf("echo-cloud = {%s,%s,%s}, want {transcrever,cloudrun,on_demand}", p.Capability, p.Runtime, p.Activation)
 	}
 	if got := string(p.Constraints); got != `{"accepts":["podcast"]}` {
-		t.Errorf("asr-direct-audio constraints = %q, want accepts=[podcast] (no residential)", got)
+		t.Errorf("echo-cloud constraints = %q, want accepts=[podcast] (no residential)", got)
 	}
 
 	// The shared work providers are present (reused, not lane-specific).
@@ -115,8 +115,8 @@ func TestIngestPodcastRequiresSeededFlow(t *testing.T) {
 
 // TestReconcilePodcastRoutesDirectAudio is the slice (a) payoff: with BOTH lanes seeded,
 // transcrever has two providers, and the reconciler routes each item to the provider whose
-// `accepts` matches its lane — a podcast item to asr-direct-audio, never to the residential
-// asr-youtube. YouTube routing is unchanged (verified in the same test).
+// `accepts` matches its lane — a podcast item to echo-cloud, never to the residential
+// caption-mac. YouTube routing is unchanged (verified in the same test).
 func TestReconcilePodcastRoutesDirectAudio(t *testing.T) {
 	ctx := context.Background()
 	db := newMockDatabase()
@@ -127,7 +127,7 @@ func TestReconcilePodcastRoutesDirectAudio(t *testing.T) {
 	if err := SeedPodcastLane(ctx, db); err != nil {
 		t.Fatal(err)
 	}
-	// Both ASR providers known alive (resident asr-youtube; on_demand asr-direct-audio is
+	// Both ASR providers known alive (resident caption-mac; on_demand echo-cloud is
 	// health-exempt but a heartbeat is harmless).
 	markProviderAlive(t, db, provASRYouTube)
 	markProviderAlive(t, db, provASRDirectAudio)
@@ -154,9 +154,9 @@ func TestReconcilePodcastRoutesDirectAudio(t *testing.T) {
 	}
 
 	if s := db.itemSteps[itemStepKey{podID, 3}]; s.Status != stepPending || s.AssignedProvider != provASRDirectAudio {
-		t.Errorf("podcast transcrever = %+v, want pending+asr-direct-audio", s)
+		t.Errorf("podcast transcrever = %+v, want pending+%s", s, provASRDirectAudio)
 	}
 	if s := db.itemSteps[itemStepKey{ytID, 3}]; s.Status != stepPending || s.AssignedProvider != provASRYouTube {
-		t.Errorf("youtube transcrever = %+v, want pending+asr-youtube (unchanged)", s)
+		t.Errorf("youtube transcrever = %+v, want pending+%s (unchanged)", s, provASRYouTube)
 	}
 }

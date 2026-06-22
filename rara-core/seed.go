@@ -235,8 +235,8 @@ func seedOptInLaneFlow(ctx context.Context, db Database, name, sourceType string
 }
 
 // SeedYouTubeLane writes the YouTube lane: shared capabilities/providers/config plus the
-// YouTube-specific collectors (harvest, shelf) and the residential-constrained scribe
-// (asr-youtube), and the youtube flow. Idempotent: safe to call on every boot.
+// YouTube-specific collectors (harvest, shelf) and the residential-constrained transcriber
+// (caption-mac, app=transcribe), and the youtube flow. Idempotent: safe to call on every boot.
 //
 // The flow seeds DISABLED on first run and preserves the operator's enable on re-seed — a
 // later `core-job seed` must never silently turn the lane back off. Enable deliberately via
@@ -260,7 +260,7 @@ func SeedYouTubeLane(ctx context.Context, db Database) error {
 		// transcrever: scribe (local Whisper) resident on the Mac. YouTube blocks audio download
 		// from datacenter IPs — HARD residential constraint with NO datacenter fallback.
 		{Name: provASRYouTube, Capability: capTranscrever, Runtime: runtimeLocal, Activation: activationResident,
-			Worker: "caption", App: "asr-youtube", Description: "Transcritor — vídeo YouTube (Mac)",
+			Worker: "caption", App: "transcribe", Description: "Transcritor — vídeo YouTube (Mac)",
 			Constraints: []byte(`{"requires":"residential","accepts":["youtube"]}`), Enabled: true},
 	}
 	for _, p := range providers {
@@ -278,11 +278,11 @@ func SeedYouTubeLane(ctx context.Context, db Database) error {
 }
 
 // SeedPodcastLane writes the Podcast lane: shared capabilities/providers/config plus the
-// direct-audio ASR provider (asr-direct-audio) and the podcast flow. The lane template is
-// identical to YouTube's; only the to-text provider differs — asr-direct-audio runs on Cloud
-// Run with NO residential constraint (the enclosure is a direct CDN mp3, not a yt-dlp
-// download) and `accepts` pins it to podcast items. It reuses the gates, distill and the
-// transcripts table (source_type=podcast). Idempotent.
+// direct-audio transcriber (echo-cloud, app=transcribe) and the podcast flow. The lane template
+// is identical to YouTube's; only the to-text provider differs — echo-cloud runs on Cloud Run
+// with NO residential constraint (the enclosure is a direct CDN mp3, not a yt-dlp download)
+// and `accepts` pins it to podcast items. It reuses the gates, distill and the transcripts
+// table (source_type=podcast). Idempotent.
 func SeedPodcastLane(ctx context.Context, db Database) error {
 	if err := seedCapabilities(ctx, db); err != nil {
 		return err
@@ -301,7 +301,7 @@ func SeedPodcastLane(ctx context.Context, db Database) error {
 	// transcrever: direct-audio ASR on Cloud Run — no residential constraint, accepts only podcast.
 	if err := db.UpsertProvider(ctx, Provider{
 		Name: provASRDirectAudio, Capability: capTranscrever, Runtime: runtimeCloudRun, Activation: activationOnDemand,
-		Worker: "echo", App: "asr-direct-audio", Description: "Transcritor — áudio/podcast",
+		Worker: "echo", App: "transcribe", Description: "Transcritor — áudio/podcast",
 		Constraints: []byte(`{"accepts":["podcast"]}`), Enabled: true,
 	}); err != nil {
 		return err

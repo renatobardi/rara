@@ -122,7 +122,7 @@ func TestReviewQuarantineUpRescues(t *testing.T) {
 		t.Fatal(err)
 	}
 	if s, ok := stepBySeq(db, itemID, 3); !ok || s.Status != stepPending || s.AssignedProvider != provASRYouTube {
-		t.Errorf("after rescue, transcrever step = %+v, want pending+asr-youtube", s)
+		t.Errorf("after rescue, transcrever step = %+v, want pending+%s", s, provASRYouTube)
 	}
 }
 

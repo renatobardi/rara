@@ -560,8 +560,8 @@ func TestSeedAllProvidersHaveApp(t *testing.T) {
 		provGateBaratoLocal: "gate",
 		provGateRico:        "gate",
 		provGateRicoLocal:   "gate",
-		provASRYouTube:      "asr-youtube",
-		provASRDirectAudio:  "asr-direct-audio",
+		provASRYouTube:      "transcribe",
+		provASRDirectAudio:  "transcribe",
 		provExtrairEmail:    "extract",
 		provExtrairNews:     "extract",
 	}
