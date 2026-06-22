@@ -178,7 +178,7 @@ bash install-agent-mac.sh
 
 # 4. Validate.
 launchctl list | grep rara.runner          # PID must be present, exit code absent
-curl -s http://$(grep RUNNER_ADDR ~/.rara-runner/agent.env | cut -d= -f2)/healthz
+RUNNER_ADDR=$(grep RUNNER_ADDR ~/.rara-runner/agent.env | cut -d= -f2); curl -s "http://${RUNNER_ADDR}/healthz"
 tail -f ~/Library/Logs/rara-runner-agent/error.log
 ```
 
@@ -194,7 +194,7 @@ gcloud artifacts docker images list REGISTRY/IMAGE --include-tags --filter='tags
 
 # Validate multi-arch (should list both linux/amd64 and linux/arm64):
 docker manifest inspect REGISTRY/IMAGE@sha256:DIGEST | \
-  python3 -c "import sys,json; [print(m['platform']) for m in json.load(sys.stdin)['manifests']]"
+  python3 -c "import sys,json; [print(m['platform']) for m in json.load(sys.stdin).get('manifests', [])]"
 ```
 
 Example `agent.env` entry:

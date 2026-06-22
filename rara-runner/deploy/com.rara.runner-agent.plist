@@ -19,11 +19,18 @@
         <string>/Users/YOUR_USER/.rara-runner/run-agent.sh</string>
     </array>
 
-    <!-- Resident HTTP daemon: keep alive across crashes, start at login. -->
+    <!-- Resident HTTP daemon: keep alive across crashes, start at login.
+         ThrottleInterval caps restart frequency — without it launchd can spin
+         the agent in a tight loop if it crashes at startup. -->
     <key>KeepAlive</key>
     <true/>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
     <key>RunAtLoad</key>
     <true/>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/YOUR_USER/.rara-runner</string>
 
     <key>StandardOutPath</key>
     <string>/Users/YOUR_USER/Library/Logs/rara-runner-agent/output.log</string>

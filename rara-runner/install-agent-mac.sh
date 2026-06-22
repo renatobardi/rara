@@ -48,8 +48,9 @@ mkdir -p "$INSTALL_DIR" "$LOG_DIR"
 if [ ! -f "$INSTALL_DIR/agent.env" ]; then
     echo ""
     echo "==> Creating $INSTALL_DIR/agent.env from template..."
-    cp deploy/agent.env.example "$INSTALL_DIR/agent.env"
-    chmod 600 "$INSTALL_DIR/agent.env"
+    # install -m 600 creates the file with restrictive permissions atomically,
+    # avoiding the brief world-readable window that cp + chmod would leave.
+    install -m 600 deploy/agent.env.example "$INSTALL_DIR/agent.env"
     echo ""
     echo "!! REQUIRED STEP: edit the file before continuing:"
     echo "   \$EDITOR $INSTALL_DIR/agent.env"
@@ -87,7 +88,7 @@ source "$INSTALL_DIR/agent.env"
 set +a
 exec "$INSTALL_DIR/rara-runner" agent
 WRAPPER
-chmod +x "$INSTALL_DIR/run-agent.sh"
+chmod 500 "$INSTALL_DIR/run-agent.sh"
 
 # ---------------------------------------------------------------------------
 # 6. Generate and install the launchd plist
@@ -108,11 +109,17 @@ cat > "$PLIST_PATH" << PLIST
         <string>$INSTALL_DIR/run-agent.sh</string>
     </array>
 
-    <!-- Resident HTTP daemon: restart on crash, start at login. -->
+    <!-- Resident HTTP daemon: restart on crash, start at login.
+         ThrottleInterval caps restart frequency to prevent spin loops on startup crashes. -->
     <key>KeepAlive</key>
     <true/>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
     <key>RunAtLoad</key>
     <true/>
+
+    <key>WorkingDirectory</key>
+    <string>$INSTALL_DIR</string>
 
     <key>StandardOutPath</key>
     <string>$LOG_DIR/output.log</string>
