@@ -14,6 +14,7 @@
 	type Provider = {
 		name: string;
 		worker?: string;
+		app?: string;
 		capability: string;
 		runtime: string;
 		activation: string;
@@ -112,6 +113,7 @@
 	let formLockedWorker = $state<string | null>(null);
 	let formLockedCapability = $state<string | null>(null);
 	let formLockedConstraints = $state<Constraints | null>(null);
+	let formLockedApp = $state<string | null>(null);
 
 	// --- routing editor state ---
 	let selectedScope = $state<string>(GLOBAL_SCOPE);
@@ -352,7 +354,7 @@
 			// ponytail: explicit DTO — omit heartbeat_at (core preserves it from DB on upsert).
 			// description/env must stay: full-record upsert, omitting them would clear the DB columns.
 			const dto = {
-				worker: workerName, name: p.name, capability: p.capability, runtime: p.runtime,
+				worker: workerName, name: p.name, app: p.app, capability: p.capability, runtime: p.runtime,
 				activation: p.activation,
 				enabled: !p.enabled, constraints: p.constraints,
 				runner_url: p.runner_url, env: p.env, description: p.description
@@ -395,6 +397,8 @@
 		formLockedCapability = w.capability;
 		// any placement carries the worker's constraints (per-worker invariant in the data model)
 		formLockedConstraints = w.placements.find((p) => p.constraints)?.constraints ?? null;
+		// inherit app from existing siblings so the new placement doesn't fall back to app=name
+		formLockedApp = w.placements[0]?.app ?? null;
 		saveMsg = '';
 		// ensure worker row is expanded so the inline form is visible
 		const next = new Set(expandedWorkers);
@@ -417,6 +421,7 @@
 		formLockedWorker = null;
 		formLockedCapability = null;
 		formLockedConstraints = null;
+		formLockedApp = null;
 	}
 
 	async function saveWorker(payload: Provider) {
@@ -732,6 +737,7 @@
 												lockedWorker={w.name}
 												lockedCapability={w.capability}
 												lockedConstraints={formLockedConstraints}
+												lockedApp={formLockedApp}
 												capabilities={knownCapabilities}
 												onSave={saveWorker}
 												onCancel={closeForm}

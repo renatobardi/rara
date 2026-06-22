@@ -11,6 +11,7 @@
 	type Provider = {
 		name: string;
 		worker?: string;
+		app?: string;
 		capability: string;
 		runtime: string;
 		activation: string;
@@ -32,6 +33,8 @@
 		lockedCapability?: string;
 		/** Constraints of the worker being extended (add-placement mode — restricts runtime options). */
 		lockedConstraints?: Constraints | null;
+		/** App binary inherited from sibling placements (add-placement mode — sent as-is, not shown). */
+		lockedApp?: string | null;
 		onSave: (p: Provider) => Promise<void>;
 		onCancel: () => void;
 	};
@@ -42,6 +45,7 @@
 		lockedWorker,
 		lockedCapability,
 		lockedConstraints = null,
+		lockedApp = null,
 		onSave,
 		onCancel
 	}: Props = $props();
@@ -158,6 +162,8 @@
 		const payload: Provider = {
 			worker: worker.trim(),
 			name: name.trim(),
+			// round-trip app: inherit from siblings (add-placement) or from existing record (edit)
+			...(lockedApp != null ? { app: lockedApp } : initial?.app ? { app: initial.app } : {}),
 			capability: capability.trim(),
 			runtime,
 			activation,
