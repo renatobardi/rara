@@ -1,7 +1,7 @@
 .PHONY: help test test-verbose test-coverage test-race lint fmt clean build build-arm64 docker-build deps all
 
 help:
-	@echo "rara-glean - Makefile Commands"
+	@echo "rara-extract - Makefile Commands"
 	@echo ""
 	@echo "Testing:"
 	@echo "  make test              Run all tests"
@@ -58,23 +58,23 @@ fmt:
 # Build targets
 build:
 	@echo "Building for current OS..."
-	go build -ldflags="-w -s" -o glean-job .
-	@echo "Built: glean-job"
+	go build -ldflags="-w -s" -o extract-job .
+	@echo "Built: extract-job"
 
 build-arm64:
 	@echo "Building ARM64 binary..."
-	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags="-w -s" -o glean-job-arm64 .
-	@echo "Built: glean-job-arm64"
+	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags="-w -s" -o extract-job-arm64 .
+	@echo "Built: extract-job-arm64"
 
 docker-build:
 	@echo "Building Docker image..."
-	docker build -t rara-glean:latest .
-	@echo "Docker image built: rara-glean:latest"
+	docker build -t rara-extract:latest .
+	@echo "Docker image built: rara-extract:latest"
 
 # Maintenance
 clean:
 	@echo "Cleaning build artifacts..."
-	rm -f glean-job glean-job-arm64 coverage.out
+	rm -f extract-job extract-job-arm64 coverage.out
 	@echo "Clean complete"
 
 deps:

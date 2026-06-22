@@ -2,7 +2,7 @@
 # ROOT, not this dir, so the `replace rara-addon => ../rara-addon` in go.mod resolves inside the
 # container. ONE image, two arches: amd64 (Cloud Run) + arm64 (VPC Oracle Ampere + Mac).
 # Build with buildx from the root:
-#   docker buildx build --platform linux/amd64,linux/arm64 -f rara-glean/Dockerfile .
+#   docker buildx build --platform linux/amd64,linux/arm64 -f rara-extract/Dockerfile .
 #
 # `--platform=$BUILDPLATFORM` pins the builder stage to the native runner arch and Go cross-compiles
 # via GOARCH=$TARGETARCH — no QEMU for the (slow) compile; only the tiny final alpine stage runs
@@ -18,16 +18,16 @@ RUN apk add --no-cache git
 
 # 1) the sibling SDK first (the `replace` target), 2) this module's go.mod/go.sum.
 COPY rara-addon/ ./rara-addon/
-COPY rara-glean/go.mod rara-glean/go.sum ./rara-glean/
+COPY rara-extract/go.mod rara-extract/go.sum ./rara-extract/
 
-WORKDIR /build/rara-glean
+WORKDIR /build/rara-extract
 RUN go mod download
 
-# Go sources only — rara-glean has no go:embed assets.
-COPY rara-glean/*.go ./
+# Go sources only — rara-extract has no go:embed assets.
+COPY rara-extract/*.go ./
 
 # Static, cross-compiled binary for the target arch (set by buildx per --platform entry).
-RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -ldflags="-w -s" -o /glean-job .
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -ldflags="-w -s" -o /extract-job .
 
 FROM alpine:3.21@sha256:48b0309ca019d89d40f670aa1bc06e426dc0931948452e8491e3d65087abc07d
 
@@ -35,8 +35,8 @@ RUN apk add --no-cache ca-certificates
 
 WORKDIR /app
 
-COPY --from=builder /glean-job /app/glean-job
+COPY --from=builder /extract-job /app/extract-job
 
 USER nobody
 
-ENTRYPOINT ["/app/glean-job"]
+ENTRYPOINT ["/app/extract-job"]
