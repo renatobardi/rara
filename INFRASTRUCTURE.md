@@ -80,6 +80,36 @@ Subcommands in production:
 `runner_url` set → POST with Bearer to the agent on Tailnet. `agent` does `docker run --pull=always`
 with an allowlist check on the image path; fail-closed (Bearer + allowlist).
 
+#### IAM requirement: `run.jobs.runWithOverrides` (issue [#200](https://github.com/renatobardi/rara/issues/200))
+
+Consolidated jobs (`rara-gate`, `rara-extract`, `rara-transcribe`) serve multiple workers from one
+Cloud Run Job by injecting the provider name as an env override per execution
+(`SIFT_GATE`, `GLEAN_PROVIDER`, `SCRIBE_PROVIDER`, …). The default job env is `PLACEHOLDER_PROVIDER`
+— the override is the only way the job knows which worker it is.
+
+The dispatcher calls `gcloud run jobs execute --update-env-vars …`, which translates to the
+`run.jobs.runWithOverrides` permission. `run.jobs.run` alone is not enough: without the override
+permission, Cloud Run silently ignores the env vars and the job starts with `PLACEHOLDER_PROVIDER`,
+the worker never claims an item, and those items stay stuck (visible as stalled `last_error` on
+placements `sift-cloud`, `assay-cloud`, `glean-cloud`, `winnow-cloud`, `scrub-cloud`, `echo-cloud`).
+
+**Required IAM on the dispatcher SA** (the GCP credential used by `rara-runner dispatch` on the VPC):
+
+```bash
+# Minimum-privilege option: custom role with run.jobs.run + run.jobs.runWithOverrides + run.jobs.get
+# Convenience option (includes all three):
+gcloud projects add-iam-policy-binding <PROJECT_ID> \
+  --member="serviceAccount:<DISPATCHER_SA>@<PROJECT_ID>.iam.gserviceaccount.com" \
+  --role="roles/run.developer"
+```
+
+Verify the override reaches the job:
+
+```bash
+# On the VPC — grep for PERMISSION_DENIED in the dispatch log
+journalctl -u rara-runner-dispatch -n 200 | grep -iE 'permission|override|PERMISSION_DENIED|run\.jobs'
+```
+
 ### Network
 
 - **Public IP**: SSH only (port 22). Port 8080 blocked at the Oracle firewall.
