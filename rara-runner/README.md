@@ -189,7 +189,10 @@ The allowlist maps an app name to a **bare registry path** (no tag, no digest). 
 run, not which version.
 
 **The key must equal `providers.app`** (bare name — e.g. `distill`, not `rara-distill`). The
-dispatcher sends `req.App = providers.app`, so a key mismatch → `"app not in allowlist"` → wake fails.
+dispatcher sends `req.App = providers.app`, so a key mismatch → the agent's `POST /run` handler
+returns HTTP 403 `"app not in allowlist"` — the failure is permanent per wake (no retry). The
+dispatcher records the 403 body in `providers.last_error`. To diagnose: check `providers.last_error`
+in Neon, or the agent's own log (`journalctl -u rara-runner-agent` on VPC / `log show` on Mac).
 
 ```
 RUNNER_ALLOWED_IMAGES=distill=us-central1-docker.pkg.dev/PROJECT/rara/rara-distill
