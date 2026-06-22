@@ -56,6 +56,16 @@ const (
 	provDistillLocal    = "distill-vpc"
 	provGateBaratoLocal = "sift-vpc"
 	provGateRicoLocal   = "assay-vpc"
+	// VPC variants of per-lane workers (coletores, transcrever, extrair) — seeded disabled
+	// until RUNNER_LOCAL_URL is set (same gate as the LLM steps above).
+	provHarvestLocal  = "harvest-vpc"
+	provShelfLocal    = "shelf-vpc"
+	provDialLocal     = "dial-vpc"
+	provFeedLocal     = "feed-vpc"
+	provCourierLocal  = "courier-vpc"
+	provEchoLocal     = "echo-vpc"
+	provWinnowLocal   = "winnow-vpc"
+	provGleanLocal    = "glean-vpc"
 )
 
 // seedCapabilities upserts the fixed logical-task catalog. Also seeded by migration 001
@@ -169,9 +179,25 @@ func seedSharedConfig(ctx context.Context, db Database) error {
 		scope    string
 		fallback json.RawMessage
 	}{
+		// Shared LLM steps (already established).
 		{capGateBarato, fallbackJSON(provGateBaratoLocal, provGateBarato)},
 		{capGateRico, fallbackJSON(provGateRicoLocal, provGateRico)},
 		{capDestilar, fallbackJSON(provDistillLocal, provDistill)},
+		// Per-lane workers — VPC before cloud, lane isolation preserved by accepts constraints.
+		{capColetar, fallbackJSON(
+			provHarvestLocal, provHarvest,
+			provShelfLocal, provShelf,
+			provDialLocal, provDial,
+			provFeedLocal, provFeed,
+			provCourierLocal, provCourier,
+			provClipLocal, provBrightDataLinked,
+		)},
+		{capTranscrever, fallbackJSON(provEchoLocal, provASRDirectAudio, provASRYouTube)},
+		{capExtrair, fallbackJSON(
+			provWinnowLocal, provExtrairEmail,
+			provGleanLocal, provExtrairNews,
+			provScrubLocal, provExtrairLinked,
+		)},
 	}
 	for _, p := range vpcFirst {
 		if err := db.UpsertRoutingPolicy(ctx, RoutingPolicy{Scope: p.scope, Fallback: p.fallback}); err != nil {
@@ -248,15 +274,23 @@ func SeedYouTubeLane(ctx context.Context, db Database) error {
 	if err := seedSharedProviders(ctx, db); err != nil {
 		return err
 	}
+	runnerURL := os.Getenv("RUNNER_LOCAL_URL")
+	vpcEnabled := runnerURL != ""
 	// YouTube-specific providers.
 	providers := []Provider{
 		// coletar: YouTube Data API (key) and OAuth playlists — cheap, fast metadata reads.
 		{Name: provHarvest, Capability: capColetar, Runtime: runtimeCloudRun, Activation: activationOnDemand,
 			Enabled: true, Worker: "harvest", App: "harvest", Description: "Coletor de canais (YouTube)",
 			CollectCadenceSeconds: intPtr(86400), RetryIntervalSeconds: intPtr(1800)},
+		{Name: provHarvestLocal, Capability: capColetar, Runtime: runtimeVPC, Activation: activationOnDemand,
+			Enabled: vpcEnabled, Worker: "harvest", App: "harvest", Description: "Coletor de canais (YouTube)",
+			RunnerURL: runnerURL, CollectCadenceSeconds: intPtr(86400), RetryIntervalSeconds: intPtr(1800)},
 		{Name: provShelf, Capability: capColetar, Runtime: runtimeCloudRun, Activation: activationOnDemand,
 			Enabled: true, Worker: "shelf", App: "shelf", Description: "Coletor de playlists (YouTube)",
 			CollectCadenceSeconds: intPtr(86400), RetryIntervalSeconds: intPtr(1800)},
+		{Name: provShelfLocal, Capability: capColetar, Runtime: runtimeVPC, Activation: activationOnDemand,
+			Enabled: vpcEnabled, Worker: "shelf", App: "shelf", Description: "Coletor de playlists (YouTube)",
+			RunnerURL: runnerURL, CollectCadenceSeconds: intPtr(86400), RetryIntervalSeconds: intPtr(1800)},
 		// transcrever: scribe (local Whisper) resident on the Mac. YouTube blocks audio download
 		// from datacenter IPs — HARD residential constraint with NO datacenter fallback.
 		{Name: provASRYouTube, Capability: capTranscrever, Runtime: runtimeLocal, Activation: activationResident,
@@ -290,21 +324,33 @@ func SeedPodcastLane(ctx context.Context, db Database) error {
 	if err := seedSharedProviders(ctx, db); err != nil {
 		return err
 	}
+	runnerURL := os.Getenv("RUNNER_LOCAL_URL")
+	vpcEnabled := runnerURL != ""
 	// coletar: rara-dial — woken on cadence; reads enabled podcast_feeds from the DB (F5).
-	if err := db.UpsertProvider(ctx, Provider{
-		Name: provDial, Capability: capColetar, Runtime: runtimeCloudRun, Activation: activationOnDemand,
-		Enabled: true, Worker: "dial", App: "dial", Description: "Coletor de podcasts (RSS)",
-		CollectCadenceSeconds: intPtr(86400), RetryIntervalSeconds: intPtr(1800),
-	}); err != nil {
-		return err
+	for _, p := range []Provider{
+		{Name: provDial, Capability: capColetar, Runtime: runtimeCloudRun, Activation: activationOnDemand,
+			Enabled: true, Worker: "dial", App: "dial", Description: "Coletor de podcasts (RSS)",
+			CollectCadenceSeconds: intPtr(86400), RetryIntervalSeconds: intPtr(1800)},
+		{Name: provDialLocal, Capability: capColetar, Runtime: runtimeVPC, Activation: activationOnDemand,
+			Enabled: vpcEnabled, Worker: "dial", App: "dial", Description: "Coletor de podcasts (RSS)",
+			RunnerURL: runnerURL, CollectCadenceSeconds: intPtr(86400), RetryIntervalSeconds: intPtr(1800)},
+	} {
+		if err := db.UpsertProvider(ctx, p); err != nil {
+			return err
+		}
 	}
-	// transcrever: direct-audio ASR on Cloud Run — no residential constraint, accepts only podcast.
-	if err := db.UpsertProvider(ctx, Provider{
-		Name: provASRDirectAudio, Capability: capTranscrever, Runtime: runtimeCloudRun, Activation: activationOnDemand,
-		Worker: "echo", App: "transcribe", Description: "Transcritor — áudio/podcast",
-		Constraints: []byte(`{"accepts":["podcast"]}`), Enabled: true,
-	}); err != nil {
-		return err
+	// transcrever: direct-audio ASR — no residential constraint, accepts only podcast.
+	for _, p := range []Provider{
+		{Name: provASRDirectAudio, Capability: capTranscrever, Runtime: runtimeCloudRun, Activation: activationOnDemand,
+			Worker: "echo", App: "transcribe", Description: "Transcritor — áudio/podcast",
+			Constraints: []byte(`{"accepts":["podcast"]}`), Enabled: true},
+		{Name: provEchoLocal, Capability: capTranscrever, Runtime: runtimeVPC, Activation: activationOnDemand,
+			Worker: "echo", App: "transcribe", Description: "Transcritor — áudio/podcast",
+			Constraints: []byte(`{"accepts":["podcast"]}`), RunnerURL: runnerURL, Enabled: vpcEnabled},
+	} {
+		if err := db.UpsertProvider(ctx, p); err != nil {
+			return err
+		}
 	}
 	if err := seedLaneFlow(ctx, db, podcastFlowName, lanePodcast,
 		[]string{capColetar, capGateBarato, capTranscrever, capGateRico, capDestilar}); err != nil {
@@ -327,21 +373,33 @@ func SeedEmailLane(ctx context.Context, db Database) error {
 	if err := seedSharedProviders(ctx, db); err != nil {
 		return err
 	}
+	runnerURL := os.Getenv("RUNNER_LOCAL_URL")
+	vpcEnabled := runnerURL != ""
 	// coletar: rara-courier — woken on cadence; Gmail OAuth credentials from Secret Manager.
-	if err := db.UpsertProvider(ctx, Provider{
-		Name: provCourier, Capability: capColetar, Runtime: runtimeCloudRun, Activation: activationOnDemand,
-		Enabled: true, Worker: "courier", App: "courier", Description: "Coletor de e-mail (Gmail)",
-		CollectCadenceSeconds: intPtr(21600), RetryIntervalSeconds: intPtr(1800),
-	}); err != nil {
-		return err
+	for _, p := range []Provider{
+		{Name: provCourier, Capability: capColetar, Runtime: runtimeCloudRun, Activation: activationOnDemand,
+			Enabled: true, Worker: "courier", App: "courier", Description: "Coletor de e-mail (Gmail)",
+			CollectCadenceSeconds: intPtr(21600), RetryIntervalSeconds: intPtr(1800)},
+		{Name: provCourierLocal, Capability: capColetar, Runtime: runtimeVPC, Activation: activationOnDemand,
+			Enabled: vpcEnabled, Worker: "courier", App: "courier", Description: "Coletor de e-mail (Gmail)",
+			RunnerURL: runnerURL, CollectCadenceSeconds: intPtr(21600), RetryIntervalSeconds: intPtr(1800)},
+	} {
+		if err := db.UpsertProvider(ctx, p); err != nil {
+			return err
+		}
 	}
 	// extrair: deterministic HTML/quote/signature cleaning — accepts only email.
-	if err := db.UpsertProvider(ctx, Provider{
-		Name: provExtrairEmail, Capability: capExtrair, Runtime: runtimeCloudRun, Activation: activationOnDemand,
-		Worker: "winnow", App: "extract", Description: "Normalizador — e-mail",
-		Constraints: []byte(`{"accepts":["email"]}`), Enabled: true,
-	}); err != nil {
-		return err
+	for _, p := range []Provider{
+		{Name: provExtrairEmail, Capability: capExtrair, Runtime: runtimeCloudRun, Activation: activationOnDemand,
+			Worker: "winnow", App: "extract", Description: "Normalizador — e-mail",
+			Constraints: []byte(`{"accepts":["email"]}`), Enabled: true},
+		{Name: provWinnowLocal, Capability: capExtrair, Runtime: runtimeVPC, Activation: activationOnDemand,
+			Worker: "winnow", App: "extract", Description: "Normalizador — e-mail",
+			Constraints: []byte(`{"accepts":["email"]}`), RunnerURL: runnerURL, Enabled: vpcEnabled},
+	} {
+		if err := db.UpsertProvider(ctx, p); err != nil {
+			return err
+		}
 	}
 	// Preserves operator's enable across re-seeds; defaults to disabled on first seed.
 	if err := seedOptInLaneFlow(ctx, db, emailFlowName, laneEmail,
@@ -368,21 +426,33 @@ func SeedNewsLane(ctx context.Context, db Database) error {
 	if err := seedSharedProviders(ctx, db); err != nil {
 		return err
 	}
+	runnerURL := os.Getenv("RUNNER_LOCAL_URL")
+	vpcEnabled := runnerURL != ""
 	// coletar: rara-feed — woken on cadence; reads enabled feed_sources from DB on each wake.
-	if err := db.UpsertProvider(ctx, Provider{
-		Name: provFeed, Capability: capColetar, Runtime: runtimeCloudRun, Activation: activationOnDemand,
-		Enabled: true, Worker: "feed", App: "feed", Description: "Coletor de feeds (RSS/HN/HTML)",
-		CollectCadenceSeconds: intPtr(21600), RetryIntervalSeconds: intPtr(1800),
-	}); err != nil {
-		return err
+	for _, p := range []Provider{
+		{Name: provFeed, Capability: capColetar, Runtime: runtimeCloudRun, Activation: activationOnDemand,
+			Enabled: true, Worker: "feed", App: "feed", Description: "Coletor de feeds (RSS/HN/HTML)",
+			CollectCadenceSeconds: intPtr(21600), RetryIntervalSeconds: intPtr(1800)},
+		{Name: provFeedLocal, Capability: capColetar, Runtime: runtimeVPC, Activation: activationOnDemand,
+			Enabled: vpcEnabled, Worker: "feed", App: "feed", Description: "Coletor de feeds (RSS/HN/HTML)",
+			RunnerURL: runnerURL, CollectCadenceSeconds: intPtr(21600), RetryIntervalSeconds: intPtr(1800)},
+	} {
+		if err := db.UpsertProvider(ctx, p); err != nil {
+			return err
+		}
 	}
 	// extrair: deterministic HTML/boilerplate cleaning — accepts only news.
-	if err := db.UpsertProvider(ctx, Provider{
-		Name: provExtrairNews, Capability: capExtrair, Runtime: runtimeCloudRun, Activation: activationOnDemand,
-		Worker: "glean", App: "extract", Description: "Normalizador — feed (artigo)",
-		Constraints: []byte(`{"accepts":["news"]}`), Enabled: true,
-	}); err != nil {
-		return err
+	for _, p := range []Provider{
+		{Name: provExtrairNews, Capability: capExtrair, Runtime: runtimeCloudRun, Activation: activationOnDemand,
+			Worker: "glean", App: "extract", Description: "Normalizador — feed (artigo)",
+			Constraints: []byte(`{"accepts":["news"]}`), Enabled: true},
+		{Name: provGleanLocal, Capability: capExtrair, Runtime: runtimeVPC, Activation: activationOnDemand,
+			Worker: "glean", App: "extract", Description: "Normalizador — feed (artigo)",
+			Constraints: []byte(`{"accepts":["news"]}`), RunnerURL: runnerURL, Enabled: vpcEnabled},
+	} {
+		if err := db.UpsertProvider(ctx, p); err != nil {
+			return err
+		}
 	}
 	// Preserves operator's enable across re-seeds; defaults to disabled on first seed.
 	if err := seedOptInLaneFlow(ctx, db, newsFlowName, laneNews,

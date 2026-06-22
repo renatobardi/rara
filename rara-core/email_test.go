@@ -156,8 +156,8 @@ func TestReconcileEmailUsesExtrairAndReachesToText(t *testing.T) {
 	if err := r.ReconcileOnce(ctx); err != nil { // assign extrair (seq 3)
 		t.Fatal(err)
 	}
-	if s, ok := stepBySeq(db, itemID, 3); !ok || s.Capability != capExtrair || s.AssignedProvider != provExtrairEmail {
-		t.Fatalf("to-text step = %+v, want extrair+winnow-cloud", s)
+	if s, ok := stepBySeq(db, itemID, 3); !ok || s.Capability != capExtrair || s.AssignedProvider != provWinnowLocal {
+		t.Fatalf("to-text step = %+v, want extrair+winnow-vpc (VPC-first routing)", s)
 	}
 	// extrair worker finishes (produces the cleaned to-text artifact).
 	completeStep(t, db, itemID, 3, "transcript-email-1")

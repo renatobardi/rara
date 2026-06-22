@@ -462,8 +462,8 @@ func TestReconcileLinkedInRoutesToExtrairLinkedin(t *testing.T) {
 		t.Fatal(err)
 	}
 	s, ok := stepBySeq(db, itemID, 3)
-	if !ok || s.Capability != capExtrair || s.AssignedProvider != provExtrairLinked {
-		t.Fatalf("to-text step = %+v, want extrair+scrub-cloud", s)
+	if !ok || s.Capability != capExtrair || s.AssignedProvider != provScrubLocal {
+		t.Fatalf("to-text step = %+v, want extrair+scrub-vpc (VPC-first routing)", s)
 	}
 	completeStep(t, db, itemID, 3, "transcript-linkedin-1")
 	if err := r.ReconcileOnce(ctx); err != nil { // assign gate_rico
