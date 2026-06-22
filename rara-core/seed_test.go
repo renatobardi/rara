@@ -584,12 +584,12 @@ func TestVPCRunnerURLValidation(t *testing.T) {
 	}{
 		{"http://100.66.254.24:9000", "http://100.66.254.24:9000", true},
 		{"https://runner.tailnet:8080", "https://runner.tailnet:8080", true},
-		{"", "", false},                                         // unset → disabled
-		{"ftp://runner:9000", "", false},                        // wrong scheme
-		{"http://user:pass@runner:9000", "", false},             // embedded credentials
-		{"http://runner:9000?key=val", "", false},               // query string
-		{"http://runner:9000#frag", "", false},                  // fragment
-		{"not-a-url", "", false},                                // not a URL
+		{"", "", false},                             // unset → disabled
+		{"ftp://runner:9000", "", false},            // wrong scheme
+		{"http://user:pass@runner:9000", "", false}, // embedded credentials
+		{"http://runner:9000?key=val", "", false},   // query string
+		{"http://runner:9000#frag", "", false},      // fragment
+		{"not-a-url", "", false},                    // not a URL
 	}
 	for _, tc := range cases {
 		t.Run(tc.env, func(t *testing.T) {
