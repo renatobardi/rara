@@ -20,6 +20,7 @@
 		constraints?: Constraints;
 		runner_url?: string;
 		env?: Record<string, string>;
+		description?: string;
 	};
 
 	type Props = {
@@ -29,6 +30,8 @@
 		lockedWorker?: string;
 		/** Pre-fill capability and make it read-only (add-placement mode). */
 		lockedCapability?: string;
+		/** Constraints of the worker being extended (add-placement mode — restricts runtime options). */
+		lockedConstraints?: Constraints | null;
 		onSave: (p: Provider) => Promise<void>;
 		onCancel: () => void;
 	};
@@ -38,6 +41,7 @@
 		capabilities,
 		lockedWorker,
 		lockedCapability,
+		lockedConstraints = null,
 		onSave,
 		onCancel
 	}: Props = $props();
@@ -45,7 +49,14 @@
 	const isEdit = $derived(initial !== null);
 	// worker is read-only when editing (can't regroup) or when adding placement to an existing worker
 	const workerReadonly = $derived(isEdit || !!lockedWorker);
-	const capabilityReadonly = $derived(!!lockedCapability);
+	// capability and runtime are identity fields — read-only in edit mode
+	const capabilityReadonly = $derived(!!lockedCapability || isEdit);
+	const runtimeReadonly = $derived(isEdit);
+	// allowed runtimes: restricted to ['local'] when worker requires residential IP
+	const VALID_RUNTIMES = ['local', 'cloudrun', 'vpc'];
+	const allowedRuntimes = $derived(
+		lockedConstraints?.requires === 'residential' ? ['local'] : VALID_RUNTIMES
+	);
 
 	// untrack: form mounts fresh for each add/edit open — capturing initial value once is correct
 	let worker = $state(untrack(() => lockedWorker ?? initial?.worker ?? ''));
@@ -85,7 +96,6 @@
 				: t.workers.addWorker
 	);
 
-	const VALID_RUNTIMES = ['local', 'cloudrun', 'vpc'];
 	const VALID_ACTIVATIONS = ['resident', 'on_demand'];
 	// ponytail: loopback only — private ranges (10.x, 172.16-31.x, 192.168.x, 100.x tailnet)
 	// are intentionally allowed; rara-runner lives on those networks by design.
@@ -97,8 +107,9 @@
 		if (!name.trim()) e.name = t.workers.formNameRequired;
 		if (!capability.trim()) e.capability = t.workers.formCapabilityRequired;
 		if (!VALID_RUNTIMES.includes(runtime)) e.runtime = t.workers.formRuntimeInvalid;
+		else if (!allowedRuntimes.includes(runtime)) e.runtime = t.workers.formRuntimeConstraint;
 		if (!VALID_ACTIVATIONS.includes(activation)) e.activation = t.workers.formActivationInvalid;
-		if (runnerUrl.trim()) {
+		if (runtime !== 'cloudrun' && runnerUrl.trim()) {
 			try {
 				const u = new URL(runnerUrl.trim());
 				if (!['http:', 'https:'].includes(u.protocol)) {
@@ -150,10 +161,12 @@
 			capability: capability.trim(),
 			runtime,
 			activation,
-			enabled
+			enabled,
+			// preserve description on edit (not editable in form; upsert would clear it otherwise)
+			...(initial?.description ? { description: initial.description } : {})
 		};
 
-		if (runnerUrl.trim()) payload.runner_url = runnerUrl.trim();
+		if (runtime !== 'cloudrun' && runnerUrl.trim()) payload.runner_url = runnerUrl.trim();
 
 		if (envRaw.trim()) {
 			payload.env = JSON.parse(envRaw.trim());
@@ -231,7 +244,9 @@
 
 			<!-- Capability -->
 			<div>
-				<label class={labelClass} for="wf-cap">{t.workers.formCapability}</label>
+				<label class={labelClass} for="wf-cap">
+					{capabilityReadonly ? t.workers.formCapabilityReadonly : t.workers.formCapability}
+				</label>
 				{#if capabilityReadonly}
 					<input id="wf-cap" class={readonlyFieldClass} value={capability} readonly />
 				{:else}
@@ -254,13 +269,19 @@
 
 			<!-- Runtime -->
 			<div>
-				<label class={labelClass} for="wf-runtime">{t.workers.formRuntime}</label>
-				<select id="wf-runtime" class={fieldClass} bind:value={runtime}>
-					<option value="local">local</option>
-					<option value="cloudrun">cloudrun</option>
-					<option value="vpc">vpc</option>
-				</select>
-				{#if errors.runtime}<p class={errorClass}>{errors.runtime}</p>{/if}
+				<label class={labelClass} for="wf-runtime">
+					{runtimeReadonly ? t.workers.formRuntimeReadonly : t.workers.formRuntime}
+				</label>
+				{#if runtimeReadonly}
+					<input id="wf-runtime" class={readonlyFieldClass} value={runtime} readonly />
+				{:else}
+					<select id="wf-runtime" class={fieldClass} bind:value={runtime}>
+						{#each allowedRuntimes as rt}
+							<option value={rt}>{rt}</option>
+						{/each}
+					</select>
+					{#if errors.runtime}<p class={errorClass}>{errors.runtime}</p>{/if}
+				{/if}
 			</div>
 
 			<!-- Activation -->
@@ -281,17 +302,19 @@
 				</label>
 			</div>
 
-			<!-- Runner URL -->
-			<div>
-				<label class={labelClass} for="wf-runner">{t.workers.formRunnerUrl}</label>
-				<input
-					id="wf-runner"
-					class={fieldClass}
-					placeholder={t.workers.formRunnerUrlPlaceholder}
-					bind:value={runnerUrl}
-				/>
-				{#if errors.runnerUrl}<p class={errorClass}>{errors.runnerUrl}</p>{/if}
-			</div>
+			<!-- Runner URL — only relevant for vpc/local; cloudrun has no runner -->
+			{#if runtime !== 'cloudrun'}
+				<div>
+					<label class={labelClass} for="wf-runner">{t.workers.formRunnerUrl}</label>
+					<input
+						id="wf-runner"
+						class={fieldClass}
+						placeholder={t.workers.formRunnerUrlPlaceholder}
+						bind:value={runnerUrl}
+					/>
+					{#if errors.runnerUrl}<p class={errorClass}>{errors.runnerUrl}</p>{/if}
+				</div>
+			{/if}
 		</div>
 
 		<!-- Constraints (structured) -->
