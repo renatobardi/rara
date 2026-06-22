@@ -16,7 +16,7 @@ func (f fakePodcastSource) PodcastEpisodes(_ context.Context) ([]PodcastEpisode,
 	return f.episodes, f.err
 }
 
-// TestSeedPodcastLane asserts the podcast lane config: the asr-direct-audio provider on
+// TestSeedPodcastLane asserts the podcast lane config: the echo-cloud provider on
 // transcrever (cloudrun, on_demand, accepts=podcast, NO residential) and the podcast flow
 // (same template as youtube). The shared gates/distill are reused.
 func TestSeedPodcastLane(t *testing.T) {
@@ -34,7 +34,7 @@ func TestSeedPodcastLane(t *testing.T) {
 			dial.Capability, dial.Runtime, dial.Activation, dial.Enabled)
 	}
 
-	// asr-direct-audio provider: transcrever, cloudrun, on_demand, accepts podcast, no residential.
+	// echo-cloud provider: transcrever, cloudrun, on_demand, accepts podcast, no residential.
 	p, ok := db.providers[provASRDirectAudio]
 	if !ok {
 		t.Fatalf("provider %q not seeded", provASRDirectAudio)

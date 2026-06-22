@@ -27,7 +27,7 @@ func fakeCore(t *testing.T, token string) *httptest.Server {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		_, _ = w.Write([]byte(`[{"name":"distill-local","capability":"destilar","runtime":"vpc","activation":"resident","enabled":true}]`))
+		_, _ = w.Write([]byte(`[{"name":"distill-vpc","capability":"destilar","runtime":"vpc","activation":"resident","enabled":true}]`))
 	})
 	mux.HandleFunc("GET /live", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("ok"))
@@ -57,8 +57,8 @@ func TestOverviewAggregatesFlowsAndProviders(t *testing.T) {
 	if len(got.Flows) != 1 || got.Flows[0]["name"] != "youtube" {
 		t.Errorf("flows = %+v, want one youtube flow", got.Flows)
 	}
-	if len(got.Providers) != 1 || got.Providers[0]["name"] != "distill-local" {
-		t.Errorf("providers = %+v, want one distill-local provider", got.Providers)
+	if len(got.Providers) != 1 || got.Providers[0]["name"] != "distill-vpc" {
+		t.Errorf("providers = %+v, want one distill-vpc provider", got.Providers)
 	}
 }
 
@@ -148,7 +148,7 @@ func fakePipelineCore(t *testing.T, token string) *httptest.Server {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		_, _ = w.Write([]byte(`[{"id":1,"capability":"destilar","provider":"distill-local","status":"done","attempts":1}]`))
+		_, _ = w.Write([]byte(`[{"id":1,"capability":"destilar","provider":"distill-vpc","status":"done","attempts":1}]`))
 	})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
@@ -1255,13 +1255,13 @@ func fakeC4Core(t *testing.T, token string) *httptest.Server {
 		if !requireBearer(w, r) {
 			return
 		}
-		_, _ = w.Write([]byte(`[{"name":"distill-local","capability":"destilar","runtime":"vpc","activation":"resident","enabled":true}]`))
+		_, _ = w.Write([]byte(`[{"name":"distill-vpc","capability":"destilar","runtime":"vpc","activation":"resident","enabled":true}]`))
 	})
 	mux.HandleFunc("GET /v1/workers", func(w http.ResponseWriter, r *http.Request) {
 		if !requireBearer(w, r) {
 			return
 		}
-		_, _ = w.Write([]byte(`[{"name":"distill","capability":"destilar","placements":[{"name":"distill-local","capability":"destilar","runtime":"vpc","activation":"resident","enabled":true}]}]`))
+		_, _ = w.Write([]byte(`[{"name":"distill","capability":"destilar","placements":[{"name":"distill-vpc","capability":"destilar","runtime":"vpc","activation":"resident","enabled":true}]}]`))
 	})
 	mux.HandleFunc("PUT /v1/providers", func(w http.ResponseWriter, r *http.Request) {
 		if !requireBearer(w, r) {
@@ -1376,8 +1376,8 @@ func TestPlacementsProxiesWithBearer(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 1 || got[0]["name"] != "distill-local" {
-		t.Errorf("placements = %+v, want one distill-local placement", got)
+	if len(got) != 1 || got[0]["name"] != "distill-vpc" {
+		t.Errorf("placements = %+v, want one distill-vpc placement", got)
 	}
 }
 

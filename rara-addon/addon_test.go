@@ -179,7 +179,7 @@ func seedOneStep(s *fakeStore, itemID, seq int, cap, provider, sourceRef string)
 
 const (
 	capT = "transcrever"
-	prov = "asr-youtube"
+	prov = "caption-mac"
 )
 
 // --- claim mechanics -------------------------------------------------------
@@ -241,7 +241,7 @@ func TestClaimNoDoubleClaimFIFO(t *testing.T) {
 
 // TestClaimProviderIsolation: two pending steps of one capability assigned to DIFFERENT providers —
 // each worker claims only the step routed to its own provider, never the sibling's. This is the
-// contract's whole point (a private item on distill-local must not be pulled by a third party).
+// contract's whole point (a private item on distill-vpc must not be pulled by a third party).
 func TestClaimProviderIsolation(t *testing.T) {
 	s := newFakeStore()
 	s.addItem(Item{ID: 1, SourceRef: "a"})

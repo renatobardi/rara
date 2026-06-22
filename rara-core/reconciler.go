@@ -18,7 +18,7 @@
 //	coletar     -> auto-done   (the item EXISTS, so collection already happened)
 //	gate_barato -> assign      (a real worker now; the gate judges metadata, records a
 //	                            gate_decision, marks the step done)
-//	transcrever -> assign      (pending + provider; wait for the scribe app, rara-scribe)
+//	transcrever -> assign      (pending + provider; wait for the scribe app, rara-transcribe)
 //	gate_rico   -> assign      (a real worker; the gate judges the full text)
 //	destilar    -> assign      (pending + provider; wait for the distill app, rara-distill)
 //

@@ -16,7 +16,7 @@ func (f fakeNewsSource) News(_ context.Context) ([]NewsItem, error) {
 	return f.articles, f.err
 }
 
-// TestSeedNewsLane: the extrair-news provider on `extrair` (accepts news) and the news flow that
+// TestSeedNewsLane: the glean-cloud provider on `extrair` (accepts news) and the news flow that
 // swaps transcrever for extrair — the same shape as the email lane (the source is already text).
 func TestSeedNewsLane(t *testing.T) {
 	ctx := context.Background()
@@ -29,10 +29,10 @@ func TestSeedNewsLane(t *testing.T) {
 		t.Fatalf("provider %q not seeded", provExtrairNews)
 	}
 	if p.Capability != capExtrair || p.Runtime != runtimeCloudRun {
-		t.Errorf("extrair-news = {%s,%s}, want {extrair,cloudrun}", p.Capability, p.Runtime)
+		t.Errorf("glean-cloud = {%s,%s}, want {extrair,cloudrun}", p.Capability, p.Runtime)
 	}
 	if got := string(p.Constraints); got != `{"accepts":["news"]}` {
-		t.Errorf("extrair-news constraints = %q, want accepts=[news]", got)
+		t.Errorf("glean-cloud constraints = %q, want accepts=[news]", got)
 	}
 	f, ok := db.flows[newsFlowName]
 	if !ok || f.SourceType != laneNews {

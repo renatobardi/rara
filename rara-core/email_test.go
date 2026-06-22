@@ -16,7 +16,7 @@ func (f fakeEmailSource) Emails(_ context.Context) ([]EmailItem, error) {
 }
 
 // The email body cleaning (cleanEmailText) is no longer in rara-core — extrair is its own app,
-// rara-glean, where the cleaner and its unit tests now live. The tests below cover what the core
+// rara-extract, where the cleaner and its unit tests now live. The tests below cover what the core
 // still owns of the email lane: the seed, ingest, and the reconciler routing extrair to its provider.
 
 // ---------------------------------------------------------------------------
@@ -59,7 +59,7 @@ func TestSeedEmailLanePreservesOperatorEnable(t *testing.T) {
 	}
 }
 
-// TestSeedEmailLane: the extrair-email provider on `extrair` (accepts email) and the email
+// TestSeedEmailLane: the winnow-cloud provider on `extrair` (accepts email) and the email
 // flow that swaps transcrever for extrair.
 func TestSeedEmailLane(t *testing.T) {
 	ctx := context.Background()
@@ -72,10 +72,10 @@ func TestSeedEmailLane(t *testing.T) {
 		t.Fatalf("provider %q not seeded", provExtrairEmail)
 	}
 	if p.Capability != capExtrair || p.Runtime != runtimeCloudRun {
-		t.Errorf("extrair-email = {%s,%s}, want {extrair,cloudrun}", p.Capability, p.Runtime)
+		t.Errorf("winnow-cloud = {%s,%s}, want {extrair,cloudrun}", p.Capability, p.Runtime)
 	}
 	if got := string(p.Constraints); got != `{"accepts":["email"]}` {
-		t.Errorf("extrair-email constraints = %q, want accepts=[email]", got)
+		t.Errorf("winnow-cloud constraints = %q, want accepts=[email]", got)
 	}
 	f, ok := db.flows[emailFlowName]
 	if !ok || f.SourceType != laneEmail {
@@ -129,7 +129,7 @@ func TestIngestEmail(t *testing.T) {
 }
 
 // TestReconcileEmailUsesExtrairAndReachesToText: the email flow routes the to-text step to the
-// extrair-email provider (not a transcrever provider), and once extrair completes the item
+// winnow-cloud provider (not a transcrever provider), and once extrair completes the item
 // reaches the to_text milestone — proving extrair is a first-class to-text capability.
 func TestReconcileEmailUsesExtrairAndReachesToText(t *testing.T) {
 	ctx := context.Background()
@@ -157,7 +157,7 @@ func TestReconcileEmailUsesExtrairAndReachesToText(t *testing.T) {
 		t.Fatal(err)
 	}
 	if s, ok := stepBySeq(db, itemID, 3); !ok || s.Capability != capExtrair || s.AssignedProvider != provExtrairEmail {
-		t.Fatalf("to-text step = %+v, want extrair+extrair-email", s)
+		t.Fatalf("to-text step = %+v, want extrair+winnow-cloud", s)
 	}
 	// extrair worker finishes (produces the cleaned to-text artifact).
 	completeStep(t, db, itemID, 3, "transcript-email-1")
@@ -169,6 +169,6 @@ func TestReconcileEmailUsesExtrairAndReachesToText(t *testing.T) {
 	}
 	// gate_rico for a private email routes to the self-host variant (third-party excluded).
 	if s, ok := stepBySeq(db, itemID, 4); !ok || s.AssignedProvider != provGateRicoLocal {
-		t.Errorf("gate_rico step = %+v, want pending+gate-rico-local", s)
+		t.Errorf("gate_rico step = %+v, want pending+assay-vpc", s)
 	}
 }

@@ -1,12 +1,12 @@
 // runners.go — the I/O edge (pgx + CLI) of the roles the core still runs in-process.
 //
-// rara-core no longer runs a `work` role: every domain worker — transcrever (rara-scribe), destilar
-// (rara-distill), the curation gates (rara-sift) and the to-text extractor (rara-glean) — is its own
+// rara-core no longer runs a `work` role: every domain worker — transcrever (rara-transcribe), destilar
+// (rara-distill), the curation gates (rara-gate) and the to-text extractor (rara-extract) — is its own
 // sovereign app on the rara-addon SDK, claiming its steps through the Neon contract. The
 // interest_profile reviser is likewise gone — it moved out to rara-hone, a periodic systemd-timer
 // job that PROPOSES profile revisions; the core keeps only the human APPROVAL (the surface). What
 // remains here is the orchestrator's own I/O edges: the read sides of ingest (channel_videos /
-// podcast / email) and the LinkedIn manual-inbox write. They are deliberately minimal glue,
+// podcast / email) and the LinkedIn stash write. They are deliberately minimal glue,
 // exercised by real deploys/integration, not unit tests — the pure logic each backs is what the
 // unit tests cover. The AUTOMATED LinkedIn collector (Bright Data) is no longer here either: it is
 // its own producer app, rara-clip.
@@ -28,7 +28,7 @@ func envOr(key, def string) string {
 }
 
 // transcrever, destilar, the curation gates and extrair have NO runner here: each is its own
-// independent app on the rara-addon SDK (rara-scribe, rara-distill, rara-sift, rara-glean), claiming
+// independent app on the rara-addon SDK (rara-transcribe, rara-distill, rara-gate, rara-extract), claiming
 // its steps through the Neon contract. The orchestrator still ROUTES every capability and ACTIVATES
 // the assigned provider (Cloud Run `run` / tailnet poke); it never executes the work itself.
 
@@ -155,7 +155,7 @@ func (s *pgxNewsSource) News(ctx context.Context) ([]NewsItem, error) {
 }
 
 // ---------------------------------------------------------------------------
-// pgx LinkedInPostStore — the write side of the manual-inbox collector (linkedin_posts).
+// pgx LinkedInPostStore — the write side of the stash collector (linkedin_posts).
 //
 // The manual inbox lives inside the surface (a person pastes a post through an MCP tool / HTTP
 // endpoint), so rara-core writes linkedin_posts directly here. It is a CONTRACT table: the
@@ -184,20 +184,20 @@ func (s *pgxLinkedInInbox) UpsertLinkedInPost(ctx context.Context, p LinkedInPos
 // The AUTOMATED Bright Data LinkedIn collector is no longer here: it is its own producer app,
 // rara-clip, which shells out to the `bdata` CLI, normalizes the dataset's varying keys, and writes
 // the SAME linkedin_posts contract table behind the SAME url-idempotent contract. rara-core keeps
-// only the manual-inbox write (above) and the linkedin_posts -> spine bridge (SubmitLinkedInPost's
+// only the stash write (above) and the linkedin_posts -> spine bridge (SubmitLinkedInPost's
 // DiscoverItem), both unchanged. rara-clip writes ONLY the domain table; it never touches the spine.
 
 // ---------------------------------------------------------------------------
 // pgx LinkedInSource — the read side of bulk LinkedIn ingest (linkedin_posts).
 //
-// Both producers (manual-inbox and rara-clip) write the same table behind the same
+// Both producers (stash and rara-clip) write the same table behind the same
 // url-idempotent contract; this source covers all of them in one SELECT.
 // ---------------------------------------------------------------------------
 
 type pgxLinkedInSource struct{ conn *pgx.Conn }
 
 // LinkedInPosts returns every row in linkedin_posts that carries a url. The spine is keyed on
-// (lane=linkedin, source_ref=url); both producers (manual-inbox and rara-clip) write the same table.
+// (lane=linkedin, source_ref=url); both producers (stash and rara-clip) write the same table.
 func (s *pgxLinkedInSource) LinkedInPosts(ctx context.Context) ([]LinkedInPost, error) {
 	const q = `
 		SELECT url, COALESCE(author, '')

@@ -1,9 +1,9 @@
-name: Deploy rara-transcribe (echo/asr-direct-audio, cloud)
+name: Deploy rara-transcribe (echo/echo-cloud, cloud)
 
 # GATED — manual dispatch only (NO push:main). rara-transcribe is a 2.0 bridge-total claim-worker
 # (`transcrever`): it only runs once the reconciler routes transcription steps to its provider.
-# This deploy targets the echo worker (asr-direct-audio).
-# Job name = rara-transcribe (new consolidated job; old rara-asr-direct-audio remains until P2b-B).
+# This deploy targets the echo worker (echo-cloud).
+# Job name = rara-transcribe (new consolidated job; legacy GCP job remains until P2b-B).
 # Downloads the enclosure over HTTP and transcribes via Groq — needs GROQ_API_KEY in addition to
 # DATABASE_URL.
 #
@@ -11,8 +11,10 @@ name: Deploy rara-transcribe (echo/asr-direct-audio, cloud)
 # (amd64 for Cloud Run + arm64 for VPC Oracle Ampere + Mac) and pushes a manifest list to
 # Artifact Registry. Cloud Run pulls the amd64 leaf automatically. See DOCKER-MULTIMODULE.md.
 #
-# The caption worker (asr-youtube) runs natively on the Mac (residential IP, launchd) and is NOT
+# The caption worker (caption-mac) runs natively on the Mac (residential IP, launchd) and is NOT
 # deployed here. The Mac binary rebuild is a manual step (P2b-transcribe-B).
+permissions: {}
+
 on:
   workflow_dispatch:
     inputs:

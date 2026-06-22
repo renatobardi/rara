@@ -1397,7 +1397,7 @@ func main() {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
 	defer pool.Close()
-	log.Printf("rara-scribe worker %s/%s ready [engine %s]", capTranscrever, provider, engineName)
+	log.Printf("rara-transcribe worker %s/%s ready [engine %s]", capTranscrever, provider, engineName)
 
 	// One acquirer serves both lanes: yt-dlp downloads a YouTube watch URL (with cookies, on the
 	// residential-IP Mac) or a plain enclosure URL (no cookies needed) the same way.
@@ -1420,9 +1420,9 @@ func main() {
 		PokeToken:    os.Getenv("POKE_TOKEN"),
 	}
 	if err := addon.Run(ctx, ac, transcribeHandler(&appDB{pool: pool}, acq, tr, engineName)); err != nil {
-		log.Fatalf("scribe worker %s/%s: %v", capTranscrever, provider, err)
+		log.Fatalf("rara-transcribe worker %s/%s: %v", capTranscrever, provider, err)
 	}
-	log.Printf("rara-scribe worker %s/%s: queue drained", capTranscrever, provider)
+	log.Printf("rara-transcribe worker %s/%s: queue drained", capTranscrever, provider)
 }
 
 // resolveCookies returns the Netscape cookie content to pass to writeCookieFile.

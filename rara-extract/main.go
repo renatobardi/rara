@@ -4,11 +4,11 @@
 // they need NORMALIZATION. `extrair` is that to-text capability: strip the noise the source carries
 // (HTML markup, an email signature, quoted-reply history) and leave the human-written message the
 // gates and distill should judge. The result lands in the SAME `transcripts` store the ASR worker
-// (rara-scribe) writes, keyed on (source_ref, source_type) — the universal "to-text" convention the
+// (rara-transcribe) writes, keyed on (source_ref, source_type) — the universal "to-text" convention the
 // gate_rico/distill lookups chain on. extrair is a peer of transcrever, not a special case.
 //
-// ONE app serves ALL the text providers purely by config (GLEAN_PROVIDER): `extrair-email` cleans an
-// email body, `extrair-linkedin` normalizes a post, `extrair-news` cleans a feed article. The handler
+// ONE app serves ALL the text providers purely by config (GLEAN_PROVIDER): `winnow-cloud` cleans an
+// email body, `scrub-cloud` normalizes a post, `glean-cloud` cleans a feed article. The handler
 // picks the cleaner + the to-text source_type by the item's lane, so a single codebase covers every
 // text lane — codebases ≪ providers.
 //
@@ -54,9 +54,9 @@ const capExtrair = "extrair"
 // The providers this one app serves, selected by GLEAN_PROVIDER. Each is pinned to a text lane
 // by its seed `accepts` so the email extractor never grabs a post and vice-versa.
 const (
-	provExtrairEmail    = "extrair-email"    // email HTML/quote/signature cleaner
-	provExtrairLinkedIn = "extrair-linkedin" // LinkedIn post normalizer
-	provExtrairNews     = "extrair-news"     // feed-article HTML/boilerplate cleaner
+	provExtrairEmail    = "winnow-cloud" // email HTML/quote/signature cleaner
+	provExtrairLinkedIn = "scrub-cloud"  // LinkedIn post normalizer
+	provExtrairNews     = "glean-cloud"  // feed-article HTML/boilerplate cleaner
 )
 
 // items.lane — the body read and the to-text source_type are lane-aware (a different domain table
@@ -70,9 +70,9 @@ const (
 // transcripts.engine labels for an extrair to-text row (a NOT NULL column), distinguishing extractor
 // output from real ASR engines, and the lanes from each other in the audit trail.
 const (
-	emailEngine    = "rara-glean/extrair"
-	linkedinEngine = "rara-glean/extrair-linkedin"
-	newsEngine     = "rara-glean/extrair-news"
+	emailEngine    = "rara-extract/winnow"
+	linkedinEngine = "rara-extract/scrub"
+	newsEngine     = "rara-extract/glean"
 )
 
 func isValidProvider(s string) bool {
@@ -278,7 +278,7 @@ func (db *appDB) ReadSource(ctx context.Context, item addon.Item) (string, bool,
 //
 // (A partial unique index on transcripts(source_ref, source_type) WHERE youtube_video_id IS NULL
 // would make this a one-statement ON CONFLICT; recommended but not required — it stays the to-text
-// owner's, rara-scribe's, schema decision.)
+// owner's, rara-transcribe's, schema decision.)
 func (db *appDB) WriteText(ctx context.Context, sourceType, sourceRef, text, engine string) (int, error) {
 	status := "done"
 	if strings.TrimSpace(text) == "" {
@@ -321,8 +321,8 @@ func buildGleanPoolConfig(dbURL string) (*pgxpool.Config, error) {
 
 // main wires the bridge-total claim-worker: the SDK (addon.Run) owns the queue protocol; this
 // process only supplies the extrair domain (gleanHandler). One app serves all text providers by
-// config: GLEAN_PROVIDER picks the concrete provider it serves (extrair-email | extrair-linkedin |
-// extrair-news) so it claims only the steps the reconciler routed to it. Default is on_demand (drain
+// config: GLEAN_PROVIDER picks the concrete provider it serves (winnow-cloud | scrub-cloud |
+// glean-cloud) so it claims only the steps the reconciler routed to it. Default is on_demand (drain
 // once and exit,
 // the woken Cloud Run job); a resident deploy opts into the long-running loop + symmetric activation
 // via WORK_POLL_INTERVAL and/or POKE_ADDR + POKE_TOKEN.

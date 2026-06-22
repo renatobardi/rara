@@ -2,7 +2,7 @@
 // operator-curated RSS feeds and catalogs each episode (an <item> with an audio enclosure)
 // into its own domain table, podcast_episodes. Like every rara agent it shares nothing but the
 // Neon database and never calls another agent — the control plane (rara-core) reads
-// podcast_episodes to build the items spine, and the asr-direct-audio worker reads
+// podcast_episodes to build the items spine, and the echo-cloud worker reads
 // enclosure_url to transcribe. Idempotent: every run upserts on the episode GUID, so
 // re-polling a feed converges.
 //

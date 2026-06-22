@@ -6,8 +6,7 @@ name: Deploy rara-extract
 #
 # ONE image, THREE workers (glean=news, winnow=email, scrub=linkedin) → ONE consolidated Cloud Run
 # Job (`rara-extract`). The dispatcher sets GLEAN_PROVIDER per execution override — one job serves
-# all three workers. (The legacy per-worker jobs rara-extrair-email, rara-extrair-linkedin, and
-# rara-extrair-news remain untouched until P2b-extract-B flips providers.app.)
+# all three workers. (The legacy per-worker GCP jobs remain untouched until P2b-extract-B flips providers.app.)
 #
 # Multi-arch image: amd64 (Cloud Run) + arm64 (VPC Oracle Ampere + Mac Apple Silicon). The image
 # is built once (the `build` job) then the `deploy` job creates/updates the consolidated job.

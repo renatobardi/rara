@@ -1,4 +1,4 @@
-// linkedin.go — Phase 5 deliverable #3: the LinkedIn lane (manual-inbox collector).
+// linkedin.go — Phase 5 deliverable #3: the LinkedIn lane (stash collector).
 //
 // LinkedIn is a "nice-to-have" lane the architecture folds into the same template as every
 // other lane (ARCHITECTURE-2.0, "Source lanes"): coletar -> gate_barato -> extrair ->
@@ -17,8 +17,8 @@
 // MockDatabase and a fake store. The pgx store write lives at the I/O edge in runners.go.
 //
 // The to-text step itself (extrair — writing the cleaned post into the shared transcripts store)
-// is no longer here: it is its own app, rara-glean, on the SDK. The core only seeds the lane,
-// collects/validates submissions (postHasContent rejects empty pastes), and routes; rara-glean
+// is no longer here: it is its own app, rara-extract, on the SDK. The core only seeds the lane,
+// collects/validates submissions (postHasContent rejects empty pastes), and routes; rara-extract
 // does the extraction and owns the full HTML/signature/quote cleaners.
 package main
 
@@ -48,7 +48,7 @@ type LinkedInPost struct {
 	Text   string
 }
 
-// LinkedInPostStore is the domain-write seam for the manual-inbox collector — and, later, for
+// LinkedInPostStore is the domain-write seam for the stash collector — and, later, for
 // the Bright Data collector behind the same contract. UpsertLinkedInPost is idempotent on the
 // URL (a resubmission refreshes in place). Mocked in tests; the pgx implementation
 // (pgxLinkedInInbox, runners.go) writes the linkedin_posts table.
@@ -57,13 +57,13 @@ type LinkedInPostStore interface {
 }
 
 // normalizeLinkedInURL returns the canonical form of a LinkedIn post URL used as the spine's
-// source_ref. Both producers (manual-inbox and rara-clip) must call this so that the same
+// source_ref. Both producers (stash and rara-clip) must call this so that the same
 // post always maps to the same item regardless of who collected it.
 func normalizeLinkedInURL(raw string) string {
 	return strings.TrimSpace(raw)
 }
 
-// SubmitLinkedInPost is the manual-inbox collector: it cleans the pasted post, upserts it into
+// SubmitLinkedInPost is the stash collector: it cleans the pasted post, upserts it into
 // the linkedin_posts domain table (so the gate/extractor can read it), and discovers the spine
 // item (lane=linkedin, source_ref=url, sensitivity=public). Idempotent on the URL — a
 // resubmission refreshes the post and collapses onto the existing item. Returns the item id.
@@ -106,7 +106,7 @@ func SubmitLinkedInPost(ctx context.Context, db Database, store LinkedInPostStor
 }
 
 // LinkedInSource reads the collected-post universe the LinkedIn spine is built from. Both
-// producers — the manual-inbox (SubmitLinkedInPost) and the Bright Data crawler (rara-clip) —
+// producers — the stash (SubmitLinkedInPost) and the Bright Data crawler (rara-clip) —
 // write the same linkedin_posts table behind the same url-idempotent contract.
 type LinkedInSource interface {
 	LinkedInPosts(ctx context.Context) ([]LinkedInPost, error)
@@ -114,7 +114,7 @@ type LinkedInSource interface {
 
 // IngestLinkedIn upserts one items row per collected LinkedIn post (lane=linkedin,
 // source_ref=url). Posts are PUBLIC; idempotent on (lane, source_ref); stamps the linkedin
-// flow's version; skips when the lane is disabled. Mirrors IngestFeed. Both the manual-inbox
+// flow's version; skips when the lane is disabled. Mirrors IngestFeed. Both the stash
 // path (SubmitLinkedInPost) and the Bright Data collector (rara-clip) write linkedin_posts;
 // IngestLinkedIn bridges every row not yet in the spine, so a rara-clip post lands there on
 // the next reconcile without a manual core-job ingest call.
@@ -157,20 +157,20 @@ func IngestLinkedIn(ctx context.Context, db Database, src LinkedInSource) (int, 
 
 // reTag matches any HTML tag — the only regex the collector's emptiness check needs. The full
 // to-text cleaning (HTML/signature/quote stripping that writes the transcripts artifact) is no
-// longer rara-core's: it lives in the rara-glean app. The core keeps only this cheap predicate.
+// longer rara-core's: it lives in the rara-extract app. The core keeps only this cheap predicate.
 var reTag = regexp.MustCompile(`(?s)<[^>]+>`)
 
 // postHasContent reports whether a pasted post carries any real text — the collector's submission
 // gate. It strips tags and unescapes entities (so a pure-markup body like "<div></div>" or a lone
 // "&nbsp;" counts as empty) and checks for any non-whitespace remainder. It is deliberately NOT the
 // extractor: the collector stores the RAW post and rejects only empty pastes; the actual to-text
-// normalization is the `extrair` step's job (rara-glean), exactly as the email lane stores raw bodies.
+// normalization is the `extrair` step's job (rara-extract), exactly as the email lane stores raw bodies.
 func postHasContent(raw string) bool {
 	return strings.TrimSpace(html.UnescapeString(reTag.ReplaceAllString(raw, ""))) != ""
 }
 
 // SeedLinkedInLane writes the LinkedIn lane: shared capabilities/providers/config plus the
-// manual-inbox collector and the LinkedIn extractor (extrair-linkedin), and the linkedin flow.
+// stash collector and the LinkedIn extractor (scrub-cloud), and the linkedin flow.
 // The lane template matches email's — `extrair` is the to-text step (the post is already text)
 // — and only the collector and the extractor's `accepts` differ. Idempotent: safe on every boot.
 func SeedLinkedInLane(ctx context.Context, db Database) error {
@@ -184,7 +184,7 @@ func SeedLinkedInLane(ctx context.Context, db Database) error {
 	// Like every other lane's collector neither is actually routed (coletar is auto-satisfied
 	// by the reconciler — the item already exists once a post is collected); the rows are seeded
 	// for completeness and config-as-data.
-	//   manual-inbox        — a person pastes a post through the surface (the Phase 5 stand-in,
+	//   stash               — a person pastes a post through the surface (the Phase 5 stand-in,
 	//                         KEPT as a fallback for posts the crawl misses).
 	//   clip               — the automated Bright Data crawl via rara-clip (provider name maps to
 	//                         Cloud Run job rara-clip via CLOUD_RUN_JOB_PREFIX); woken by the
@@ -193,7 +193,7 @@ func SeedLinkedInLane(ctx context.Context, db Database) error {
 	// change (ARCHITECTURE-2.0: "swap collector behind the same contract, flow unchanged").
 	if err := db.UpsertProvider(ctx, Provider{
 		Name: provManualInbox, Capability: capColetar, Runtime: runtimeVPC, Activation: activationResident,
-		Worker: "stash", App: "manual-inbox", Description: "Submissão manual (LinkedIn)",
+		Worker: "stash", App: "stash", Description: "Submissão manual (LinkedIn)",
 		Constraints: []byte(`{"accepts":["linkedin"]}`), Enabled: true,
 	}); err != nil {
 		return err

@@ -1231,7 +1231,7 @@ func buildDistillPoolConfig(dbURL string) (*pgxpool.Config, error) {
 }
 
 // process only supplies the destilar domain (distillHandler). It serves ONE provider
-// (DISTILL_PROVIDER, e.g. distill | distill-local) so it claims only the steps the reconciler
+// (DISTILL_PROVIDER, e.g. distill | distill-vpc) so it claims only the steps the reconciler
 // routed to it. Default is on_demand (drain once and exit, the woken Cloud Run job); a resident
 // deploy opts into the long-running loop + symmetric activation via WORK_POLL_INTERVAL and/or
 // POKE_ADDR + POKE_TOKEN.
@@ -1242,7 +1242,7 @@ func main() {
 	}
 	provider := os.Getenv("DISTILL_PROVIDER")
 	if provider == "" {
-		log.Fatalf("DISTILL_PROVIDER is required (the provider this worker serves, e.g. distill | distill-local)")
+		log.Fatalf("DISTILL_PROVIDER is required (the provider this worker serves, e.g. distill | distill-vpc)")
 	}
 
 	cur, engineName, err := NewCurator(cfg)

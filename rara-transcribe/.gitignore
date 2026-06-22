@@ -1,5 +1,5 @@
-scribe-job
-rara-scribe
+transcribe-job
+rara-transcribe
 coverage.out
 *.out
 .env

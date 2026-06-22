@@ -275,7 +275,7 @@ func TestReconcileAfterTranscrever(t *testing.T) {
 		t.Errorf("item status = %q, want to_text", got)
 	}
 	if s, ok := stepBySeq(db, itemID, 4); !ok || s.Status != stepPending || s.AssignedProvider != provGateRicoLocal {
-		t.Errorf("gate_rico step = %+v, want pending+gate-rico-local (VPC-first)", s)
+		t.Errorf("gate_rico step = %+v, want pending+assay-vpc (VPC-first)", s)
 	}
 
 	runGate(t, db, itemID, 4, gateRico, decisionKeep)

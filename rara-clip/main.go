@@ -2,7 +2,7 @@
 // LinkedIn via Bright Data and catalogs each into its own domain table, linkedin_posts. Like
 // every rara agent it shares nothing but the Neon database and never calls another agent — the
 // control plane (rara-core) reads linkedin_posts to build the items spine (lane=linkedin,
-// source_ref=url, sensitivity=public) and the extrair-linkedin worker reads body to clean it.
+// source_ref=url, sensitivity=public) and the scrub-cloud worker reads body to clean it.
 // Idempotent: every run upserts on the canonical post URL, so re-collecting a post converges.
 //
 // linkedin_posts is a CONTRACT table with TWO producers: this AUTOMATED Bright Data crawl, and
@@ -146,7 +146,7 @@ var reTag = regexp.MustCompile(`(?s)<[^>]+>`)
 // strips tags and unescapes entities (so a pure-markup body like "<div></div>" or a lone "&nbsp;"
 // counts as empty) and checks for any non-whitespace remainder. It is deliberately NOT the
 // extractor: rara-clip stores the RAW post and drops only empty rows; the actual to-text
-// normalization is the extrair-linkedin worker's job (rara-glean), exactly as the email lane stores
+// normalization is the scrub-cloud worker's job (rara-extract), exactly as the email lane stores
 // raw bodies. This is rara-clip's own copy — it shares no code with rara-core.
 func postHasContent(raw string) bool {
 	return strings.TrimSpace(html.UnescapeString(reTag.ReplaceAllString(raw, ""))) != ""

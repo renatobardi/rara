@@ -6,7 +6,7 @@ import (
 )
 
 // These tests cover what rara-core itself still owns of the contract now that every domain worker is
-// its own app on the rara-addon SDK (rara-scribe, rara-distill, rara-sift, rara-glean): the
+// its own app on the rara-addon SDK (rara-transcribe, rara-distill, rara-gate, rara-extract): the
 // contract-table CLAIM (the atomic pull + the per-provider isolation) and the reconciler control
 // loop end to end. rara-core no longer runs a `work` role — the SDK's loop mechanics (poke, poll,
 // heartbeat, requeue) are unit-tested in the rara-addon module, and each worker's domain logic in
@@ -89,9 +89,9 @@ func mustStep(t *testing.T, db *MockDatabase, s ItemStep) {
 
 // TestEndToEndYouTubeFlow drives a single video from discovery to done through alternating reconcile
 // passes and SIMULATED worker completions — the whole control loop end to end. Every domain worker
-// now runs out of process on the SDK (rara-scribe, rara-distill, rara-sift); here the to-text and
+// now runs out of process on the SDK (rara-transcribe, rara-distill, rara-gate); here the to-text and
 // distill workers are simulated by completeStep (the external app writes its domain row and marks the
-// step done) and the curation gates by runGate (rara-sift writes its gate_decision and marks the step
+// step done) and the curation gates by runGate (rara-gate writes its gate_decision and marks the step
 // done). The only seams are the simulators; the reconciler under test is real.
 func TestEndToEndYouTubeFlow(t *testing.T) {
 	ctx := context.Background()
@@ -105,7 +105,7 @@ func TestEndToEndYouTubeFlow(t *testing.T) {
 		seq int
 		ref string
 	}{{3, "transcript-7"}, {5, "distill-9"}}
-	// The gates (gate_barato seq 2, gate_rico seq 4) run out of process (rara-sift); runGate records
+	// The gates (gate_barato seq 2, gate_rico seq 4) run out of process (rara-gate); runGate records
 	// the decision + marks the step done after each pass.
 	gates := []struct {
 		seq        int
@@ -120,12 +120,12 @@ func TestEndToEndYouTubeFlow(t *testing.T) {
 		}
 		for _, g := range gates {
 			if s := db.itemSteps[itemStepKey{itemID, g.seq}]; s.Status == stepPending {
-				runGate(t, db, itemID, g.seq, g.capability, decisionKeep) // rara-sift keeps
+				runGate(t, db, itemID, g.seq, g.capability, decisionKeep) // rara-gate keeps
 			}
 		}
 		for _, w := range work {
 			if s := db.itemSteps[itemStepKey{itemID, w.seq}]; s.Status == stepPending {
-				completeStep(t, db, itemID, w.seq, w.ref) // rara-scribe / rara-distill finishes
+				completeStep(t, db, itemID, w.seq, w.ref) // rara-transcribe / rara-distill finishes
 			}
 		}
 		if db.itemByID[itemID].Status == itemDone {

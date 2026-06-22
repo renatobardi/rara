@@ -22,7 +22,7 @@ func fakeStepHostsCore(t *testing.T, token string) *httptest.Server {
 		}
 	}
 	mux := http.NewServeMux()
-	hostsBody := `{"providers":["asr-youtube"],"available":[{"name":"asr-youtube","capability":"transcrever","runtime":"local","activation":"resident","enabled":true}]}`
+	hostsBody := `{"providers":["caption-mac"],"available":[{"name":"caption-mac","capability":"transcrever","runtime":"local","activation":"resident","enabled":true}]}`
 	mux.HandleFunc("GET /v1/flows/{flow_id}/steps/{seq}/hosts", guard(hostsBody))
 	mux.HandleFunc("PUT /v1/flows/{flow_id}/steps/{seq}/hosts", guard(`{"ok":true}`))
 	srv := httptest.NewServer(mux)
@@ -81,8 +81,8 @@ func TestStepHostsGETProxiesWithBearer(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "asr-youtube") {
-		t.Errorf("body missing asr-youtube: %s", rec.Body.String())
+	if !strings.Contains(rec.Body.String(), "caption-mac") {
+		t.Errorf("body missing caption-mac: %s", rec.Body.String())
 	}
 }
 
@@ -125,7 +125,7 @@ func TestStepHostsPUTProxiesWithBearer(t *testing.T) {
 	core := fakeStepHostsCore(t, "secret")
 	s := &server{coreURL: core.URL, token: "secret", client: core.Client()}
 
-	rec := doPUTHosts(s, "1", "3", `{"providers":["asr-youtube"]}`)
+	rec := doPUTHosts(s, "1", "3", `{"providers":["caption-mac"]}`)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
@@ -135,7 +135,7 @@ func TestStepHostsPUTProxiesWithBearer(t *testing.T) {
 func TestStepHostsPUTReturns502WhenCoreUnreachable(t *testing.T) {
 	s := &server{coreURL: "http://127.0.0.1:1", token: "secret", client: http.DefaultClient}
 
-	rec := doPUTHosts(s, "1", "3", `{"providers":["asr-youtube"]}`)
+	rec := doPUTHosts(s, "1", "3", `{"providers":["caption-mac"]}`)
 
 	if rec.Code != http.StatusBadGateway {
 		t.Errorf("status = %d, want 502", rec.Code)
@@ -146,7 +146,7 @@ func TestStepHostsPUTNeverLeaksToken(t *testing.T) {
 	core := fakeStepHostsCore(t, "topsecret")
 	s := &server{coreURL: core.URL, token: "topsecret", client: core.Client()}
 
-	rec := doPUTHosts(s, "1", "3", `{"providers":["asr-youtube"]}`)
+	rec := doPUTHosts(s, "1", "3", `{"providers":["caption-mac"]}`)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())

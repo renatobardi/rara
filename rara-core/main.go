@@ -136,7 +136,7 @@ func profileStatusOr(s string) string {
 	return s
 }
 
-// gate_decisions.decided_by values are now written by the rara-sift gate app (rules | profile |
+// gate_decisions.decided_by values are now written by the rara-gate app (rules | profile |
 // llm); rara-core no longer makes gate decisions. The one decided_by rara-core still writes is the
 // quarantine rescue's `quarantine_review` (sourceQuarantineReview, in feedback.go).
 
@@ -180,7 +180,7 @@ const policyScopeGlobal = "global"
 
 // constraintResidential is the hard-constraint requirement (providers.constraints ->
 // {"requires":"residential"}): egress from a residential IP, satisfied only by
-// runtime=local. YouTube blocks audio download from datacenter IPs, so asr-youtube carries
+// runtime=local. YouTube blocks audio download from datacenter IPs, so caption-mac carries
 // it and the router eliminates any cloudrun/vpc candidate.
 const constraintResidential = "residential"
 
@@ -281,7 +281,7 @@ type Provider struct {
 	// Owned by the dispatcher; seed never writes it.
 	LastAttemptAt *time.Time `json:"last_attempt_at,omitempty"`
 	// Worker is the logical binary name grouping cloud and VPC placements of the same job
-	// (e.g. both "distill" and "distill-local" carry Worker="distill"). Equals Name for
+	// (e.g. both "distill" and "distill-vpc" carry Worker="distill"). Equals Name for
 	// providers that have no -local sibling. Populated by seed; backfilled by migration 014.
 	Worker string `json:"worker"`
 	// LastError is the most recent dispatch failure message. Written by the runner on a failed
@@ -664,8 +664,8 @@ type Database interface {
 	//   ORDER BY id FOR UPDATE SKIP LOCKED LIMIT 1
 	// then transitions it pending->running, bumps attempt and stamps the heartbeat — so no
 	// two workers ever claim the same row. The provider filter matters once a capability has
-	// MORE THAN ONE provider with different runners (transcrever -> asr-youtube on the Mac vs
-	// asr-direct-audio on Cloud Run): each worker pulls only the steps the reconciler routed
+	// MORE THAN ONE provider with different runners (transcrever -> caption-mac on the Mac vs
+	// echo-cloud on Cloud Run): each worker pulls only the steps the reconciler routed
 	// to it, never the other provider's. Returns (nil, nil) when the queue is empty.
 	ClaimPendingStep(ctx context.Context, capability, provider string) (*ItemStep, error)
 
@@ -1020,7 +1020,7 @@ func loadDatabaseURL() string { return os.Getenv("DATABASE_URL") }
 // the architecture puts it: `reconcile` runs always-on in the VPC; `seed`/`ingest` are
 // operational one-shots; `surface` serves the control plane. rara-core no longer runs a `work` role
 // — every capability (transcrever, destilar, the gates, extrair) is its own app on the SDK
-// (rara-scribe, rara-distill, rara-sift, rara-glean); the core only ROUTES and ACTIVATES them.
+// (rara-transcribe, rara-distill, rara-gate, rara-extract); the core only ROUTES and ACTIVATES them.
 const usage = `rara-core — 2.0 control plane
 
 Usage: core-job <command> [flags]
@@ -1098,7 +1098,7 @@ func main() {
 	switch cmd {
 	case "seed":
 		if os.Getenv("RUNNER_LOCAL_URL") == "" {
-			log.Fatalf("RUNNER_LOCAL_URL not set — required for VPC on_demand providers (distill-local, gate-barato-local, gate-rico-local); set it to the tailnet runner endpoint before seeding")
+			log.Fatalf("RUNNER_LOCAL_URL not set — required for VPC on_demand providers (distill-vpc, sift-vpc, assay-vpc); set it to the tailnet runner endpoint before seeding")
 		}
 		for _, seed := range []struct {
 			name string
