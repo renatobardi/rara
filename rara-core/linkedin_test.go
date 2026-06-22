@@ -170,6 +170,9 @@ func TestSeedLinkedInLane(t *testing.T) {
 	if ex.Capability != capExtrair {
 		t.Errorf("extrair-linkedin capability = %q, want extrair", ex.Capability)
 	}
+	if ex.App != "extract" {
+		t.Errorf("extrair-linkedin App = %q, want %q", ex.App, "extract")
+	}
 	if got := string(ex.Constraints); got != `{"accepts":["linkedin"]}` {
 		t.Errorf("extrair-linkedin constraints = %q, want accepts=[linkedin]", got)
 	}
