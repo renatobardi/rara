@@ -99,8 +99,9 @@ func TestSeedYouTubeLane(t *testing.T) {
 // TestSeedSharedProviderEnv asserts the shared work providers carry the per-run NON-secret
 // config their worker image reads from the environment (the dispatcher injects this on wake).
 // Identity keys mirror what each main.go reads: sift -> SIFT_GATE+SIFT_PROVIDER, distill ->
-// DISTILL_PROVIDER; the cloud variants also pin LITELLM_MODEL (the value baked in the deploy
-// YAML today). No secrets (DATABASE_URL, API keys) — those are resolved by the host/agent.
+// DISTILL_PROVIDER. Both cloud and VPC variants pin LITELLM_MODEL; distill-vpc also carries
+// CURATE_ENGINE=litellm so it doesn't default to gemini (which requires GEMINI_API_KEY on the
+// VPC host). No secrets (DATABASE_URL, API keys) — those are resolved by the host/agent.
 func TestSeedSharedProviderEnv(t *testing.T) {
 	ctx := context.Background()
 	db := newMockDatabase()
@@ -109,11 +110,11 @@ func TestSeedSharedProviderEnv(t *testing.T) {
 	}
 	want := map[string]string{
 		provGateBarato:      `{"SIFT_GATE":"gate_barato","SIFT_PROVIDER":"sift-cloud","LITELLM_MODEL":"groq-fast"}`,
-		provGateBaratoLocal: `{"SIFT_GATE":"gate_barato","SIFT_PROVIDER":"sift-vpc"}`,
+		provGateBaratoLocal: `{"SIFT_GATE":"gate_barato","SIFT_PROVIDER":"sift-vpc","LITELLM_MODEL":"groq-fast"}`,
 		provGateRico:        `{"SIFT_GATE":"gate_rico","SIFT_PROVIDER":"assay-cloud","LITELLM_MODEL":"groq-fast"}`,
-		provGateRicoLocal:   `{"SIFT_GATE":"gate_rico","SIFT_PROVIDER":"assay-vpc"}`,
+		provGateRicoLocal:   `{"SIFT_GATE":"gate_rico","SIFT_PROVIDER":"assay-vpc","LITELLM_MODEL":"groq-fast"}`,
 		provDistill:         `{"DISTILL_PROVIDER":"distill-cloud","LITELLM_MODEL":"groq-llama"}`,
-		provDistillLocal:    `{"DISTILL_PROVIDER":"distill-vpc"}`, // model/engine from host LiteLLM config
+		provDistillLocal:    `{"DISTILL_PROVIDER":"distill-vpc","CURATE_ENGINE":"litellm","LITELLM_MODEL":"groq-llama"}`,
 	}
 	for name, wantEnv := range want {
 		if got := string(db.providers[name].Env); got != wantEnv {
@@ -894,6 +895,46 @@ func TestCaptionStashUnchangedByVPCSeed(t *testing.T) {
 	}
 	if stash.Activation != activationResident {
 		t.Errorf("stash: Activation=%q, want %q", stash.Activation, activationResident)
+	}
+}
+
+// TestVPCProviderEnvCarriesEngineAndModel asserts that the three LLM VPC providers carry the
+// engine selector and model in their body env — without these the worker falls back to the gemini
+// engine (which requires GEMINI_API_KEY, absent on the VPC host) and crashes on boot.
+func TestVPCProviderEnvCarriesEngineAndModel(t *testing.T) {
+	ctx := context.Background()
+	db := newMockDatabase()
+	if err := SeedYouTubeLane(ctx, db); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	type wantEnv struct {
+		curateEngine string // empty = not required (gate has no CURATE_ENGINE)
+		litellmModel string
+		identity     string // provider-specific identity key=value to check
+	}
+	cases := map[string]wantEnv{
+		provDistillLocal:    {curateEngine: "litellm", litellmModel: "groq-llama", identity: `"DISTILL_PROVIDER":"distill-vpc"`},
+		provGateBaratoLocal: {litellmModel: "groq-fast", identity: `"SIFT_PROVIDER":"sift-vpc"`},
+		provGateRicoLocal:   {litellmModel: "groq-fast", identity: `"SIFT_PROVIDER":"assay-vpc"`},
+	}
+
+	for name, want := range cases {
+		p, ok := db.providers[name]
+		if !ok {
+			t.Errorf("provider %q not seeded", name)
+			continue
+		}
+		env := string(p.Env)
+		if !strings.Contains(env, `"LITELLM_MODEL":"`+want.litellmModel+`"`) {
+			t.Errorf("provider %q env missing LITELLM_MODEL=%q: %s", name, want.litellmModel, env)
+		}
+		if want.curateEngine != "" && !strings.Contains(env, `"CURATE_ENGINE":"`+want.curateEngine+`"`) {
+			t.Errorf("provider %q env missing CURATE_ENGINE=%q: %s", name, want.curateEngine, env)
+		}
+		if !strings.Contains(env, want.identity) {
+			t.Errorf("provider %q env missing identity %q: %s", name, want.identity, env)
+		}
 	}
 }
 

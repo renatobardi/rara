@@ -121,10 +121,11 @@ func seedSharedProviders(ctx context.Context, db Database) error {
 	// against the worker main.go + the Cloud Run deploy YAML). Identity keys: sift reads
 	// SIFT_GATE + SIFT_PROVIDER, distill reads DISTILL_PROVIDER (so it claims only its own steps).
 	// The cloud variants also pin LITELLM_MODEL (the exact value baked in deploy-sift.yml /
-	// deploy-distill.yml today: groq-fast for gates, groq-llama for distill). The self-host
-	// (-local, VPC) variants carry identity only — their model/endpoint comes from the host's own
-	// LiteLLM/ollama config, not a constant we can seed here. NO secrets (DATABASE_URL, API keys,
-	// LITELLM_BASE_URL is a deploy-resolved endpoint) — the host/agent resolves those (§7).
+	// deploy-distill.yml today: groq-fast for gates, groq-llama for distill). The VPC variants
+	// also carry LITELLM_MODEL (same value from env) + CURATE_ENGINE=litellm for distill, so the
+	// worker selects litellm instead of defaulting to gemini (which requires GEMINI_API_KEY).
+	// NO secrets (DATABASE_URL, API keys, LITELLM_BASE_URL is a deploy-resolved endpoint) —
+	// the host/agent resolves those (§7).
 	modelDistill := os.Getenv("DISTILL_MODEL")
 	if modelDistill == "" {
 		log.Fatalf("seed: DISTILL_MODEL is required")
@@ -152,7 +153,7 @@ func seedSharedProviders(ctx context.Context, db Database) error {
 			Enabled: vpcEnabled, Worker: "distill", App: "distill",
 			Description: "Destilador (LLM)",
 			RunnerURL:   runnerURL,
-			Env:         []byte(`{"DISTILL_PROVIDER":"distill-vpc"}`)}, // model/engine from host LiteLLM config
+			Env:         []byte(`{"DISTILL_PROVIDER":"distill-vpc","CURATE_ENGINE":"litellm","LITELLM_MODEL":` + string(mDistill) + `}`)},
 		// gate_barato / gate_rico: cascade gates (rules -> profile -> LLM-judge).
 		// SIFT_GATE names the gate capability (unchanged); SIFT_PROVIDER is the placement identity.
 		{Name: provGateBarato, Capability: capGateBarato, Runtime: runtimeCloudRun, Activation: activationOnDemand,
@@ -163,7 +164,7 @@ func seedSharedProviders(ctx context.Context, db Database) error {
 			Enabled: vpcEnabled, Worker: "sift", App: "gate",
 			Description: "Filtro — metadados (barato)",
 			RunnerURL:   runnerURL,
-			Env:         []byte(`{"SIFT_GATE":"gate_barato","SIFT_PROVIDER":"sift-vpc"}`)},
+			Env:         []byte(`{"SIFT_GATE":"gate_barato","SIFT_PROVIDER":"sift-vpc","LITELLM_MODEL":` + string(mGate) + `}`)},
 		{Name: provGateRico, Capability: capGateRico, Runtime: runtimeCloudRun, Activation: activationOnDemand,
 			Constraints: thirdParty, Enabled: true, Worker: "assay", App: "gate",
 			Description: "Filtro — texto completo (rico)",
@@ -172,7 +173,7 @@ func seedSharedProviders(ctx context.Context, db Database) error {
 			Enabled: vpcEnabled, Worker: "assay", App: "gate",
 			Description: "Filtro — texto completo (rico)",
 			RunnerURL:   runnerURL,
-			Env:         []byte(`{"SIFT_GATE":"gate_rico","SIFT_PROVIDER":"assay-vpc"}`)},
+			Env:         []byte(`{"SIFT_GATE":"gate_rico","SIFT_PROVIDER":"assay-vpc","LITELLM_MODEL":` + string(mGate) + `}`)},
 	}
 	for _, p := range providers {
 		if err := db.UpsertProvider(ctx, p); err != nil {
