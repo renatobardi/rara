@@ -1130,8 +1130,8 @@ func sanitizeStructured(dist *Distillation) {
 		return
 	}
 	if !json.Valid(dist.Structured) {
-		log.Printf("warn: source_key=%s structured is not valid JSON; saving {} (snippet: %s)",
-			dist.SourceKey, truncate(string(dist.Structured), 200))
+		log.Printf("warn: source_key=%s structured is not valid JSON; saving {} (bytes=%d)",
+			dist.SourceKey, len(dist.Structured))
 		dist.Structured = []byte("{}")
 		dist.StructuredStatus = structParseFailed
 	}
