@@ -63,4 +63,4 @@ handles the credential. Downstream cleaning, gating, and distillation are driven
 
 ## Deploy
 
-No deploy workflow yet — a Cloud Run Job (datacenter IP, like the other collectors) lands in P2.
+Runs **VPC-first** (`clip-vpc` placement via `rara-runner agent`); Cloud Run Job (`rara-clip`) is the ordered fallback. LinkedIn data passes through Bright Data proxies, so no residential IP constraint — the host's datacenter IP is fine.

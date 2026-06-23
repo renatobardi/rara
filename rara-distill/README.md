@@ -26,9 +26,13 @@ isolation: rara-distill never calls Kura.
 - **Tables**: `distillations` (own, domain); reads `transcripts`, `channel_videos`,
   `playlist_videos`, and `flow_steps` (the per-item recipe config). The CONTRACT tables
   (`item_steps`/`providers`/`items`) are handled by the SDK's `PgxStore`.
-- **Runtime**: one provider per deploy (`DISTILL_PROVIDER`, e.g. `distill` on Cloud Run /
-  `distill-vpc` on the VPC). on_demand by default (drain once and exit, the woken Cloud Run Job);
-  resident + symmetric activation via `WORK_POLL_INTERVAL` / `POKE_ADDR`.
+- **Runtime**: **VPC-first** — primary execution is `distill-vpc` on the VPC Oracle, where
+  `rara-runner agent` runs the container via `docker run --pull=always` with
+  `CURATE_ENGINE=litellm` + `LITELLM_MODEL=groq-llama` (LiteLLM gateway at `172.17.0.1:4010`
+  on the host). Cloud Run (`distill-cloud`) is the ordered fallback. One provider per deploy
+  (`DISTILL_PROVIDER`, e.g. `distill-vpc` on the VPC / `distill` on Cloud Run). on_demand by
+  default (drain once and exit); resident + symmetric activation via `WORK_POLL_INTERVAL` /
+  `POKE_ADDR`.
 
 ## How it works
 
