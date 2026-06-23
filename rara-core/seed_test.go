@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -901,7 +902,15 @@ func TestCaptionStashUnchangedByVPCSeed(t *testing.T) {
 // TestVPCProviderEnvCarriesEngineAndModel asserts that the three LLM VPC providers carry the
 // engine selector and model in their body env — without these the worker falls back to the gemini
 // engine (which requires GEMINI_API_KEY, absent on the VPC host) and crashes on boot.
+// TestMain sets DISTILL_MODEL and GATE_MODEL; this test reads them so the expected values track
+// whatever TestMain configures rather than being hardcoded twice.
 func TestVPCProviderEnvCarriesEngineAndModel(t *testing.T) {
+	distillModel := os.Getenv("DISTILL_MODEL")
+	gateModel := os.Getenv("GATE_MODEL")
+	if distillModel == "" || gateModel == "" {
+		t.Skip("DISTILL_MODEL and GATE_MODEL must be set (TestMain sets them for the full suite)")
+	}
+
 	ctx := context.Background()
 	db := newMockDatabase()
 	if err := SeedYouTubeLane(ctx, db); err != nil {
@@ -914,9 +923,9 @@ func TestVPCProviderEnvCarriesEngineAndModel(t *testing.T) {
 		identity     string // provider-specific identity key=value to check
 	}
 	cases := map[string]wantEnv{
-		provDistillLocal:    {curateEngine: "litellm", litellmModel: "groq-llama", identity: `"DISTILL_PROVIDER":"distill-vpc"`},
-		provGateBaratoLocal: {litellmModel: "groq-fast", identity: `"SIFT_PROVIDER":"sift-vpc"`},
-		provGateRicoLocal:   {litellmModel: "groq-fast", identity: `"SIFT_PROVIDER":"assay-vpc"`},
+		provDistillLocal:    {curateEngine: "litellm", litellmModel: distillModel, identity: `"DISTILL_PROVIDER":"distill-vpc"`},
+		provGateBaratoLocal: {litellmModel: gateModel, identity: `"SIFT_PROVIDER":"sift-vpc"`},
+		provGateRicoLocal:   {litellmModel: gateModel, identity: `"SIFT_PROVIDER":"assay-vpc"`},
 	}
 
 	for name, want := range cases {
