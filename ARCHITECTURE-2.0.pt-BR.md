@@ -61,10 +61,14 @@ trabalho roda*):
 O core **não executa trabalho de domínio** — só decide, observa e acorda. (`core` e `core console`
 na VPC são mandatórios.)
 
-> **Regra de host (não negociável):** **always-on → VPC Oracle (systemd); on_demand → Cloud Run Jobs.**
+> **Regra de host:** **always-on → VPC Oracle (systemd); on_demand → VPC Oracle via docker run (primário) + Cloud Run Jobs (fallback).**
 > O `rara-core` (reconciler + surface) é always-on → mora na VM (systemd, custo marginal ~zero, a VM já é
-> paga). Os workers (coletores, gates, glean, scribe-direct, distill) são on_demand → Cloud Run Jobs
-> (scale-to-zero, ~grátis ocioso). O `hone` é cron → Cloud Run Job + Scheduler.
+> paga). Os workers (coletores, gates, glean, scribe-direct, distill) são on_demand — executam como
+> containers Docker no VPC via `rara-runner agent` (`docker run --pull=always`) com **Cloud Run como
+> fallback ordenado**: se o VPC não está disponível, o dispatcher rota para o `*-cloud` placement.
+> O `hone` é cron → Cloud Run Job + Scheduler (ainda sem placement VPC). `caption` fica no Mac
+> (IP residencial, sem fallback). Cloud Run não cobre mais o compute primário dos workers — o custo
+> de execução foi zerado ao mover pro VPC (VM Oracle já é paga).
 >
 > **⚠️ Armadilha (já aconteceu — commit `b517553`, W1):** é tentador deployar o `core` como **Cloud Run
 > Service** porque (a) o activator fica *keyless* (o token de `jobs:run` vem do metadata server do GCP de
@@ -148,9 +152,9 @@ constraint.
 
 | Host | Roda | 
 |---|---|
-| **VPC Oracle** (always-on) | `core` + `console` + `runner` (dispatch + agent) + workers VPC-local (via Docker) + LiteLLM container |
-| **Mac** (residente) | `caption` (rara-transcribe, launchd, IP residencial) |
-| **GCP Cloud Run** (on_demand) | coletores + `gate` + `distill` + `echo` (rara-transcribe) + `extract` + `hone` + LiteLLM Service |
+| **VPC Oracle** (always-on + on_demand) | `core` + `console` + `runner` (dispatch + agent) + LiteLLM container; **workers on_demand executam via `docker run --pull=always`** (distill, gate/sift/assay, extract/winnow/glean/scrub, coletores harvest/shelf/dial/feed/courier/clip, echo) |
+| **Mac** (residente) | `caption` (rara-transcribe, launchd, IP residencial obrigatório) |
+| **GCP Cloud Run** (fallback) | fallback ordenado para todos os workers VPC; `hone` (cron, sem placement VPC); LiteLLM Service (gateway para workers cloud) |
 | **Neon** | estado · config · domínio (de tudo) |
 
 Detalhes de deploy em [INFRASTRUCTURE.md](./INFRASTRUCTURE.md).
@@ -188,7 +192,27 @@ providers/roteamento, auditoria.
 
 Binários nativos arm64, sem Docker. Deploy: rsync + SSH + systemd (`deploy-core.yml` e `deploy-console.yml` em push a `main`; `deploy-runner.yml` é `workflow_dispatch` deliberado). LiteLLM roda como container Docker na VPC (`groq-fast` para gates, `groq-llama` para distill).
 
-### Cloud Run Jobs (on_demand, amd64, acionados pelo dispatcher)
+### VPC Oracle — workers on_demand (arm64, docker run --pull=always)
+
+O `rara-runner agent` executa cada worker como container Docker com o env base de
+`/etc/rara-runner/worker.env` (DATABASE_URL, LITELLM_BASE_URL, LITELLM_API_KEY) + overrides do body
+(`CURATE_ENGINE`, `LITELLM_MODEL`, etc.). O dispatcher rota para o `*-vpc` placement primeiro.
+
+| Placement(s) VPC | App | Capability |
+|---|---|---|
+| `harvest-vpc`, `shelf-vpc`, `feed-vpc` | harvest / shelf / feed | coletar (YouTube API, Spotify, RSS) |
+| `dial-vpc` | dial | coletar (podcasts) |
+| `courier-vpc` | courier | coletar (email) |
+| `clip-vpc` | clip | coletar (LinkedIn via Bright Data) |
+| `sift-vpc`, `assay-vpc` | gate | gate_barato (sift) / gate_rico (assay) — `LITELLM_MODEL=groq-fast` |
+| `distill-vpc` | distill | destilar — `CURATE_ENGINE=litellm`, `LITELLM_MODEL=groq-llama` |
+| `echo-vpc` | transcribe | transcrever (áudio via URL direta, echo) |
+| `winnow-vpc`, `glean-vpc`, `scrub-vpc` | extract | extrair |
+
+### Cloud Run Jobs (fallback, amd64, acionados pelo dispatcher)
+
+Fallback ordenado: o dispatcher rota para `*-cloud` quando o placement VPC não está disponível.
+`hone` não tem placement VPC (ainda) — roda apenas via Cloud Run Job (Cloud Scheduler diário).
 
 | Job(s) | App | Capability |
 |---|---|---|

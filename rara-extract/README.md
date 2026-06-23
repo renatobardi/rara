@@ -20,6 +20,10 @@ One app, **three workers** by lane (`GLEAN_PROVIDER`):
 
 The handler dispatches by `item.Lane` — one codebase, three workers. Codebases ≪ providers.
 
+**Runtime: VPC-first.** Primary execution is via `rara-runner agent` on the VPC Oracle
+(`winnow-vpc`, `glean-vpc`, `scrub-vpc` placements). Cloud Run (`rara-extract` job) is the
+ordered fallback.
+
 ## What it does
 
 Per claimed item:

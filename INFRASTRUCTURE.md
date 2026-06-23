@@ -22,7 +22,8 @@ see `ARCHITECTURE.md`.
 | **rara-runner-agent** | VPC Oracle | systemd | always-on; HTTP daemon → `docker run` for VPC-local workers |
 | **LiteLLM (VPC)** | VPC Oracle | Docker container | serves VPC-local workers (groq models, bridge `172.17.0.1:4010`) |
 | **rara-transcribe / caption** | Mac | launchd | residential IP; daily 02:00; yt-dlp + ffmpeg native |
-| **Cloud Run Jobs** (collectors + workers) | GCP | Cloud Run Job | on-demand; dispatched via `jobs:run` by rara-runner-dispatch |
+| **Workers (VPC-local)** | VPC Oracle | Docker container | on-demand; dispatched by rara-runner-dispatch → rara-runner-agent → `docker run --pull=always` |
+| **Cloud Run Jobs** (collectors + workers, **fallback**) | GCP | Cloud Run Job | fallback when VPC placement unavailable; dispatched via `jobs:run` by rara-runner-dispatch |
 | **LiteLLM (cloud)** | GCP | Cloud Run Service | gateway for Cloud Run workers; scales to zero |
 | **Neon** | managed | PostgreSQL | shared state for all components |
 
@@ -147,10 +148,31 @@ manually with `make build && bash install-local.sh` from the `rara-transcribe` d
 | Deployer SA | `rara-deployer@<PROJECT_ID>.iam.gserviceaccount.com` |
 | Auth | Workload Identity Federation (no SA key files in Cloud Run) |
 
-### Cloud Run Jobs
+### Workers on the VPC (primary execution path)
 
-On-demand, dispatched by `rara-runner dispatch` via `gcloud run jobs execute`.
-Job name = `rara-` + provider name (what the dispatcher wakes).
+Workers run as Docker containers via `rara-runner agent` (`docker run --pull=always <image>:latest`).
+The dispatcher routes to the `*-vpc` placement first; Cloud Run is the fallback.
+
+Base env injected into every VPC container comes from `/etc/rara-runner/worker.env`
+(`DATABASE_URL`, `LITELLM_BASE_URL`, `LITELLM_API_KEY`). Per-placement overrides (e.g.
+`CURATE_ENGINE=litellm`, `LITELLM_MODEL=groq-llama`) are carried in the provider's `body_env`
+and injected by the dispatcher at wake time.
+
+| VPC placement(s) | App | Capability |
+|-----------------|-----|------------|
+| `harvest-vpc`, `shelf-vpc`, `feed-vpc` | harvest / shelf / feed | coletar (YouTube API, Spotify, RSS) |
+| `dial-vpc` | dial | coletar (podcasts) |
+| `courier-vpc` | courier | coletar (email) |
+| `clip-vpc` | clip | coletar (LinkedIn via Bright Data proxies) |
+| `sift-vpc`, `assay-vpc` | gate | gate_barato / gate_rico (`LITELLM_MODEL=groq-fast`) |
+| `distill-vpc` | distill | destilar (`CURATE_ENGINE=litellm`, `LITELLM_MODEL=groq-llama`) |
+| `echo-vpc` | transcribe | transcrever (echo/audio via direct URL) |
+| `winnow-vpc`, `glean-vpc`, `scrub-vpc` | extract | extrair |
+
+### Cloud Run Jobs (fallback)
+
+Fallback when the VPC placement for a worker is unavailable. `hone` has no VPC placement and
+runs exclusively here. Dispatched via `gcloud run jobs execute`.
 
 | Job(s) | App image | Capability |
 |--------|-----------|------------|
@@ -159,7 +181,7 @@ Job name = `rara-` + provider name (what the dispatcher wakes).
 | `rara-courier` | courier | coletar (email) |
 | `rara-clip` | clip | coletar (LinkedIn via Bright Data proxies) |
 | `rara-gate` | gate | gate_barato / gate_rico |
-| `rara-distill` | distill | destilar (llama-3.3-70b via LiteLLM) |
+| `rara-distill` | distill | destilar |
 | `rara-transcribe` | transcribe | transcrever (echo/audio via direct URL, no residential IP needed) |
 | `rara-extract` (winnow / scrub / glean) | extract | extrair |
 | `rara-hone` | hone | revise (triggered by Cloud Scheduler daily) |

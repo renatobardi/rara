@@ -11,8 +11,8 @@ A zero-idle-cost video harvesting pipeline for collecting latest videos from tar
 - **Language**: Go 1.23+
 - **Database**: Neon DB (PostgreSQL Serverless)
 - **Driver**: pgx/v5
-- **Container Runtime**: Docker (ARM64-optimized)
-- **Deployment**: Google Cloud Run (serverless, pay-per-execution)
+- **Container Runtime**: Docker (multi-arch: arm64 primary on VPC, amd64 on Cloud Run)
+- **Deployment**: **VPC-first** (`harvest-vpc` placement via `rara-runner agent`); Cloud Run Job (`rara-harvest`) is the ordered fallback
 - **Testing**: TDD with fluent harness pattern
 
 ## Features
@@ -23,7 +23,7 @@ A zero-idle-cost video harvesting pipeline for collecting latest videos from tar
 - **Quota Efficient**: Uses playlistItems endpoint (1 unit vs 100 for search)
 - **ARM64 Native**: Cross-compiled for Oracle Cloud and GCP ARM environments
 - **Minimal Container**: ~50MB Docker image with ca-certificates
-- **Zero Idle Costs**: Serverless Cloud Run with pay-per-execution billing
+- **Zero Idle Costs**: Runs on the already-paid VPC Oracle (primary); Cloud Run fallback scales to zero
 - **Production Ready**: Comprehensive TDD test suite with fluent harness pattern
 
 ## Quick Start

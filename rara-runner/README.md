@@ -80,10 +80,11 @@ the same native-binary + rsync + systemd pattern as `rara-core`.
 | Config | `/etc/rara-runner/env` (chmod 640, gitignored) — see [deploy/env.example](deploy/env.example) |
 | Service | `/etc/systemd/system/rara-runner-dispatch.service` — Type=exec, Restart=on-failure |
 
-Prod state is **cloud-run-only**: `dispatch` wakes GCP Cloud Run jobs via `jobs:run`, authenticating
-with ADC through `GOOGLE_APPLICATION_CREDENTIALS=/etc/rara-core/sa-key.json` (the SA key `rara-core`
-already uses — its `rara-core-activator` holds `run.invoker`). `RUNNER_TOKEN` is intentionally unset
-(no host transport yet), so no `agent` is required.
+Prod routing is **VPC-first**: `dispatch` wakes VPC workers via `POST /run` to the agent (Bearer +
+allowlist), falling back to `gcloud run jobs execute` for any worker whose VPC placement is
+unavailable. GCP auth uses ADC through `GOOGLE_APPLICATION_CREDENTIALS=/etc/rara-core/sa-key.json`
+(shared with `rara-core`). `RUNNER_TOKEN` and `RUNNER_LOCAL_URL` must be set in `/etc/rara-core/env`
+(the core env) to activate VPC placements during `core-job seed`.
 
 First bring-up (on the VM, once):
 
@@ -91,7 +92,8 @@ First bring-up (on the VM, once):
 sudo mkdir -p /etc/rara-runner && sudo chown ubuntu:ubuntu /etc/rara-runner && sudo chmod 750 /etc/rara-runner
 cp deploy/env.example /etc/rara-runner/env && chmod 640 /etc/rara-runner/env
 nano /etc/rara-runner/env   # DATABASE_URL, CLOUD_RUN_PROJECT, CLOUD_RUN_REGION,
-                            # GOOGLE_APPLICATION_CREDENTIALS (reuse /etc/rara-core/sa-key.json)
+                            # GOOGLE_APPLICATION_CREDENTIALS (reuse /etc/rara-core/sa-key.json),
+                            # RUNNER_TOKEN (must match agent.env)
 ```
 
 ### `agent` (receives POST /run, executes docker run)

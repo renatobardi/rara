@@ -5,8 +5,9 @@ public channels, **rara-shelf** does the opposite: it catalogs **your own YouTub
 (public, private, and unlisted) and the videos in each one, recording **which playlist each
 video belongs to**.
 
-Fully isolated from harvest (own code, tables, Cloud Run Job, and workflows), reusing the
-same GCP + Neon infrastructure.
+Fully isolated from harvest (own code, tables, and workflows), reusing the same GCP + Neon
+infrastructure. Runs **VPC-first** (`shelf-vpc` placement via `rara-runner agent`); Cloud Run
+Job (`rara-shelf`) is the ordered fallback.
 
 ## How it works
 

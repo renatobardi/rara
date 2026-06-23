@@ -13,6 +13,10 @@ It serves **two workers**, both gates, selected by the `SIFT_GATE` env var:
 
 One binary, two workers. The dispatcher sets `SIFT_GATE` + `SIFT_PROVIDER` per execution.
 
+**Runtime: VPC-first.** Primary execution is via `rara-runner agent` on the VPC Oracle
+(`sift-vpc` / `assay-vpc` placements), with `LITELLM_MODEL=groq-fast` pointing to the
+LiteLLM container on the host. Cloud Run (`rara-gate` job) is the ordered fallback.
+
 ## The cascade (cheap → expensive)
 
 The verdict is reached by a cost-ordered cascade, so the paid layer rarely runs:
