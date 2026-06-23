@@ -985,3 +985,64 @@ func TestLoadSourceDocIntegration(t *testing.T) {
 		t.Error("an unknown source_ref must not be found")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// sanitizeStructured — 22P02 guard
+// ---------------------------------------------------------------------------
+
+// TestSanitizeStructuredInvalidJSON: non-JSON bytes are replaced with '{}' and
+// structured_status set to parse_failed; content and status are untouched.
+func TestSanitizeStructuredInvalidJSON(t *testing.T) {
+	d := Distillation{
+		SourceKey:        "key1",
+		Content:          "# Useful note",
+		Status:           statusDone,
+		Structured:       []byte("not json at all"),
+		StructuredStatus: structOK,
+	}
+	sanitizeStructured(&d)
+
+	if string(d.Structured) != "{}" {
+		t.Errorf("structured = %s, want {}", d.Structured)
+	}
+	if d.StructuredStatus != structParseFailed {
+		t.Errorf("structured_status = %q, want %q", d.StructuredStatus, structParseFailed)
+	}
+	if d.Content != "# Useful note" {
+		t.Errorf("content clobbered: %q", d.Content)
+	}
+	if d.Status != statusDone {
+		t.Errorf("status changed to %q, want done", d.Status)
+	}
+}
+
+// TestSanitizeStructuredValidJSON: valid JSON bytes pass through unchanged.
+func TestSanitizeStructuredValidJSON(t *testing.T) {
+	raw := []byte(`{"concepts":["foo"],"insights":["bar"]}`)
+	d := Distillation{
+		SourceKey:        "key2",
+		Structured:       raw,
+		StructuredStatus: structOK,
+	}
+	sanitizeStructured(&d)
+
+	if string(d.Structured) != string(raw) {
+		t.Errorf("structured changed: %s", d.Structured)
+	}
+	if d.StructuredStatus != structOK {
+		t.Errorf("structured_status changed to %q", d.StructuredStatus)
+	}
+}
+
+// TestSanitizeStructuredEmpty: nil/empty bytes default to '{}' without changing status.
+func TestSanitizeStructuredEmpty(t *testing.T) {
+	d := Distillation{StructuredStatus: structEmpty}
+	sanitizeStructured(&d)
+
+	if string(d.Structured) != "{}" {
+		t.Errorf("structured = %s, want {}", d.Structured)
+	}
+	if d.StructuredStatus != structEmpty {
+		t.Errorf("structured_status changed to %q", d.StructuredStatus)
+	}
+}

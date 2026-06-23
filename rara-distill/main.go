@@ -1121,17 +1121,30 @@ func (db *appDB) LoadSourceDoc(ctx context.Context, sourceRef string) (SourceDoc
 	return doc, true, nil
 }
 
+// sanitizeStructured ensures dist.Structured is valid JSON for the jsonb column.
+// Empty bytes → '{}' (status unchanged). Invalid JSON → '{}' + structParseFailed + warning log.
+// ponytail: defensive guard against 22P02 when the LLM delivers non-JSON structured bytes.
+func sanitizeStructured(dist *Distillation) {
+	if len(dist.Structured) == 0 {
+		dist.Structured = []byte("{}")
+		return
+	}
+	if !json.Valid(dist.Structured) {
+		log.Printf("warn: source_key=%s structured is not valid JSON; saving {} (snippet: %s)",
+			dist.SourceKey, truncate(string(dist.Structured), 200))
+		dist.Structured = []byte("{}")
+		dist.StructuredStatus = structParseFailed
+	}
+}
+
 // SaveDistillation upserts the distillation and returns its id (the OutputRef recorded on the
 // step). Idempotent on (source_key, COALESCE(session_patterns, pattern)): a re-run replaces the
 // row, incrementing attempt_count on consecutive failures and resetting it on success.
 func (db *appDB) SaveDistillation(ctx context.Context, dist Distillation) (int, error) {
+	sanitizeStructured(&dist)
 	initialAttempt := 0
 	if dist.Status == statusFailed {
 		initialAttempt = 1
-	}
-	structured := dist.Structured
-	if len(structured) == 0 {
-		structured = []byte("{}")
 	}
 	const upsert = `
 		INSERT INTO distillations
@@ -1176,7 +1189,7 @@ func (db *appDB) SaveDistillation(ctx context.Context, dist Distillation) (int, 
 		dist.Engine,
 		nullStr(dist.Title),
 		nullStr(dist.Content),
-		structured,
+		dist.Structured,
 		dist.StructuredStatus,
 		nullStr(dist.DocContext),
 		dist.SourceSHA256,
