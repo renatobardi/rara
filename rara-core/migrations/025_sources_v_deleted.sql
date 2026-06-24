@@ -17,6 +17,15 @@ ALTER TABLE podcast_feeds   ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
 ALTER TABLE feed_sources    ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
 ALTER TABLE email_sources   ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
 
+-- Partial indexes over the live set (every SELECT below filters deleted_at IS NULL, and
+-- soft-deleted rows accumulate forever). Owned by the collector migrations; mirrored here
+-- IF NOT EXISTS so the view's scans are covered regardless of migration order.
+CREATE INDEX IF NOT EXISTS target_channels_live_idx ON target_channels (id) WHERE deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS playlists_live_idx       ON playlists       (id) WHERE deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS podcast_feeds_live_idx   ON podcast_feeds   (id) WHERE deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS feed_sources_live_idx    ON feed_sources    (id) WHERE deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS email_sources_live_idx   ON email_sources   (id) WHERE deleted_at IS NULL;
+
 -- ---------------------------------------------------------------------------
 -- 2. sources_v — same shape as 024, now filtering out soft-deleted rows.
 -- ---------------------------------------------------------------------------

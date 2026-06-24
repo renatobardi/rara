@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -86,6 +87,24 @@ func TestYTResolveNotFound(t *testing.T) {
 
 	if _, err := r.resolve(context.Background(), "Nonexistent Channel"); !isBadInput(err) {
 		t.Fatalf("zero results should be badInput, got %v", err)
+	}
+}
+
+// A transport error must not surface the request URL (it carries the API key).
+func TestYTResolveErrorDoesNotLeakKey(t *testing.T) {
+	leaky := &url.Error{
+		Op:  "Get",
+		URL: "http://test/channels?forHandle=%40h&key=SUPERSECRETKEY",
+		Err: context.DeadlineExceeded,
+	}
+	r := &ytResolver{doer: &fakeDoer{err: leaky}, apiKey: "SUPERSECRETKEY", baseURL: "http://test"}
+
+	_, err := r.resolve(context.Background(), "@h")
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if strings.Contains(err.Error(), "SUPERSECRETKEY") || strings.Contains(err.Error(), "key=") {
+		t.Errorf("error leaked the API key: %v", err)
 	}
 }
 

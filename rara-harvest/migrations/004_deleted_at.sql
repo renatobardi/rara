@@ -5,3 +5,7 @@
 -- Idempotent (IF NOT EXISTS): safe to re-apply.
 
 ALTER TABLE target_channels ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
+
+-- Partial index over the live set: the view and harvest scan WHERE deleted_at IS NULL,
+-- and soft-deleted rows accumulate forever (never hard-deleted). Idempotent.
+CREATE INDEX IF NOT EXISTS target_channels_live_idx ON target_channels (id) WHERE deleted_at IS NULL;

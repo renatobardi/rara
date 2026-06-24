@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -115,7 +116,13 @@ func (r *ytResolver) get(ctx context.Context, path string, params url.Values, ou
 	}
 	resp, err := r.doer.Do(req)
 	if err != nil {
-		return err
+		// *url.Error stringifies the full request URL, which carries the API key as a
+		// query param — strip it down to the underlying cause before surfacing/logging.
+		var ue *url.Error
+		if errors.As(err, &ue) {
+			err = ue.Err
+		}
+		return fmt.Errorf("youtube API %s request failed: %w", path, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {

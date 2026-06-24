@@ -1067,7 +1067,7 @@ func (d *pgxDatabase) SetSourceDeleted(ctx context.Context, apiID string) error 
 	}
 	tag, err := d.conn.Exec(ctx, q, id)
 	if err != nil {
-		return err
+		return fmt.Errorf("soft-delete source %q: %w", apiID, err)
 	}
 	if tag.RowsAffected() == 0 {
 		return fmt.Errorf("source %q: %w", apiID, errNotFound)
@@ -1566,7 +1566,11 @@ func serveSurfacePool(ctx context.Context, dbURL, addr, token string) error {
 	}
 	defer pool.Close()
 	core := NewCore(&pgxDatabase{conn: pool}, newPgxLinkedInInbox(pool))
-	core.resolveChannel = newYTResolver(os.Getenv("YOUTUBE_API_KEY")).resolve
+	// Only wire the resolver when a key is configured; without it, leave resolveChannel
+	// nil so AddYouTubeChannel keeps accepting a raw channel id verbatim (no API needed).
+	if key := os.Getenv("YOUTUBE_API_KEY"); key != "" {
+		core.resolveChannel = newYTResolver(key).resolve
+	}
 	return ServeSurface(ctx, core, addr, token)
 }
 

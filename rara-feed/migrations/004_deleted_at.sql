@@ -5,3 +5,6 @@
 -- Idempotent (IF NOT EXISTS): safe to re-apply.
 
 ALTER TABLE feed_sources ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
+
+-- Partial index over the live set (the view and feed scan WHERE deleted_at IS NULL). Idempotent.
+CREATE INDEX IF NOT EXISTS feed_sources_live_idx ON feed_sources (id) WHERE deleted_at IS NULL;
