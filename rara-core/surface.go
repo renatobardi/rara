@@ -27,6 +27,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -371,6 +372,197 @@ func (c *Core) SetPodcastFeedActive(ctx context.Context, id int, active bool) er
 	return c.db.SetPodcastFeedActive(ctx, id, active)
 }
 
+// --- Source writes (fatia #2) — per-kind create + cross-kind edit/toggle ---
+
+// AddYouTubeChannel registers a YouTube channel for collection (rara-harvest's table).
+// channelID must be the YouTube channel ID (UCxxxxxxx) or a handle; it is the UNIQUE key.
+// displayName is optional (the collector reads channel_name; display_name is UI-only).
+func (c *Core) AddYouTubeChannel(ctx context.Context, channelID, channelName, displayName string) (int, error) {
+	channelID = strings.TrimSpace(channelID)
+	if channelID == "" {
+		return 0, badInput("channel_id cannot be empty")
+	}
+	if channelName == "" {
+		channelName = channelID
+	}
+	return c.db.UpsertYouTubeChannel(ctx, channelID, channelName, displayName)
+}
+
+// AddYouTubePlaylist registers a YouTube playlist for collection (rara-shelf's table).
+// playlistURL may be a full YouTube URL (list= param is parsed) or a raw playlist ID.
+func (c *Core) AddYouTubePlaylist(ctx context.Context, playlistURL, displayName string) (int, error) {
+	raw := strings.TrimSpace(playlistURL)
+	if raw == "" {
+		return 0, badInput("playlist_url cannot be empty")
+	}
+	playlistID, err := extractPlaylistID(raw)
+	if err != nil {
+		return 0, badInput("%v", err)
+	}
+	return c.db.UpsertYouTubePlaylist(ctx, playlistID, raw, displayName)
+}
+
+// extractPlaylistID returns the playlist ID from a YouTube URL or a bare ID.
+func extractPlaylistID(raw string) (string, error) {
+	if !strings.Contains(raw, "://") {
+		// Not a URL: treat as a raw playlist ID.
+		return raw, nil
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", fmt.Errorf("invalid playlist URL: %w", err)
+	}
+	id := u.Query().Get("list")
+	if id == "" {
+		return "", fmt.Errorf("playlist URL has no list= parameter: %q", raw)
+	}
+	return id, nil
+}
+
+// validFeedKinds are the source_type values feed_sources accepts.
+var validFeedKinds = map[string]bool{"rss": true, "html": true, "hn": true}
+
+// AddFeedSource adds an RSS/HTML/HN source to the feed collector's table.
+// For rss/html, endpoint is required; for hn it may be empty (collects the front page).
+func (c *Core) AddFeedSource(ctx context.Context, kind, name, endpoint string) (int, error) {
+	if !validFeedKinds[kind] {
+		return 0, badInput("unknown feed kind %q (want rss|html|hn)", kind)
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return 0, badInput("feed source name cannot be empty")
+	}
+	if kind != "hn" && strings.TrimSpace(endpoint) == "" {
+		return 0, badInput("endpoint cannot be empty for kind %q", kind)
+	}
+	cls := "b-" + strings.ToLower(strings.ReplaceAll(name, " ", "-"))
+	return c.db.UpsertFeedSource(ctx, name, kind, endpoint, cls)
+}
+
+// AddEmailSource adds an email reading rule to the courier's table.
+// At least one of gmailQuery, label, or fromFilter must be non-empty.
+func (c *Core) AddEmailSource(ctx context.Context, gmailQuery, label, fromFilter string) (int, error) {
+	if strings.TrimSpace(gmailQuery) == "" && strings.TrimSpace(label) == "" && strings.TrimSpace(fromFilter) == "" {
+		return 0, badInput("at least one of gmail_query, label, from_filter must be set")
+	}
+	return c.db.CreateEmailSource(ctx, gmailQuery, label, fromFilter)
+}
+
+// PatchSource updates display_name and/or tags on any source identified by api_id.
+// Neither field is required; omitting both is a valid no-op.
+func (c *Core) PatchSource(ctx context.Context, apiID string, patch SourcePatch) error {
+	if _, _, ok := parseSourceID(apiID); !ok {
+		return badInput("invalid source id %q (want kind:N)", apiID)
+	}
+	return c.db.PatchSourceMeta(ctx, apiID, patch.DisplayName, patch.Tags)
+}
+
+// PauseSource sets a source to paused (active/enabled=false). Idempotent.
+func (c *Core) PauseSource(ctx context.Context, apiID string) error {
+	return c.toggleSourceActive(ctx, apiID, false)
+}
+
+// ResumeSource restores a source to active. Idempotent.
+func (c *Core) ResumeSource(ctx context.Context, apiID string) error {
+	return c.toggleSourceActive(ctx, apiID, true)
+}
+
+// ArchiveSource soft-deletes a source (active/enabled=false). Identical to PauseSource;
+// the semantic label "archive" lives in the UI, not the data model.
+// ponytail: no hard-delete in v1. Add DELETE FROM when Renato explicitly requests it.
+func (c *Core) ArchiveSource(ctx context.Context, apiID string) error {
+	return c.toggleSourceActive(ctx, apiID, false)
+}
+
+func (c *Core) toggleSourceActive(ctx context.Context, apiID string, active bool) error {
+	kind, _, ok := parseSourceID(apiID)
+	if !ok {
+		return badInput("invalid source id %q (want kind:N)", apiID)
+	}
+	validKinds := map[string]bool{
+		"youtube_channel": true, "youtube_playlist": true, "podcast": true,
+		"rss": true, "html": true, "hn": true, "email": true,
+	}
+	if !validKinds[kind] {
+		return badInput("unknown source kind %q", kind)
+	}
+	return c.db.SetSourceActive(ctx, apiID, active)
+}
+
+// validBulkActions are the allowed actions for POST /v1/sources/bulk.
+var validBulkActions = map[string]bool{"pause": true, "resume": true, "tag": true, "untag": true, "archive": true}
+
+// BulkSources applies an action to multiple sources. Results are per-item: a failure on one
+// does not stop the others (relayed in BulkSourcesResult).
+func (c *Core) BulkSources(ctx context.Context, action string, ids []string, tag string) (BulkSourcesResult, error) {
+	if !validBulkActions[action] {
+		return BulkSourcesResult{}, badInput("unknown bulk action %q (want pause|resume|tag|untag|archive)", action)
+	}
+	result := BulkSourcesResult{Items: make([]BulkSourceEntry, 0, len(ids))}
+	for _, id := range ids {
+		entry := BulkSourceEntry{ID: id}
+		var err error
+		switch action {
+		case "pause", "archive":
+			err = c.PauseSource(ctx, id)
+		case "resume":
+			err = c.ResumeSource(ctx, id)
+		case "tag":
+			if tag == "" {
+				err = badInput("tag action requires a non-empty tag")
+			} else {
+				err = c.addTag(ctx, id, tag)
+			}
+		case "untag":
+			err = c.removeTag(ctx, id, tag)
+		}
+		if err != nil {
+			entry.Error = err.Error()
+			result.Failed++
+		} else {
+			entry.OK = true
+			result.Applied++
+		}
+		result.Items = append(result.Items, entry)
+	}
+	return result, nil
+}
+
+// addTag appends a tag to the source's tags array (no-op if already present).
+func (c *Core) addTag(ctx context.Context, apiID, tag string) error {
+	src, found, err := c.db.GetSource(ctx, apiID)
+	if err != nil {
+		return err
+	}
+	tags := src.Tags
+	if !found {
+		// Source not in sources_v yet (newly created); patch with just the tag.
+		tags = []string{}
+	}
+	for _, t := range tags {
+		if t == tag {
+			return nil // already present
+		}
+	}
+	tags = append(tags, tag)
+	return c.db.PatchSourceMeta(ctx, apiID, nil, tags)
+}
+
+// removeTag removes a tag from the source's tags array (no-op if absent).
+func (c *Core) removeTag(ctx context.Context, apiID, tag string) error {
+	src, _, err := c.db.GetSource(ctx, apiID)
+	if err != nil {
+		return err
+	}
+	filtered := src.Tags[:0:0]
+	for _, t := range src.Tags {
+		if t != tag {
+			filtered = append(filtered, t)
+		}
+	}
+	return c.db.PatchSourceMeta(ctx, apiID, nil, filtered)
+}
+
 // --- Unified source listing (sources_v, fatia #1) -------------------------
 
 // sourceKind builds a SourceKind entry. All kinds support pause and tags, and every
@@ -387,7 +579,10 @@ func sourceKind(kind, label, lane, icon, targetApp string, fields ...SourceField
 // A new kind = one entry here + one write endpoint in fatia #2. No table needed.
 var sourceKindsRegistry = []SourceKind{
 	sourceKind("youtube_channel", "YouTube Channel", "youtube", "youtube", "rara-harvest",
-		SourceField{Name: "channel_name", Label: "Channel name or handle", Type: "text", Required: true, Placeholder: "@channelhandle"},
+		// channel_id is the YouTube channel ID (UCxxxxxxx) or a handle; used as the UNIQUE key.
+		// No YouTube API resolution at creation time — the collector reads it on first harvest.
+		SourceField{Name: "channel_id", Label: "Channel ID or handle", Type: "text", Required: true, Placeholder: "UCxxxxxxxxxxxxxxxxxxxxxxxx or @handle"},
+		SourceField{Name: "channel_name", Label: "Channel name", Type: "text"},
 	),
 	sourceKind("youtube_playlist", "YouTube Playlist", "youtube", "youtube", "rara-shelf",
 		SourceField{Name: "playlist_url", Label: "Playlist URL", Type: "url", Required: true, Placeholder: "https://youtube.com/playlist?list=..."},
@@ -693,6 +888,17 @@ func NewSurfaceMux(core *Core, token string) http.Handler {
 	mux.HandleFunc("POST /v1/sources/podcast", h.addPodcastFeed)
 	mux.HandleFunc("PUT /v1/sources/podcast", h.setPodcastFeedActive)
 
+	// Sources — fatia #2 writes. Bulk registered first (exact path wins over {kind} wildcard).
+	mux.HandleFunc("POST /v1/sources/bulk", h.bulkSources)
+	// Per-kind create: dispatches by {kind} value (youtube_channel|youtube_playlist|rss|html|hn|email).
+	mux.HandleFunc("POST /v1/sources/{kind}", h.addSource)
+	// Cross-kind edit + archive. Note: {source_id}/pause and /resume have deeper paths than {source_id}
+	// so they are matched first by the Go 1.22 mux (longer patterns win).
+	mux.HandleFunc("PATCH /v1/sources/{source_id}", h.patchSource)
+	mux.HandleFunc("DELETE /v1/sources/{source_id}", h.archiveSource)
+	mux.HandleFunc("POST /v1/sources/{source_id}/pause", h.pauseSource)
+	mux.HandleFunc("POST /v1/sources/{source_id}/resume", h.resumeSource)
+
 	// Config edits (idempotent upserts; a new profile version is append-only).
 	mux.HandleFunc("PUT /v1/flows", h.upsertFlow)
 	mux.HandleFunc("PUT /v1/flow-steps", h.upsertFlowStep)
@@ -923,6 +1129,118 @@ func (h *httpSurface) setPodcastFeedActive(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	writeResult(w, okResult{OK: true}, h.core.SetPodcastFeedActive(r.Context(), req.ID, req.Active))
+}
+
+// --- source write handlers (fatia #2) ---
+
+// addSource dispatches POST /v1/sources/{kind} to the right Core method.
+func (h *httpSurface) addSource(w http.ResponseWriter, r *http.Request) {
+	kind := r.PathValue("kind")
+	switch kind {
+	case "youtube_channel":
+		var req struct {
+			ChannelID   string `json:"channel_id"`
+			ChannelName string `json:"channel_name"`
+			DisplayName string `json:"display_name"`
+		}
+		if !decodeJSON(w, r, &req) {
+			return
+		}
+		id, err := h.core.AddYouTubeChannel(r.Context(), req.ChannelID, req.ChannelName, req.DisplayName)
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]int{"id": id})
+
+	case "youtube_playlist":
+		var req struct {
+			PlaylistURL string `json:"playlist_url"`
+			DisplayName string `json:"display_name"`
+		}
+		if !decodeJSON(w, r, &req) {
+			return
+		}
+		id, err := h.core.AddYouTubePlaylist(r.Context(), req.PlaylistURL, req.DisplayName)
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]int{"id": id})
+
+	case "rss", "html", "hn":
+		var req struct {
+			Name        string `json:"name"`
+			Endpoint    string `json:"endpoint"`
+			DisplayName string `json:"display_name"`
+		}
+		if !decodeJSON(w, r, &req) {
+			return
+		}
+		id, err := h.core.AddFeedSource(r.Context(), kind, req.Name, req.Endpoint)
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]int{"id": id})
+
+	case "email":
+		var req struct {
+			GmailQuery  string `json:"gmail_query"`
+			Label       string `json:"label"`
+			FromFilter  string `json:"from_filter"`
+			DisplayName string `json:"display_name"`
+		}
+		if !decodeJSON(w, r, &req) {
+			return
+		}
+		id, err := h.core.AddEmailSource(r.Context(), req.GmailQuery, req.Label, req.FromFilter)
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]int{"id": id})
+
+	default:
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "unknown source kind: " + kind})
+	}
+}
+
+func (h *httpSurface) patchSource(w http.ResponseWriter, r *http.Request) {
+	apiID := r.PathValue("source_id")
+	var patch SourcePatch
+	if !decodeJSON(w, r, &patch) {
+		return
+	}
+	writeResult(w, okResult{OK: true}, h.core.PatchSource(r.Context(), apiID, patch))
+}
+
+func (h *httpSurface) archiveSource(w http.ResponseWriter, r *http.Request) {
+	apiID := r.PathValue("source_id")
+	writeResult(w, okResult{OK: true}, h.core.ArchiveSource(r.Context(), apiID))
+}
+
+func (h *httpSurface) pauseSource(w http.ResponseWriter, r *http.Request) {
+	apiID := r.PathValue("source_id")
+	writeResult(w, okResult{OK: true}, h.core.PauseSource(r.Context(), apiID))
+}
+
+func (h *httpSurface) resumeSource(w http.ResponseWriter, r *http.Request) {
+	apiID := r.PathValue("source_id")
+	writeResult(w, okResult{OK: true}, h.core.ResumeSource(r.Context(), apiID))
+}
+
+func (h *httpSurface) bulkSources(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Action string   `json:"action"`
+		IDs    []string `json:"ids"`
+		Tag    string   `json:"tag"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	result, err := h.core.BulkSources(r.Context(), req.Action, req.IDs, req.Tag)
+	writeResult(w, result, err)
 }
 
 func (h *httpSurface) getInterestProfile(w http.ResponseWriter, r *http.Request) {
