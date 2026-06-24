@@ -943,7 +943,7 @@ func (d *pgxDatabase) EnabledSources(ctx context.Context) ([]FeedSource, error) 
 	const q = `
 		SELECT id, name, source_type, endpoint, cls, fetch_strategy, COALESCE(parser, '')
 		FROM feed_sources
-		WHERE enabled = true
+		WHERE enabled = true AND deleted_at IS NULL
 		ORDER BY id`
 	rows, err := d.conn.Query(ctx, q)
 	if err != nil {

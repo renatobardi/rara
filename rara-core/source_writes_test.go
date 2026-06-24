@@ -59,6 +59,43 @@ func TestCoreAddYouTubeChannelRejectsEmptyID(t *testing.T) {
 	}
 }
 
+// AddYouTubeChannel resolves a handle to a UC id but keeps the handle as the
+// operator-facing channel_name (the registry field is the handle/name, not the UC id).
+func TestCoreAddYouTubeChannelResolvesHandle(t *testing.T) {
+	ctx := context.Background()
+	core, db, _ := newTestCore(t)
+	core.resolveChannel = func(_ context.Context, ref string) (string, error) {
+		if ref != "@MyHandle" {
+			t.Fatalf("resolver got %q", ref)
+		}
+		return "UCresolved00000000000000", nil
+	}
+
+	id, err := core.AddYouTubeChannel(ctx, "@MyHandle", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ch := db.ytChannels[id]
+	if ch.ChannelID != "UCresolved00000000000000" {
+		t.Errorf("channel_id should be the resolved UC id, got %q", ch.ChannelID)
+	}
+	if ch.ChannelName != "@MyHandle" {
+		t.Errorf("channel_name should keep the handle, got %q", ch.ChannelName)
+	}
+}
+
+// A resolver failure (e.g. channel not found) propagates out of AddYouTubeChannel.
+func TestCoreAddYouTubeChannelResolveFailure(t *testing.T) {
+	ctx := context.Background()
+	core, _, _ := newTestCore(t)
+	core.resolveChannel = func(_ context.Context, _ string) (string, error) {
+		return "", badInput("channel not found")
+	}
+	if _, err := core.AddYouTubeChannel(ctx, "Ghost Channel", "", ""); !isBadInput(err) {
+		t.Fatalf("resolver failure should propagate as badInput, got %v", err)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Core — AddYouTubePlaylist
 // ---------------------------------------------------------------------------
@@ -246,7 +283,7 @@ func TestCorePatchSourceBadAPIID(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Core — PauseSource / ResumeSource / ArchiveSource
+// Core — PauseSource / ResumeSource / DeleteSource
 // ---------------------------------------------------------------------------
 
 func TestCorePauseSourceReflectsInSourcesV(t *testing.T) {
@@ -293,7 +330,9 @@ func TestCoreResumeSourceRestoresActive(t *testing.T) {
 	}
 }
 
-func TestCoreArchiveSourceDeactivates(t *testing.T) {
+// DeleteSource hides the source from sources_v (it disappears from the list) while the
+// backing row — and thus its collected content — is preserved.
+func TestCoreDeleteSourceHidesFromList(t *testing.T) {
 	ctx := context.Background()
 	core, db, _ := newTestCore(t)
 
@@ -301,14 +340,52 @@ func TestCoreArchiveSourceDeactivates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !db.feedSources[id].Enabled {
-		t.Fatal("feed should be enabled after creation")
+	apiID := fmt.Sprintf("rss:%d", id)
+	if _, found, _ := core.Source(ctx, apiID); !found {
+		t.Fatal("source should be listed before delete")
 	}
-	if err := core.ArchiveSource(ctx, fmt.Sprintf("rss:%d", id)); err != nil {
+
+	if err := core.DeleteSource(ctx, apiID); err != nil {
 		t.Fatal(err)
 	}
-	if db.feedSources[id].Enabled {
-		t.Error("feed should be disabled after archive")
+	if _, found, _ := core.Source(ctx, apiID); found {
+		t.Error("deleted source must disappear from sources_v")
+	}
+	// Backing row (content) is preserved — not destroyed.
+	if _, ok := db.feedSources[id]; !ok {
+		t.Error("backing row should be preserved on soft-delete")
+	}
+}
+
+// DeleteSource is idempotent: deleting an already-deleted source is a no-op success.
+func TestCoreDeleteSourceIdempotent(t *testing.T) {
+	ctx := context.Background()
+	core, _, _ := newTestCore(t)
+	id, _ := core.AddFeedSource(ctx, "rss", "Feed", "https://x/rss", "")
+	apiID := fmt.Sprintf("rss:%d", id)
+	if err := core.DeleteSource(ctx, apiID); err != nil {
+		t.Fatal(err)
+	}
+	if err := core.DeleteSource(ctx, apiID); err != nil {
+		t.Errorf("second delete should be a no-op, got %v", err)
+	}
+}
+
+// Pausing keeps the source listed (as paused) — distinct from deleting.
+func TestCorePauseDoesNotHide(t *testing.T) {
+	ctx := context.Background()
+	core, _, _ := newTestCore(t)
+	id, _ := core.AddFeedSource(ctx, "rss", "Feed", "https://x/rss", "")
+	apiID := fmt.Sprintf("rss:%d", id)
+	if err := core.PauseSource(ctx, apiID); err != nil {
+		t.Fatal(err)
+	}
+	src, found, _ := core.Source(ctx, apiID)
+	if !found {
+		t.Fatal("paused source must stay listed")
+	}
+	if src.Status != "paused" {
+		t.Errorf("status = %q, want paused", src.Status)
 	}
 }
 
@@ -345,6 +422,28 @@ func TestCoreBulkSourcesPausesMultiple(t *testing.T) {
 	}
 	if db.ytChannels[id1].Active || db.ytChannels[id2].Active {
 		t.Error("both channels should be paused")
+	}
+}
+
+func TestCoreBulkSourcesDeletesMultiple(t *testing.T) {
+	ctx := context.Background()
+	core, _, _ := newTestCore(t)
+
+	id1, _ := core.AddYouTubeChannel(ctx, "UCbd1", "A", "")
+	id2, _ := core.AddYouTubeChannel(ctx, "UCbd2", "B", "")
+	ids := []string{fmt.Sprintf("youtube_channel:%d", id1), fmt.Sprintf("youtube_channel:%d", id2)}
+
+	result, err := core.BulkSources(ctx, "delete", ids, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Applied != 2 || result.Failed != 0 {
+		t.Errorf("bulk delete: applied=%d failed=%d", result.Applied, result.Failed)
+	}
+	for _, apiID := range ids {
+		if _, found, _ := core.Source(ctx, apiID); found {
+			t.Errorf("%s should be hidden after bulk delete", apiID)
+		}
 	}
 }
 
@@ -487,7 +586,7 @@ func TestHTTPPatchSource(t *testing.T) {
 	}
 }
 
-func TestHTTPDeleteSourceArchives(t *testing.T) {
+func TestHTTPDeleteSourceHides(t *testing.T) {
 	ctx := context.Background()
 	core, db, _ := newTestCore(t)
 	h := NewSurfaceMux(core, testToken)
@@ -499,8 +598,12 @@ func TestHTTPDeleteSourceArchives(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("got %d: %s", rec.Code, rec.Body.String())
 	}
-	if db.ytChannels[id].Active {
-		t.Error("source should be inactive after DELETE")
+	if _, found, _ := core.Source(ctx, apiID); found {
+		t.Error("source should disappear from sources_v after DELETE")
+	}
+	// Content preserved — the backing row is not destroyed.
+	if _, ok := db.ytChannels[id]; !ok {
+		t.Error("backing row should be preserved after soft-delete")
 	}
 }
 

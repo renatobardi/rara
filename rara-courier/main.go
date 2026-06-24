@@ -432,7 +432,7 @@ func (d *pgxDatabase) StampProviderCollected(ctx context.Context, name string) e
 // ListEmailSources returns all enabled email reading rules from email_sources, ordered by id.
 func (d *pgxDatabase) ListEmailSources(ctx context.Context) ([]EmailSource, error) {
 	const q = `SELECT id, COALESCE(display_name,''), COALESCE(gmail_query,''), COALESCE(label,''), COALESCE(from_filter,'')
-	           FROM email_sources WHERE enabled = true ORDER BY id`
+	           FROM email_sources WHERE enabled = true AND deleted_at IS NULL ORDER BY id`
 	rows, err := d.conn.Query(ctx, q)
 	if err != nil {
 		return nil, err

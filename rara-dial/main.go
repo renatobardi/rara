@@ -277,7 +277,7 @@ func httpFetch(ctx context.Context, url string) ([]byte, error) {
 type pgxDatabase struct{ conn *pgx.Conn }
 
 func (d *pgxDatabase) ActiveFeeds(ctx context.Context) ([]Feed, error) {
-	const q = `SELECT id, feed_url, COALESCE(title, ''), active FROM podcast_feeds WHERE active = true ORDER BY id`
+	const q = `SELECT id, feed_url, COALESCE(title, ''), active FROM podcast_feeds WHERE active = true AND deleted_at IS NULL ORDER BY id`
 	rows, err := d.conn.Query(ctx, q)
 	if err != nil {
 		return nil, err
