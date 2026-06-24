@@ -54,16 +54,17 @@ func TestSourcesProxiesListWithTokenInjected(t *testing.T) {
 	}
 }
 
-func TestSourcesForwardsOnlyWhitelistedQueryParams(t *testing.T) {
+// forwardedQuery runs handleSources against rawURL and returns the query string the fake core
+// actually received, so a test can assert which params crossed the BFF. Factored out because the
+// setup/run/parse trio is identical across the query-forwarding cases.
+func forwardedQuery(t *testing.T, rawURL string) url.Values {
+	t.Helper()
 	var got string
 	core := fakeSourcesCore(t, "secret", &got)
 	s := &server{coreURL: core.URL, token: "secret", client: core.Client()}
 
 	rec := httptest.NewRecorder()
-	// status= is whitelisted and forwarded; evil= is dropped so it can't reach the upstream.
-	r := httptest.NewRequest("GET", "/api/sources?kind=podcast&status=active&tag=x&q=lex&page=2&page_size=50&evil=1", nil)
-	s.handleSources(rec, r)
-
+	s.handleSources(rec, httptest.NewRequest("GET", rawURL, nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
 	}
@@ -71,40 +72,32 @@ func TestSourcesForwardsOnlyWhitelistedQueryParams(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse forwarded query %q: %v", got, err)
 	}
+	return q
+}
+
+func TestSourcesForwardsOnlyWhitelistedQueryParams(t *testing.T) {
+	// status= is whitelisted and forwarded; evil= is dropped so it can't reach the upstream.
+	q := forwardedQuery(t, "/api/sources?kind=podcast&status=active&tag=x&q=lex&page=2&page_size=50&evil=1")
 	for k, want := range map[string]string{
 		"kind": "podcast", "status": "active", "tag": "x", "q": "lex", "page": "2", "page_size": "50",
 	} {
 		if q.Get(k) != want {
-			t.Errorf("forwarded %s = %q, want %q (full query=%q)", k, q.Get(k), want, got)
+			t.Errorf("forwarded %s = %q, want %q (full query=%q)", k, q.Get(k), want, q.Encode())
 		}
 	}
 	if q.Has("evil") {
-		t.Errorf("forwarded a non-whitelisted param: %q", got)
+		t.Errorf("forwarded a non-whitelisted param: %q", q.Encode())
 	}
 }
 
 func TestSourcesDropsInvalidPagination(t *testing.T) {
-	var got string
-	core := fakeSourcesCore(t, "secret", &got)
-	s := &server{coreURL: core.URL, token: "secret", client: core.Client()}
-
-	rec := httptest.NewRecorder()
 	// Non-numeric and non-positive pagination must not be forwarded verbatim to the upstream.
-	r := httptest.NewRequest("GET", "/api/sources?page=abc&page_size=-5&kind=podcast", nil)
-	s.handleSources(rec, r)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
-	}
-	q, err := url.ParseQuery(got)
-	if err != nil {
-		t.Fatalf("parse forwarded query %q: %v", got, err)
-	}
+	q := forwardedQuery(t, "/api/sources?page=abc&page_size=-5&kind=podcast")
 	if q.Has("page") || q.Has("page_size") {
-		t.Errorf("forwarded invalid pagination: %q", got)
+		t.Errorf("forwarded invalid pagination: %q", q.Encode())
 	}
 	if q.Get("kind") != "podcast" {
-		t.Errorf("dropped a valid filter alongside bad pagination: %q", got)
+		t.Errorf("dropped a valid filter alongside bad pagination: %q", q.Encode())
 	}
 }
 
