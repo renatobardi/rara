@@ -49,88 +49,78 @@ func TestCoreSourcesListsAll(t *testing.T) {
 	ctx := context.Background()
 	core, db, _ := newTestCore(t)
 	db.sources = []SourceItem{
-		{ApiID: "podcast:1", Kind: "podcast", Lane: "podcast", DisplayName: "Feed A", Tags: []string{}, Status: "active", ConfigSummary: "https://a.example/rss"},
-		{ApiID: "youtube_channel:1", Kind: "youtube_channel", Lane: "youtube", DisplayName: "Chan A", Tags: []string{}, Status: "active", ConfigSummary: "chan-a"},
-		{ApiID: "rss:1", Kind: "rss", Lane: "news", DisplayName: "RSS A", Tags: []string{}, Status: "paused", ConfigSummary: "https://b.example/rss"},
+		{ApiID: "podcast:1", Kind: "podcast", Lane: "podcast", DisplayName: "Feed A", Tags: []string{}, Status: "active"},
+		{ApiID: "youtube_channel:1", Kind: "youtube_channel", Lane: "youtube", DisplayName: "Chan A", Tags: []string{}, Status: "active"},
+		{ApiID: "rss:1", Kind: "rss", Lane: "news", DisplayName: "RSS A", Tags: []string{}, Status: "paused"},
 	}
 
 	result, err := core.Sources(ctx, SourceFilter{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Total != 3 {
-		t.Errorf("total = %d, want 3", result.Total)
-	}
-	if len(result.Items) != 3 {
-		t.Errorf("len(items) = %d, want 3", len(result.Items))
+	if result.Total != 3 || len(result.Items) != 3 {
+		t.Errorf("want 3 sources, got total=%d items=%d", result.Total, len(result.Items))
 	}
 }
 
-func TestCoreSourcesFiltersByKind(t *testing.T) {
-	ctx := context.Background()
-	core, db, _ := newTestCore(t)
-	db.sources = []SourceItem{
-		{ApiID: "podcast:1", Kind: "podcast", Status: "active", Tags: []string{}},
-		{ApiID: "rss:1", Kind: "rss", Status: "active", Tags: []string{}},
+// TestCoreSourcesFilters covers all single-filter cases (kind/status/tag/q) in a table
+// to avoid repeating the same 10-line setup-filter-assert pattern four times.
+func TestCoreSourcesFilters(t *testing.T) {
+	twoSources := func(a, b SourceItem) []SourceItem { return []SourceItem{a, b} }
+	podcastActive := SourceItem{ApiID: "podcast:1", Kind: "podcast", Status: "active", Tags: []string{}}
+	rssActive := SourceItem{ApiID: "rss:1", Kind: "rss", Status: "active", Tags: []string{}}
+
+	cases := []struct {
+		name    string
+		sources []SourceItem
+		filter  SourceFilter
+		wantID  string
+	}{
+		{
+			name:    "by kind",
+			sources: twoSources(podcastActive, rssActive),
+			filter:  SourceFilter{Kind: "podcast"},
+			wantID:  "podcast:1",
+		},
+		{
+			name:    "by status",
+			sources: twoSources(podcastActive, SourceItem{ApiID: "rss:1", Kind: "rss", Status: "paused", Tags: []string{}}),
+			filter:  SourceFilter{Status: "active"},
+			wantID:  "podcast:1",
+		},
+		{
+			name: "by tag",
+			sources: twoSources(
+				SourceItem{ApiID: "podcast:1", Kind: "podcast", Status: "active", Tags: []string{"tech", "ai"}},
+				SourceItem{ApiID: "rss:1", Kind: "rss", Status: "active", Tags: []string{"sports"}},
+			),
+			filter: SourceFilter{Tag: "tech"},
+			wantID: "podcast:1",
+		},
+		{
+			name: "by q (display_name)",
+			sources: twoSources(
+				SourceItem{ApiID: "podcast:1", Kind: "podcast", DisplayName: "AI Weekly", Status: "active", Tags: []string{}},
+				SourceItem{ApiID: "rss:1", Kind: "rss", DisplayName: "Sports Daily", Status: "active", Tags: []string{}},
+			),
+			filter: SourceFilter{Q: "weekly"},
+			wantID: "podcast:1",
+		},
 	}
 
-	result, err := core.Sources(ctx, SourceFilter{Kind: "podcast"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.Total != 1 || len(result.Items) != 1 || result.Items[0].ApiID != "podcast:1" {
-		t.Errorf("filter kind=podcast: got total=%d items=%v", result.Total, result.Items)
-	}
-}
-
-func TestCoreSourcesFiltersByStatus(t *testing.T) {
-	ctx := context.Background()
-	core, db, _ := newTestCore(t)
-	db.sources = []SourceItem{
-		{ApiID: "podcast:1", Kind: "podcast", Status: "active", Tags: []string{}},
-		{ApiID: "rss:1", Kind: "rss", Status: "paused", Tags: []string{}},
-	}
-
-	result, err := core.Sources(ctx, SourceFilter{Status: "active"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.Total != 1 || result.Items[0].ApiID != "podcast:1" {
-		t.Errorf("filter status=active: got %+v", result)
-	}
-}
-
-func TestCoreSourcesFiltersByTag(t *testing.T) {
-	ctx := context.Background()
-	core, db, _ := newTestCore(t)
-	db.sources = []SourceItem{
-		{ApiID: "podcast:1", Kind: "podcast", Status: "active", Tags: []string{"tech", "ai"}},
-		{ApiID: "rss:1", Kind: "rss", Status: "active", Tags: []string{"sports"}},
-	}
-
-	result, err := core.Sources(ctx, SourceFilter{Tag: "tech"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.Total != 1 || result.Items[0].ApiID != "podcast:1" {
-		t.Errorf("filter tag=tech: got %+v", result)
-	}
-}
-
-func TestCoreSourcesSearchByQ(t *testing.T) {
-	ctx := context.Background()
-	core, db, _ := newTestCore(t)
-	db.sources = []SourceItem{
-		{ApiID: "podcast:1", Kind: "podcast", DisplayName: "AI Weekly", Status: "active", Tags: []string{}},
-		{ApiID: "rss:1", Kind: "rss", DisplayName: "Sports Daily", Status: "active", Tags: []string{}},
-	}
-
-	result, err := core.Sources(ctx, SourceFilter{Q: "weekly"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.Total != 1 || result.Items[0].ApiID != "podcast:1" {
-		t.Errorf("q=weekly: got %+v", result)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			core, db, _ := newTestCore(t)
+			db.sources = tc.sources
+			result, err := core.Sources(ctx, tc.filter)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Total != 1 || result.Items[0].ApiID != tc.wantID {
+				t.Errorf("filter %+v: got total=%d items=%v", tc.filter, result.Total, result.Items)
+			}
+		})
 	}
 }
 
@@ -158,6 +148,22 @@ func TestCoreSourcesPagination(t *testing.T) {
 	}
 }
 
+func TestCoreSourcesPageSizeCapped(t *testing.T) {
+	ctx := context.Background()
+	core, db, _ := newTestCore(t)
+	db.sources = []SourceItem{
+		{ApiID: "podcast:1", Kind: "podcast", Status: "active", Tags: []string{}},
+	}
+
+	result, err := core.Sources(ctx, SourceFilter{PageSize: 99999})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.PageSize > maxSourcePageSize {
+		t.Errorf("pageSize should be capped at %d, got %d", maxSourcePageSize, result.PageSize)
+	}
+}
+
 func TestCoreSourcesCountsMatchItems(t *testing.T) {
 	ctx := context.Background()
 	core, db, _ := newTestCore(t)
@@ -176,22 +182,6 @@ func TestCoreSourcesCountsMatchItems(t *testing.T) {
 	}
 	if result.Counts.ByKind["podcast"] != 2 || result.Counts.ByKind["rss"] != 1 {
 		t.Errorf("by_kind: %v", result.Counts.ByKind)
-	}
-}
-
-func TestCoreSourcesPageSizeCapped(t *testing.T) {
-	ctx := context.Background()
-	core, db, _ := newTestCore(t)
-	db.sources = []SourceItem{
-		{ApiID: "podcast:1", Kind: "podcast", Status: "active", Tags: []string{}},
-	}
-
-	result, err := core.Sources(ctx, SourceFilter{PageSize: 99999})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.PageSize > maxSourcePageSize {
-		t.Errorf("pageSize should be capped at %d, got %d", maxSourcePageSize, result.PageSize)
 	}
 }
 
@@ -245,43 +235,43 @@ func TestHTTPListSourceKindsReturnsAllKinds(t *testing.T) {
 	}
 }
 
-func TestHTTPListSourcesNoFilter(t *testing.T) {
-	core, db, _ := newTestCore(t)
-	db.sources = []SourceItem{
+func TestHTTPListSources(t *testing.T) {
+	twoSources := []SourceItem{
 		{ApiID: "podcast:1", Kind: "podcast", Lane: "podcast", DisplayName: "F1", Status: "active", Tags: []string{}},
 		{ApiID: "rss:1", Kind: "rss", Lane: "news", DisplayName: "R1", Status: "paused", Tags: []string{}},
 	}
-	h := NewSurfaceMux(core, testToken)
 
-	rec := do(t, h, http.MethodGet, "/v1/sources", "")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("got %d: %s", rec.Code, rec.Body.String())
+	cases := []struct {
+		name      string
+		path      string
+		wantTotal int
+		wantKind  string // if set, assert Items[0].Kind
+	}{
+		{name: "no filter", path: "/v1/sources", wantTotal: 2},
+		{name: "filter kind=podcast", path: "/v1/sources?kind=podcast", wantTotal: 1, wantKind: "podcast"},
 	}
-	var result SourcesResult
-	if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
-		t.Fatal(err)
-	}
-	if result.Total != 2 || len(result.Items) != 2 {
-		t.Errorf("want 2 sources, got total=%d items=%d", result.Total, len(result.Items))
-	}
-}
 
-func TestHTTPListSourcesFilterKind(t *testing.T) {
-	core, db, _ := newTestCore(t)
-	db.sources = []SourceItem{
-		{ApiID: "podcast:1", Kind: "podcast", Status: "active", Tags: []string{}},
-		{ApiID: "rss:1", Kind: "rss", Status: "active", Tags: []string{}},
-	}
-	h := NewSurfaceMux(core, testToken)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			core, db, _ := newTestCore(t)
+			db.sources = twoSources
+			h := NewSurfaceMux(core, testToken)
 
-	rec := do(t, h, http.MethodGet, "/v1/sources?kind=podcast", "")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("got %d: %s", rec.Code, rec.Body.String())
-	}
-	var result SourcesResult
-	_ = json.Unmarshal(rec.Body.Bytes(), &result)
-	if result.Total != 1 || result.Items[0].Kind != "podcast" {
-		t.Errorf("filter kind=podcast: %+v", result)
+			rec := do(t, h, http.MethodGet, tc.path, "")
+			if rec.Code != http.StatusOK {
+				t.Fatalf("got %d: %s", rec.Code, rec.Body.String())
+			}
+			var result SourcesResult
+			if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
+				t.Fatal(err)
+			}
+			if result.Total != tc.wantTotal {
+				t.Errorf("total=%d, want %d", result.Total, tc.wantTotal)
+			}
+			if tc.wantKind != "" && (len(result.Items) == 0 || result.Items[0].Kind != tc.wantKind) {
+				t.Errorf("items[0].kind=%q, want %q", result.Items[0].Kind, tc.wantKind)
+			}
+		})
 	}
 }
 
