@@ -404,7 +404,9 @@ func TestHTTPAddYouTubeChannel(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("got %d: %s", rec.Code, rec.Body.String())
 	}
-	var res struct{ ID int `json:"id"` }
+	var res struct {
+		ID int `json:"id"`
+	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
 		t.Fatal(err)
 	}

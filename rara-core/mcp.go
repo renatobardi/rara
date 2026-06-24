@@ -318,7 +318,9 @@ func buildTools(core *Core) []mcpTool {
 			Description: "Pause a source by api_id (e.g. 'youtube_channel:3', 'rss:7'). Sets active/enabled=false; use rara_resume_source to undo.",
 			InputSchema: schemaObject(`{"source_id":{"type":"string"}}`, "source_id"),
 			Handler: func(ctx context.Context, raw json.RawMessage) (any, error) {
-				var a struct{ SourceID string `json:"source_id"` }
+				var a struct {
+					SourceID string `json:"source_id"`
+				}
 				if err := json.Unmarshal(raw, &a); err != nil {
 					return nil, fmt.Errorf("decode rara_pause_source args: %w", err)
 				}
@@ -333,7 +335,9 @@ func buildTools(core *Core) []mcpTool {
 			Description: "Resume a paused source by api_id. Sets active/enabled=true.",
 			InputSchema: schemaObject(`{"source_id":{"type":"string"}}`, "source_id"),
 			Handler: func(ctx context.Context, raw json.RawMessage) (any, error) {
-				var a struct{ SourceID string `json:"source_id"` }
+				var a struct {
+					SourceID string `json:"source_id"`
+				}
 				if err := json.Unmarshal(raw, &a); err != nil {
 					return nil, fmt.Errorf("decode rara_resume_source args: %w", err)
 				}

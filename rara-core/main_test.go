@@ -158,12 +158,12 @@ type MockDatabase struct {
 	feedByNameEp    map[string]int // UNIQUE(name+"\x00"+endpoint) -> id
 	emailSources    map[int]mockEmailSource
 
-	nextFlowID    int
-	nextItemID    int
-	nextFeedID    int
-	nextYTChanID  int
-	nextYTPlayID  int
-	nextFeedSrcID int
+	nextFlowID     int
+	nextItemID     int
+	nextFeedID     int
+	nextYTChanID   int
+	nextYTPlayID   int
+	nextFeedSrcID  int
 	nextEmailSrcID int
 
 	// nowFn stamps CreatedAt on appended feedback / inserted profiles when the caller leaves it
