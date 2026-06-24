@@ -234,7 +234,7 @@ func TestRunSourceListErrorSkipsSource(t *testing.T) {
 		EmailSource{ID: 2, GmailQuery: "newer_than:7d"},
 	)
 	api := &fakeGmail{
-		ids:     []string{"a"},
+		ids:      []string{"a"},
 		messages: map[string]Email{"a": {MessageID: "a", Body: "ok"}},
 		// listErr only when queried with the first source's query
 		listErrFor: map[string]error{"label:Broken": errors.New("api down")},
