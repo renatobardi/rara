@@ -125,10 +125,32 @@ func buildGmailQuery(src EmailSource) string {
 	return strings.Join(parts, " ")
 }
 
+// collectIDs fetches and upserts each message id for one source rule.
+// Returns the number of successfully upserted messages; per-message errors are logged and skipped.
+func collectIDs(ctx context.Context, db Database, api GmailAPI, ids []string) int {
+	n := 0
+	for _, id := range ids {
+		e, err := api.GetMessage(ctx, id)
+		if err != nil {
+			log.Printf("get message %s: %v", id, err)
+			continue
+		}
+		if e.MessageID == "" {
+			continue
+		}
+		if err := db.UpsertEmail(ctx, e); err != nil {
+			log.Printf("upsert email %s: %v", id, err)
+			continue
+		}
+		n++
+	}
+	return n
+}
+
 // run is the collector loop: for each enabled email_sources rule, list matching message IDs,
-// fetch each, and upsert. Per-source list errors and per-message errors are logged and skipped —
-// one bad source or message must not stall the rest. The DB deduplicates by message_id
-// (ON CONFLICT), so the same message returned by two rules is upserted idempotently.
+// fetch each, and upsert. Per-source list errors are logged and skipped — one bad source must
+// not stall the rest. The DB deduplicates by message_id (ON CONFLICT), so the same message
+// returned by two rules is upserted idempotently.
 func run(ctx context.Context, db Database, api GmailAPI, max int) (int, error) {
 	sources, err := db.ListEmailSources(ctx)
 	if err != nil {
@@ -145,21 +167,7 @@ func run(ctx context.Context, db Database, api GmailAPI, max int) (int, error) {
 			log.Printf("list messages for source %d (%s): %v", src.ID, src.DisplayName, err)
 			continue
 		}
-		for _, id := range ids {
-			e, err := api.GetMessage(ctx, id)
-			if err != nil {
-				log.Printf("get message %s: %v", id, err)
-				continue
-			}
-			if e.MessageID == "" {
-				continue
-			}
-			if err := db.UpsertEmail(ctx, e); err != nil {
-				log.Printf("upsert email %s: %v", id, err)
-				continue
-			}
-			catalogued++
-		}
+		catalogued += collectIDs(ctx, db, api, ids)
 	}
 	if err := db.StampProviderCollected(ctx, "courier"); err != nil {
 		log.Printf("stamp provider courier: %v", err)
