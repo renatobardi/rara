@@ -373,77 +373,45 @@ func (c *Core) SetPodcastFeedActive(ctx context.Context, id int, active bool) er
 
 // --- Unified source listing (sources_v, fatia #1) -------------------------
 
+// sourceKind builds a SourceKind entry. All kinds support pause and tags, and every
+// kind ends with a display_name field (human-readable override); callers supply the rest.
+func sourceKind(kind, label, lane, icon, targetApp string, fields ...SourceField) SourceKind {
+	return SourceKind{
+		Kind: kind, Label: label, Lane: lane, Icon: icon, TargetApp: targetApp,
+		SupportsPause: true, SupportsTags: true,
+		Fields: append(fields, SourceField{Name: "display_name", Label: "Display name", Type: "text"}),
+	}
+}
+
 // sourceKindsRegistry is the config-driven registry of source kinds (drives the wizard UI).
 // A new kind = one entry here + one write endpoint in fatia #2. No table needed.
 var sourceKindsRegistry = []SourceKind{
-	{
-		Kind: "youtube_channel", Label: "YouTube Channel", Lane: "youtube",
-		Icon: "youtube", TargetApp: "rara-harvest",
-		SupportsPause: true, SupportsTags: true,
-		Fields: []SourceField{
-			{Name: "channel_name", Label: "Channel name or handle", Type: "text", Required: true, Placeholder: "@channelhandle"},
-			{Name: "display_name", Label: "Display name", Type: "text"},
-		},
-	},
-	{
-		Kind: "youtube_playlist", Label: "YouTube Playlist", Lane: "youtube",
-		Icon: "youtube", TargetApp: "rara-shelf",
-		SupportsPause: true, SupportsTags: true,
-		Fields: []SourceField{
-			{Name: "playlist_url", Label: "Playlist URL", Type: "url", Required: true, Placeholder: "https://youtube.com/playlist?list=..."},
-			{Name: "display_name", Label: "Display name", Type: "text"},
-		},
-	},
-	{
-		Kind: "podcast", Label: "Podcast Feed", Lane: "podcast",
-		Icon: "podcast", TargetApp: "rara-dial",
-		SupportsPause: true, SupportsTags: true,
-		Fields: []SourceField{
-			{Name: "feed_url", Label: "Feed URL", Type: "url", Required: true, Placeholder: "https://example.com/feed.rss"},
-			{Name: "title", Label: "Title", Type: "text"},
-			{Name: "display_name", Label: "Display name", Type: "text"},
-		},
-	},
-	{
-		Kind: "rss", Label: "RSS Feed", Lane: "news",
-		Icon: "rss", TargetApp: "rara-feed",
-		SupportsPause: true, SupportsTags: true,
-		Fields: []SourceField{
-			{Name: "endpoint", Label: "Feed URL", Type: "url", Required: true, Placeholder: "https://example.com/feed.rss"},
-			{Name: "name", Label: "Name", Type: "text", Required: true},
-			{Name: "display_name", Label: "Display name", Type: "text"},
-		},
-	},
-	{
-		Kind: "html", Label: "HTML Page", Lane: "news",
-		Icon: "globe", TargetApp: "rara-feed",
-		SupportsPause: true, SupportsTags: true,
-		Fields: []SourceField{
-			{Name: "endpoint", Label: "Page URL", Type: "url", Required: true, Placeholder: "https://example.com"},
-			{Name: "name", Label: "Name", Type: "text", Required: true},
-			{Name: "display_name", Label: "Display name", Type: "text"},
-		},
-	},
-	{
-		Kind: "hn", Label: "Hacker News", Lane: "news",
-		Icon: "hackernews", TargetApp: "rara-feed",
-		SupportsPause: true, SupportsTags: true,
-		Fields: []SourceField{
-			{Name: "name", Label: "Name", Type: "text", Required: true},
-			{Name: "display_name", Label: "Display name", Type: "text"},
-		},
-	},
-	{
-		Kind: "email", Label: "Email Reading Rule", Lane: "email",
-		Icon: "mail", TargetApp: "rara-courier",
-		SupportsPause: true, SupportsTags: true,
-		Fields: []SourceField{
-			{Name: "gmail_query", Label: "Gmail query", Type: "text", Placeholder: "from:newsletter@example.com"},
-			{Name: "label", Label: "Gmail label", Type: "text"},
-			{Name: "from_filter", Label: "Sender filter", Type: "text"},
-			{Name: "display_name", Label: "Display name", Type: "text"},
-		},
-	},
+	sourceKind("youtube_channel", "YouTube Channel", "youtube", "youtube", "rara-harvest",
+		SourceField{Name: "channel_name", Label: "Channel name or handle", Type: "text", Required: true, Placeholder: "@channelhandle"},
+	),
+	sourceKind("youtube_playlist", "YouTube Playlist", "youtube", "youtube", "rara-shelf",
+		SourceField{Name: "playlist_url", Label: "Playlist URL", Type: "url", Required: true, Placeholder: "https://youtube.com/playlist?list=..."},
+	),
+	sourceKind("podcast", "Podcast Feed", "podcast", "podcast", "rara-dial",
+		SourceField{Name: "feed_url", Label: "Feed URL", Type: "url", Required: true, Placeholder: "https://example.com/feed.rss"},
+		SourceField{Name: "title", Label: "Title", Type: "text"},
+	),
+	sourceKind("rss", "RSS Feed", "news", "rss", "rara-feed",
+		SourceField{Name: "endpoint", Label: "Feed URL", Type: "url", Required: true, Placeholder: "https://example.com/feed.rss"},
+		SourceField{Name: "name", Label: "Name", Type: "text", Required: true},
+	),
+	sourceKind("html", "HTML Page", "news", "globe", "rara-feed",
+		SourceField{Name: "endpoint", Label: "Page URL", Type: "url", Required: true, Placeholder: "https://example.com"},
+		SourceField{Name: "name", Label: "Name", Type: "text", Required: true},
+	),
+	sourceKind("hn", "Hacker News", "news", "hackernews", "rara-feed",
+		SourceField{Name: "name", Label: "Name", Type: "text", Required: true},
+	),
+	sourceKind("email", "Email Reading Rule", "email", "mail", "rara-courier",
+		SourceField{Name: "gmail_query", Label: "Gmail query", Type: "text", Placeholder: "from:newsletter@example.com"},
+		SourceField{Name: "label", Label: "Gmail label", Type: "text"},
+		SourceField{Name: "from_filter", Label: "Sender filter", Type: "text"},
+	),
 }
 
 // maxSourcePageSize caps page_size for GET /v1/sources to prevent resource exhaustion.
