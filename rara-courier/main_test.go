@@ -107,13 +107,23 @@ func TestDecodeB64URL(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 type MockDatabase struct {
+	sources  []EmailSource    // returned by ListEmailSources
 	emails   map[string]Email // keyed by message_id (UNIQUE)
 	err      error
 	stampErr error    // returned by StampProviderCollected when set
 	stamped  []string // provider names passed to StampProviderCollected
 }
 
-func newMockDatabase() *MockDatabase { return &MockDatabase{emails: map[string]Email{}} }
+func newMockDatabase(sources ...EmailSource) *MockDatabase {
+	if len(sources) == 0 {
+		sources = []EmailSource{{ID: 1, GmailQuery: "newer_than:30d"}}
+	}
+	return &MockDatabase{sources: sources, emails: map[string]Email{}}
+}
+
+func (m *MockDatabase) ListEmailSources(_ context.Context) ([]EmailSource, error) {
+	return m.sources, m.err
+}
 
 func (m *MockDatabase) UpsertEmail(_ context.Context, e Email) error {
 	if m.err != nil {
@@ -130,15 +140,19 @@ func (m *MockDatabase) StampProviderCollected(_ context.Context, name string) er
 
 var _ Database = (*MockDatabase)(nil)
 
-// fakeGmail serves canned ids and messages; getErr/missing simulate per-message failures.
+// fakeGmail serves canned ids and messages; listErrFor/getErr simulate failures.
 type fakeGmail struct {
-	ids      []string
-	messages map[string]Email
-	listErr  error
-	getErr   map[string]error
+	ids        []string
+	messages   map[string]Email
+	listErr    error            // returned for every ListMessageIDs call
+	listErrFor map[string]error // returned for specific query strings
+	getErr     map[string]error
 }
 
-func (f *fakeGmail) ListMessageIDs(_ context.Context, _ string, max int) ([]string, error) {
+func (f *fakeGmail) ListMessageIDs(_ context.Context, query string, max int) ([]string, error) {
+	if err, ok := f.listErrFor[query]; ok {
+		return nil, err
+	}
 	if f.listErr != nil {
 		return nil, f.listErr
 	}
@@ -163,7 +177,7 @@ var _ GmailAPI = (*fakeGmail)(nil)
 
 func TestRunCollectsEmails(t *testing.T) {
 	ctx := context.Background()
-	db := newMockDatabase()
+	db := newMockDatabase(EmailSource{ID: 1, GmailQuery: "newer_than:30d"})
 	api := &fakeGmail{
 		ids: []string{"a", "b"},
 		messages: map[string]Email{
@@ -171,7 +185,7 @@ func TestRunCollectsEmails(t *testing.T) {
 			"b": {MessageID: "b", Subject: "Second", Body: "body b"},
 		},
 	}
-	n, err := run(ctx, db, api, "newer_than:30d", 100)
+	n, err := run(ctx, db, api, 100)
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
@@ -184,10 +198,10 @@ func TestRunIdempotent(t *testing.T) {
 	ctx := context.Background()
 	db := newMockDatabase()
 	api := &fakeGmail{ids: []string{"a"}, messages: map[string]Email{"a": {MessageID: "a", Body: "x"}}}
-	if _, err := run(ctx, db, api, "", 100); err != nil {
+	if _, err := run(ctx, db, api, 100); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := run(ctx, db, api, "", 100); err != nil {
+	if _, err := run(ctx, db, api, 100); err != nil {
 		t.Fatal(err)
 	}
 	if len(db.emails) != 1 {
@@ -203,7 +217,7 @@ func TestRunSkipsBadMessage(t *testing.T) {
 		messages: map[string]Email{"b": {MessageID: "b", Body: "ok"}},
 		getErr:   map[string]error{"a": errors.New("boom")},
 	}
-	n, err := run(ctx, db, api, "", 100)
+	n, err := run(ctx, db, api, 100)
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
@@ -212,11 +226,69 @@ func TestRunSkipsBadMessage(t *testing.T) {
 	}
 }
 
-func TestRunSurfacesListError(t *testing.T) {
-	db := newMockDatabase()
-	api := &fakeGmail{listErr: errors.New("api down")}
-	if _, err := run(context.Background(), db, api, "", 100); err == nil {
-		t.Error("a list error should abort the run")
+func TestRunSourceListErrorSkipsSource(t *testing.T) {
+	// A ListMessageIDs error for one source must skip it and continue (not abort).
+	ctx := context.Background()
+	db := newMockDatabase(
+		EmailSource{ID: 1, GmailQuery: "label:Broken"},
+		EmailSource{ID: 2, GmailQuery: "newer_than:7d"},
+	)
+	api := &fakeGmail{
+		ids:      []string{"a"},
+		messages: map[string]Email{"a": {MessageID: "a", Body: "ok"}},
+		// listErr only when queried with the first source's query
+		listErrFor: map[string]error{"label:Broken": errors.New("api down")},
+	}
+	n, err := run(ctx, db, api, 100)
+	if err != nil {
+		t.Fatalf("run should not abort on per-source list error: %v", err)
+	}
+	if n != 1 || len(db.emails) != 1 {
+		t.Errorf("catalogued %d, want 1 (only second source succeeded)", n)
+	}
+}
+
+func TestRunListEmailSourcesErrorAborts(t *testing.T) {
+	// If ListEmailSources itself fails, the run must abort with an error.
+	db := &MockDatabase{emails: map[string]Email{}, err: errors.New("db down")}
+	api := &fakeGmail{}
+	if _, err := run(context.Background(), db, api, 100); err == nil {
+		t.Error("ListEmailSources error should abort the run")
+	}
+}
+
+func TestRunNoSourcesMeansNoop(t *testing.T) {
+	// No active sources = nothing collected, no error.
+	db := newMockDatabase() // starts with default source
+	db.sources = nil        // clear to simulate no active rules
+	api := &fakeGmail{ids: []string{"a"}, messages: map[string]Email{"a": {MessageID: "a", Body: "x"}}}
+	n, err := run(context.Background(), db, api, 100)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("no sources → no collection, got %d", n)
+	}
+}
+
+func TestRunMultiSourceDedup(t *testing.T) {
+	// Two rules returning the same message — DB deduplication means one unique email stored.
+	ctx := context.Background()
+	db := newMockDatabase(
+		EmailSource{ID: 1, GmailQuery: "label:News"},
+		EmailSource{ID: 2, GmailQuery: "from:@substack.com"},
+	)
+	shared := Email{MessageID: "shared", Body: "newsletter"}
+	api := &fakeGmail{
+		ids:      []string{"shared"},
+		messages: map[string]Email{"shared": shared},
+	}
+	_, err := run(ctx, db, api, 100)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if len(db.emails) != 1 {
+		t.Errorf("stored %d, want 1 (dedup by message_id)", len(db.emails))
 	}
 }
 
@@ -227,7 +299,7 @@ func TestRunStampsProviderOnSuccess(t *testing.T) {
 		ids:      []string{"a"},
 		messages: map[string]Email{"a": {MessageID: "a", Body: "body"}},
 	}
-	if _, err := run(ctx, db, api, "", 100); err != nil {
+	if _, err := run(ctx, db, api, 100); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 	if len(db.stamped) != 1 || db.stamped[0] != "courier" {
@@ -244,11 +316,33 @@ func TestRunStampErrorIsBestEffort(t *testing.T) {
 		ids:      []string{"a"},
 		messages: map[string]Email{"a": {MessageID: "a", Body: "body"}},
 	}
-	n, err := run(ctx, db, api, "", 100)
+	n, err := run(ctx, db, api, 100)
 	if err != nil {
 		t.Fatalf("run returned error on stamp failure (should be best-effort): %v", err)
 	}
 	if n != 1 {
 		t.Errorf("catalogued %d, want 1", n)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// buildGmailQuery — pure, so fully testable.
+// ---------------------------------------------------------------------------
+
+func TestBuildGmailQuery(t *testing.T) {
+	cases := []struct {
+		src  EmailSource
+		want string
+	}{
+		{EmailSource{GmailQuery: "newer_than:30d"}, "newer_than:30d"},
+		{EmailSource{Label: "Newsletters"}, "label:Newsletters"},
+		{EmailSource{FromFilter: "@substack.com"}, "from:@substack.com"},
+		{EmailSource{Label: "News", FromFilter: "@nyt.com", GmailQuery: "newer_than:7d"}, "label:News from:@nyt.com newer_than:7d"},
+		{EmailSource{}, ""},
+	}
+	for _, c := range cases {
+		if got := buildGmailQuery(c.src); got != c.want {
+			t.Errorf("buildGmailQuery(%+v) = %q, want %q", c.src, got, c.want)
+		}
 	}
 }
