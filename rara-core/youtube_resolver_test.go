@@ -49,6 +49,24 @@ func TestYTResolveRawChannelIDSkipsAPI(t *testing.T) {
 	}
 }
 
+// A malformed "UC…" (right prefix/length, illegal char) must NOT bypass — it falls
+// through to API resolution instead of being persisted as a dead canonical id.
+func TestYTResolveMalformedUCDoesNotBypass(t *testing.T) {
+	doer := &fakeDoer{body: `{"items":[{"id":{"channelId":"UCsearchresult0000000000"}}]}`}
+	r := &ytResolver{doer: doer, apiKey: "k", baseURL: "http://test"}
+
+	got, err := r.resolve(context.Background(), "UC have a space here!!!!") // 24 chars, illegal
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doer.lastURL == "" {
+		t.Error("malformed UC id should fall through to the API, not bypass")
+	}
+	if got != "UCsearchresult0000000000" {
+		t.Errorf("got %q", got)
+	}
+}
+
 func TestYTResolveHandle(t *testing.T) {
 	doer := &fakeDoer{body: `{"items":[{"id":"UChandleresolved000000000"}]}`}
 	r := &ytResolver{doer: doer, apiKey: "k", baseURL: "http://test"}

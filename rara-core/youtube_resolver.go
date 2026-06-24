@@ -8,9 +8,15 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 )
+
+// ucChannelID matches a well-formed YouTube channel id: "UC" + 22 base64url chars.
+// A malformed "UC…" string falls through to API resolution rather than being
+// persisted verbatim as a (dead) canonical id.
+var ucChannelID = regexp.MustCompile(`^UC[0-9A-Za-z_-]{22}$`)
 
 // httpDoer is the minimal HTTP seam so the YouTube resolver is unit-testable with a fake
 // (zero real I/O), mirroring how the rest of the core injects its dependencies.
@@ -47,8 +53,9 @@ func (r *ytResolver) resolve(ctx context.Context, input string) (string, error) 
 	if input == "" {
 		return "", badInput("channel reference cannot be empty")
 	}
-	// A real channel id is exactly "UC" + 22 chars; pass it through untouched.
-	if strings.HasPrefix(input, "UC") && len(input) == 24 {
+	// A well-formed channel id ("UC" + 22 base64url chars) passes through untouched;
+	// a malformed "UC…" string is resolved via the API rather than persisted as-is.
+	if ucChannelID.MatchString(input) {
 		return input, nil
 	}
 	if r.apiKey == "" {
@@ -112,7 +119,7 @@ func (r *ytResolver) get(ctx context.Context, path string, params url.Values, ou
 	reqURL := r.baseURL + path + "?" + params.Encode()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 	if err != nil {
-		return err
+		return fmt.Errorf("youtube API %s build request: %w", path, err)
 	}
 	resp, err := r.doer.Do(req)
 	if err != nil {
@@ -128,5 +135,8 @@ func (r *ytResolver) get(ctx context.Context, path string, params url.Values, ou
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("YouTube API error (status %d) on %s", resp.StatusCode, path)
 	}
-	return json.NewDecoder(resp.Body).Decode(out)
+	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+		return fmt.Errorf("youtube API %s decode response: %w", path, err)
+	}
+	return nil
 }
