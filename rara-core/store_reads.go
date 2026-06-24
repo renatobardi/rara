@@ -934,6 +934,18 @@ func (d *pgxDatabase) WorkerMetrics(ctx context.Context, since *time.Time) ([]Wo
 	return out, nil
 }
 
+// sourceViewCols is the SELECT projection for sources_v, shared by ListSources and GetSource.
+const sourceViewCols = `api_id, kind, lane, display_name, COALESCE(tags,'{}'), status,
+	COALESCE(config_summary,''), created_at, updated_at`
+
+// scanSourceItem scans one row from sources_v into a SourceItem.
+func scanSourceItem(scan func(...any) error) (SourceItem, error) {
+	var s SourceItem
+	err := scan(&s.ApiID, &s.Kind, &s.Lane, &s.DisplayName, &s.Tags,
+		&s.Status, &s.ConfigSummary, &s.CreatedAt, &s.UpdatedAt)
+	return s, err
+}
+
 // ListSources returns sources from sources_v with optional filters and pagination.
 // Counts (by_status, by_kind) reflect the full filtered set before pagination.
 func (d *pgxDatabase) ListSources(ctx context.Context, f SourceFilter) (SourcesResult, error) {
@@ -1008,9 +1020,7 @@ func (d *pgxDatabase) ListSources(ctx context.Context, f SourceFilter) (SourcesR
 	}
 	offset := (page - 1) * pageSize
 
-	dataQ := `SELECT api_id, kind, lane, display_name, COALESCE(tags,'{}'), status,
-		COALESCE(config_summary,''), created_at, updated_at
-		FROM sources_v` + where +
+	dataQ := `SELECT ` + sourceViewCols + ` FROM sources_v` + where +
 		` ORDER BY created_at DESC, api_id` +
 		` LIMIT $` + strconv.Itoa(n) + ` OFFSET $` + strconv.Itoa(n+1)
 	args = append(args, pageSize, offset)
@@ -1023,11 +1033,8 @@ func (d *pgxDatabase) ListSources(ctx context.Context, f SourceFilter) (SourcesR
 
 	items := make([]SourceItem, 0)
 	for dataRows.Next() {
-		var s SourceItem
-		if err := dataRows.Scan(
-			&s.ApiID, &s.Kind, &s.Lane, &s.DisplayName, &s.Tags,
-			&s.Status, &s.ConfigSummary, &s.CreatedAt, &s.UpdatedAt,
-		); err != nil {
+		s, err := scanSourceItem(dataRows.Scan)
+		if err != nil {
 			return SourcesResult{}, fmt.Errorf("list sources scan: %w", err)
 		}
 		items = append(items, s)
@@ -1044,14 +1051,9 @@ func (d *pgxDatabase) ListSources(ctx context.Context, f SourceFilter) (SourcesR
 
 // GetSource returns one source by api_id from sources_v (found=false if absent).
 func (d *pgxDatabase) GetSource(ctx context.Context, apiID string) (SourceItem, bool, error) {
-	const q = `SELECT api_id, kind, lane, display_name, COALESCE(tags,'{}'), status,
-		COALESCE(config_summary,''), created_at, updated_at
-		FROM sources_v WHERE api_id = $1`
-	var s SourceItem
-	err := d.conn.QueryRow(ctx, q, apiID).Scan(
-		&s.ApiID, &s.Kind, &s.Lane, &s.DisplayName, &s.Tags,
-		&s.Status, &s.ConfigSummary, &s.CreatedAt, &s.UpdatedAt,
-	)
+	q := `SELECT ` + sourceViewCols + ` FROM sources_v WHERE api_id = $1`
+	row := d.conn.QueryRow(ctx, q, apiID)
+	s, err := scanSourceItem(row.Scan)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return SourceItem{}, false, nil
 	}
