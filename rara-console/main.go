@@ -249,6 +249,53 @@ func (s *server) handleDistillationList(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, json.RawMessage(body))
 }
 
+// sourceListParams are the only query params forwarded to /v1/sources. Re-encoding through this
+// allowlist means a crafted query (e.g. ?evil=1) can never reach the upstream surface.
+var sourceListParams = [6]string{"kind", "status", "tag", "q", "page", "page_size"}
+
+// handleSources proxies GET /v1/sources (the unified sources_v read-model), forwarding only the
+// whitelisted filter/pagination params. The values are re-encoded via url.Values to prevent
+// query-parameter injection.
+func (s *server) handleSources(w http.ResponseWriter, r *http.Request) {
+	q := url.Values{}
+	for _, k := range sourceListParams {
+		v := r.URL.Query().Get(k)
+		if v == "" {
+			continue
+		}
+		if k == "page" || k == "page_size" {
+			// Forward pagination only when it parses as a positive int — garbage like ?page=abc
+			// never reaches the upstream. The core surface owns the page_size ceiling
+			// (maxSourcePageSize), so we deliberately don't duplicate that cap here.
+			if n, err := strconv.Atoi(v); err != nil || n <= 0 {
+				continue
+			}
+		}
+		q.Set(k, v)
+	}
+	path := "/v1/sources"
+	if enc := q.Encode(); enc != "" {
+		path += "?" + enc
+	}
+	body, err := s.fetchCore(r.Context(), path)
+	if err != nil {
+		badGateway(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, json.RawMessage(body))
+}
+
+// handleSourceKinds proxies GET /v1/source-kinds — the static registry that drives the wizard and
+// labels/icons each kind in the list.
+func (s *server) handleSourceKinds(w http.ResponseWriter, r *http.Request) {
+	body, err := s.fetchCore(r.Context(), "/v1/source-kinds")
+	if err != nil {
+		badGateway(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, json.RawMessage(body))
+}
+
 // handleDistillationDetail proxies GET /v1/distillations/{id}. Rejects non-numeric ids before
 // touching the core so a path-traversal payload never reaches the upstream.
 func (s *server) handleDistillationDetail(w http.ResponseWriter, r *http.Request) {
@@ -715,6 +762,10 @@ func main() {
 	mux.HandleFunc("PUT /api/routing-policies", s.handleUpsertRoutingPolicy)
 	mux.HandleFunc("GET /api/decisions", s.handleDecisionsFeed)
 	mux.HandleFunc("GET /api/items/{id}/decisions", s.handleItemDecisions)
+	mux.HandleFunc("GET /api/source-kinds", s.handleSourceKinds)
+	// /api/sources → unified sources_v list (fatia #1); the more-specific /api/sources/podcast below
+	// is a distinct ServeMux pattern, so it keeps its own handler.
+	mux.HandleFunc("GET /api/sources", s.handleSources)
 	mux.HandleFunc("GET /api/sources/podcast", s.handlePodcastSources)
 	mux.HandleFunc("POST /api/sources/podcast", s.handleAddPodcastSource)
 	mux.HandleFunc("PUT /api/sources/podcast", s.handleTogglePodcastSource)
