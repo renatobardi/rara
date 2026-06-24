@@ -321,6 +321,66 @@ type PodcastFeed struct {
 	Active  bool   `json:"active"`
 }
 
+// SourceField describes one wizard input field for a source kind.
+type SourceField struct {
+	Name        string `json:"name"`
+	Label       string `json:"label"`
+	Type        string `json:"type"` // text | url | textarea
+	Required    bool   `json:"required,omitempty"`
+	Validation  string `json:"validation,omitempty"`
+	Placeholder string `json:"placeholder,omitempty"`
+}
+
+// SourceKind is one entry in the source registry (drives the creation wizard).
+type SourceKind struct {
+	Kind          string        `json:"kind"`
+	Label         string        `json:"label"`
+	Lane          string        `json:"lane"`
+	Icon          string        `json:"icon"`
+	TargetApp     string        `json:"target_app"`
+	SupportsPause bool          `json:"supports_pause"`
+	SupportsTags  bool          `json:"supports_tags"`
+	Fields        []SourceField `json:"fields"`
+}
+
+// SourceItem is one row from sources_v (the unified source read-model).
+type SourceItem struct {
+	ApiID         string    `json:"api_id"`
+	Kind          string    `json:"kind"`
+	Lane          string    `json:"lane"`
+	DisplayName   string    `json:"display_name"`
+	Tags          []string  `json:"tags"`
+	Status        string    `json:"status"` // active | paused
+	ConfigSummary string    `json:"config_summary"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
+}
+
+// SourceFilter holds query parameters for GET /v1/sources.
+type SourceFilter struct {
+	Kind     string
+	Status   string
+	Tag      string
+	Q        string
+	Page     int
+	PageSize int
+}
+
+// SourceCounts holds per-status and per-kind badge counts over the result set.
+type SourceCounts struct {
+	ByStatus map[string]int `json:"by_status"`
+	ByKind   map[string]int `json:"by_kind"`
+}
+
+// SourcesResult is the paginated response for GET /v1/sources.
+type SourcesResult struct {
+	Items    []SourceItem `json:"items"`
+	Page     int          `json:"page"`
+	PageSize int          `json:"page_size"`
+	Total    int          `json:"total"`
+	Counts   SourceCounts `json:"counts"`
+}
+
 // FlowStep is one ordered step of a flow.
 type FlowStep struct {
 	FlowID     int             `json:"flow_id"`
@@ -518,6 +578,13 @@ type Database interface {
 	ListPodcastFeeds(ctx context.Context) ([]PodcastFeed, error)
 	UpsertPodcastFeed(ctx context.Context, feedURL, title string) (int, error)
 	SetPodcastFeedActive(ctx context.Context, id int, active bool) error
+
+	// --- Unified source listing (fatia #1, sources_v) ---------------------------
+	// ListSources returns sources from sources_v with optional filters and pagination.
+	// Counts (by_status, by_kind) are computed over the full filtered set before pagination.
+	ListSources(ctx context.Context, f SourceFilter) (SourcesResult, error)
+	// GetSource returns one source by api_id (found=false if absent).
+	GetSource(ctx context.Context, apiID string) (SourceItem, bool, error)
 
 	// Spine (idempotent upserts).
 	UpsertItem(ctx context.Context, it Item) (int, error)

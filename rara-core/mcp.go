@@ -288,6 +288,29 @@ func buildTools(core *Core) []mcpTool {
 				return okResult{OK: true}, nil
 			},
 		},
+		// --- sources listing (fatia #1) ---
+		{
+			Name:        "rara_list_sources",
+			Description: "List collectable sources from sources_v with optional filters (kind, status, tag, q, page, page_size). Returns items, total, and badge counts.",
+			InputSchema: schemaObject(`{"kind":{"type":"string"},"status":{"type":"string"},"tag":{"type":"string"},"q":{"type":"string"},"page":{"type":"integer"},"page_size":{"type":"integer"}}`),
+			Handler: func(ctx context.Context, raw json.RawMessage) (any, error) {
+				var a struct {
+					Kind     string `json:"kind"`
+					Status   string `json:"status"`
+					Tag      string `json:"tag"`
+					Q        string `json:"q"`
+					Page     int    `json:"page"`
+					PageSize int    `json:"page_size"`
+				}
+				if err := json.Unmarshal(raw, &a); err != nil {
+					return nil, err
+				}
+				return core.Sources(ctx, SourceFilter{
+					Kind: a.Kind, Status: a.Status, Tag: a.Tag, Q: a.Q,
+					Page: a.Page, PageSize: a.PageSize,
+				})
+			},
+		},
 		// --- LinkedIn manual inbox ---
 		{
 			Name: "rara_submit_linkedin_post", Description: "Submit a LinkedIn post (url + text, optional author) into the manual inbox; upserts it and discovers the spine item. Returns the item id.",

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"sort"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -104,6 +105,8 @@ type MockDatabase struct {
 
 	podcastFeeds map[int]PodcastFeed // rara-dial's table, written by the core surface (config)
 	feedByURL    map[string]int      // UNIQUE(feed_url) -> id
+
+	sources []SourceItem // backing store for sources_v mock (tests populate directly)
 
 	nextFlowID int
 	nextItemID int
@@ -235,6 +238,88 @@ func (m *MockDatabase) SetPodcastFeedActive(_ context.Context, id int, active bo
 		m.podcastFeeds[id] = f
 	}
 	return nil
+}
+
+func (m *MockDatabase) ListSources(_ context.Context, f SourceFilter) (SourcesResult, error) {
+	var filtered []SourceItem
+	for _, s := range m.sources {
+		if f.Kind != "" && s.Kind != f.Kind {
+			continue
+		}
+		if f.Status != "" && s.Status != f.Status {
+			continue
+		}
+		if f.Tag != "" {
+			hasTag := false
+			for _, t := range s.Tags {
+				if t == f.Tag {
+					hasTag = true
+					break
+				}
+			}
+			if !hasTag {
+				continue
+			}
+		}
+		if f.Q != "" {
+			q := strings.ToLower(f.Q)
+			if !strings.Contains(strings.ToLower(s.DisplayName), q) &&
+				!strings.Contains(strings.ToLower(s.ConfigSummary), q) {
+				continue
+			}
+		}
+		item := s
+		if item.Tags == nil {
+			item.Tags = []string{}
+		}
+		filtered = append(filtered, item)
+	}
+
+	byStatus := make(map[string]int)
+	byKind := make(map[string]int)
+	for _, s := range filtered {
+		byStatus[s.Status]++
+		byKind[s.Kind]++
+	}
+
+	total := len(filtered)
+	pageSize := f.PageSize
+	if pageSize <= 0 {
+		pageSize = 50
+	}
+	page := f.Page
+	if page <= 0 {
+		page = 1
+	}
+	start := (page - 1) * pageSize
+	end := start + pageSize
+	if start > len(filtered) {
+		start = len(filtered)
+	}
+	if end > len(filtered) {
+		end = len(filtered)
+	}
+	items := filtered[start:end]
+	if items == nil {
+		items = []SourceItem{}
+	}
+
+	return SourcesResult{
+		Items: items, Page: page, PageSize: pageSize, Total: total,
+		Counts: SourceCounts{ByStatus: byStatus, ByKind: byKind},
+	}, nil
+}
+
+func (m *MockDatabase) GetSource(_ context.Context, apiID string) (SourceItem, bool, error) {
+	for _, s := range m.sources {
+		if s.ApiID == apiID {
+			if s.Tags == nil {
+				s.Tags = []string{}
+			}
+			return s, true, nil
+		}
+	}
+	return SourceItem{}, false, nil
 }
 
 func (m *MockDatabase) UpsertGateRule(_ context.Context, r GateRule) error {

@@ -15,6 +15,8 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strconv"
+	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -930,4 +932,137 @@ func (d *pgxDatabase) WorkerMetrics(ctx context.Context, since *time.Time) ([]Wo
 		out = append(out, *m)
 	}
 	return out, nil
+}
+
+// ListSources returns sources from sources_v with optional filters and pagination.
+// Counts (by_status, by_kind) reflect the full filtered set before pagination.
+func (d *pgxDatabase) ListSources(ctx context.Context, f SourceFilter) (SourcesResult, error) {
+	var conds []string
+	var args []any
+	n := 1
+
+	if f.Kind != "" {
+		conds = append(conds, fmt.Sprintf("kind = $%d", n))
+		args = append(args, f.Kind)
+		n++
+	}
+	if f.Status != "" {
+		conds = append(conds, fmt.Sprintf("status = $%d", n))
+		args = append(args, f.Status)
+		n++
+	}
+	if f.Tag != "" {
+		conds = append(conds, fmt.Sprintf("$%d = ANY(tags)", n))
+		args = append(args, f.Tag)
+		n++
+	}
+	if f.Q != "" {
+		// Same parameter index used twice — PostgreSQL supports reusing $N.
+		conds = append(conds, fmt.Sprintf("(display_name ILIKE $%d OR config_summary ILIKE $%d)", n, n))
+		args = append(args, "%"+f.Q+"%")
+		n++
+	}
+
+	where := ""
+	if len(conds) > 0 {
+		where = " WHERE " + strings.Join(conds, " AND ")
+	}
+
+	// Count total.
+	var total int
+	if err := d.conn.QueryRow(ctx, "SELECT COUNT(*) FROM sources_v"+where, args...).Scan(&total); err != nil {
+		return SourcesResult{}, fmt.Errorf("list sources count: %w", err)
+	}
+
+	// Counts by status and kind (over full filtered set).
+	byStatus := make(map[string]int)
+	byKind := make(map[string]int)
+	countRows, err := d.conn.Query(ctx,
+		"SELECT status, kind, COUNT(*) FROM sources_v"+where+" GROUP BY status, kind", args...)
+	if err != nil {
+		return SourcesResult{}, fmt.Errorf("list sources counts: %w", err)
+	}
+	for countRows.Next() {
+		var status, kind string
+		var cnt int
+		if err := countRows.Scan(&status, &kind, &cnt); err != nil {
+			countRows.Close()
+			return SourcesResult{}, fmt.Errorf("list sources counts scan: %w", err)
+		}
+		byStatus[status] += cnt
+		byKind[kind] += cnt
+	}
+	countRows.Close()
+	if err := countRows.Err(); err != nil {
+		return SourcesResult{}, fmt.Errorf("list sources counts rows: %w", err)
+	}
+
+	// Pagination.
+	pageSize := f.PageSize
+	if pageSize <= 0 {
+		pageSize = 50
+	}
+	page := f.Page
+	if page <= 0 {
+		page = 1
+	}
+	offset := (page - 1) * pageSize
+
+	dataQ := `SELECT api_id, kind, lane, display_name, COALESCE(tags,'{}'), status,
+		COALESCE(config_summary,''), created_at, updated_at
+		FROM sources_v` + where +
+		` ORDER BY created_at DESC, api_id` +
+		` LIMIT $` + strconv.Itoa(n) + ` OFFSET $` + strconv.Itoa(n+1)
+	args = append(args, pageSize, offset)
+
+	dataRows, err := d.conn.Query(ctx, dataQ, args...)
+	if err != nil {
+		return SourcesResult{}, fmt.Errorf("list sources data: %w", err)
+	}
+	defer dataRows.Close()
+
+	items := make([]SourceItem, 0)
+	for dataRows.Next() {
+		var s SourceItem
+		if err := dataRows.Scan(
+			&s.ApiID, &s.Kind, &s.Lane, &s.DisplayName, &s.Tags,
+			&s.Status, &s.ConfigSummary, &s.CreatedAt, &s.UpdatedAt,
+		); err != nil {
+			return SourcesResult{}, fmt.Errorf("list sources scan: %w", err)
+		}
+		if s.Tags == nil {
+			s.Tags = []string{}
+		}
+		items = append(items, s)
+	}
+	if err := dataRows.Err(); err != nil {
+		return SourcesResult{}, fmt.Errorf("list sources rows: %w", err)
+	}
+
+	return SourcesResult{
+		Items: items, Page: page, PageSize: pageSize, Total: total,
+		Counts: SourceCounts{ByStatus: byStatus, ByKind: byKind},
+	}, nil
+}
+
+// GetSource returns one source by api_id from sources_v (found=false if absent).
+func (d *pgxDatabase) GetSource(ctx context.Context, apiID string) (SourceItem, bool, error) {
+	const q = `SELECT api_id, kind, lane, display_name, COALESCE(tags,'{}'), status,
+		COALESCE(config_summary,''), created_at, updated_at
+		FROM sources_v WHERE api_id = $1`
+	var s SourceItem
+	err := d.conn.QueryRow(ctx, q, apiID).Scan(
+		&s.ApiID, &s.Kind, &s.Lane, &s.DisplayName, &s.Tags,
+		&s.Status, &s.ConfigSummary, &s.CreatedAt, &s.UpdatedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return SourceItem{}, false, nil
+	}
+	if err != nil {
+		return SourceItem{}, false, fmt.Errorf("get source %q: %w", apiID, err)
+	}
+	if s.Tags == nil {
+		s.Tags = []string{}
+	}
+	return s, true, nil
 }
