@@ -111,6 +111,10 @@ type WorkerMetric struct {
 type Core struct {
 	db    Database
 	inbox LinkedInPostStore
+	// resolveChannel turns a channel reference (raw UC id, @handle, or name) into a
+	// canonical youtube_channel_id. Set from YOUTUBE_API_KEY at startup; when nil the
+	// input is used verbatim (e.g. unit tests that pass raw ids).
+	resolveChannel func(ctx context.Context, input string) (string, error)
 }
 
 // NewCore wires the operations layer over the seam and the LinkedIn store.
@@ -376,15 +380,25 @@ func (c *Core) SetPodcastFeedActive(ctx context.Context, id int, active bool) er
 // --- Source writes (fatia #2) — per-kind create + cross-kind edit/toggle ---
 
 // AddYouTubeChannel registers a YouTube channel for collection (rara-harvest's table).
-// channelID must be the YouTube channel ID (UCxxxxxxx) or a handle; it is the UNIQUE key.
-// displayName is optional (the collector reads channel_name; display_name is UI-only).
-func (c *Core) AddYouTubeChannel(ctx context.Context, channelID, channelName, displayName string) (int, error) {
-	channelID = strings.TrimSpace(channelID)
-	if channelID == "" {
+// channelRef may be a raw channel id (UC…), an @handle, or a free-text name — it is
+// resolved to the canonical youtube_channel_id (the UNIQUE key) via the YouTube API.
+// The operator-facing channel_name keeps the original reference (handle/name); the
+// resolved UC id is not surfaced in the UI. displayName is optional (UI-only).
+func (c *Core) AddYouTubeChannel(ctx context.Context, channelRef, channelName, displayName string) (int, error) {
+	channelRef = strings.TrimSpace(channelRef)
+	if channelRef == "" {
 		return 0, badInput("channel_id cannot be empty")
 	}
+	channelID := channelRef
+	if c.resolveChannel != nil {
+		resolved, err := c.resolveChannel(ctx, channelRef)
+		if err != nil {
+			return 0, err
+		}
+		channelID = resolved
+	}
 	if channelName == "" {
-		channelName = channelID
+		channelName = channelRef
 	}
 	return c.db.UpsertYouTubeChannel(ctx, channelID, channelName, displayName)
 }
@@ -493,11 +507,25 @@ func (c *Core) ResumeSource(ctx context.Context, apiID string) error {
 	return c.toggleSourceActive(ctx, apiID, true)
 }
 
-// ArchiveSource soft-deletes a source (active/enabled=false). Identical to PauseSource;
-// the semantic label "archive" lives in the UI, not the data model.
-// ponytail: no hard-delete in v1. Add DELETE FROM when Renato explicitly requests it.
-func (c *Core) ArchiveSource(ctx context.Context, apiID string) error {
-	return c.toggleSourceActive(ctx, apiID, false)
+// validSourceKinds are the api_id prefixes accepted by the cross-kind source operations.
+var validSourceKinds = map[string]bool{
+	"youtube_channel": true, "youtube_playlist": true, "podcast": true,
+	"rss": true, "html": true, "hn": true, "email": true,
+}
+
+// DeleteSource soft-deletes a source (sets deleted_at) so it DISAPPEARS from sources_v and
+// the Console list, while its already-collected content (videos, episodes, distillations)
+// is preserved — no hard DELETE, no cascade. Distinct from PauseSource, which only flips
+// active/enabled=false and keeps the source listed as paused. Idempotent.
+func (c *Core) DeleteSource(ctx context.Context, apiID string) error {
+	kind, _, ok := parseSourceID(apiID)
+	if !ok {
+		return badInput("invalid source id %q (want kind:N)", apiID)
+	}
+	if !validSourceKinds[kind] {
+		return badInput("unknown source kind %q", kind)
+	}
+	return c.db.SetSourceDeleted(ctx, apiID)
 }
 
 func (c *Core) toggleSourceActive(ctx context.Context, apiID string, active bool) error {
@@ -505,32 +533,31 @@ func (c *Core) toggleSourceActive(ctx context.Context, apiID string, active bool
 	if !ok {
 		return badInput("invalid source id %q (want kind:N)", apiID)
 	}
-	validKinds := map[string]bool{
-		"youtube_channel": true, "youtube_playlist": true, "podcast": true,
-		"rss": true, "html": true, "hn": true, "email": true,
-	}
-	if !validKinds[kind] {
+	if !validSourceKinds[kind] {
 		return badInput("unknown source kind %q", kind)
 	}
 	return c.db.SetSourceActive(ctx, apiID, active)
 }
 
 // validBulkActions are the allowed actions for POST /v1/sources/bulk.
-var validBulkActions = map[string]bool{"pause": true, "resume": true, "tag": true, "untag": true, "archive": true}
+// "delete" is the destructive action (soft-delete via deleted_at); there is no "archive".
+var validBulkActions = map[string]bool{"pause": true, "resume": true, "tag": true, "untag": true, "delete": true}
 
 // BulkSources applies an action to multiple sources. Results are per-item: a failure on one
 // does not stop the others (relayed in BulkSourcesResult).
 func (c *Core) BulkSources(ctx context.Context, action string, ids []string, tag string) (BulkSourcesResult, error) {
 	if !validBulkActions[action] {
-		return BulkSourcesResult{}, badInput("unknown bulk action %q (want pause|resume|tag|untag|archive)", action)
+		return BulkSourcesResult{}, badInput("unknown bulk action %q (want pause|resume|tag|untag|delete)", action)
 	}
 	result := BulkSourcesResult{Items: make([]BulkSourceEntry, 0, len(ids))}
 	for _, id := range ids {
 		entry := BulkSourceEntry{ID: id}
 		var err error
 		switch action {
-		case "pause", "archive":
+		case "pause":
 			err = c.PauseSource(ctx, id)
+		case "delete":
+			err = c.DeleteSource(ctx, id)
 		case "resume":
 			err = c.ResumeSource(ctx, id)
 		case "tag":
@@ -609,9 +636,9 @@ func sourceKind(kind, label, lane, icon, targetApp string, fields ...SourceField
 // A new kind = one entry here + one write endpoint in fatia #2. No table needed.
 var sourceKindsRegistry = []SourceKind{
 	sourceKind("youtube_channel", "YouTube Channel", "youtube", "youtube", "rara-harvest",
-		// channel_id is the YouTube channel ID (UCxxxxxxx) or a handle; used as the UNIQUE key.
-		// No YouTube API resolution at creation time — the collector reads it on first harvest.
-		SourceField{Name: "channel_id", Label: "Channel ID or handle", Type: "text", Required: true, Placeholder: "UCxxxxxxxxxxxxxxxxxxxxxxxx or @handle"},
+		// channel_id accepts a raw channel id (UC…), an @handle, or a free-text name; it is
+		// resolved to the canonical youtube_channel_id via the YouTube API at creation time.
+		SourceField{Name: "channel_id", Label: "Channel ID, handle, or name", Type: "text", Required: true, Placeholder: "UCxxxx… , @handle, or channel name"},
 		SourceField{Name: "channel_name", Label: "Channel name", Type: "text"},
 	),
 	sourceKind("youtube_playlist", "YouTube Playlist", "youtube", "youtube", "rara-shelf",
@@ -922,10 +949,11 @@ func NewSurfaceMux(core *Core, token string) http.Handler {
 	mux.HandleFunc("POST /v1/sources/bulk", h.bulkSources)
 	// Per-kind create: dispatches by {kind} value (youtube_channel|youtube_playlist|rss|html|hn|email).
 	mux.HandleFunc("POST /v1/sources/{kind}", h.addSource)
-	// Cross-kind edit + archive. Note: {source_id}/pause and /resume have deeper paths than {source_id}
-	// so they are matched first by the Go 1.22 mux (longer patterns win).
+	// Cross-kind edit + delete (soft-delete via deleted_at — the source disappears from the list).
+	// Note: {source_id}/pause and /resume have deeper paths than {source_id} so they are matched
+	// first by the Go 1.22 mux (longer patterns win).
 	mux.HandleFunc("PATCH /v1/sources/{source_id}", h.patchSource)
-	mux.HandleFunc("DELETE /v1/sources/{source_id}", h.archiveSource)
+	mux.HandleFunc("DELETE /v1/sources/{source_id}", h.deleteSource)
 	mux.HandleFunc("POST /v1/sources/{source_id}/pause", h.pauseSource)
 	mux.HandleFunc("POST /v1/sources/{source_id}/resume", h.resumeSource)
 
@@ -1245,9 +1273,9 @@ func (h *httpSurface) patchSource(w http.ResponseWriter, r *http.Request) {
 	writeResult(w, okResult{OK: true}, h.core.PatchSource(r.Context(), apiID, patch))
 }
 
-func (h *httpSurface) archiveSource(w http.ResponseWriter, r *http.Request) {
+func (h *httpSurface) deleteSource(w http.ResponseWriter, r *http.Request) {
 	apiID := r.PathValue("source_id")
-	writeResult(w, okResult{OK: true}, h.core.ArchiveSource(r.Context(), apiID))
+	writeResult(w, okResult{OK: true}, h.core.DeleteSource(r.Context(), apiID))
 }
 
 func (h *httpSurface) pauseSource(w http.ResponseWriter, r *http.Request) {

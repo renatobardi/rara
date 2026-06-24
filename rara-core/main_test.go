@@ -375,9 +375,6 @@ func (m *MockDatabase) CreateEmailSource(_ context.Context, gmailQuery, label, f
 	return id, nil
 }
 
-// mockSourceKey builds a lookup key for the sources backing store.
-func mockSourceKey(apiID string) string { return apiID }
-
 // setSourcesVStatus reflects an active/enabled change in the sources_v backing store.
 func (m *MockDatabase) setSourcesVStatus(apiID string, active bool) {
 	status := "active"
@@ -457,6 +454,42 @@ func (m *MockDatabase) SetSourceActive(_ context.Context, apiID string, active b
 		return fmt.Errorf("mock: unknown kind %q in api_id %q", kind, apiID)
 	}
 	m.setSourcesVStatus(apiID, active)
+	return nil
+}
+
+// SetSourceDeleted mirrors the soft-delete: the row vanishes from sources_v (m.sources),
+// just as the real view filters deleted_at IS NULL. The backing write-store row is kept
+// (content is preserved). Idempotent; an unknown id is a not-found error.
+func (m *MockDatabase) SetSourceDeleted(_ context.Context, apiID string) error {
+	kind, id, ok := parseSourceID(apiID)
+	if !ok {
+		return fmt.Errorf("mock: invalid api_id %q", apiID)
+	}
+	var exists bool
+	switch kind {
+	case "youtube_channel":
+		_, exists = m.ytChannels[id]
+	case "youtube_playlist":
+		_, exists = m.ytPlaylists[id]
+	case "podcast":
+		_, exists = m.podcastFeeds[id]
+	case "rss", "html", "hn":
+		_, exists = m.feedSources[id]
+	case "email":
+		_, exists = m.emailSources[id]
+	default:
+		return fmt.Errorf("mock: unknown kind %q in api_id %q", kind, apiID)
+	}
+	if !exists {
+		return fmt.Errorf("source %q: %w", apiID, errNotFound)
+	}
+	// Drop it from the sources_v backing slice (idempotent — a no-op if already gone).
+	for i, s := range m.sources {
+		if s.ApiID == apiID {
+			m.sources = append(m.sources[:i], m.sources[i+1:]...)
+			break
+		}
+	}
 	return nil
 }
 

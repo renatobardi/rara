@@ -46,9 +46,11 @@ func filterActive(playlists []Playlist, inactive map[string]bool) []Playlist {
 	return out
 }
 
-// loadInactivePlaylists returns the set of youtube_playlist_ids with active=false.
+// loadInactivePlaylists returns the set of youtube_playlist_ids to skip: those paused
+// (active=false) OR soft-deleted (deleted_at set). Deleted playlists are excluded from
+// collection just like paused ones, but stay out of the operator's list entirely.
 func loadInactivePlaylists(ctx context.Context, conn *pgx.Conn) (map[string]bool, error) {
-	rows, err := conn.Query(ctx, "SELECT youtube_playlist_id FROM playlists WHERE active = false")
+	rows, err := conn.Query(ctx, "SELECT youtube_playlist_id FROM playlists WHERE active = false OR deleted_at IS NOT NULL")
 	if err != nil {
 		return nil, err
 	}

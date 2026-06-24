@@ -121,7 +121,7 @@ func main() {
 }
 
 func fetchActiveChannels(ctx context.Context, conn *pgx.Conn) ([]Channel, error) {
-	rows, err := conn.Query(ctx, "SELECT id, youtube_channel_id, channel_name, active FROM target_channels WHERE active = true")
+	rows, err := conn.Query(ctx, "SELECT id, youtube_channel_id, channel_name, active FROM target_channels WHERE active = true AND deleted_at IS NULL")
 	if err != nil {
 		return nil, err
 	}

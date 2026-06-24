@@ -613,6 +613,9 @@ type Database interface {
 	CreateEmailSource(ctx context.Context, gmailQuery, label, fromFilter, displayName string) (int, error)
 	// SetSourceActive toggles the active/enabled flag; dispatches to the right table by api_id prefix.
 	SetSourceActive(ctx context.Context, apiID string, active bool) error
+	// SetSourceDeleted soft-deletes a source (sets deleted_at) so it drops out of sources_v;
+	// the collected content is preserved (no cascade). Idempotent. Dispatches by api_id prefix.
+	SetSourceDeleted(ctx context.Context, apiID string) error
 	// PatchSourceMeta updates display_name and/or tags; dispatches by api_id prefix.
 	// A nil displayName preserves the existing value; a non-nil tags slice overwrites the array.
 	PatchSourceMeta(ctx context.Context, apiID string, displayName *string, tags []string) error
@@ -1032,6 +1035,39 @@ func (d *pgxDatabase) SetSourceActive(ctx context.Context, apiID string, active 
 	tag, err := d.conn.Exec(ctx, q, id, active)
 	if err != nil {
 		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("source %q: %w", apiID, errNotFound)
+	}
+	return nil
+}
+
+// SetSourceDeleted stamps deleted_at on the source's row (soft-delete). COALESCE keeps the
+// first deletion time on re-delete, so the operation is idempotent. RowsAffected==0 means the
+// id does not exist (a true not-found), since the WHERE matches regardless of deleted_at.
+func (d *pgxDatabase) SetSourceDeleted(ctx context.Context, apiID string) error {
+	kind, id, ok := parseSourceID(apiID)
+	if !ok {
+		return fmt.Errorf("SetSourceDeleted: invalid api_id %q", apiID)
+	}
+	var q string
+	switch kind {
+	case "youtube_channel":
+		q = `UPDATE target_channels SET deleted_at = COALESCE(deleted_at, now()), updated_at = CURRENT_TIMESTAMP WHERE id = $1`
+	case "youtube_playlist":
+		q = `UPDATE playlists SET deleted_at = COALESCE(deleted_at, now()), updated_at = CURRENT_TIMESTAMP WHERE id = $1`
+	case "podcast":
+		q = `UPDATE podcast_feeds SET deleted_at = COALESCE(deleted_at, now()), updated_at = CURRENT_TIMESTAMP WHERE id = $1`
+	case "rss", "html", "hn":
+		q = `UPDATE feed_sources SET deleted_at = COALESCE(deleted_at, now()), updated_at = CURRENT_TIMESTAMP WHERE id = $1`
+	case "email":
+		q = `UPDATE email_sources SET deleted_at = COALESCE(deleted_at, now()), updated_at = CURRENT_TIMESTAMP WHERE id = $1`
+	default:
+		return fmt.Errorf("SetSourceDeleted: unknown kind %q", kind)
+	}
+	tag, err := d.conn.Exec(ctx, q, id)
+	if err != nil {
+		return fmt.Errorf("soft-delete source %q: %w", apiID, err)
 	}
 	if tag.RowsAffected() == 0 {
 		return fmt.Errorf("source %q: %w", apiID, errNotFound)
@@ -1530,6 +1566,11 @@ func serveSurfacePool(ctx context.Context, dbURL, addr, token string) error {
 	}
 	defer pool.Close()
 	core := NewCore(&pgxDatabase{conn: pool}, newPgxLinkedInInbox(pool))
+	// Only wire the resolver when a key is configured; without it, leave resolveChannel
+	// nil so AddYouTubeChannel keeps accepting a raw channel id verbatim (no API needed).
+	if key := os.Getenv("YOUTUBE_API_KEY"); key != "" {
+		core.resolveChannel = newYTResolver(key).resolve
+	}
 	return ServeSurface(ctx, core, addr, token)
 }
 
