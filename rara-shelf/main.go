@@ -34,6 +34,36 @@ type pgxExecer interface {
 	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
 }
 
+// filterActive returns only playlists not explicitly disabled in the DB.
+// Playlists absent from the DB (new ones) default to active — first run always processes them.
+func filterActive(playlists []Playlist, inactive map[string]bool) []Playlist {
+	out := make([]Playlist, 0, len(playlists))
+	for _, p := range playlists {
+		if !inactive[p.YoutubePlaylistID] {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// loadInactivePlaylists returns the set of youtube_playlist_ids with active=false.
+func loadInactivePlaylists(ctx context.Context, conn *pgx.Conn) (map[string]bool, error) {
+	rows, err := conn.Query(ctx, "SELECT youtube_playlist_id FROM playlists WHERE active = false")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	inactive := make(map[string]bool)
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		inactive[id] = true
+	}
+	return inactive, rows.Err()
+}
+
 // stampProviderCollected sets providers.last_collect_at = now() for the named provider.
 // Called on successful completion so the dispatcher can track cadence.
 // Returns an error if no row was updated (provider not registered in providers table).
@@ -157,6 +187,19 @@ func main() {
 	}
 
 	log.Printf("Discovered %d playlists\n", len(playlists))
+
+	// Filter out playlists the operator has disabled (active=false in DB).
+	// New playlists (not yet in DB) are processed by default.
+	inactiveCtx, inactiveCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	inactive, err := loadInactivePlaylists(inactiveCtx, conn)
+	inactiveCancel()
+	if err != nil {
+		log.Fatalf("load inactive playlists: %v", err)
+	}
+	playlists = filterActive(playlists, inactive)
+	if len(inactive) > 0 {
+		log.Printf("Skipping %d inactive playlist(s)\n", len(inactive))
+	}
 
 	for _, pl := range playlists {
 		// Give each playlist its own timeout proportional to its item count.

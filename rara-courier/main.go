@@ -47,9 +47,21 @@ type GmailAPI interface {
 	GetMessage(ctx context.Context, id string) (Email, error)
 }
 
+// EmailSource is one enabled Gmail reading rule from the email_sources table.
+// The courier iterates all active rules and composes a Gmail search query from
+// the non-empty fields (gmail_query, label, from_filter ANDed together).
+type EmailSource struct {
+	ID          int
+	DisplayName string
+	GmailQuery  string
+	Label       string
+	FromFilter  string
+}
+
 // Database is the persistence seam: the idempotent email upsert and provider stamp. The pgx
 // implementation talks to Neon; tests use an in-memory mock.
 type Database interface {
+	ListEmailSources(ctx context.Context) ([]EmailSource, error)
 	UpsertEmail(ctx context.Context, e Email) error
 	StampProviderCollected(ctx context.Context, name string) error
 }
@@ -65,7 +77,6 @@ func main() {
 	if clientID == "" || clientSecret == "" || refreshToken == "" {
 		log.Fatalf("GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET and GOOGLE_OAUTH_REFRESH_TOKEN are required")
 	}
-	query := envOr("GMAIL_QUERY", "newer_than:30d")
 	max := 100
 	if v := os.Getenv("MAIL_MAX"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
@@ -91,47 +102,69 @@ func main() {
 	log.Println("OAuth access token obtained")
 
 	api := &httpGmailAPI{accessToken: accessToken}
-	n, err := run(context.Background(), &pgxDatabase{conn: conn}, api, query, max)
+	n, err := run(context.Background(), &pgxDatabase{conn: conn}, api, max)
 	if err != nil {
 		log.Fatalf("mail collector: %v", err)
 	}
 	log.Printf("Mail job completed: %d emails catalogued", n)
 }
 
-// run is the collector loop: list message ids matching the query, fetch each, and upsert it. A
-// per-message error is logged and the loop continues — one bad message must not stall the run.
-func run(ctx context.Context, db Database, api GmailAPI, query string, max int) (int, error) {
-	ids, err := api.ListMessageIDs(ctx, query, max)
+// buildGmailQuery composes a Gmail search query from the non-empty fields of a source.
+// label and from_filter are translated to Gmail search operators; gmail_query is appended as-is.
+func buildGmailQuery(src EmailSource) string {
+	parts := make([]string, 0, 3)
+	if src.Label != "" {
+		parts = append(parts, "label:"+src.Label)
+	}
+	if src.FromFilter != "" {
+		parts = append(parts, "from:"+src.FromFilter)
+	}
+	if src.GmailQuery != "" {
+		parts = append(parts, src.GmailQuery)
+	}
+	return strings.Join(parts, " ")
+}
+
+// run is the collector loop: for each enabled email_sources rule, list matching message IDs,
+// fetch each, and upsert. Per-source list errors and per-message errors are logged and skipped —
+// one bad source or message must not stall the rest. The DB deduplicates by message_id
+// (ON CONFLICT), so the same message returned by two rules is upserted idempotently.
+func run(ctx context.Context, db Database, api GmailAPI, max int) (int, error) {
+	sources, err := db.ListEmailSources(ctx)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("list email sources: %w", err)
 	}
 	catalogued := 0
-	for _, id := range ids {
-		e, err := api.GetMessage(ctx, id)
+	for _, src := range sources {
+		q := buildGmailQuery(src)
+		if q == "" {
+			continue
+		}
+		ids, err := api.ListMessageIDs(ctx, q, max)
 		if err != nil {
-			log.Printf("get message %s: %v", id, err)
+			log.Printf("list messages for source %d (%s): %v", src.ID, src.DisplayName, err)
 			continue
 		}
-		if e.MessageID == "" {
-			continue
+		for _, id := range ids {
+			e, err := api.GetMessage(ctx, id)
+			if err != nil {
+				log.Printf("get message %s: %v", id, err)
+				continue
+			}
+			if e.MessageID == "" {
+				continue
+			}
+			if err := db.UpsertEmail(ctx, e); err != nil {
+				log.Printf("upsert email %s: %v", id, err)
+				continue
+			}
+			catalogued++
 		}
-		if err := db.UpsertEmail(ctx, e); err != nil {
-			log.Printf("upsert email %s: %v", id, err)
-			continue
-		}
-		catalogued++
 	}
 	if err := db.StampProviderCollected(ctx, "courier"); err != nil {
 		log.Printf("stamp provider courier: %v", err)
 	}
 	return catalogued, nil
-}
-
-func envOr(key, def string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return def
 }
 
 // ---------------------------------------------------------------------------
@@ -386,6 +419,26 @@ func (d *pgxDatabase) StampProviderCollected(ctx context.Context, name string) e
 		return fmt.Errorf("provider %q not found in providers table", name)
 	}
 	return nil
+}
+
+// ListEmailSources returns all enabled email reading rules from email_sources, ordered by id.
+func (d *pgxDatabase) ListEmailSources(ctx context.Context) ([]EmailSource, error) {
+	const q = `SELECT id, COALESCE(display_name,''), COALESCE(gmail_query,''), COALESCE(label,''), COALESCE(from_filter,'')
+	           FROM email_sources WHERE enabled = true ORDER BY id`
+	rows, err := d.conn.Query(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []EmailSource
+	for rows.Next() {
+		var s EmailSource
+		if err := rows.Scan(&s.ID, &s.DisplayName, &s.GmailQuery, &s.Label, &s.FromFilter); err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
 }
 
 // UpsertEmail inserts an email, idempotent on message_id. On conflict it refreshes the

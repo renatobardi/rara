@@ -495,3 +495,40 @@ func TestStampProviderCollectedNotFound(t *testing.T) {
 		t.Errorf("error = %q, want %q", err.Error(), want)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// filterActive — pure function, zero I/O.
+// ---------------------------------------------------------------------------
+
+func TestFilterActiveSkipsInactive(t *testing.T) {
+	pls := []Playlist{
+		{YoutubePlaylistID: "A"},
+		{YoutubePlaylistID: "B"},
+		{YoutubePlaylistID: "C"}, // not in inactive map → always included (new playlist)
+	}
+	inactive := map[string]bool{"B": true}
+	got := filterActive(pls, inactive)
+	if len(got) != 2 {
+		t.Fatalf("filterActive = %d playlists, want 2", len(got))
+	}
+	if got[0].YoutubePlaylistID != "A" || got[1].YoutubePlaylistID != "C" {
+		t.Errorf("ids = [%s %s], want [A C]", got[0].YoutubePlaylistID, got[1].YoutubePlaylistID)
+	}
+}
+
+func TestFilterActiveEmptyInactive(t *testing.T) {
+	pls := []Playlist{{YoutubePlaylistID: "A"}, {YoutubePlaylistID: "B"}}
+	got := filterActive(pls, nil)
+	if len(got) != 2 {
+		t.Errorf("empty inactive map should keep all, got %d", len(got))
+	}
+}
+
+func TestFilterActiveAllInactive(t *testing.T) {
+	pls := []Playlist{{YoutubePlaylistID: "A"}, {YoutubePlaylistID: "B"}}
+	inactive := map[string]bool{"A": true, "B": true}
+	got := filterActive(pls, inactive)
+	if len(got) != 0 {
+		t.Errorf("all inactive → empty result, got %d", len(got))
+	}
+}
