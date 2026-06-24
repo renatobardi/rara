@@ -21,14 +21,18 @@ func fakeSourcesCore(t *testing.T, token string, gotQuery *string) *httptest.Ser
 		if gotQuery != nil {
 			*gotQuery = r.URL.RawQuery
 		}
-		_, _ = w.Write([]byte(`{"items":[{"api_id":"podcast:1","kind":"podcast","lane":"podcast","display_name":"Lex","tags":[],"status":"active","config_summary":"https://feed","created_at":"2026-06-24T00:00:00Z","updated_at":"2026-06-24T00:00:00Z"}],"page":1,"page_size":20,"total":1,"counts":{"by_status":{"active":1},"by_kind":{"podcast":1}}}`))
+		if _, err := w.Write([]byte(`{"items":[{"api_id":"podcast:1","kind":"podcast","lane":"podcast","display_name":"Lex","tags":[],"status":"active","config_summary":"https://feed","created_at":"2026-06-24T00:00:00Z","updated_at":"2026-06-24T00:00:00Z"}],"page":1,"page_size":20,"total":1,"counts":{"by_status":{"active":1},"by_kind":{"podcast":1}}}`)); err != nil {
+			t.Errorf("fake core write: %v", err)
+		}
 	})
 	mux.HandleFunc("GET /v1/source-kinds", func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer "+token {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		_, _ = w.Write([]byte(`[{"kind":"podcast","label":"Podcast Feed","lane":"podcast","icon":"podcast","target_app":"rara-dial","supports_pause":true,"supports_tags":true,"fields":[]}]`))
+		if _, err := w.Write([]byte(`[{"kind":"podcast","label":"Podcast Feed","lane":"podcast","icon":"podcast","target_app":"rara-dial","supports_pause":true,"supports_tags":true,"fields":[]}]`)); err != nil {
+			t.Errorf("fake core write: %v", err)
+		}
 	})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)

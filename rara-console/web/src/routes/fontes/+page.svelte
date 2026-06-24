@@ -79,6 +79,15 @@
 			.map((s) => ({ ...s, tags: Array.isArray(s.tags) ? s.tags : [] }));
 	}
 
+	// Coerce counts to the {by_status, by_kind} shape so the badge lookups can't crash the page
+	// on a malformed payload (the template dereferences both sub-maps).
+	function normCounts(raw: unknown): Counts {
+		const c = (raw ?? {}) as Partial<Counts>;
+		const obj = (v: unknown): Record<string, number> =>
+			v && typeof v === 'object' ? (v as Record<string, number>) : {};
+		return { by_status: obj(c.by_status), by_kind: obj(c.by_kind) };
+	}
+
 	function fmtDate(iso: string): string {
 		if (!iso) return t.fontes.never;
 		return new Date(iso).toLocaleString('pt-BR', {
@@ -98,7 +107,7 @@
 			.then(([k, res]: [SourceKind[], SourcesResult]) => {
 				kinds = Array.isArray(k) ? k : [];
 				items = normItems(res?.items);
-				counts = res?.counts ?? { by_status: {}, by_kind: {} };
+				counts = normCounts(res?.counts);
 				total = res?.total ?? items.length;
 				loading = false;
 			})
