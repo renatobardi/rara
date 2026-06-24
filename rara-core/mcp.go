@@ -15,6 +15,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 )
 
@@ -309,6 +310,41 @@ func buildTools(core *Core) []mcpTool {
 					Kind: a.Kind, Status: a.Status, Tag: a.Tag, Q: a.Q,
 					Page: a.Page, PageSize: a.PageSize,
 				})
+			},
+		},
+		// --- source actions (fatia #2) ---
+		{
+			Name:        "rara_pause_source",
+			Description: "Pause a source by api_id (e.g. 'youtube_channel:3', 'rss:7'). Sets active/enabled=false; use rara_resume_source to undo.",
+			InputSchema: schemaObject(`{"source_id":{"type":"string"}}`, "source_id"),
+			Handler: func(ctx context.Context, raw json.RawMessage) (any, error) {
+				var a struct {
+					SourceID string `json:"source_id"`
+				}
+				if err := json.Unmarshal(raw, &a); err != nil {
+					return nil, fmt.Errorf("decode rara_pause_source args: %w", err)
+				}
+				if err := core.PauseSource(ctx, a.SourceID); err != nil {
+					return nil, fmt.Errorf("pause source %q: %w", a.SourceID, err)
+				}
+				return okResult{OK: true}, nil
+			},
+		},
+		{
+			Name:        "rara_resume_source",
+			Description: "Resume a paused source by api_id. Sets active/enabled=true.",
+			InputSchema: schemaObject(`{"source_id":{"type":"string"}}`, "source_id"),
+			Handler: func(ctx context.Context, raw json.RawMessage) (any, error) {
+				var a struct {
+					SourceID string `json:"source_id"`
+				}
+				if err := json.Unmarshal(raw, &a); err != nil {
+					return nil, fmt.Errorf("decode rara_resume_source args: %w", err)
+				}
+				if err := core.ResumeSource(ctx, a.SourceID); err != nil {
+					return nil, fmt.Errorf("resume source %q: %w", a.SourceID, err)
+				}
+				return okResult{OK: true}, nil
 			},
 		},
 		// --- LinkedIn manual inbox ---

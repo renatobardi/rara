@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sort"
 	"strconv"
 	"strings"
@@ -80,6 +81,46 @@ func capProviderError(p Provider) Provider {
 	return p
 }
 
+// mock row types for source write backing stores (fatia #2)
+type mockYTChannel struct {
+	ID          int
+	ChannelID   string
+	ChannelName string
+	DisplayName string
+	Tags        []string
+	Active      bool
+}
+
+type mockYTPlaylist struct {
+	ID          int
+	PlaylistID  string
+	Title       string
+	DisplayName string
+	Tags        []string
+	Active      bool
+}
+
+type mockFeedSource struct {
+	ID          int
+	Name        string
+	SourceType  string
+	Endpoint    string
+	Cls         string
+	DisplayName string
+	Tags        []string
+	Enabled     bool
+}
+
+type mockEmailSource struct {
+	ID          int
+	GmailQuery  string
+	Label       string
+	FromFilter  string
+	DisplayName string
+	Tags        []string
+	Enabled     bool
+}
+
 type MockDatabase struct {
 	capabilities map[string]Capability // UNIQUE(name)
 	providers    map[string]Provider   // UNIQUE(name)
@@ -108,9 +149,22 @@ type MockDatabase struct {
 
 	sources []SourceItem // backing store for sources_v mock (tests populate directly)
 
-	nextFlowID int
-	nextItemID int
-	nextFeedID int
+	// --- source write backing stores (fatia #2) ---
+	ytChannels      map[int]mockYTChannel
+	ytChannelByKey  map[string]int // UNIQUE(youtube_channel_id) -> id
+	ytPlaylists     map[int]mockYTPlaylist
+	ytPlaylistByKey map[string]int // UNIQUE(youtube_playlist_id) -> id
+	feedSources     map[int]mockFeedSource
+	feedByNameEp    map[string]int // UNIQUE(name+"\x00"+endpoint) -> id
+	emailSources    map[int]mockEmailSource
+
+	nextFlowID     int
+	nextItemID     int
+	nextFeedID     int
+	nextYTChanID   int
+	nextYTPlayID   int
+	nextFeedSrcID  int
+	nextEmailSrcID int
 
 	// nowFn stamps CreatedAt on appended feedback / inserted profiles when the caller leaves it
 	// zero (mirroring the SQL DEFAULT CURRENT_TIMESTAMP). Tests override it for determinism.
@@ -123,24 +177,35 @@ type gateRuleKey struct {
 
 func newMockDatabase() *MockDatabase {
 	return &MockDatabase{
-		capabilities: make(map[string]Capability),
-		providers:    make(map[string]Provider),
-		flows:        make(map[string]Flow),
-		flowByID:     make(map[int]bool),
-		flowSteps:    make(map[flowStepKey]FlowStep),
-		policies:     make(map[string]RoutingPolicy),
-		items:        make(map[string]Item),
-		itemByID:     make(map[int]Item),
-		itemSteps:    make(map[itemStepKey]ItemStep),
-		stepOrder:    make(map[itemStepKey]int),
-		gateRules:    make(map[gateRuleKey]GateRule),
-		profiles:     make(map[int]InterestProfile),
-		podcastFeeds: make(map[int]PodcastFeed),
-		feedByURL:    make(map[string]int),
-		nextFlowID:   1,
-		nextItemID:   1,
-		nextFeedID:   1,
-		nowFn:        time.Now,
+		capabilities:    make(map[string]Capability),
+		providers:       make(map[string]Provider),
+		flows:           make(map[string]Flow),
+		flowByID:        make(map[int]bool),
+		flowSteps:       make(map[flowStepKey]FlowStep),
+		policies:        make(map[string]RoutingPolicy),
+		items:           make(map[string]Item),
+		itemByID:        make(map[int]Item),
+		itemSteps:       make(map[itemStepKey]ItemStep),
+		stepOrder:       make(map[itemStepKey]int),
+		gateRules:       make(map[gateRuleKey]GateRule),
+		profiles:        make(map[int]InterestProfile),
+		podcastFeeds:    make(map[int]PodcastFeed),
+		feedByURL:       make(map[string]int),
+		ytChannels:      make(map[int]mockYTChannel),
+		ytChannelByKey:  make(map[string]int),
+		ytPlaylists:     make(map[int]mockYTPlaylist),
+		ytPlaylistByKey: make(map[string]int),
+		feedSources:     make(map[int]mockFeedSource),
+		feedByNameEp:    make(map[string]int),
+		emailSources:    make(map[int]mockEmailSource),
+		nextFlowID:      1,
+		nextItemID:      1,
+		nextFeedID:      1,
+		nextYTChanID:    1,
+		nextYTPlayID:    1,
+		nextFeedSrcID:   1,
+		nextEmailSrcID:  1,
+		nowFn:           time.Now,
 	}
 }
 
@@ -236,6 +301,236 @@ func (m *MockDatabase) SetPodcastFeedActive(_ context.Context, id int, active bo
 	if f, ok := m.podcastFeeds[id]; ok { // UPDATE ... WHERE id — a miss is a no-op, not an error
 		f.Active = active
 		m.podcastFeeds[id] = f
+	}
+	return nil
+}
+
+// --- source writes (fatia #2) ---
+
+func (m *MockDatabase) UpsertYouTubeChannel(_ context.Context, channelID, channelName, displayName string) (int, error) {
+	if id, ok := m.ytChannelByKey[channelID]; ok {
+		ch := m.ytChannels[id]
+		ch.ChannelName = channelName
+		if displayName != "" {
+			ch.DisplayName = displayName
+		}
+		m.ytChannels[id] = ch
+		return id, nil
+	}
+	id := m.nextYTChanID
+	m.nextYTChanID++
+	apiID := fmt.Sprintf("youtube_channel:%d", id)
+	m.ytChannels[id] = mockYTChannel{ID: id, ChannelID: channelID, ChannelName: channelName, DisplayName: displayName, Tags: []string{}, Active: true}
+	m.ytChannelByKey[channelID] = id
+	m.sources = append(m.sources, SourceItem{ApiID: apiID, Kind: "youtube_channel", DisplayName: displayName, Status: "active", Tags: []string{}})
+	return id, nil
+}
+
+func (m *MockDatabase) UpsertYouTubePlaylist(_ context.Context, playlistID, title, displayName string) (int, error) {
+	if id, ok := m.ytPlaylistByKey[playlistID]; ok {
+		pl := m.ytPlaylists[id]
+		pl.Title = title
+		if displayName != "" {
+			pl.DisplayName = displayName
+		}
+		m.ytPlaylists[id] = pl
+		return id, nil
+	}
+	id := m.nextYTPlayID
+	m.nextYTPlayID++
+	apiID := fmt.Sprintf("youtube_playlist:%d", id)
+	m.ytPlaylists[id] = mockYTPlaylist{ID: id, PlaylistID: playlistID, Title: title, DisplayName: displayName, Tags: []string{}, Active: true}
+	m.ytPlaylistByKey[playlistID] = id
+	m.sources = append(m.sources, SourceItem{ApiID: apiID, Kind: "youtube_playlist", DisplayName: displayName, Status: "active", Tags: []string{}})
+	return id, nil
+}
+
+func (m *MockDatabase) UpsertFeedSource(_ context.Context, name, sourceType, endpoint, cls, displayName string) (int, error) {
+	key := name + "\x00" + endpoint
+	if id, ok := m.feedByNameEp[key]; ok {
+		fs := m.feedSources[id]
+		fs.SourceType = sourceType
+		fs.Cls = cls
+		if displayName != "" {
+			fs.DisplayName = displayName
+		}
+		m.feedSources[id] = fs
+		return id, nil
+	}
+	id := m.nextFeedSrcID
+	m.nextFeedSrcID++
+	apiID := fmt.Sprintf("%s:%d", sourceType, id)
+	m.feedSources[id] = mockFeedSource{ID: id, Name: name, SourceType: sourceType, Endpoint: endpoint, Cls: cls, DisplayName: displayName, Tags: []string{}, Enabled: true}
+	m.feedByNameEp[key] = id
+	m.sources = append(m.sources, SourceItem{ApiID: apiID, Kind: sourceType, DisplayName: displayName, Status: "active", Tags: []string{}})
+	return id, nil
+}
+
+func (m *MockDatabase) CreateEmailSource(_ context.Context, gmailQuery, label, fromFilter, displayName string) (int, error) {
+	id := m.nextEmailSrcID
+	m.nextEmailSrcID++
+	apiID := fmt.Sprintf("email:%d", id)
+	m.emailSources[id] = mockEmailSource{ID: id, GmailQuery: gmailQuery, Label: label, FromFilter: fromFilter, DisplayName: displayName, Tags: []string{}, Enabled: true}
+	m.sources = append(m.sources, SourceItem{ApiID: apiID, Kind: "email", DisplayName: displayName, Status: "active", Tags: []string{}})
+	return id, nil
+}
+
+// mockSourceKey builds a lookup key for the sources backing store.
+func mockSourceKey(apiID string) string { return apiID }
+
+// setSourcesVStatus reflects an active/enabled change in the sources_v backing store.
+func (m *MockDatabase) setSourcesVStatus(apiID string, active bool) {
+	status := "active"
+	if !active {
+		status = "paused"
+	}
+	for i, s := range m.sources {
+		if s.ApiID == apiID {
+			m.sources[i].Status = status
+			return
+		}
+	}
+}
+
+// setSourcesVTags reflects a tag change in the sources_v backing store.
+func (m *MockDatabase) setSourcesVTags(apiID string, tags []string) {
+	for i, s := range m.sources {
+		if s.ApiID == apiID {
+			m.sources[i].Tags = tags
+			return
+		}
+	}
+}
+
+// setSourcesVDisplayName reflects a display_name change in the sources_v backing store.
+func (m *MockDatabase) setSourcesVDisplayName(apiID, displayName string) {
+	for i, s := range m.sources {
+		if s.ApiID == apiID {
+			m.sources[i].DisplayName = displayName
+			return
+		}
+	}
+}
+
+func (m *MockDatabase) SetSourceActive(_ context.Context, apiID string, active bool) error {
+	kind, id, ok := parseSourceID(apiID)
+	if !ok {
+		return fmt.Errorf("mock: invalid api_id %q", apiID)
+	}
+	switch kind {
+	case "youtube_channel":
+		ch, exists := m.ytChannels[id]
+		if !exists {
+			return fmt.Errorf("source %q: %w", apiID, errNotFound)
+		}
+		ch.Active = active
+		m.ytChannels[id] = ch
+	case "youtube_playlist":
+		pl, exists := m.ytPlaylists[id]
+		if !exists {
+			return fmt.Errorf("source %q: %w", apiID, errNotFound)
+		}
+		pl.Active = active
+		m.ytPlaylists[id] = pl
+	case "podcast":
+		f, exists := m.podcastFeeds[id]
+		if !exists {
+			return fmt.Errorf("source %q: %w", apiID, errNotFound)
+		}
+		f.Active = active
+		m.podcastFeeds[id] = f
+	case "rss", "html", "hn":
+		fs, exists := m.feedSources[id]
+		if !exists {
+			return fmt.Errorf("source %q: %w", apiID, errNotFound)
+		}
+		fs.Enabled = active
+		m.feedSources[id] = fs
+	case "email":
+		es, exists := m.emailSources[id]
+		if !exists {
+			return fmt.Errorf("source %q: %w", apiID, errNotFound)
+		}
+		es.Enabled = active
+		m.emailSources[id] = es
+	default:
+		return fmt.Errorf("mock: unknown kind %q in api_id %q", kind, apiID)
+	}
+	m.setSourcesVStatus(apiID, active)
+	return nil
+}
+
+func (m *MockDatabase) PatchSourceMeta(_ context.Context, apiID string, displayName *string, tags []string) error {
+	kind, id, ok := parseSourceID(apiID)
+	if !ok {
+		return fmt.Errorf("mock: invalid api_id %q", apiID)
+	}
+	switch kind {
+	case "youtube_channel":
+		ch, exists := m.ytChannels[id]
+		if !exists {
+			return fmt.Errorf("source %q: %w", apiID, errNotFound)
+		}
+		if displayName != nil {
+			ch.DisplayName = *displayName
+		}
+		if tags != nil {
+			ch.Tags = tags
+		}
+		m.ytChannels[id] = ch
+	case "youtube_playlist":
+		pl, exists := m.ytPlaylists[id]
+		if !exists {
+			return fmt.Errorf("source %q: %w", apiID, errNotFound)
+		}
+		if displayName != nil {
+			pl.DisplayName = *displayName
+		}
+		if tags != nil {
+			pl.Tags = tags
+		}
+		m.ytPlaylists[id] = pl
+	case "podcast":
+		f, exists := m.podcastFeeds[id]
+		if !exists {
+			return fmt.Errorf("source %q: %w", apiID, errNotFound)
+		}
+		if displayName != nil {
+			f.Title = *displayName // ponytail: podcast's display_name stored as Title in mock
+		}
+		m.podcastFeeds[id] = f
+	case "rss", "html", "hn":
+		fs, exists := m.feedSources[id]
+		if !exists {
+			return fmt.Errorf("source %q: %w", apiID, errNotFound)
+		}
+		if displayName != nil {
+			fs.DisplayName = *displayName
+		}
+		if tags != nil {
+			fs.Tags = tags
+		}
+		m.feedSources[id] = fs
+	case "email":
+		es, exists := m.emailSources[id]
+		if !exists {
+			return fmt.Errorf("source %q: %w", apiID, errNotFound)
+		}
+		if displayName != nil {
+			es.DisplayName = *displayName
+		}
+		if tags != nil {
+			es.Tags = tags
+		}
+		m.emailSources[id] = es
+	default:
+		return fmt.Errorf("mock: unknown kind %q", kind)
+	}
+	if displayName != nil {
+		m.setSourcesVDisplayName(apiID, *displayName)
+	}
+	if tags != nil {
+		m.setSourcesVTags(apiID, tags)
 	}
 	return nil
 }

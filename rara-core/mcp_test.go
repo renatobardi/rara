@@ -52,6 +52,7 @@ func TestMCPToolRegistryWellFormed(t *testing.T) {
 		"rara_approve_profile",
 		"rara_feedback_distillation", "rara_review_quarantine",
 		"rara_list_sources",
+		"rara_pause_source", "rara_resume_source",
 		"rara_submit_linkedin_post",
 	}
 	if len(s.tools) != len(want) {
