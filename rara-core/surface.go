@@ -446,11 +446,17 @@ var sourceKindsRegistry = []SourceKind{
 	},
 }
 
+// maxSourcePageSize caps page_size for GET /v1/sources to prevent resource exhaustion.
+const maxSourcePageSize = 200
+
 // SourceKinds returns the static source-kind registry (feeds the wizard UI).
 func (c *Core) SourceKinds() []SourceKind { return sourceKindsRegistry }
 
 // Sources lists sources from sources_v with optional filters, pagination, and counts.
 func (c *Core) Sources(ctx context.Context, f SourceFilter) (SourcesResult, error) {
+	if f.PageSize > maxSourcePageSize {
+		f.PageSize = maxSourcePageSize
+	}
 	return c.db.ListSources(ctx, f)
 }
 

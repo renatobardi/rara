@@ -968,13 +968,9 @@ func (d *pgxDatabase) ListSources(ctx context.Context, f SourceFilter) (SourcesR
 		where = " WHERE " + strings.Join(conds, " AND ")
 	}
 
-	// Count total.
+	// Counts by status and kind (over full filtered set); total is derived from the GROUP BY sum,
+	// avoiding a separate COUNT(*) round-trip to the database.
 	var total int
-	if err := d.conn.QueryRow(ctx, "SELECT COUNT(*) FROM sources_v"+where, args...).Scan(&total); err != nil {
-		return SourcesResult{}, fmt.Errorf("list sources count: %w", err)
-	}
-
-	// Counts by status and kind (over full filtered set).
 	byStatus := make(map[string]int)
 	byKind := make(map[string]int)
 	countRows, err := d.conn.Query(ctx,
@@ -991,6 +987,7 @@ func (d *pgxDatabase) ListSources(ctx context.Context, f SourceFilter) (SourcesR
 		}
 		byStatus[status] += cnt
 		byKind[kind] += cnt
+		total += cnt
 	}
 	countRows.Close()
 	if err := countRows.Err(); err != nil {
@@ -1001,6 +998,9 @@ func (d *pgxDatabase) ListSources(ctx context.Context, f SourceFilter) (SourcesR
 	pageSize := f.PageSize
 	if pageSize <= 0 {
 		pageSize = 50
+	}
+	if pageSize > maxSourcePageSize {
+		pageSize = maxSourcePageSize
 	}
 	page := f.Page
 	if page <= 0 {
@@ -1030,9 +1030,6 @@ func (d *pgxDatabase) ListSources(ctx context.Context, f SourceFilter) (SourcesR
 		); err != nil {
 			return SourcesResult{}, fmt.Errorf("list sources scan: %w", err)
 		}
-		if s.Tags == nil {
-			s.Tags = []string{}
-		}
 		items = append(items, s)
 	}
 	if err := dataRows.Err(); err != nil {
@@ -1060,9 +1057,6 @@ func (d *pgxDatabase) GetSource(ctx context.Context, apiID string) (SourceItem, 
 	}
 	if err != nil {
 		return SourceItem{}, false, fmt.Errorf("get source %q: %w", apiID, err)
-	}
-	if s.Tags == nil {
-		s.Tags = []string{}
 	}
 	return s, true, nil
 }

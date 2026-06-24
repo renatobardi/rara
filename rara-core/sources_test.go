@@ -179,6 +179,22 @@ func TestCoreSourcesCountsMatchItems(t *testing.T) {
 	}
 }
 
+func TestCoreSourcesPageSizeCapped(t *testing.T) {
+	ctx := context.Background()
+	core, db, _ := newTestCore(t)
+	db.sources = []SourceItem{
+		{ApiID: "podcast:1", Kind: "podcast", Status: "active", Tags: []string{}},
+	}
+
+	result, err := core.Sources(ctx, SourceFilter{PageSize: 99999})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.PageSize > maxSourcePageSize {
+		t.Errorf("pageSize should be capped at %d, got %d", maxSourcePageSize, result.PageSize)
+	}
+}
+
 func TestCoreGetSourceFound(t *testing.T) {
 	ctx := context.Background()
 	core, db, _ := newTestCore(t)
