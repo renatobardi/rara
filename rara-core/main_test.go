@@ -319,8 +319,10 @@ func (m *MockDatabase) UpsertYouTubeChannel(_ context.Context, channelID, channe
 	}
 	id := m.nextYTChanID
 	m.nextYTChanID++
+	apiID := fmt.Sprintf("youtube_channel:%d", id)
 	m.ytChannels[id] = mockYTChannel{ID: id, ChannelID: channelID, ChannelName: channelName, DisplayName: displayName, Tags: []string{}, Active: true}
 	m.ytChannelByKey[channelID] = id
+	m.sources = append(m.sources, SourceItem{ApiID: apiID, Kind: "youtube_channel", DisplayName: displayName, Status: "active", Tags: []string{}})
 	return id, nil
 }
 
@@ -336,31 +338,40 @@ func (m *MockDatabase) UpsertYouTubePlaylist(_ context.Context, playlistID, titl
 	}
 	id := m.nextYTPlayID
 	m.nextYTPlayID++
+	apiID := fmt.Sprintf("youtube_playlist:%d", id)
 	m.ytPlaylists[id] = mockYTPlaylist{ID: id, PlaylistID: playlistID, Title: title, DisplayName: displayName, Tags: []string{}, Active: true}
 	m.ytPlaylistByKey[playlistID] = id
+	m.sources = append(m.sources, SourceItem{ApiID: apiID, Kind: "youtube_playlist", DisplayName: displayName, Status: "active", Tags: []string{}})
 	return id, nil
 }
 
-func (m *MockDatabase) UpsertFeedSource(_ context.Context, name, sourceType, endpoint, cls string) (int, error) {
+func (m *MockDatabase) UpsertFeedSource(_ context.Context, name, sourceType, endpoint, cls, displayName string) (int, error) {
 	key := name + "\x00" + endpoint
 	if id, ok := m.feedByNameEp[key]; ok {
 		fs := m.feedSources[id]
 		fs.SourceType = sourceType
 		fs.Cls = cls
+		if displayName != "" {
+			fs.DisplayName = displayName
+		}
 		m.feedSources[id] = fs
 		return id, nil
 	}
 	id := m.nextFeedSrcID
 	m.nextFeedSrcID++
-	m.feedSources[id] = mockFeedSource{ID: id, Name: name, SourceType: sourceType, Endpoint: endpoint, Cls: cls, Tags: []string{}, Enabled: true}
+	apiID := fmt.Sprintf("%s:%d", sourceType, id)
+	m.feedSources[id] = mockFeedSource{ID: id, Name: name, SourceType: sourceType, Endpoint: endpoint, Cls: cls, DisplayName: displayName, Tags: []string{}, Enabled: true}
 	m.feedByNameEp[key] = id
+	m.sources = append(m.sources, SourceItem{ApiID: apiID, Kind: sourceType, DisplayName: displayName, Status: "active", Tags: []string{}})
 	return id, nil
 }
 
-func (m *MockDatabase) CreateEmailSource(_ context.Context, gmailQuery, label, fromFilter string) (int, error) {
+func (m *MockDatabase) CreateEmailSource(_ context.Context, gmailQuery, label, fromFilter, displayName string) (int, error) {
 	id := m.nextEmailSrcID
 	m.nextEmailSrcID++
-	m.emailSources[id] = mockEmailSource{ID: id, GmailQuery: gmailQuery, Label: label, FromFilter: fromFilter, Tags: []string{}, Enabled: true}
+	apiID := fmt.Sprintf("email:%d", id)
+	m.emailSources[id] = mockEmailSource{ID: id, GmailQuery: gmailQuery, Label: label, FromFilter: fromFilter, DisplayName: displayName, Tags: []string{}, Enabled: true}
+	m.sources = append(m.sources, SourceItem{ApiID: apiID, Kind: "email", DisplayName: displayName, Status: "active", Tags: []string{}})
 	return id, nil
 }
 
@@ -391,6 +402,16 @@ func (m *MockDatabase) setSourcesVTags(apiID string, tags []string) {
 	}
 }
 
+// setSourcesVDisplayName reflects a display_name change in the sources_v backing store.
+func (m *MockDatabase) setSourcesVDisplayName(apiID, displayName string) {
+	for i, s := range m.sources {
+		if s.ApiID == apiID {
+			m.sources[i].DisplayName = displayName
+			return
+		}
+	}
+}
+
 func (m *MockDatabase) SetSourceActive(_ context.Context, apiID string, active bool) error {
 	kind, id, ok := parseSourceID(apiID)
 	if !ok {
@@ -398,30 +419,40 @@ func (m *MockDatabase) SetSourceActive(_ context.Context, apiID string, active b
 	}
 	switch kind {
 	case "youtube_channel":
-		if ch, exists := m.ytChannels[id]; exists {
-			ch.Active = active
-			m.ytChannels[id] = ch
+		ch, exists := m.ytChannels[id]
+		if !exists {
+			return fmt.Errorf("source %q: %w", apiID, errNotFound)
 		}
+		ch.Active = active
+		m.ytChannels[id] = ch
 	case "youtube_playlist":
-		if pl, exists := m.ytPlaylists[id]; exists {
-			pl.Active = active
-			m.ytPlaylists[id] = pl
+		pl, exists := m.ytPlaylists[id]
+		if !exists {
+			return fmt.Errorf("source %q: %w", apiID, errNotFound)
 		}
+		pl.Active = active
+		m.ytPlaylists[id] = pl
 	case "podcast":
-		if f, exists := m.podcastFeeds[id]; exists {
-			f.Active = active
-			m.podcastFeeds[id] = f
+		f, exists := m.podcastFeeds[id]
+		if !exists {
+			return fmt.Errorf("source %q: %w", apiID, errNotFound)
 		}
+		f.Active = active
+		m.podcastFeeds[id] = f
 	case "rss", "html", "hn":
-		if fs, exists := m.feedSources[id]; exists {
-			fs.Enabled = active
-			m.feedSources[id] = fs
+		fs, exists := m.feedSources[id]
+		if !exists {
+			return fmt.Errorf("source %q: %w", apiID, errNotFound)
 		}
+		fs.Enabled = active
+		m.feedSources[id] = fs
 	case "email":
-		if es, exists := m.emailSources[id]; exists {
-			es.Enabled = active
-			m.emailSources[id] = es
+		es, exists := m.emailSources[id]
+		if !exists {
+			return fmt.Errorf("source %q: %w", apiID, errNotFound)
 		}
+		es.Enabled = active
+		m.emailSources[id] = es
 	default:
 		return fmt.Errorf("mock: unknown kind %q in api_id %q", kind, apiID)
 	}
@@ -438,7 +469,7 @@ func (m *MockDatabase) PatchSourceMeta(_ context.Context, apiID string, displayN
 	case "youtube_channel":
 		ch, exists := m.ytChannels[id]
 		if !exists {
-			return nil // no-op on missing id, mirroring UPDATE WHERE id=$1 returning 0 rows
+			return fmt.Errorf("source %q: %w", apiID, errNotFound)
 		}
 		if displayName != nil {
 			ch.DisplayName = *displayName
@@ -450,7 +481,7 @@ func (m *MockDatabase) PatchSourceMeta(_ context.Context, apiID string, displayN
 	case "youtube_playlist":
 		pl, exists := m.ytPlaylists[id]
 		if !exists {
-			return nil
+			return fmt.Errorf("source %q: %w", apiID, errNotFound)
 		}
 		if displayName != nil {
 			pl.DisplayName = *displayName
@@ -462,7 +493,7 @@ func (m *MockDatabase) PatchSourceMeta(_ context.Context, apiID string, displayN
 	case "podcast":
 		f, exists := m.podcastFeeds[id]
 		if !exists {
-			return nil
+			return fmt.Errorf("source %q: %w", apiID, errNotFound)
 		}
 		if displayName != nil {
 			f.Title = *displayName // ponytail: podcast's display_name stored as Title in mock
@@ -471,7 +502,7 @@ func (m *MockDatabase) PatchSourceMeta(_ context.Context, apiID string, displayN
 	case "rss", "html", "hn":
 		fs, exists := m.feedSources[id]
 		if !exists {
-			return nil
+			return fmt.Errorf("source %q: %w", apiID, errNotFound)
 		}
 		if displayName != nil {
 			fs.DisplayName = *displayName
@@ -483,7 +514,7 @@ func (m *MockDatabase) PatchSourceMeta(_ context.Context, apiID string, displayN
 	case "email":
 		es, exists := m.emailSources[id]
 		if !exists {
-			return nil
+			return fmt.Errorf("source %q: %w", apiID, errNotFound)
 		}
 		if displayName != nil {
 			es.DisplayName = *displayName
@@ -494,6 +525,9 @@ func (m *MockDatabase) PatchSourceMeta(_ context.Context, apiID string, displayN
 		m.emailSources[id] = es
 	default:
 		return fmt.Errorf("mock: unknown kind %q", kind)
+	}
+	if displayName != nil {
+		m.setSourcesVDisplayName(apiID, *displayName)
 	}
 	if tags != nil {
 		m.setSourcesVTags(apiID, tags)

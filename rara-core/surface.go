@@ -26,6 +26,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"sort"
@@ -422,9 +423,29 @@ func extractPlaylistID(raw string) (string, error) {
 // validFeedKinds are the source_type values feed_sources accepts.
 var validFeedKinds = map[string]bool{"rss": true, "html": true, "hn": true}
 
+// validateEndpointURL rejects non-HTTP(S) schemes and loopback/private IP literals.
+// Domain names that resolve to private IPs are checked at fetch time by rara-feed.
+func validateEndpointURL(endpoint string) error {
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		return badInput("invalid endpoint URL: %v", err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return badInput("endpoint must use http or https, got %q", u.Scheme)
+	}
+	if host := u.Hostname(); host != "" {
+		if ip := net.ParseIP(host); ip != nil {
+			if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() {
+				return badInput("endpoint %q is not a public address", host)
+			}
+		}
+	}
+	return nil
+}
+
 // AddFeedSource adds an RSS/HTML/HN source to the feed collector's table.
-// For rss/html, endpoint is required; for hn it may be empty (collects the front page).
-func (c *Core) AddFeedSource(ctx context.Context, kind, name, endpoint string) (int, error) {
+// For rss/html, endpoint is required and must be a public http(s) URL; for hn it may be empty.
+func (c *Core) AddFeedSource(ctx context.Context, kind, name, endpoint, displayName string) (int, error) {
 	if !validFeedKinds[kind] {
 		return 0, badInput("unknown feed kind %q (want rss|html|hn)", kind)
 	}
@@ -432,20 +453,25 @@ func (c *Core) AddFeedSource(ctx context.Context, kind, name, endpoint string) (
 	if name == "" {
 		return 0, badInput("feed source name cannot be empty")
 	}
-	if kind != "hn" && strings.TrimSpace(endpoint) == "" {
-		return 0, badInput("endpoint cannot be empty for kind %q", kind)
+	if kind != "hn" {
+		if strings.TrimSpace(endpoint) == "" {
+			return 0, badInput("endpoint cannot be empty for kind %q", kind)
+		}
+		if err := validateEndpointURL(endpoint); err != nil {
+			return 0, err
+		}
 	}
 	cls := "b-" + strings.ToLower(strings.ReplaceAll(name, " ", "-"))
-	return c.db.UpsertFeedSource(ctx, name, kind, endpoint, cls)
+	return c.db.UpsertFeedSource(ctx, name, kind, endpoint, cls, displayName)
 }
 
 // AddEmailSource adds an email reading rule to the courier's table.
 // At least one of gmailQuery, label, or fromFilter must be non-empty.
-func (c *Core) AddEmailSource(ctx context.Context, gmailQuery, label, fromFilter string) (int, error) {
+func (c *Core) AddEmailSource(ctx context.Context, gmailQuery, label, fromFilter, displayName string) (int, error) {
 	if strings.TrimSpace(gmailQuery) == "" && strings.TrimSpace(label) == "" && strings.TrimSpace(fromFilter) == "" {
 		return 0, badInput("at least one of gmail_query, label, from_filter must be set")
 	}
-	return c.db.CreateEmailSource(ctx, gmailQuery, label, fromFilter)
+	return c.db.CreateEmailSource(ctx, gmailQuery, label, fromFilter, displayName)
 }
 
 // PatchSource updates display_name and/or tags on any source identified by api_id.
@@ -514,7 +540,11 @@ func (c *Core) BulkSources(ctx context.Context, action string, ids []string, tag
 				err = c.addTag(ctx, id, tag)
 			}
 		case "untag":
-			err = c.removeTag(ctx, id, tag)
+			if tag == "" {
+				err = badInput("untag action requires a non-empty tag")
+			} else {
+				err = c.removeTag(ctx, id, tag)
+			}
 		}
 		if err != nil {
 			entry.Error = err.Error()
@@ -1177,7 +1207,7 @@ func (h *httpSurface) addSource(w http.ResponseWriter, r *http.Request) {
 		if !decodeJSON(w, r, &req) {
 			return
 		}
-		id, err := h.core.AddFeedSource(r.Context(), kind, req.Name, req.Endpoint)
+		id, err := h.core.AddFeedSource(r.Context(), kind, req.Name, req.Endpoint, req.DisplayName)
 		if err != nil {
 			writeErr(w, err)
 			return
@@ -1194,7 +1224,7 @@ func (h *httpSurface) addSource(w http.ResponseWriter, r *http.Request) {
 		if !decodeJSON(w, r, &req) {
 			return
 		}
-		id, err := h.core.AddEmailSource(r.Context(), req.GmailQuery, req.Label, req.FromFilter)
+		id, err := h.core.AddEmailSource(r.Context(), req.GmailQuery, req.Label, req.FromFilter, req.DisplayName)
 		if err != nil {
 			writeErr(w, err)
 			return

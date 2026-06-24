@@ -120,7 +120,7 @@ func TestCoreAddFeedSourceRSS(t *testing.T) {
 	ctx := context.Background()
 	core, db, _ := newTestCore(t)
 
-	id, err := core.AddFeedSource(ctx, "rss", "My Feed", "https://example.com/feed.rss")
+	id, err := core.AddFeedSource(ctx, "rss", "My Feed", "https://example.com/feed.rss", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,7 +134,7 @@ func TestCoreAddFeedSourceHNDefaultsEndpoint(t *testing.T) {
 	ctx := context.Background()
 	core, db, _ := newTestCore(t)
 
-	id, err := core.AddFeedSource(ctx, "hn", "Hacker News", "")
+	id, err := core.AddFeedSource(ctx, "hn", "Hacker News", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -150,7 +150,7 @@ func TestCoreAddFeedSourceHNDefaultsEndpoint(t *testing.T) {
 func TestCoreAddFeedSourceRejectsUnknownKind(t *testing.T) {
 	ctx := context.Background()
 	core, _, _ := newTestCore(t)
-	if _, err := core.AddFeedSource(ctx, "xml", "Bad", "http://x"); !isBadInput(err) {
+	if _, err := core.AddFeedSource(ctx, "xml", "Bad", "http://x", ""); !isBadInput(err) {
 		t.Fatalf("unknown kind should be badInput, got %v", err)
 	}
 }
@@ -158,7 +158,7 @@ func TestCoreAddFeedSourceRejectsUnknownKind(t *testing.T) {
 func TestCoreAddFeedSourceRejectsEmptyName(t *testing.T) {
 	ctx := context.Background()
 	core, _, _ := newTestCore(t)
-	if _, err := core.AddFeedSource(ctx, "rss", "   ", "http://x"); !isBadInput(err) {
+	if _, err := core.AddFeedSource(ctx, "rss", "   ", "http://x", ""); !isBadInput(err) {
 		t.Fatalf("empty name should be badInput, got %v", err)
 	}
 }
@@ -166,7 +166,7 @@ func TestCoreAddFeedSourceRejectsEmptyName(t *testing.T) {
 func TestCoreAddFeedSourceRSSRejectsEmptyEndpoint(t *testing.T) {
 	ctx := context.Background()
 	core, _, _ := newTestCore(t)
-	if _, err := core.AddFeedSource(ctx, "rss", "Name", ""); !isBadInput(err) {
+	if _, err := core.AddFeedSource(ctx, "rss", "Name", "", ""); !isBadInput(err) {
 		t.Fatalf("rss with empty endpoint should be badInput, got %v", err)
 	}
 }
@@ -179,7 +179,7 @@ func TestCoreAddEmailSourceCreates(t *testing.T) {
 	ctx := context.Background()
 	core, db, _ := newTestCore(t)
 
-	id, err := core.AddEmailSource(ctx, "from:news@example.com", "", "")
+	id, err := core.AddEmailSource(ctx, "from:news@example.com", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -192,7 +192,7 @@ func TestCoreAddEmailSourceCreates(t *testing.T) {
 func TestCoreAddEmailSourceRejectsAllEmpty(t *testing.T) {
 	ctx := context.Background()
 	core, _, _ := newTestCore(t)
-	if _, err := core.AddEmailSource(ctx, "", "", ""); !isBadInput(err) {
+	if _, err := core.AddEmailSource(ctx, "", "", "", ""); !isBadInput(err) {
 		t.Fatalf("all empty fields should be badInput, got %v", err)
 	}
 }
@@ -223,7 +223,7 @@ func TestCorePatchSourceTags(t *testing.T) {
 	ctx := context.Background()
 	core, db, _ := newTestCore(t)
 
-	id, err := core.AddFeedSource(ctx, "rss", "Feed", "https://x.com/rss")
+	id, err := core.AddFeedSource(ctx, "rss", "Feed", "https://x.com/rss", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -277,7 +277,7 @@ func TestCoreResumeSourceRestoresActive(t *testing.T) {
 	ctx := context.Background()
 	core, db, _ := newTestCore(t)
 
-	id, err := core.AddEmailSource(ctx, "from:x@y.com", "", "")
+	id, err := core.AddEmailSource(ctx, "from:x@y.com", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -297,7 +297,7 @@ func TestCoreArchiveSourceDeactivates(t *testing.T) {
 	ctx := context.Background()
 	core, db, _ := newTestCore(t)
 
-	id, err := core.AddFeedSource(ctx, "rss", "Feed", "https://x/rss")
+	id, err := core.AddFeedSource(ctx, "rss", "Feed", "https://x/rss", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -352,8 +352,8 @@ func TestCoreBulkSourcesTagsMultiple(t *testing.T) {
 	ctx := context.Background()
 	core, db, _ := newTestCore(t)
 
-	id1, _ := core.AddFeedSource(ctx, "rss", "F1", "https://a/rss")
-	id2, _ := core.AddFeedSource(ctx, "rss", "F2", "https://b/rss")
+	id1, _ := core.AddFeedSource(ctx, "rss", "F1", "https://a/rss", "")
+	id2, _ := core.AddFeedSource(ctx, "rss", "F2", "https://b/rss", "")
 	ids := []string{fmt.Sprintf("rss:%d", id1), fmt.Sprintf("rss:%d", id2)}
 
 	result, err := core.BulkSources(ctx, "tag", ids, "featured")
@@ -379,8 +379,9 @@ func TestCoreBulkSourcesRejectsUnknownAction(t *testing.T) {
 func TestCoreBulkSourcesPartialSuccess(t *testing.T) {
 	ctx := context.Background()
 	core, _, _ := newTestCore(t)
-	// Valid podcast:1 pause (mock is a no-op on missing ids) and bad api_id
-	ids := []string{"podcast:1", "nope"}
+	// One valid source + one bad api_id to verify per-item error reporting.
+	id, _ := core.AddYouTubeChannel(ctx, "UCbulkpart", "Chan", "")
+	ids := []string{fmt.Sprintf("youtube_channel:%d", id), "nope"}
 	result, err := core.BulkSources(ctx, "pause", ids, "")
 	if err != nil {
 		t.Fatal(err)
@@ -510,7 +511,7 @@ func TestHTTPPauseSource(t *testing.T) {
 	core, db, _ := newTestCore(t)
 	h := NewSurfaceMux(core, testToken)
 
-	id, _ := core.AddFeedSource(ctx, "rss", "Feed", "https://a/rss")
+	id, _ := core.AddFeedSource(ctx, "rss", "Feed", "https://a/rss", "")
 	apiID := fmt.Sprintf("rss:%d", id)
 
 	rec := do(t, h, http.MethodPost, "/v1/sources/"+apiID+"/pause", "")
@@ -527,7 +528,7 @@ func TestHTTPResumeSource(t *testing.T) {
 	core, db, _ := newTestCore(t)
 	h := NewSurfaceMux(core, testToken)
 
-	id, _ := core.AddEmailSource(ctx, "from:x@y.com", "", "")
+	id, _ := core.AddEmailSource(ctx, "from:x@y.com", "", "", "")
 	apiID := fmt.Sprintf("email:%d", id)
 	_ = core.PauseSource(ctx, apiID)
 
@@ -657,7 +658,7 @@ func TestMCPResumeSource(t *testing.T) {
 	ctx := context.Background()
 	core, db, _ := newTestCore(t)
 
-	id, _ := core.AddEmailSource(ctx, "from:x@y.com", "", "")
+	id, _ := core.AddEmailSource(ctx, "from:x@y.com", "", "", "")
 	apiID := fmt.Sprintf("email:%d", id)
 	_ = core.PauseSource(ctx, apiID)
 
@@ -673,6 +674,100 @@ func TestMCPResumeSource(t *testing.T) {
 	}
 	if !db.emailSources[id].Enabled {
 		t.Error("email source should be enabled after MCP resume")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Core — display_name persistence (CodeRabbit: AddFeedSource/AddEmailSource dropped it)
+// ---------------------------------------------------------------------------
+
+func TestCoreAddFeedSourcePersistsDisplayName(t *testing.T) {
+	ctx := context.Background()
+	core, db, _ := newTestCore(t)
+
+	id, err := core.AddFeedSource(ctx, "rss", "My Feed", "https://example.com/feed.rss", "Renamed Feed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if db.feedSources[id].DisplayName != "Renamed Feed" {
+		t.Errorf("display_name not persisted: %+v", db.feedSources[id])
+	}
+}
+
+func TestCoreAddEmailSourcePersistsDisplayName(t *testing.T) {
+	ctx := context.Background()
+	core, db, _ := newTestCore(t)
+
+	id, err := core.AddEmailSource(ctx, "from:news@example.com", "", "", "Newsletter Rule")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if db.emailSources[id].DisplayName != "Newsletter Rule" {
+		t.Errorf("display_name not persisted: %+v", db.emailSources[id])
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Core — AddFeedSource SSRF prevention (CodeRabbit: loopback/private IP rejection)
+// ---------------------------------------------------------------------------
+
+func TestCoreAddFeedSourceRejectsLoopbackIP(t *testing.T) {
+	ctx := context.Background()
+	core, _, _ := newTestCore(t)
+	if _, err := core.AddFeedSource(ctx, "rss", "Bad", "http://127.0.0.1/feed", ""); !isBadInput(err) {
+		t.Fatalf("loopback IP should be badInput, got %v", err)
+	}
+}
+
+func TestCoreAddFeedSourceRejectsPrivateIP(t *testing.T) {
+	ctx := context.Background()
+	core, _, _ := newTestCore(t)
+	if _, err := core.AddFeedSource(ctx, "rss", "Bad", "http://192.168.1.1/feed", ""); !isBadInput(err) {
+		t.Fatalf("private IP should be badInput, got %v", err)
+	}
+}
+
+func TestCoreAddFeedSourceRejectsNonHTTPScheme(t *testing.T) {
+	ctx := context.Background()
+	core, _, _ := newTestCore(t)
+	if _, err := core.AddFeedSource(ctx, "rss", "Bad", "ftp://example.com/feed", ""); !isBadInput(err) {
+		t.Fatalf("non-http scheme should be badInput, got %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Core — not-found on pause/resume for non-existent source
+// ---------------------------------------------------------------------------
+
+func TestCorePauseSourceNotFound(t *testing.T) {
+	ctx := context.Background()
+	core, _, _ := newTestCore(t)
+	if err := core.PauseSource(ctx, "youtube_channel:999"); err == nil {
+		t.Fatal("PauseSource on non-existent source should return error")
+	}
+}
+
+func TestCoreResumeSourceNotFound(t *testing.T) {
+	ctx := context.Background()
+	core, _, _ := newTestCore(t)
+	if err := core.ResumeSource(ctx, "rss:999"); err == nil {
+		t.Fatal("ResumeSource on non-existent source should return error")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Core — BulkSources "untag" rejects empty tag
+// ---------------------------------------------------------------------------
+
+func TestCoreBulkUntagRejectsEmptyTag(t *testing.T) {
+	ctx := context.Background()
+	core, _, _ := newTestCore(t)
+	result, err := core.BulkSources(ctx, "untag", []string{"rss:1"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Failed != 1 || result.Items[0].Error == "" {
+		t.Errorf("untag with empty tag should fail per-item: %+v", result)
 	}
 }
 

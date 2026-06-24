@@ -607,10 +607,10 @@ type Database interface {
 	UpsertYouTubeChannel(ctx context.Context, channelID, channelName, displayName string) (int, error)
 	UpsertYouTubePlaylist(ctx context.Context, playlistID, title, displayName string) (int, error)
 	// UpsertFeedSource handles rss/html/hn; cls defaults to name, fetch_strategy to 'http'.
-	UpsertFeedSource(ctx context.Context, name, sourceType, endpoint, cls string) (int, error)
+	UpsertFeedSource(ctx context.Context, name, sourceType, endpoint, cls, displayName string) (int, error)
 	// CreateEmailSource always inserts a new rule (email_sources has no natural dedup key —
 	// two identical queries are intentionally distinct rules an operator can manage separately).
-	CreateEmailSource(ctx context.Context, gmailQuery, label, fromFilter string) (int, error)
+	CreateEmailSource(ctx context.Context, gmailQuery, label, fromFilter, displayName string) (int, error)
 	// SetSourceActive toggles the active/enabled flag; dispatches to the right table by api_id prefix.
 	SetSourceActive(ctx context.Context, apiID string, active bool) error
 	// PatchSourceMeta updates display_name and/or tags; dispatches by api_id prefix.
@@ -984,26 +984,27 @@ func (d *pgxDatabase) UpsertYouTubePlaylist(ctx context.Context, playlistID, tit
 	return id, d.conn.QueryRow(ctx, q, playlistID, title, nullStr(displayName)).Scan(&id)
 }
 
-func (d *pgxDatabase) UpsertFeedSource(ctx context.Context, name, sourceType, endpoint, cls string) (int, error) {
+func (d *pgxDatabase) UpsertFeedSource(ctx context.Context, name, sourceType, endpoint, cls, displayName string) (int, error) {
 	const q = `
-		INSERT INTO feed_sources (name, source_type, endpoint, cls, fetch_strategy)
-		VALUES ($1, $2, $3, $4, 'http')
+		INSERT INTO feed_sources (name, source_type, endpoint, cls, fetch_strategy, display_name)
+		VALUES ($1, $2, $3, $4, 'http', NULLIF($5, ''))
 		ON CONFLICT (name, endpoint) DO UPDATE SET
 			source_type    = EXCLUDED.source_type,
 			cls            = EXCLUDED.cls,
+			display_name   = COALESCE(EXCLUDED.display_name, feed_sources.display_name),
 			updated_at     = CURRENT_TIMESTAMP
 		RETURNING id`
 	var id int
-	return id, d.conn.QueryRow(ctx, q, name, sourceType, endpoint, cls).Scan(&id)
+	return id, d.conn.QueryRow(ctx, q, name, sourceType, endpoint, cls, displayName).Scan(&id)
 }
 
-func (d *pgxDatabase) CreateEmailSource(ctx context.Context, gmailQuery, label, fromFilter string) (int, error) {
+func (d *pgxDatabase) CreateEmailSource(ctx context.Context, gmailQuery, label, fromFilter, displayName string) (int, error) {
 	const q = `
-		INSERT INTO email_sources (gmail_query, label, from_filter)
-		VALUES ($1, $2, $3)
+		INSERT INTO email_sources (gmail_query, label, from_filter, display_name)
+		VALUES ($1, $2, $3, NULLIF($4, ''))
 		RETURNING id`
 	var id int
-	return id, d.conn.QueryRow(ctx, q, nullStr(gmailQuery), nullStr(label), nullStr(fromFilter)).Scan(&id)
+	return id, d.conn.QueryRow(ctx, q, nullStr(gmailQuery), nullStr(label), nullStr(fromFilter), displayName).Scan(&id)
 }
 
 // SetSourceActive dispatches to the right table based on the api_id prefix (e.g. "rss:3" → feed_sources).
@@ -1028,8 +1029,14 @@ func (d *pgxDatabase) SetSourceActive(ctx context.Context, apiID string, active 
 	default:
 		return fmt.Errorf("SetSourceActive: unknown kind %q", kind)
 	}
-	_, err := d.conn.Exec(ctx, q, id, active)
-	return err
+	tag, err := d.conn.Exec(ctx, q, id, active)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("source %q: %w", apiID, errNotFound)
+	}
+	return nil
 }
 
 // PatchSourceMeta dispatches display_name / tags update to the right table.
@@ -1040,35 +1047,41 @@ func (d *pgxDatabase) PatchSourceMeta(ctx context.Context, apiID string, display
 	}
 	// Build targeted UPDATE: only overwrite display_name if provided; tags always written when non-nil.
 	// ponytail: five-case switch — one UPDATE per table; no abstraction needed.
+	var (
+		tag pgconn.CommandTag
+		err error
+	)
 	switch kind {
 	case "youtube_channel":
-		_, err := d.conn.Exec(ctx,
+		tag, err = d.conn.Exec(ctx,
 			`UPDATE target_channels SET display_name=COALESCE($2,display_name), tags=COALESCE($3,tags), updated_at=CURRENT_TIMESTAMP WHERE id=$1`,
 			id, displayName, tags)
-		return err
 	case "youtube_playlist":
-		_, err := d.conn.Exec(ctx,
+		tag, err = d.conn.Exec(ctx,
 			`UPDATE playlists SET display_name=COALESCE($2,display_name), tags=COALESCE($3,tags), updated_at=CURRENT_TIMESTAMP WHERE id=$1`,
 			id, displayName, tags)
-		return err
 	case "podcast":
-		_, err := d.conn.Exec(ctx,
+		tag, err = d.conn.Exec(ctx,
 			`UPDATE podcast_feeds SET display_name=COALESCE($2,display_name), tags=COALESCE($3,tags), updated_at=CURRENT_TIMESTAMP WHERE id=$1`,
 			id, displayName, tags)
-		return err
 	case "rss", "html", "hn":
-		_, err := d.conn.Exec(ctx,
+		tag, err = d.conn.Exec(ctx,
 			`UPDATE feed_sources SET display_name=COALESCE($2,display_name), tags=COALESCE($3,tags), updated_at=CURRENT_TIMESTAMP WHERE id=$1`,
 			id, displayName, tags)
-		return err
 	case "email":
-		_, err := d.conn.Exec(ctx,
+		tag, err = d.conn.Exec(ctx,
 			`UPDATE email_sources SET display_name=COALESCE($2,display_name), tags=COALESCE($3,tags), updated_at=CURRENT_TIMESTAMP WHERE id=$1`,
 			id, displayName, tags)
-		return err
 	default:
 		return fmt.Errorf("PatchSourceMeta: unknown kind %q", kind)
 	}
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("source %q: %w", apiID, errNotFound)
+	}
+	return nil
 }
 
 // parseSourceID splits "kind:N" → (kind, N, true); returns ("", 0, false) on bad input.
