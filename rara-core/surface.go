@@ -371,6 +371,68 @@ func (c *Core) SetPodcastFeedActive(ctx context.Context, id int, active bool) er
 	return c.db.SetPodcastFeedActive(ctx, id, active)
 }
 
+// --- Unified source listing (sources_v, fatia #1) -------------------------
+
+// sourceKind builds a SourceKind entry. All kinds support pause and tags, and every
+// kind ends with a display_name field (human-readable override); callers supply the rest.
+func sourceKind(kind, label, lane, icon, targetApp string, fields ...SourceField) SourceKind {
+	return SourceKind{
+		Kind: kind, Label: label, Lane: lane, Icon: icon, TargetApp: targetApp,
+		SupportsPause: true, SupportsTags: true,
+		Fields: append(fields, SourceField{Name: "display_name", Label: "Display name", Type: "text"}),
+	}
+}
+
+// sourceKindsRegistry is the config-driven registry of source kinds (drives the wizard UI).
+// A new kind = one entry here + one write endpoint in fatia #2. No table needed.
+var sourceKindsRegistry = []SourceKind{
+	sourceKind("youtube_channel", "YouTube Channel", "youtube", "youtube", "rara-harvest",
+		SourceField{Name: "channel_name", Label: "Channel name or handle", Type: "text", Required: true, Placeholder: "@channelhandle"},
+	),
+	sourceKind("youtube_playlist", "YouTube Playlist", "youtube", "youtube", "rara-shelf",
+		SourceField{Name: "playlist_url", Label: "Playlist URL", Type: "url", Required: true, Placeholder: "https://youtube.com/playlist?list=..."},
+	),
+	sourceKind("podcast", "Podcast Feed", "podcast", "podcast", "rara-dial",
+		SourceField{Name: "feed_url", Label: "Feed URL", Type: "url", Required: true, Placeholder: "https://example.com/feed.rss"},
+		SourceField{Name: "title", Label: "Title", Type: "text"},
+	),
+	sourceKind("rss", "RSS Feed", "news", "rss", "rara-feed",
+		SourceField{Name: "endpoint", Label: "Feed URL", Type: "url", Required: true, Placeholder: "https://example.com/feed.rss"},
+		SourceField{Name: "name", Label: "Name", Type: "text", Required: true},
+	),
+	sourceKind("html", "HTML Page", "news", "globe", "rara-feed",
+		SourceField{Name: "endpoint", Label: "Page URL", Type: "url", Required: true, Placeholder: "https://example.com"},
+		SourceField{Name: "name", Label: "Name", Type: "text", Required: true},
+	),
+	sourceKind("hn", "Hacker News", "news", "hackernews", "rara-feed",
+		SourceField{Name: "name", Label: "Name", Type: "text", Required: true},
+	),
+	sourceKind("email", "Email Reading Rule", "email", "mail", "rara-courier",
+		SourceField{Name: "gmail_query", Label: "Gmail query", Type: "text", Placeholder: "from:newsletter@example.com"},
+		SourceField{Name: "label", Label: "Gmail label", Type: "text"},
+		SourceField{Name: "from_filter", Label: "Sender filter", Type: "text"},
+	),
+}
+
+// maxSourcePageSize caps page_size for GET /v1/sources to prevent resource exhaustion.
+const maxSourcePageSize = 200
+
+// SourceKinds returns the static source-kind registry (feeds the wizard UI).
+func (c *Core) SourceKinds() []SourceKind { return sourceKindsRegistry }
+
+// Sources lists sources from sources_v with optional filters, pagination, and counts.
+func (c *Core) Sources(ctx context.Context, f SourceFilter) (SourcesResult, error) {
+	if f.PageSize > maxSourcePageSize {
+		f.PageSize = maxSourcePageSize
+	}
+	return c.db.ListSources(ctx, f)
+}
+
+// Source returns a single source by api_id (found=false if absent).
+func (c *Core) Source(ctx context.Context, apiID string) (SourceItem, bool, error) {
+	return c.db.GetSource(ctx, apiID)
+}
+
 // InterestProfile returns the ACTIVE preferences document (the version in force the gate reads),
 // not merely the latest — a `proposed` revision is invisible here until approved.
 func (c *Core) InterestProfile(ctx context.Context) (InterestProfile, bool, error) {
@@ -620,7 +682,13 @@ func NewSurfaceMux(core *Core, token string) http.Handler {
 	mux.HandleFunc("GET /v1/interest-profile", h.getInterestProfile)
 	mux.HandleFunc("GET /v1/interest-profile/versions", h.listInterestProfiles)
 
+	// Sources — unified registry + listing (fatia #1).
+	mux.HandleFunc("GET /v1/source-kinds", h.listSourceKinds)
+	mux.HandleFunc("GET /v1/sources", h.listSources)
+	mux.HandleFunc("GET /v1/sources/{source_id}", h.getSource)
+
 	// Sources — podcast feeds (control-plane config; the table is rara-dial's, the core writes it).
+	// Exact paths take precedence over the wildcard above; /v1/sources/podcast still routes here.
 	mux.HandleFunc("GET /v1/sources/podcast", h.listPodcastFeeds)
 	mux.HandleFunc("POST /v1/sources/podcast", h.addPodcastFeed)
 	mux.HandleFunc("PUT /v1/sources/podcast", h.setPodcastFeedActive)
@@ -783,6 +851,46 @@ func (h *httpSurface) listRoutingPolicies(w http.ResponseWriter, r *http.Request
 func (h *httpSurface) listGateRules(w http.ResponseWriter, r *http.Request) {
 	rules, err := h.core.GateRules(r.Context())
 	writeResult(w, rules, err)
+}
+
+func (h *httpSurface) listSourceKinds(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, h.core.SourceKinds())
+}
+
+func (h *httpSurface) listSources(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	f := SourceFilter{
+		Kind:   q.Get("kind"),
+		Status: q.Get("status"),
+		Tag:    q.Get("tag"),
+		Q:      q.Get("q"),
+	}
+	if ps := q.Get("page_size"); ps != "" {
+		if n, err := strconv.Atoi(ps); err == nil && n > 0 {
+			f.PageSize = n
+		}
+	}
+	if p := q.Get("page"); p != "" {
+		if n, err := strconv.Atoi(p); err == nil && n > 0 {
+			f.Page = n
+		}
+	}
+	result, err := h.core.Sources(r.Context(), f)
+	writeResult(w, result, err)
+}
+
+func (h *httpSurface) getSource(w http.ResponseWriter, r *http.Request) {
+	apiID := r.PathValue("source_id")
+	src, found, err := h.core.Source(r.Context(), apiID)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	if !found {
+		http.Error(w, `{"error":"source not found"}`, http.StatusNotFound)
+		return
+	}
+	writeJSON(w, http.StatusOK, src)
 }
 
 func (h *httpSurface) listPodcastFeeds(w http.ResponseWriter, r *http.Request) {

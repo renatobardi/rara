@@ -50,7 +50,9 @@ func TestMCPToolRegistryWellFormed(t *testing.T) {
 		"rara_upsert_flow", "rara_upsert_flow_step", "rara_upsert_provider",
 		"rara_upsert_routing_policy", "rara_upsert_gate_rule", "rara_add_interest_profile",
 		"rara_approve_profile",
-		"rara_feedback_distillation", "rara_review_quarantine", "rara_submit_linkedin_post",
+		"rara_feedback_distillation", "rara_review_quarantine",
+		"rara_list_sources",
+		"rara_submit_linkedin_post",
 	}
 	if len(s.tools) != len(want) {
 		t.Fatalf("tool count = %d, want %d", len(s.tools), len(want))
