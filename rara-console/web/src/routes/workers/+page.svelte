@@ -810,18 +810,18 @@
 									onclick={() => moveFallback(i, -1)}
 									disabled={i === 0}
 									aria-label={t.workers.fallbackMoveUp}
-								>{t.fontesFlows.hostsUp}</button>
+								>{t.workers.hostsUp}</button>
 								<button
 									class="rounded px-1.5 py-0.5 text-[11px] text-muted hover:bg-hover disabled:opacity-30"
 									onclick={() => moveFallback(i, 1)}
 									disabled={i === editFallback.length - 1}
 									aria-label={t.workers.fallbackMoveDown}
-								>{t.fontesFlows.hostsDown}</button>
+								>{t.workers.hostsDown}</button>
 								<button
 									class="rounded px-1.5 py-0.5 text-[11px] text-muted hover:bg-hover"
 									onclick={() => removeFallback(i)}
 									aria-label={t.workers.fallbackRemove}
-								>{t.fontesFlows.hostsRemove}</button>
+								>{t.workers.hostsRemove}</button>
 							</li>
 						{/each}
 					</ol>
@@ -833,9 +833,9 @@
 						<select
 							bind:value={routingAddWorker}
 							class="flex-1 rounded border border-border bg-bg px-2 py-1 text-[12px] outline-none focus:border-text/40"
-							aria-label={t.fontesFlows.hostsAddPlaceholder}
+							aria-label={t.workers.hostsAddPlaceholder}
 						>
-							<option value="">{t.fontesFlows.hostsAddPlaceholder}</option>
+							<option value="">{t.workers.hostsAddPlaceholder}</option>
 							{#each fallbackAddable as p}
 								<option value={p.name}>{p.name}</option>
 							{/each}
@@ -845,7 +845,7 @@
 							class="cursor-pointer rounded border border-border bg-bg px-2 py-1 text-[12px] hover:bg-hover disabled:opacity-40"
 							disabled={!routingAddWorker}
 							onclick={() => { addFallback(routingAddWorker); routingAddWorker = ''; }}
-							aria-label={t.fontesFlows.hostsAddPlaceholder}
+							aria-label={t.workers.hostsAddPlaceholder}
 						>+</button>
 					</div>
 				{/if}

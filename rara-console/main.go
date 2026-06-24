@@ -23,6 +23,7 @@ import (
 	"net/url"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -222,6 +223,18 @@ func (s *server) putCore(ctx context.Context, path string, reqBody io.Reader) (i
 	return s.doCore(ctx, http.MethodPut, path, reqBody)
 }
 
+// proxyWrite relays a doCore result to the client: a transport failure → 502, otherwise the
+// upstream status + body verbatim (so core 4xx validation reaches the SPA).
+func proxyWrite(w http.ResponseWriter, status int, body []byte, err error) {
+	if err != nil {
+		badGateway(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_, _ = w.Write(body)
+}
+
 // handleQuarantine proxies GET /v1/quarantine — the cold-start quarantine review queue.
 func (s *server) handleQuarantine(w http.ResponseWriter, r *http.Request) {
 	body, err := s.fetchCore(r.Context(), "/v1/quarantine")
@@ -294,6 +307,85 @@ func (s *server) handleSourceKinds(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, json.RawMessage(body))
+}
+
+// --- Fontes CRUD writes (fatia #4) -----------------------------------------
+// Write proxies for the unified source surface. The bearer is injected server-side; a core 4xx
+// (validation) propagates so the wizard can show field errors, transport failures become 502.
+// The {kind} and {source_id} path segments are validated before they're concatenated into the
+// upstream URL so a crafted value can't traverse to another surface path.
+
+// isSourceKindToken reports whether s is a safe source-kind token ([a-z_]+). The core owns the
+// authoritative allow-list; this only guards the URL path against injection.
+func isSourceKindToken(s string) bool {
+	if s == "" || len(s) > 32 {
+		return false
+	}
+	for _, c := range s {
+		if (c < 'a' || c > 'z') && c != '_' {
+			return false
+		}
+	}
+	return true
+}
+
+// isSourceID reports whether s is a well-formed api_id (kind:N), matching the core's composite id.
+func isSourceID(s string) bool {
+	k, n, ok := strings.Cut(s, ":")
+	return ok && isSourceKindToken(k) && isNumericID(n)
+}
+
+// handleAddSource proxies POST /v1/sources/{kind} — the registry-driven per-kind create.
+func (s *server) handleAddSource(w http.ResponseWriter, r *http.Request) {
+	kind := r.PathValue("kind")
+	if !isSourceKindToken(kind) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid source kind"})
+		return
+	}
+	status, body, err := s.postCore(r.Context(), "/v1/sources/"+kind, r.Body)
+	proxyWrite(w, status, body, err)
+}
+
+// handlePatchSource proxies PATCH /v1/sources/{source_id} — edits display_name and/or tags.
+func (s *server) handlePatchSource(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("source_id")
+	if !isSourceID(id) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid source id"})
+		return
+	}
+	status, body, err := s.doCore(r.Context(), http.MethodPatch, "/v1/sources/"+id, r.Body)
+	proxyWrite(w, status, body, err)
+}
+
+// handleDeleteSource proxies DELETE /v1/sources/{source_id} — soft-delete (source disappears).
+func (s *server) handleDeleteSource(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("source_id")
+	if !isSourceID(id) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid source id"})
+		return
+	}
+	status, body, err := s.doCore(r.Context(), http.MethodDelete, "/v1/sources/"+id, r.Body)
+	proxyWrite(w, status, body, err)
+}
+
+// handlePauseSource proxies POST /v1/sources/{source_id}/pause.
+func (s *server) handlePauseSource(w http.ResponseWriter, r *http.Request) {
+	s.toggleSource(w, r, "pause")
+}
+
+// handleResumeSource proxies POST /v1/sources/{source_id}/resume.
+func (s *server) handleResumeSource(w http.ResponseWriter, r *http.Request) {
+	s.toggleSource(w, r, "resume")
+}
+
+func (s *server) toggleSource(w http.ResponseWriter, r *http.Request, action string) {
+	id := r.PathValue("source_id")
+	if !isSourceID(id) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid source id"})
+		return
+	}
+	status, body, err := s.postCore(r.Context(), "/v1/sources/"+id+"/"+action, r.Body)
+	proxyWrite(w, status, body, err)
 }
 
 // handleDistillationDetail proxies GET /v1/distillations/{id}. Rejects non-numeric ids before
@@ -769,6 +861,13 @@ func main() {
 	mux.HandleFunc("GET /api/sources/podcast", s.handlePodcastSources)
 	mux.HandleFunc("POST /api/sources/podcast", s.handleAddPodcastSource)
 	mux.HandleFunc("PUT /api/sources/podcast", s.handleTogglePodcastSource)
+	// Fontes CRUD writes (fatia #4). Deeper /pause|/resume patterns win over the {source_id}
+	// catch-all; the exact /podcast routes above win over the {kind} create.
+	mux.HandleFunc("POST /api/sources/{kind}", s.handleAddSource)
+	mux.HandleFunc("PATCH /api/sources/{source_id}", s.handlePatchSource)
+	mux.HandleFunc("DELETE /api/sources/{source_id}", s.handleDeleteSource)
+	mux.HandleFunc("POST /api/sources/{source_id}/pause", s.handlePauseSource)
+	mux.HandleFunc("POST /api/sources/{source_id}/resume", s.handleResumeSource)
 	mux.HandleFunc("GET /api/flows", s.handleFlows)
 	mux.HandleFunc("GET /api/flows/{id}/steps", s.handleFlowSteps)
 	mux.HandleFunc("GET /api/flows/{flow_id}/steps/{seq}/hosts", s.handleStepHosts)
