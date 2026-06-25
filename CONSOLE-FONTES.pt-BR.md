@@ -30,7 +30,7 @@ Confirmado contra o banco — **as fontes que você cadastra já existem em 4 ta
 | youtube_playlist | youtube | `playlists` (11) | **`active` bool** | **rara-shelf** (corrigido na #0; shelf não filtrava `active` — fix incluído) |
 | podcast | podcast | `podcast_feeds` | **`active` bool** | rara-dial |
 | feed / rss / url | news | `feed_sources` (`source_type`,`cls`,`parser`) | **`enabled` bool** | rara-feed |
-| email_leitura | email | — (não há registro de fonte; `emails` é **saída**) | — | rara-courier |
+| email_leitura | email | `email_sources` (criada na #0; `emails` é **saída**) | **`enabled` bool** | rara-courier |
 | linkedin | linkedin | — (não há registro de fonte; `linkedin_posts` é **saída**) | — | rara-clip |
 
 Três consequências diretas:
@@ -115,12 +115,12 @@ diferentes convivem aqui, e o plano trata só do segundo:
 - **Gmail do `rara-courier`:** o coletor de email do pipeline, com **OAuth refresh token
   próprio** (autônomo, padrão rara-shelf). **É esse** que o cadastro de Fontes configura.
 
-**Achado no schema:** não há tabela de fonte de email — só `emails` (saída: message_id,
-sender, subject, body, status). Hoje o courier puxa a caixa inteira; não há "fontes" de
-email cadastráveis. Então a Fonte "Email de leitura" é **net-new**: criar `email_sources`
-(dona = courier) com `enabled` + `tags` + `display_name` + `gmail_query`/`label`/
-`from_filter`. Cada linha = uma regra de leitura pausável/tagueável. Pausar = courier para
-de puxar daquela regra.
+**Achado no schema (plano original):** não havia tabela de fonte de email — só `emails`
+(saída: message_id, sender, subject, body, status); o courier puxava a caixa inteira.
+**Resolvido na #0:** criada `email_sources` (dona = courier) com `enabled` + `tags` +
+`display_name` + `gmail_query`/`label`/`from_filter`, e o courier passou a ler as regras via
+`ListEmailSources` (`WHERE enabled=true`). Cada linha = uma regra de leitura
+pausável/tagueável. Pausar = courier para de puxar daquela regra.
 
 > **DECIDIDO: completo (N regras).** Cada regra (`gmail_query`/`label`/`from_filter`) é uma
 > fonte pausável/tagueável, e o **courier passa a respeitar as regras na coleta** (itera as
@@ -261,7 +261,7 @@ Branch `feat/console-fontes-6-verify`. Evidências: queries read-only no Neon pr
 
 | # | Item | Resultado | Evidência |
 |---|---|---|---|
-| 1 | **Smoke por tipo** (6 kinds) | ✅ | `sources_v` retorna os 6 kinds normalizados (youtube_channel, youtube_playlist, podcast, rss/hn/html→news, email). Write-path (POST/PATCH/DELETE/pause/resume) coberto por `rara-core/source_writes_test.go` + `rara-console/sources_write_test.go` (137 + 81 testes verdes). |
+| 1 | **Smoke por tipo** (5 lanes de fonte) | ✅ | `sources_v` retorna os kinds normalizados (youtube_channel, youtube_playlist, podcast, rss/hn/html→news, email). Write-path (POST/PATCH/DELETE/pause/resume) coberto por `rara-core/source_writes_test.go` + `rara-console/sources_write_test.go` (137 + 81 testes verdes). |
 | 2 | **Pausa é real (CRÍTICO)** | ✅ | Mesmo booleano nos 3 lugares: UI flipa `active`/`enabled` → view deriva `status` via `CASE WHEN active/enabled` → coletor filtra `WHERE active/enabled=true`. Cross-check runtime **bate em todas as lanes**. |
 | 3 | **Filtros / lote** | ✅ | `ListSources` lê `sources_v` com `kind`/`status`/`$N = ANY(tags)`/`ILIKE` (display_name OR config_summary) + GROUP BY p/ badges + LIMIT/OFFSET — tudo parametrizado. Bulk (pause\|resume\|tag\|untag\|delete) em `surface.go:1261`. |
 | 4 | **Email respeita pausa+filtros** | ✅ | `courier ListEmailSources`: `FROM email_sources WHERE enabled=true AND deleted_at IS NULL`, itera as N regras compondo a query Gmail (`rara-courier/main.go:432`). Pausar regra (`enabled=false`) → não coleta dela. |
