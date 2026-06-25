@@ -1,6 +1,7 @@
 package main
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -228,6 +229,44 @@ func TestPauseResumeSourceProxiesToSubpath(t *testing.T) {
 	}
 }
 
+func TestBulkSourcesProxiesPostWithBody(t *testing.T) {
+	var method, path, body string
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /v1/sources/bulk", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer secret" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		method, path = r.Method, r.URL.Path
+		b, _ := io.ReadAll(r.Body)
+		body = string(b)
+		_, _ = w.Write([]byte(`{"applied":2,"failed":1,"items":[]}`))
+	})
+	core := httptest.NewServer(mux)
+	t.Cleanup(core.Close)
+	s := &server{coreURL: core.URL, token: "secret", client: core.Client()}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/api/sources/bulk",
+		strings.NewReader(`{"action":"pause","ids":["rss:1","rss:2","podcast:9"]}`))
+	s.handleBulkSources(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if method != "POST" || path != "/v1/sources/bulk" {
+		t.Errorf("forwarded %s %s, want POST /v1/sources/bulk", method, path)
+	}
+	// Exact-match both directions so a JSON rewrite or a dropped field (failed/items) fails the test.
+	const wantReq = `{"action":"pause","ids":["rss:1","rss:2","podcast:9"]}`
+	if body != wantReq {
+		t.Errorf("forwarded body = %s, want %s", body, wantReq)
+	}
+	const wantResp = `{"applied":2,"failed":1,"items":[]}`
+	if rec.Body.String() != wantResp {
+		t.Errorf("body = %s, want %s", rec.Body.String(), wantResp)
+	}
+}
 func TestSourceWritesNeverLeakToken(t *testing.T) {
 	core := fakeSourcesWriteCore(t, "supersecret", nil, nil)
 	s := &server{coreURL: core.URL, token: "supersecret", client: core.Client()}

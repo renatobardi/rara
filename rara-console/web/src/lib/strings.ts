@@ -203,7 +203,6 @@ export const t = {
 		error: 'Não foi possível carregar as fontes.',
 		empty: 'Nenhuma fonte cadastrada.',
 		emptyFiltered: 'Nenhuma fonte para os filtros atuais.',
-		capNotice: 'Mostrando as primeiras {n} fontes. Há mais no banco — paginação no servidor chega numa próxima fatia.',
 		searchPlaceholder: 'Buscar por nome, tag ou config…',
 		filterAllKinds: 'Todos os tipos',
 		filterAllStatus: 'Todos os status',
@@ -258,7 +257,35 @@ export const t = {
 		// pause/resume toasts
 		pauseOk: 'Fonte pausada.',
 		resumeOk: 'Fonte retomada.',
-		pauseError: 'Não foi possível alterar o status.'
+		pauseError: 'Não foi possível alterar o status.',
+		// pagination (server-side) — every page is reachable, so there is no truncation notice
+		pageRange: '{from}–{to} de {total}',
+		pagePrev: 'Página anterior',
+		pageNext: 'Próxima página',
+		pageOf: '{page}/{pages}',
+		// selection + bulk
+		selectAllPage: 'Selecionar a página',
+		selectRow: 'Selecionar fonte',
+		selectAllPageBanner: 'As {n} fontes desta página estão selecionadas.',
+		selectAllFilterBtn: 'Selecionar todas as {total}',
+		selectAllCapNote: '(máx. {cap})',
+		selectingAll: 'Selecionando…',
+		selectedCount: '{n} fonte selecionada',
+		selectedCountPlural: '{n} fontes selecionadas',
+		bulkClear: 'Limpar seleção',
+		bulkPause: 'Pausar',
+		bulkResume: 'Retomar',
+		bulkTag: 'Taguear',
+		bulkUntag: 'Destaguear',
+		bulkDelete: 'Excluir',
+		bulkTagPlaceholder: 'tag…',
+		bulkApplying: 'Aplicando…',
+		bulkResultOk: '{ok} aplicada(s).',
+		bulkResultPartial: '{ok} aplicada(s), {fail} falha(s).',
+		bulkError: 'Não foi possível aplicar a ação em lote.',
+		bulkDeleteTitle: 'Excluir fontes selecionadas',
+		bulkDeleteConfirm:
+			'Excluir {n} fonte(s)? O cadastro some da lista; o conteúdo já coletado é preservado.'
 	},
 	auditoria: {
 		title: 'Auditoria',
