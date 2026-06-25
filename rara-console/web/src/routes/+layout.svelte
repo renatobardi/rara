@@ -37,7 +37,6 @@
 		{ section: t.nav.secTrain },
 		{ icon: '◐', label: t.nav.curation, href: '/curadoria' },
 		{ icon: '⛁', label: t.nav.fontes, href: '/fontes' },
-		{ icon: '⇄', label: t.nav.sources, href: '/fontes-flows' },
 		{ icon: '⚡', label: t.nav.workers, href: '/workers' },
 		{ icon: '◆', label: t.nav.agents, href: '/agents' },
 		{ section: t.nav.secSystem },
@@ -54,7 +53,6 @@
 		'/fontes': t.nav.fontes,
 		'/workers': t.nav.workers,
 		'/agents': t.nav.agents,
-		'/fontes-flows': t.nav.sources,
 		'/auditoria': t.nav.audit,
 		'/configuracoes': t.settings.title
 	};
