@@ -1,7 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { t } from '$lib/strings';
-	import Paginator from '$lib/Paginator.svelte';
 
 	type SourceItem = {
 		api_id: string;
@@ -34,13 +33,21 @@
 	type SourcesResult = { items: SourceItem[]; total: number; counts: Counts };
 	type BulkResult = { applied: number; failed: number };
 
-	// Filtering and search now run SERVER-side (the BFF forwards kind/status/tag/q to sources_v),
-	// so the table only holds the rows matching the active filter — no more in-memory filtering of a
-	// fixed blob (fatia #3 debt). One server page is still fetched (cap = surface maxSourcePageSize)
-	// and split into client pages for display.
-	// ponytail: server-side FILTER; client-side paging over the filtered set. A single filter that
-	// matches >PAGE_CAP rows shows a "refine" notice; add server page fetching only if that happens.
-	const PAGE_CAP = 200;
+	// Filtering, search AND pagination all run SERVER-side: the BFF forwards
+	// kind/status/tag/q/page/page_size to sources_v, so the table only ever holds the current page of
+	// rows matching the active filter — no in-memory filtering or slicing (fatia #3 debt retired).
+	const PAGE_SIZES = [20, 50, 100] as const;
+	const PAGE_SIZE_KEY = 'fontes.pageSize';
+	// Unfiltered fetches (global counts + tag universe) ask for the surface's max page in one shot.
+	const GLOBAL_CAP = 200;
+	function loadPageSize(): number {
+		try {
+			const v = Number(localStorage.getItem(PAGE_SIZE_KEY));
+			return (PAGE_SIZES as readonly number[]).includes(v) ? v : 20;
+		} catch {
+			return 20;
+		}
+	}
 
 	// glyph per registry icon name — purely cosmetic, falls back to a neutral dot.
 	const ICONS: Record<string, string> = {
@@ -52,14 +59,14 @@
 		mail: '✉'
 	};
 
-	let items = $state<SourceItem[]>([]); // rows matching the active filter (one server page)
+	let items = $state<SourceItem[]>([]); // current server page of rows matching the active filter
 	let kinds = $state<SourceKind[]>([]);
 	let counts = $state<Counts>({ by_status: {}, by_kind: {} }); // GLOBAL badge counts (unfiltered)
 	let tagUniverse = $state<string[]>([]); // GLOBAL tag list (unfiltered) for the tag dropdown
-	let total = $state(0); // total rows matching the active filter
+	let total = $state(0); // total rows matching the active filter (across all pages)
 	let loading = $state(true);
 	let error = $state(false);
-	let refetching = $state(false); // a filter/search reload in flight (table dims, no skeleton)
+	let refetching = $state(false); // a filter/search/page reload in flight (table dims, no skeleton)
 
 	// filters
 	let fKind = $state('');
@@ -68,11 +75,19 @@
 	let query = $state('');
 	let searchTimer: ReturnType<typeof setTimeout> | undefined;
 
-	// selection (api_ids); persists only within the active filter — cleared on every refilter.
+	// pagination (server-side)
+	let page = $state(1);
+	let pageSize = $state(20);
+	let totalPages = $derived(Math.max(1, Math.ceil(total / pageSize)));
+	let pageFrom = $derived(total === 0 ? 0 : (page - 1) * pageSize + 1);
+	let pageTo = $derived(Math.min(page * pageSize, total));
+
+	// selection (api_ids); persists across pages of the same filter, cleared on every refilter.
+	// "Select all" toggles the current page; a banner offers selecting every match across pages.
 	let selectedIds = $state<string[]>([]);
 	let selectedSet = $derived(new Set(selectedIds));
-	let allSelected = $derived(items.length > 0 && items.every((s) => selectedSet.has(s.api_id)));
-	let someSelected = $derived(selectedIds.length > 0 && !allSelected);
+	let pageAllSelected = $derived(items.length > 0 && items.every((s) => selectedSet.has(s.api_id)));
+	let pageSomeSelected = $derived(items.some((s) => selectedSet.has(s.api_id)) && !pageAllSelected);
 
 	// bulk
 	let bulkBusy = $state(false);
@@ -177,23 +192,27 @@
 		return `/api/sources/${encodeURIComponent(seg)}${suffix}`;
 	}
 
-	// Build the GET /api/sources query from the active filter. The BFF allow-lists these params.
-	function sourcesQuery(): string {
+	// Build the filter portion of a GET /api/sources query. The BFF allow-lists these params.
+	function filterParams(): URLSearchParams {
 		const q = new URLSearchParams();
 		if (fKind) q.set('kind', fKind);
 		if (fStatus) q.set('status', fStatus);
 		if (fTag) q.set('tag', fTag);
 		if (query.trim()) q.set('q', query.trim());
-		q.set('page_size', String(PAGE_CAP));
-		return q.toString();
+		return q;
 	}
+	let hasFilter = $derived(!!(fKind || fStatus || fTag || query.trim()));
 
-	// pageLoad fetches the rows matching the active filter (server-side). Clears the selection,
-	// since the visible set just changed. Errors raise a toast but leave the prior rows in place.
-	async function pageLoad() {
+	// pageLoad fetches the current server page of rows matching the active filter. resetSelection
+	// clears the selection when the visible set fundamentally changes (a refilter), but page nav
+	// keeps it so a multi-page bulk selection survives. Errors keep the prior rows in place.
+	async function pageLoad(resetSelection = false) {
 		refetching = true;
 		try {
-			const res = await fetch(`/api/sources?${sourcesQuery()}`);
+			const q = filterParams();
+			q.set('page', String(page));
+			q.set('page_size', String(pageSize));
+			const res = await fetch(`/api/sources?${q.toString()}`);
 			if (!res.ok) {
 				toast('err', t.fontes.error);
 				return;
@@ -201,7 +220,14 @@
 			const data: SourcesResult = await res.json();
 			items = normItems(data?.items);
 			total = data?.total ?? items.length;
-			selectedIds = [];
+			// Clamp to the last page if a deletion shrank the result set below the current page.
+			const last = Math.max(1, Math.ceil(total / pageSize));
+			if (page > last) {
+				page = last;
+				await pageLoad(resetSelection);
+				return;
+			}
+			if (resetSelection) selectedIds = [];
 		} catch {
 			toast('err', t.fontes.error);
 		} finally {
@@ -212,10 +238,10 @@
 	// globalLoad fetches the UNFILTERED dataset to keep the dropdown badges (counts) and the tag
 	// filter (tagUniverse) global — independent of the active filter. Reused after every mutation.
 	// ponytail: tagUniverse is derived from one unfiltered page; if the dataset ever exceeds
-	// PAGE_CAP, rare tags past the cap won't list — acceptable until that happens.
+	// GLOBAL_CAP, rare tags past the cap won't list — acceptable until that happens.
 	async function globalLoad() {
 		try {
-			const res = await fetch(`/api/sources?page_size=${PAGE_CAP}`);
+			const res = await fetch(`/api/sources?page_size=${GLOBAL_CAP}`);
 			if (!res.ok) return;
 			const data: SourcesResult = await res.json();
 			counts = normCounts(data?.counts);
@@ -225,34 +251,61 @@
 		}
 	}
 
-	// Refresh both the filtered table and the global badges/tags after a mutation.
+	// Refresh both the filtered table and the global badges/tags after a mutation. Keeps the
+	// selection (pageLoad clamps the page if a bulk delete shrank the result set).
 	async function reloadAll() {
 		await Promise.all([pageLoad(), globalLoad()]);
 	}
 
-	// Re-run the server query when a filter changes (selects fire onchange; search is debounced).
+	// A filter change resets to page 1 and clears the selection (the result set changed).
 	function applyFilters() {
 		clearTimeout(searchTimer);
-		pageLoad();
+		page = 1;
+		pageLoad(true);
 	}
 	function onSearchInput() {
 		clearTimeout(searchTimer);
-		searchTimer = setTimeout(pageLoad, 300);
+		searchTimer = setTimeout(() => {
+			page = 1;
+			pageLoad(true);
+		}, 300);
+	}
+
+	// ── Pagination nav (page nav keeps the selection across pages) ──
+	function goToPage(p: number) {
+		const target = Math.min(Math.max(1, p), totalPages);
+		if (target === page) return;
+		page = target;
+		pageLoad();
+	}
+	function setPageSize(n: number) {
+		if (n === pageSize) return;
+		pageSize = n;
+		page = 1;
+		try {
+			localStorage.setItem(PAGE_SIZE_KEY, String(n));
+		} catch {
+			/* private mode — size just won't persist */
+		}
+		pageLoad();
 	}
 
 	onMount(() => {
+		pageSize = loadPageSize();
 		const ctrl = new AbortController();
+		// First load is unfiltered: one page for the table (respecting the saved page size) and one
+		// unfiltered page (GLOBAL_CAP) that seeds the global counts + tag universe.
 		Promise.all([
 			fetch('/api/source-kinds', { signal: ctrl.signal }).then((r) => (r.ok ? r.json() : Promise.reject(r.status))),
-			fetch(`/api/sources?page_size=${PAGE_CAP}`, { signal: ctrl.signal }).then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
+			fetch(`/api/sources?page=1&page_size=${pageSize}`, { signal: ctrl.signal }).then((r) => (r.ok ? r.json() : Promise.reject(r.status))),
+			fetch(`/api/sources?page_size=${GLOBAL_CAP}`, { signal: ctrl.signal }).then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
 		])
-			.then(([k, res]: [SourceKind[], SourcesResult]) => {
+			.then(([k, first, glob]: [SourceKind[], SourcesResult, SourcesResult]) => {
 				kinds = Array.isArray(k) ? k : [];
-				// First load is unfiltered, so it seeds the table AND the global badges/tags in one fetch.
-				items = normItems(res?.items);
-				counts = normCounts(res?.counts);
-				tagUniverse = [...new Set(items.flatMap((s) => s.tags))].sort();
-				total = res?.total ?? items.length;
+				items = normItems(first?.items);
+				total = first?.total ?? items.length;
+				counts = normCounts(glob?.counts);
+				tagUniverse = [...new Set(normItems(glob?.items).flatMap((s) => s.tags))].sort();
 				loading = false;
 			})
 			.catch((e) => {
@@ -271,11 +324,43 @@
 	function toggleRow(id: string) {
 		selectedIds = selectedSet.has(id) ? selectedIds.filter((x) => x !== id) : [...selectedIds, id];
 	}
-	function toggleAll() {
-		selectedIds = allSelected ? [] : items.map((s) => s.api_id);
+	// Header checkbox toggles every row on the CURRENT page (others, on other pages, are untouched).
+	function togglePage() {
+		const pageIds = items.map((s) => s.api_id);
+		if (pageAllSelected) {
+			const drop = new Set(pageIds);
+			selectedIds = selectedIds.filter((id) => !drop.has(id));
+		} else {
+			selectedIds = [...new Set([...selectedIds, ...pageIds])];
+		}
 	}
 	function clearSelection() {
 		selectedIds = [];
+	}
+
+	// Select EVERY source matching the active filter across all pages — one fetch of all ids (capped
+	// at GLOBAL_CAP, which equals the surface max page). If the filter matches more than the cap, the
+	// banner says so honestly and selects the first GLOBAL_CAP.
+	let selectingAll = $state(false);
+	async function selectAllFilter() {
+		if (selectingAll) return;
+		selectingAll = true;
+		try {
+			const q = filterParams();
+			q.set('page', '1');
+			q.set('page_size', String(GLOBAL_CAP));
+			const res = await fetch(`/api/sources?${q.toString()}`);
+			if (!res.ok) {
+				toast('err', t.fontes.error);
+				return;
+			}
+			const data: SourcesResult = await res.json();
+			selectedIds = normItems(data?.items).map((s) => s.api_id);
+		} catch {
+			toast('err', t.fontes.error);
+		} finally {
+			selectingAll = false;
+		}
 	}
 
 	// ── Bulk actions ──
@@ -627,26 +712,33 @@
 			</div>
 		{/if}
 
-		{#if total > items.length}
-			<p class="mb-3 text-[12px] text-muted">{t.fontes.capNoticeFiltered.replace('{n}', String(items.length))}</p>
+		<!-- Select-all-across-pages: shown once the whole page is ticked and more matches exist. -->
+		{#if pageAllSelected && selectedIds.length < total}
+			<div class="mb-3 flex flex-wrap items-center gap-2 rounded-token bg-surface-2 px-3 py-2 text-[12px] text-muted">
+				<span>{t.fontes.selectAllPageBanner.replace('{n}', String(items.length))}</span>
+				<button
+					class="font-medium text-text underline underline-offset-2 hover:opacity-80 disabled:opacity-50"
+					disabled={selectingAll}
+					onclick={selectAllFilter}
+				>{selectingAll ? t.fontes.selectingAll : t.fontes.selectAllFilterBtn.replace('{total}', String(total))}</button>
+				{#if total > GLOBAL_CAP}<span>{t.fontes.selectAllCapNote.replace('{cap}', String(GLOBAL_CAP))}</span>{/if}
+			</div>
 		{/if}
 
 		{#if items.length === 0}
-			<p class="text-sm text-muted">{query || fKind || fStatus || fTag ? t.fontes.emptyFiltered : t.fontes.empty}</p>
+			<p class="text-sm text-muted">{hasFilter ? t.fontes.emptyFiltered : t.fontes.empty}</p>
 		{:else}
 			<div class="overflow-x-auto rounded-xl border border-border transition-opacity {refetching ? 'opacity-60' : ''}" aria-busy={refetching}>
-				<Paginator items={items} storageKey="fontes.pageSize">
-					{#snippet children(page: SourceItem[])}
 						<table class="w-full border-collapse text-[13px]">
 							<thead>
 								<tr class="border-b border-border bg-surface-2 text-left text-muted">
 									<th class="w-9 px-4 py-2.5">
 										<input
 											type="checkbox"
-											checked={allSelected}
-											use:indeterminate={someSelected}
-											onchange={toggleAll}
-											aria-label={t.fontes.selectAll}
+											checked={pageAllSelected}
+											use:indeterminate={pageSomeSelected}
+											onchange={togglePage}
+											aria-label={t.fontes.selectAllPage}
 											class="cursor-pointer align-middle"
 										/>
 									</th>
@@ -660,7 +752,7 @@
 								</tr>
 							</thead>
 							<tbody>
-								{#each page as s (s.api_id)}
+								{#each items as s (s.api_id)}
 									<tr class="border-b border-border last:border-0 hover:bg-hover {selectedSet.has(s.api_id) ? 'bg-surface-2' : ''}">
 										<td class="px-4 py-2.5">
 											<input
@@ -725,8 +817,40 @@
 								{/each}
 							</tbody>
 						</table>
-					{/snippet}
-				</Paginator>
+				{#if total > PAGE_SIZES[0]}
+					<div class="flex items-center justify-between px-4 py-2 text-[11px] text-muted">
+						<span class="tabular-nums">
+							{t.fontes.pageRange.replace('{from}', String(pageFrom)).replace('{to}', String(pageTo)).replace('{total}', String(total))}
+						</span>
+						<div class="flex items-center gap-3">
+							<span class="flex gap-0.5">
+								{#each PAGE_SIZES as sz}
+									<button
+										class="cursor-pointer rounded px-1.5 py-0.5 {pageSize === sz ? 'font-medium text-text' : 'text-muted hover:bg-hover'}"
+										aria-pressed={pageSize === sz}
+										disabled={refetching}
+										onclick={() => setPageSize(sz)}
+									>{sz}</button>
+								{/each}
+							</span>
+							<span class="flex items-center gap-1 tabular-nums">
+								<button
+									class="cursor-pointer rounded px-1 py-0.5 hover:bg-hover disabled:cursor-default disabled:opacity-30"
+									disabled={page <= 1 || refetching}
+									aria-label={t.fontes.pagePrev}
+									onclick={() => goToPage(page - 1)}
+								>‹</button>
+								<span>{t.fontes.pageOf.replace('{page}', String(page)).replace('{pages}', String(totalPages))}</span>
+								<button
+									class="cursor-pointer rounded px-1 py-0.5 hover:bg-hover disabled:cursor-default disabled:opacity-30"
+									disabled={page >= totalPages || refetching}
+									aria-label={t.fontes.pageNext}
+									onclick={() => goToPage(page + 1)}
+								>›</button>
+							</span>
+						</div>
+					</div>
+				{/if}
 			</div>
 		{/if}
 	{/if}

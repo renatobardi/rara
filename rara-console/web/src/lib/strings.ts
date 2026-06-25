@@ -258,12 +258,18 @@ export const t = {
 		pauseOk: 'Fonte pausada.',
 		resumeOk: 'Fonte retomada.',
 		pauseError: 'Não foi possível alterar o status.',
-		// server-side paging ceiling notice
-		capNoticeFiltered:
-			'Mostrando as primeiras {n} fontes deste filtro. Refine a busca para ver as demais.',
+		// pagination (server-side) — every page is reachable, so there is no truncation notice
+		pageRange: '{from}–{to} de {total}',
+		pagePrev: 'Página anterior',
+		pageNext: 'Próxima página',
+		pageOf: '{page}/{pages}',
 		// selection + bulk
-		selectAll: 'Selecionar todas',
+		selectAllPage: 'Selecionar a página',
 		selectRow: 'Selecionar fonte',
+		selectAllPageBanner: 'As {n} fontes desta página estão selecionadas.',
+		selectAllFilterBtn: 'Selecionar todas as {total}',
+		selectAllCapNote: '(máx. {cap})',
+		selectingAll: 'Selecionando…',
 		selectedCount: '{n} selecionada',
 		selectedCountPlural: '{n} selecionadas',
 		bulkClear: 'Limpar seleção',
