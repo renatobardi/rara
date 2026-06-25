@@ -203,7 +203,6 @@ export const t = {
 		error: 'Não foi possível carregar as fontes.',
 		empty: 'Nenhuma fonte cadastrada.',
 		emptyFiltered: 'Nenhuma fonte para os filtros atuais.',
-		capNotice: 'Mostrando as primeiras {n} fontes. Há mais no banco — paginação no servidor chega numa próxima fatia.',
 		searchPlaceholder: 'Buscar por nome, tag ou config…',
 		filterAllKinds: 'Todos os tipos',
 		filterAllStatus: 'Todos os status',
@@ -258,7 +257,29 @@ export const t = {
 		// pause/resume toasts
 		pauseOk: 'Fonte pausada.',
 		resumeOk: 'Fonte retomada.',
-		pauseError: 'Não foi possível alterar o status.'
+		pauseError: 'Não foi possível alterar o status.',
+		// server-side paging ceiling notice
+		capNoticeFiltered:
+			'Mostrando as primeiras {n} fontes deste filtro. Refine a busca para ver as demais.',
+		// selection + bulk
+		selectAll: 'Selecionar todas',
+		selectRow: 'Selecionar fonte',
+		selectedCount: '{n} selecionada',
+		selectedCountPlural: '{n} selecionadas',
+		bulkClear: 'Limpar seleção',
+		bulkPause: 'Pausar',
+		bulkResume: 'Retomar',
+		bulkTag: 'Taguear',
+		bulkUntag: 'Destaguear',
+		bulkDelete: 'Excluir',
+		bulkTagPlaceholder: 'tag…',
+		bulkApplying: 'Aplicando…',
+		bulkResultOk: '{ok} aplicada(s).',
+		bulkResultPartial: '{ok} aplicada(s), {fail} falha(s).',
+		bulkError: 'Não foi possível aplicar a ação em lote.',
+		bulkDeleteTitle: 'Excluir fontes selecionadas',
+		bulkDeleteConfirm:
+			'Excluir {n} fonte(s)? O cadastro some da lista; o conteúdo já coletado é preservado.'
 	},
 	auditoria: {
 		title: 'Auditoria',

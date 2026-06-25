@@ -388,6 +388,14 @@ func (s *server) toggleSource(w http.ResponseWriter, r *http.Request, action str
 	proxyWrite(w, status, body, err)
 }
 
+// handleBulkSources proxies POST /v1/sources/bulk — apply one action (pause|resume|tag|untag|
+// delete) to many sources. The body (action/ids/tag) is forwarded as-is; the core validates it
+// and returns per-item results, so a core 4xx propagates and transport failures become 502.
+func (s *server) handleBulkSources(w http.ResponseWriter, r *http.Request) {
+	status, body, err := s.postCore(r.Context(), "/v1/sources/bulk", r.Body)
+	proxyWrite(w, status, body, err)
+}
+
 // handleDistillationDetail proxies GET /v1/distillations/{id}. Rejects non-numeric ids before
 // touching the core so a path-traversal payload never reaches the upstream.
 func (s *server) handleDistillationDetail(w http.ResponseWriter, r *http.Request) {
@@ -829,6 +837,7 @@ func main() {
 	mux.HandleFunc("DELETE /api/sources/{source_id}", s.handleDeleteSource)
 	mux.HandleFunc("POST /api/sources/{source_id}/pause", s.handlePauseSource)
 	mux.HandleFunc("POST /api/sources/{source_id}/resume", s.handleResumeSource)
+	mux.HandleFunc("POST /api/sources/bulk", s.handleBulkSources)
 	mux.HandleFunc("GET /api/flows", s.handleFlows)
 	mux.HandleFunc("GET /api/flows/{id}/steps", s.handleFlowSteps)
 	mux.HandleFunc("GET /api/flows/{flow_id}/steps/{seq}/hosts", s.handleStepHosts)

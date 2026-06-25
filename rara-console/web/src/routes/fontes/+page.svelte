@@ -32,10 +32,14 @@
 	};
 	type Counts = { by_status: Record<string, number>; by_kind: Record<string, number> };
 	type SourcesResult = { items: SourceItem[]; total: number; counts: Counts };
+	type BulkResult = { applied: number; failed: number };
 
-	// The screen loads one server page (cap = surface maxSourcePageSize) and filters/paginates
-	// client-side. Far above today's ~150 rows; server-side filtering lands when total can exceed it.
-	// ponytail: client-side filter over one page; add server paging when total can exceed PAGE_CAP.
+	// Filtering and search now run SERVER-side (the BFF forwards kind/status/tag/q to sources_v),
+	// so the table only holds the rows matching the active filter — no more in-memory filtering of a
+	// fixed blob (fatia #3 debt). One server page is still fetched (cap = surface maxSourcePageSize)
+	// and split into client pages for display.
+	// ponytail: server-side FILTER; client-side paging over the filtered set. A single filter that
+	// matches >PAGE_CAP rows shows a "refine" notice; add server page fetching only if that happens.
 	const PAGE_CAP = 200;
 
 	// glyph per registry icon name — purely cosmetic, falls back to a neutral dot.
@@ -48,18 +52,32 @@
 		mail: '✉'
 	};
 
-	let items = $state<SourceItem[]>([]);
+	let items = $state<SourceItem[]>([]); // rows matching the active filter (one server page)
 	let kinds = $state<SourceKind[]>([]);
-	let counts = $state<Counts>({ by_status: {}, by_kind: {} });
-	let total = $state(0);
+	let counts = $state<Counts>({ by_status: {}, by_kind: {} }); // GLOBAL badge counts (unfiltered)
+	let tagUniverse = $state<string[]>([]); // GLOBAL tag list (unfiltered) for the tag dropdown
+	let total = $state(0); // total rows matching the active filter
 	let loading = $state(true);
 	let error = $state(false);
+	let refetching = $state(false); // a filter/search reload in flight (table dims, no skeleton)
 
 	// filters
 	let fKind = $state('');
 	let fStatus = $state('');
 	let fTag = $state('');
 	let query = $state('');
+	let searchTimer: ReturnType<typeof setTimeout> | undefined;
+
+	// selection (api_ids); persists only within the active filter — cleared on every refilter.
+	let selectedIds = $state<string[]>([]);
+	let selectedSet = $derived(new Set(selectedIds));
+	let allSelected = $derived(items.length > 0 && items.every((s) => selectedSet.has(s.api_id)));
+	let someSelected = $derived(selectedIds.length > 0 && !allSelected);
+
+	// bulk
+	let bulkBusy = $state(false);
+	let bulkTagInput = $state('');
+	let bulkDeleteOpen = $state(false);
 
 	// toasts
 	type Toast = { id: number; kind: 'ok' | 'err'; msg: string };
@@ -87,7 +105,7 @@
 	let editSaving = $state(false);
 	let editError = $state('');
 
-	// delete
+	// delete (single)
 	let deleteTarget = $state<SourceItem | null>(null);
 	let deleting = $state(false);
 
@@ -95,7 +113,6 @@
 	let toggling = $state<Record<string, boolean>>({});
 
 	let kindMap = $derived(new Map(kinds.map((k) => [k.kind, k])));
-	let allTags = $derived([...new Set(items.flatMap((s) => s.tags))].sort());
 
 	function kindLabel(kind: string): string {
 		return kindMap.get(kind)?.label ?? kind;
@@ -103,20 +120,6 @@
 	function kindIcon(kind: string): string {
 		return ICONS[kindMap.get(kind)?.icon ?? ''] ?? '•';
 	}
-
-	let filtered = $derived(
-		items.filter((s) => {
-			if (fKind && s.kind !== fKind) return false;
-			if (fStatus && s.status !== fStatus) return false;
-			if (fTag && !s.tags.includes(fTag)) return false;
-			if (query) {
-				const q = query.toLowerCase();
-				const hay = `${s.display_name} ${s.config_summary} ${s.tags.join(' ')}`.toLowerCase();
-				if (!hay.includes(q)) return false;
-			}
-			return true;
-		})
-	);
 
 	// Defensive: the BFF is trusted, but a malformed row must not crash the table. Keep only
 	// objects with a string api_id and coerce tags to an array (the .includes/.length paths assume it).
@@ -174,22 +177,67 @@
 		return `/api/sources/${encodeURIComponent(seg)}${suffix}`;
 	}
 
-	// Reload the source list after a mutation. Leaves `kinds` (the static registry) untouched.
-	// Swallows fetch rejections / invalid JSON so a mutation flow can't be left in a bad state.
-	async function reload() {
+	// Build the GET /api/sources query from the active filter. The BFF allow-lists these params.
+	function sourcesQuery(): string {
+		const q = new URLSearchParams();
+		if (fKind) q.set('kind', fKind);
+		if (fStatus) q.set('status', fStatus);
+		if (fTag) q.set('tag', fTag);
+		if (query.trim()) q.set('q', query.trim());
+		q.set('page_size', String(PAGE_CAP));
+		return q.toString();
+	}
+
+	// pageLoad fetches the rows matching the active filter (server-side). Clears the selection,
+	// since the visible set just changed. Errors raise a toast but leave the prior rows in place.
+	async function pageLoad() {
+		refetching = true;
 		try {
-			const res = await fetch(`/api/sources?page_size=${PAGE_CAP}`);
+			const res = await fetch(`/api/sources?${sourcesQuery()}`);
 			if (!res.ok) {
 				toast('err', t.fontes.error);
 				return;
 			}
 			const data: SourcesResult = await res.json();
 			items = normItems(data?.items);
-			counts = normCounts(data?.counts);
 			total = data?.total ?? items.length;
+			selectedIds = [];
 		} catch {
 			toast('err', t.fontes.error);
+		} finally {
+			refetching = false;
 		}
+	}
+
+	// globalLoad fetches the UNFILTERED dataset to keep the dropdown badges (counts) and the tag
+	// filter (tagUniverse) global — independent of the active filter. Reused after every mutation.
+	// ponytail: tagUniverse is derived from one unfiltered page; if the dataset ever exceeds
+	// PAGE_CAP, rare tags past the cap won't list — acceptable until that happens.
+	async function globalLoad() {
+		try {
+			const res = await fetch(`/api/sources?page_size=${PAGE_CAP}`);
+			if (!res.ok) return;
+			const data: SourcesResult = await res.json();
+			counts = normCounts(data?.counts);
+			tagUniverse = [...new Set(normItems(data?.items).flatMap((s) => s.tags))].sort();
+		} catch {
+			/* badges degrade silently — the table itself uses pageLoad */
+		}
+	}
+
+	// Refresh both the filtered table and the global badges/tags after a mutation.
+	async function reloadAll() {
+		await Promise.all([pageLoad(), globalLoad()]);
+	}
+
+	// Re-run the server query when a filter changes (selects fire onchange; search is debounced).
+	function applyFilters() {
+		clearTimeout(searchTimer);
+		pageLoad();
+	}
+	function onSearchInput() {
+		clearTimeout(searchTimer);
+		searchTimer = setTimeout(pageLoad, 300);
 	}
 
 	onMount(() => {
@@ -200,8 +248,10 @@
 		])
 			.then(([k, res]: [SourceKind[], SourcesResult]) => {
 				kinds = Array.isArray(k) ? k : [];
+				// First load is unfiltered, so it seeds the table AND the global badges/tags in one fetch.
 				items = normItems(res?.items);
 				counts = normCounts(res?.counts);
+				tagUniverse = [...new Set(items.flatMap((s) => s.tags))].sort();
 				total = res?.total ?? items.length;
 				loading = false;
 			})
@@ -211,8 +261,61 @@
 				loading = false;
 			});
 		// Abort pending fetches on unmount so a hung request can't update state after navigation.
-		return () => ctrl.abort();
+		return () => {
+			ctrl.abort();
+			clearTimeout(searchTimer);
+		};
 	});
+
+	// ── Selection ──
+	function toggleRow(id: string) {
+		selectedIds = selectedSet.has(id) ? selectedIds.filter((x) => x !== id) : [...selectedIds, id];
+	}
+	function toggleAll() {
+		selectedIds = allSelected ? [] : items.map((s) => s.api_id);
+	}
+	function clearSelection() {
+		selectedIds = [];
+	}
+
+	// ── Bulk actions ──
+	async function bulk(action: 'pause' | 'resume' | 'tag' | 'untag' | 'delete', tag?: string) {
+		if (selectedIds.length === 0 || bulkBusy) return;
+		bulkBusy = true;
+		try {
+			const body: { action: string; ids: string[]; tag?: string } = { action, ids: selectedIds };
+			if (tag) body.tag = tag;
+			const res = await fetch('/api/sources/bulk', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify(body)
+			});
+			if (!res.ok) {
+				toast('err', await errMsg(res, t.fontes.bulkError));
+				return;
+			}
+			const r: BulkResult = await res.json();
+			const applied = r?.applied ?? 0;
+			const failed = r?.failed ?? 0;
+			if (failed > 0) {
+				toast('err', t.fontes.bulkResultPartial.replace('{ok}', String(applied)).replace('{fail}', String(failed)));
+			} else {
+				toast('ok', t.fontes.bulkResultOk.replace('{ok}', String(applied)));
+			}
+			bulkTagInput = '';
+			await reloadAll();
+		} catch {
+			toast('err', t.fontes.bulkError);
+		} finally {
+			bulkBusy = false;
+			bulkDeleteOpen = false;
+		}
+	}
+	function bulkTag(action: 'tag' | 'untag') {
+		const tag = bulkTagInput.trim();
+		if (!tag) return;
+		bulk(action, tag);
+	}
 
 	// ── Wizard (create) ──
 	function openWizard() {
@@ -254,7 +357,7 @@
 			}
 			wizardOpen = false;
 			toast('ok', t.fontes.wizardCreateOk);
-			await reload();
+			await reloadAll();
 		} catch {
 			createError = t.fontes.wizardCreateError;
 		} finally {
@@ -300,7 +403,7 @@
 			}
 			editSource = null;
 			toast('ok', t.fontes.editSaveOk);
-			await reload();
+			await reloadAll();
 		} catch {
 			editError = t.fontes.editSaveError;
 		} finally {
@@ -308,7 +411,7 @@
 		}
 	}
 
-	// ── Delete (soft-delete; source disappears from the list) ──
+	// ── Delete single (soft-delete; source disappears from the list) ──
 	async function confirmDelete() {
 		if (!deleteTarget) return;
 		const target = deleteTarget;
@@ -319,15 +422,9 @@
 				toast('err', await errMsg(res, t.fontes.deleteError));
 				return;
 			}
-			items = items.filter((s) => s.api_id !== target.api_id);
-			// Keep the badges/total consistent with the row that just left the list.
-			total = Math.max(0, total - 1);
-			counts = {
-				by_status: { ...counts.by_status, [target.status]: Math.max(0, (counts.by_status[target.status] ?? 0) - 1) },
-				by_kind: { ...counts.by_kind, [target.kind]: Math.max(0, (counts.by_kind[target.kind] ?? 0) - 1) }
-			};
 			deleteTarget = null;
 			toast('ok', t.fontes.deleteOk);
+			await reloadAll();
 		} catch {
 			toast('err', t.fontes.deleteError);
 		} finally {
@@ -370,13 +467,14 @@
 	}
 
 	// A modal must not be dismissable mid-mutation — closing would hide the inline error.
-	let mutating = $derived(creating || editSaving || deleting);
+	let mutating = $derived(creating || editSaving || deleting || bulkBusy);
 
 	function closeOnEsc(e: KeyboardEvent) {
 		if (e.key !== 'Escape' || mutating) return;
 		if (wizardOpen) wizardOpen = false;
 		else if (editSource) editSource = null;
 		else if (deleteTarget) deleteTarget = null;
+		else if (bulkDeleteOpen) bulkDeleteOpen = false;
 	}
 
 	// Move focus into a dialog when it opens and keep Tab cycling trapped inside it, so keyboard
@@ -411,6 +509,16 @@
 			}
 		};
 	}
+
+	// Bind a checkbox's indeterminate property (it's not settable via an attribute).
+	function indeterminate(node: HTMLInputElement, value: boolean) {
+		node.indeterminate = value;
+		return { update: (v: boolean) => (node.indeterminate = v) };
+	}
+
+	function selectedLabel(n: number): string {
+		return (n === 1 ? t.fontes.selectedCount : t.fontes.selectedCountPlural).replace('{n}', String(n));
+	}
 </script>
 
 <svelte:window onkeydown={closeOnEsc} />
@@ -427,23 +535,29 @@
 	</div>
 
 	{#if loading}
-		<p class="text-sm text-muted">{t.fontes.loading}</p>
+		<!-- Skeleton rows while the first fetch resolves; honours reduced-motion. -->
+		<div class="space-y-2" aria-busy="true" aria-live="polite">
+			<span class="sr-only">{t.fontes.loading}</span>
+			{#each Array(6) as _, i (i)}
+				<div class="h-11 animate-pulse rounded-token bg-surface-2 motion-reduce:animate-none"></div>
+			{/each}
+		</div>
 	{:else if error}
 		<p class="text-sm text-red-500">{t.fontes.error}</p>
-	{:else if items.length === 0}
-		<p class="mb-4 text-sm text-muted">{t.fontes.empty}</p>
 	{:else}
 		<!-- ── Filters ── -->
 		<div class="mb-4 flex flex-wrap items-center gap-2">
 			<input
 				type="search"
 				bind:value={query}
+				oninput={onSearchInput}
 				placeholder={t.fontes.searchPlaceholder}
 				aria-label={t.fontes.searchPlaceholder}
 				class="min-w-[240px] flex-1 rounded-token border border-border bg-bg px-3 py-1.5 text-[13px] outline-none focus:border-text/40"
 			/>
 			<select
 				bind:value={fKind}
+				onchange={applyFilters}
 				aria-label={t.fontes.colKind}
 				class="rounded-token border border-border bg-bg px-3 py-1.5 text-[13px] outline-none focus:border-text/40"
 			>
@@ -454,6 +568,7 @@
 			</select>
 			<select
 				bind:value={fStatus}
+				onchange={applyFilters}
 				aria-label={t.fontes.colStatus}
 				class="rounded-token border border-border bg-bg px-3 py-1.5 text-[13px] outline-none focus:border-text/40"
 			>
@@ -461,36 +576,80 @@
 				<option value="active">{t.fontes.statusActive}{counts.by_status.active ? ` (${counts.by_status.active})` : ''}</option>
 				<option value="paused">{t.fontes.statusPaused}{counts.by_status.paused ? ` (${counts.by_status.paused})` : ''}</option>
 			</select>
-			{#if allTags.length > 0}
+			{#if tagUniverse.length > 0}
 				<select
 					bind:value={fTag}
+					onchange={applyFilters}
 					aria-label={t.fontes.colTags}
 					class="rounded-token border border-border bg-bg px-3 py-1.5 text-[13px] outline-none focus:border-text/40"
 				>
 					<option value="">{t.fontes.filterAllTags}</option>
-					{#each allTags as tag}
+					{#each tagUniverse as tag}
 						<option value={tag}>{tag}</option>
 					{/each}
 				</select>
 			{/if}
 			<span class="ml-auto text-[12px] tabular-nums text-muted">
-				{filtered.length} {filtered.length === 1 ? t.fontes.count : t.fontes.countPlural}
+				{total} {total === 1 ? t.fontes.count : t.fontes.countPlural}
 			</span>
 		</div>
 
-		{#if total > items.length}
-			<p class="mb-3 text-[12px] text-muted">{t.fontes.capNotice.replace('{n}', String(items.length))}</p>
+		<!-- ── Bulk action bar ── -->
+		{#if selectedIds.length > 0}
+			<div
+				class="mb-3 flex flex-wrap items-center gap-2 rounded-token border border-border bg-surface-2 px-3 py-2 text-[13px]"
+				role="region"
+				aria-label={selectedLabel(selectedIds.length)}
+			>
+				<span class="font-medium text-text">{selectedLabel(selectedIds.length)}</span>
+				<span class="mx-1 h-4 w-px bg-border"></span>
+				<button class="rounded-token border border-border px-2 py-1 text-muted hover:bg-hover disabled:opacity-50" disabled={bulkBusy} onclick={() => bulk('pause')}>{t.fontes.bulkPause}</button>
+				<button class="rounded-token border border-border px-2 py-1 text-muted hover:bg-hover disabled:opacity-50" disabled={bulkBusy} onclick={() => bulk('resume')}>{t.fontes.bulkResume}</button>
+				<span class="mx-1 h-4 w-px bg-border"></span>
+				<input
+					bind:value={bulkTagInput}
+					placeholder={t.fontes.bulkTagPlaceholder}
+					aria-label={t.fontes.bulkTag}
+					onkeydown={(e) => {
+						if (e.key === 'Enter') {
+							e.preventDefault();
+							bulkTag('tag');
+						}
+					}}
+					class="w-28 rounded-token border border-border bg-bg px-2 py-1 outline-none focus:border-text/40"
+				/>
+				<button class="rounded-token border border-border px-2 py-1 text-muted hover:bg-hover disabled:opacity-50" disabled={bulkBusy || !bulkTagInput.trim()} onclick={() => bulkTag('tag')}>{t.fontes.bulkTag}</button>
+				<button class="rounded-token border border-border px-2 py-1 text-muted hover:bg-hover disabled:opacity-50" disabled={bulkBusy || !bulkTagInput.trim()} onclick={() => bulkTag('untag')}>{t.fontes.bulkUntag}</button>
+				<span class="mx-1 h-4 w-px bg-border"></span>
+				<button class="rounded-token border border-border px-2 py-1 text-red-500 hover:bg-hover disabled:opacity-50" disabled={bulkBusy} onclick={() => (bulkDeleteOpen = true)}>{t.fontes.bulkDelete}</button>
+				<button class="ml-auto rounded-token px-2 py-1 text-muted hover:bg-hover disabled:opacity-50" disabled={bulkBusy} onclick={clearSelection}>{t.fontes.bulkClear}</button>
+				{#if bulkBusy}<span class="text-muted">{t.fontes.bulkApplying}</span>{/if}
+			</div>
 		{/if}
 
-		{#if filtered.length === 0}
-			<p class="text-sm text-muted">{t.fontes.emptyFiltered}</p>
+		{#if total > items.length}
+			<p class="mb-3 text-[12px] text-muted">{t.fontes.capNoticeFiltered.replace('{n}', String(items.length))}</p>
+		{/if}
+
+		{#if items.length === 0}
+			<p class="text-sm text-muted">{query || fKind || fStatus || fTag ? t.fontes.emptyFiltered : t.fontes.empty}</p>
 		{:else}
-			<div class="overflow-x-auto rounded-xl border border-border">
-				<Paginator items={filtered} storageKey="fontes.pageSize">
+			<div class="overflow-x-auto rounded-xl border border-border transition-opacity {refetching ? 'opacity-60' : ''}" aria-busy={refetching}>
+				<Paginator items={items} storageKey="fontes.pageSize">
 					{#snippet children(page: SourceItem[])}
 						<table class="w-full border-collapse text-[13px]">
 							<thead>
 								<tr class="border-b border-border bg-surface-2 text-left text-muted">
+									<th class="w-9 px-4 py-2.5">
+										<input
+											type="checkbox"
+											checked={allSelected}
+											use:indeterminate={someSelected}
+											onchange={toggleAll}
+											aria-label={t.fontes.selectAll}
+											class="cursor-pointer align-middle"
+										/>
+									</th>
 									<th class="px-4 py-2.5 font-medium">{t.fontes.colName}</th>
 									<th class="px-4 py-2.5 font-medium">{t.fontes.colKind}</th>
 									<th class="px-4 py-2.5 font-medium">{t.fontes.colLane}</th>
@@ -502,7 +661,16 @@
 							</thead>
 							<tbody>
 								{#each page as s (s.api_id)}
-									<tr class="border-b border-border last:border-0 hover:bg-hover">
+									<tr class="border-b border-border last:border-0 hover:bg-hover {selectedSet.has(s.api_id) ? 'bg-surface-2' : ''}">
+										<td class="px-4 py-2.5">
+											<input
+												type="checkbox"
+												checked={selectedSet.has(s.api_id)}
+												onchange={() => toggleRow(s.api_id)}
+												aria-label={`${t.fontes.selectRow}: ${s.display_name || s.api_id}`}
+												class="cursor-pointer align-middle"
+											/>
+										</td>
 										<td class="px-4 py-2.5">
 											<span class="font-medium text-text">{s.display_name || s.api_id}</span>
 											{#if s.config_summary}
@@ -703,7 +871,7 @@
 	</div>
 {/if}
 
-<!-- ── Delete confirm ── -->
+<!-- ── Delete confirm (single) ── -->
 {#if deleteTarget}
 	<div
 		class="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
@@ -727,6 +895,35 @@
 					class="rounded-token bg-red-500 px-3.5 py-1.5 text-[13px] font-medium text-white hover:opacity-90 disabled:opacity-50"
 					disabled={deleting}
 					onclick={confirmDelete}>{deleting ? t.fontes.deleting : t.fontes.deleteConfirmBtn}</button>
+			</div>
+		</div>
+	</div>
+{/if}
+
+<!-- ── Bulk delete confirm ── -->
+{#if bulkDeleteOpen}
+	<div
+		class="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+		role="presentation"
+		onclick={(e) => e.target === e.currentTarget && !mutating && (bulkDeleteOpen = false)}
+	>
+		<div
+			class="w-full max-w-[420px] rounded-xl border border-border bg-bg p-5 shadow-xl"
+			role="dialog"
+			aria-modal="true"
+			aria-labelledby="fontes-bulk-delete-title"
+			use:focusInto
+		>
+			<h2 id="fontes-bulk-delete-title" class="mb-3 text-[15px] font-semibold">{t.fontes.bulkDeleteTitle}</h2>
+			<p class="mb-5 text-[13px] text-muted">
+				{t.fontes.bulkDeleteConfirm.replace('{n}', String(selectedIds.length))}
+			</p>
+			<div class="flex justify-end gap-2">
+				<button class="rounded-token border border-border px-3 py-1.5 text-[13px] text-muted hover:bg-surface-2 disabled:opacity-50" disabled={bulkBusy} onclick={() => (bulkDeleteOpen = false)}>{t.fontes.deleteCancel}</button>
+				<button
+					class="rounded-token bg-red-500 px-3.5 py-1.5 text-[13px] font-medium text-white hover:opacity-90 disabled:opacity-50"
+					disabled={bulkBusy}
+					onclick={() => bulk('delete')}>{bulkBusy ? t.fontes.deleting : t.fontes.deleteConfirmBtn}</button>
 			</div>
 		</div>
 	</div>
