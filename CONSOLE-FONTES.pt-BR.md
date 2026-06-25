@@ -282,6 +282,24 @@ A view (`pg_get_viewdef`) confirma: cada branch deriva `status` do **mesmo** fla
 coletor filtra, e todas filtram `deleted_at IS NULL` — soft-delete some da view E da
 descoberta. Logo, pausar (flag=false) remove a fonte do conjunto de descoberta **exatamente**.
 
+### Smoke do ciclo de vida por tipo (live, em branch efêmero do Neon)
+
+Rodado num branch descartável (`e2e-fontes-6-verify`, já deletado) — **zero impacto em
+prod**. Uma fonte sintética por tabela (tag `e2e6`), exercitando o CRUD completo e medindo
+em cada passo: `sources_v.status` + a contagem da query de descoberta de **cada** coletor
+(`collected`).
+
+| Passo | youtube_channel | youtube_playlist | podcast | rss(feed) | email |
+|---|---|---|---|---|---|
+| **Criar** | view=active, collected=1 | active, 1 | active, 1 | active, 1 | active, 1 |
+| **Editar** (nome+tag) | refletiu na view | ✓ | ✓ | ✓ | ✓ |
+| **Pausar** | view=paused, **collected=0** | paused, **0** | paused, **0** | paused, **0** | paused, **0** |
+| **Retomar** | collected=1 | 1 | 1 | 1 | 1 |
+| **Excluir** (soft) | fora da view, **collected=0** | **0** | **0** | **0** | **0** |
+
+→ **Pausada e excluída não são coletadas, confirmado por tipo** com a query real de cada
+coletor.
+
 Queries de coletor verificadas no código: harvest `main.go:124`, dial `main.go:280`,
 feed `main.go:946`, shelf `filterActive`/`loadInactivePlaylists` (main.go:38-201),
 courier `main.go:432`.
