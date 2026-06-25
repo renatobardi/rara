@@ -257,11 +257,14 @@ func TestBulkSourcesProxiesPostWithBody(t *testing.T) {
 	if method != "POST" || path != "/v1/sources/bulk" {
 		t.Errorf("forwarded %s %s, want POST /v1/sources/bulk", method, path)
 	}
-	if !strings.Contains(body, `"action":"pause"`) || !strings.Contains(body, "podcast:9") {
-		t.Errorf("forwarded body = %s, want the bulk request verbatim", body)
+	// Exact-match both directions so a JSON rewrite or a dropped field (failed/items) fails the test.
+	const wantReq = `{"action":"pause","ids":["rss:1","rss:2","podcast:9"]}`
+	if body != wantReq {
+		t.Errorf("forwarded body = %s, want %s", body, wantReq)
 	}
-	if !strings.Contains(rec.Body.String(), `"applied":2`) {
-		t.Errorf("body = %s, want the per-item bulk result", rec.Body.String())
+	const wantResp = `{"applied":2,"failed":1,"items":[]}`
+	if rec.Body.String() != wantResp {
+		t.Errorf("body = %s, want %s", rec.Body.String(), wantResp)
 	}
 }
 func TestSourceWritesNeverLeakToken(t *testing.T) {

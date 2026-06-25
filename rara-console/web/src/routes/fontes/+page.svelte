@@ -203,49 +203,75 @@
 	}
 	let hasFilter = $derived(!!(fKind || fStatus || fTag || query.trim()));
 
-	// pageLoad fetches the current server page of rows matching the active filter. resetSelection
-	// clears the selection when the visible set fundamentally changes (a refilter), but page nav
-	// keeps it so a multi-page bulk selection survives. Errors keep the prior rows in place.
-	async function pageLoad(resetSelection = false) {
+	// A monotonic token + AbortController so a slow page request can't overwrite a newer one and a
+	// superseded fetch is cancelled (race guard demanded by the filter/page churn).
+	let pageLoadSeq = 0;
+	let pageLoadCtrl: AbortController | null = null;
+
+	// pageLoad fetches the current server page of rows matching the active filter. The selection is
+	// cleared by the callers that change the result set (refilters), not here — page nav keeps it so
+	// a multi-page bulk selection survives. Errors keep the prior rows in place.
+	async function pageLoad() {
+		const seq = ++pageLoadSeq;
+		pageLoadCtrl?.abort();
+		const ctrl = new AbortController();
+		pageLoadCtrl = ctrl;
 		refetching = true;
 		try {
 			const q = filterParams();
 			q.set('page', String(page));
 			q.set('page_size', String(pageSize));
-			const res = await fetch(`/api/sources?${q.toString()}`);
+			const res = await fetch(`/api/sources?${q.toString()}`, { signal: ctrl.signal });
+			if (seq !== pageLoadSeq) return; // a newer load superseded this one — drop the stale result
 			if (!res.ok) {
 				toast('err', t.fontes.error);
 				return;
 			}
 			const data: SourcesResult = await res.json();
+			if (seq !== pageLoadSeq) return;
 			items = normItems(data?.items);
 			total = data?.total ?? items.length;
 			// Clamp to the last page if a deletion shrank the result set below the current page.
 			const last = Math.max(1, Math.ceil(total / pageSize));
 			if (page > last) {
 				page = last;
-				await pageLoad(resetSelection);
+				await pageLoad();
 				return;
 			}
-			if (resetSelection) selectedIds = [];
-		} catch {
+		} catch (e) {
+			if ((e as DOMException)?.name === 'AbortError') return; // superseded — newer load owns state
 			toast('err', t.fontes.error);
 		} finally {
-			refetching = false;
+			if (seq === pageLoadSeq) refetching = false; // a newer load manages its own flag
 		}
 	}
 
-	// globalLoad fetches the UNFILTERED dataset to keep the dropdown badges (counts) and the tag
-	// filter (tagUniverse) global — independent of the active filter. Reused after every mutation.
-	// ponytail: tagUniverse is derived from one unfiltered page; if the dataset ever exceeds
-	// GLOBAL_CAP, rare tags past the cap won't list — acceptable until that happens.
+	// globalLoad keeps the dropdown badges (counts) and the tag filter (tagUniverse) GLOBAL —
+	// independent of the active filter. Counts come back global from the surface (computed over the
+	// whole set, not the page), but tagUniverse must see every row, so this pages through the full
+	// unfiltered dataset accumulating tags (bounded by MAX_PAGES as a runaway guard).
 	async function globalLoad() {
 		try {
-			const res = await fetch(`/api/sources?page_size=${GLOBAL_CAP}`);
-			if (!res.ok) return;
-			const data: SourcesResult = await res.json();
-			counts = normCounts(data?.counts);
-			tagUniverse = [...new Set(normItems(data?.items).flatMap((s) => s.tags))].sort();
+			const tags = new Set<string>();
+			let p = 1;
+			let totalRows = Infinity;
+			let seen = 0;
+			const MAX_PAGES = 50; // 50 × GLOBAL_CAP = 10k sources — far past any realistic count
+			while (p <= MAX_PAGES) {
+				const res = await fetch(`/api/sources?page=${p}&page_size=${GLOBAL_CAP}`);
+				if (!res.ok) return;
+				const data: SourcesResult = await res.json();
+				if (p === 1) {
+					counts = normCounts(data?.counts);
+					totalRows = data?.total ?? 0;
+				}
+				const rows = normItems(data?.items);
+				for (const s of rows) for (const tag of s.tags) tags.add(tag);
+				seen += rows.length;
+				if (rows.length === 0 || seen >= totalRows) break;
+				p++;
+			}
+			tagUniverse = [...tags].sort();
 		} catch {
 			/* badges degrade silently — the table itself uses pageLoad */
 		}
@@ -257,17 +283,24 @@
 		await Promise.all([pageLoad(), globalLoad()]);
 	}
 
-	// A filter change resets to page 1 and clears the selection (the result set changed).
+	// A filter change resets to page 1 and clears the selection IMMEDIATELY (not after the fetch), so
+	// the bulk bar can't act on ids from the previous filter while the new page loads.
+	function resetSelectionForRefilter() {
+		selectedIds = [];
+		bulkDeleteOpen = false;
+	}
 	function applyFilters() {
 		clearTimeout(searchTimer);
+		resetSelectionForRefilter();
 		page = 1;
-		pageLoad(true);
+		pageLoad();
 	}
 	function onSearchInput() {
 		clearTimeout(searchTimer);
+		resetSelectionForRefilter();
 		searchTimer = setTimeout(() => {
 			page = 1;
-			pageLoad(true);
+			pageLoad();
 		}, 300);
 	}
 
@@ -293,20 +326,17 @@
 	onMount(() => {
 		pageSize = loadPageSize();
 		const ctrl = new AbortController();
-		// First load is unfiltered: one page for the table (respecting the saved page size) and one
-		// unfiltered page (GLOBAL_CAP) that seeds the global counts + tag universe.
+		// First load is unfiltered: one page for the table (respecting the saved page size).
 		Promise.all([
 			fetch('/api/source-kinds', { signal: ctrl.signal }).then((r) => (r.ok ? r.json() : Promise.reject(r.status))),
-			fetch(`/api/sources?page=1&page_size=${pageSize}`, { signal: ctrl.signal }).then((r) => (r.ok ? r.json() : Promise.reject(r.status))),
-			fetch(`/api/sources?page_size=${GLOBAL_CAP}`, { signal: ctrl.signal }).then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
+			fetch(`/api/sources?page=1&page_size=${pageSize}`, { signal: ctrl.signal }).then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
 		])
-			.then(([k, first, glob]: [SourceKind[], SourcesResult, SourcesResult]) => {
+			.then(([k, first]: [SourceKind[], SourcesResult]) => {
 				kinds = Array.isArray(k) ? k : [];
 				items = normItems(first?.items);
 				total = first?.total ?? items.length;
-				counts = normCounts(glob?.counts);
-				tagUniverse = [...new Set(normItems(glob?.items).flatMap((s) => s.tags))].sort();
 				loading = false;
+				globalLoad(); // seed global counts + tag universe (may page through the full set)
 			})
 			.catch((e) => {
 				if (e?.name === 'AbortError') return; // unmounted mid-flight; leave state untouched
@@ -316,6 +346,7 @@
 		// Abort pending fetches on unmount so a hung request can't update state after navigation.
 		return () => {
 			ctrl.abort();
+			pageLoadCtrl?.abort();
 			clearTimeout(searchTimer);
 		};
 	});
@@ -388,6 +419,7 @@
 				toast('ok', t.fontes.bulkResultOk.replace('{ok}', String(applied)));
 			}
 			bulkTagInput = '';
+			selectedIds = []; // the acted-on rows may be gone/changed — drop the stale selection
 			await reloadAll();
 		} catch {
 			toast('err', t.fontes.bulkError);
