@@ -605,45 +605,10 @@ func (s *server) handleItemDecisions(w http.ResponseWriter, r *http.Request) {
 }
 
 // --- Fontes & Flows --------------------------------------------------------
-// Fontes (podcast feeds) and Flows are both control-plane config the core surface owns. The BFF
-// proxies them with the bearer injected server-side; reads map any core failure to 502, writes
-// propagate core 4xx so the SPA can show validation errors.
-
-// handlePodcastSources proxies GET /v1/sources/podcast — the operator-curated podcast feed list.
-func (s *server) handlePodcastSources(w http.ResponseWriter, r *http.Request) {
-	body, err := s.fetchCore(r.Context(), "/v1/sources/podcast")
-	if err != nil {
-		badGateway(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, json.RawMessage(body))
-}
-
-// handleAddPodcastSource proxies POST /v1/sources/podcast (add a feed). Core 4xx (empty feed_url)
-// propagates; transport errors become 502.
-func (s *server) handleAddPodcastSource(w http.ResponseWriter, r *http.Request) {
-	status, body, err := s.postCore(r.Context(), "/v1/sources/podcast", r.Body)
-	if err != nil {
-		badGateway(w, err)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_, _ = w.Write(body)
-}
-
-// handleTogglePodcastSource proxies PUT /v1/sources/podcast (toggle active). Core 4xx propagates;
-// transport errors become 502.
-func (s *server) handleTogglePodcastSource(w http.ResponseWriter, r *http.Request) {
-	status, body, err := s.putCore(r.Context(), "/v1/sources/podcast", r.Body)
-	if err != nil {
-		badGateway(w, err)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_, _ = w.Write(body)
-}
+// Flows are control-plane config the core surface owns. The BFF proxies them with the bearer
+// injected server-side; reads map any core failure to 502, writes propagate core 4xx so the SPA can
+// show validation errors. Podcast feeds are no longer special-cased here (#4b) — they ride the
+// generic POST /api/sources/{kind} create like every other kind.
 
 // handleFlows proxies GET /v1/flows — every flow (lane) as config-as-data.
 func (s *server) handleFlows(w http.ResponseWriter, r *http.Request) {
@@ -855,14 +820,10 @@ func main() {
 	mux.HandleFunc("GET /api/decisions", s.handleDecisionsFeed)
 	mux.HandleFunc("GET /api/items/{id}/decisions", s.handleItemDecisions)
 	mux.HandleFunc("GET /api/source-kinds", s.handleSourceKinds)
-	// /api/sources → unified sources_v list (fatia #1); the more-specific /api/sources/podcast below
-	// is a distinct ServeMux pattern, so it keeps its own handler.
+	// /api/sources → unified sources_v list (fatia #1).
 	mux.HandleFunc("GET /api/sources", s.handleSources)
-	mux.HandleFunc("GET /api/sources/podcast", s.handlePodcastSources)
-	mux.HandleFunc("POST /api/sources/podcast", s.handleAddPodcastSource)
-	mux.HandleFunc("PUT /api/sources/podcast", s.handleTogglePodcastSource)
 	// Fontes CRUD writes (fatia #4). Deeper /pause|/resume patterns win over the {source_id}
-	// catch-all; the exact /podcast routes above win over the {kind} create.
+	// catch-all. Podcast creation rides the {kind} create like every other kind (#4b).
 	mux.HandleFunc("POST /api/sources/{kind}", s.handleAddSource)
 	mux.HandleFunc("PATCH /api/sources/{source_id}", s.handlePatchSource)
 	mux.HandleFunc("DELETE /api/sources/{source_id}", s.handleDeleteSource)
