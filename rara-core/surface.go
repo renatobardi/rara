@@ -361,6 +361,11 @@ func (c *Core) AddPodcastFeed(ctx context.Context, feedURL, title, displayName s
 	if feedURL == "" {
 		return 0, badInput("feed_url cannot be empty")
 	}
+	// feed_url is fetched later by the dial collector, so it gets the same public-URL guard as
+	// the rss/html feed sources — reject non-http(s) schemes and loopback/private IP literals.
+	if err := validateEndpointURL(feedURL); err != nil {
+		return 0, err
+	}
 	return c.db.UpsertPodcastFeed(ctx, feedURL, strings.TrimSpace(title), strings.TrimSpace(displayName))
 }
 
