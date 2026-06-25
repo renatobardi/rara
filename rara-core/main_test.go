@@ -272,37 +272,23 @@ func (m *MockDatabase) UpsertRoutingPolicy(_ context.Context, p RoutingPolicy) e
 	return nil
 }
 
-func (m *MockDatabase) UpsertPodcastFeed(_ context.Context, feedURL, title string) (int, error) {
+func (m *MockDatabase) UpsertPodcastFeed(_ context.Context, feedURL, title, displayName string) (int, error) {
 	if id, ok := m.feedByURL[feedURL]; ok { // ON CONFLICT (feed_url)
 		f := m.podcastFeeds[id]
 		if title != "" { // empty title never wipes a title the dial already refreshed (COALESCE)
 			f.Title = title
+		}
+		if displayName != "" { // same COALESCE semantics for display_name
+			f.DisplayName = displayName
 		}
 		m.podcastFeeds[id] = f
 		return id, nil
 	}
 	id := m.nextFeedID
 	m.nextFeedID++
-	m.podcastFeeds[id] = PodcastFeed{ID: id, FeedURL: feedURL, Title: title, Active: true} // DEFAULT TRUE
+	m.podcastFeeds[id] = PodcastFeed{ID: id, FeedURL: feedURL, Title: title, DisplayName: displayName, Active: true} // DEFAULT TRUE
 	m.feedByURL[feedURL] = id
 	return id, nil
-}
-
-func (m *MockDatabase) ListPodcastFeeds(_ context.Context) ([]PodcastFeed, error) {
-	out := make([]PodcastFeed, 0, len(m.podcastFeeds))
-	for _, f := range m.podcastFeeds {
-		out = append(out, f)
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
-	return out, nil
-}
-
-func (m *MockDatabase) SetPodcastFeedActive(_ context.Context, id int, active bool) error {
-	if f, ok := m.podcastFeeds[id]; ok { // UPDATE ... WHERE id — a miss is a no-op, not an error
-		f.Active = active
-		m.podcastFeeds[id] = f
-	}
-	return nil
 }
 
 // --- source writes (fatia #2) ---
