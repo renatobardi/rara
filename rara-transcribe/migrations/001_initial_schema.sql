@@ -9,7 +9,7 @@
 -- files or arbitrary URLs it is NULL — each is stored as a distinct row.
 CREATE TABLE IF NOT EXISTS transcripts (
     id               SERIAL PRIMARY KEY,
-    source_type      VARCHAR(16)  NOT NULL CHECK (source_type IN ('youtube', 'podcast')),  -- 'youtube' | 'podcast'
+    source_type      VARCHAR(16)  NOT NULL CHECK (source_type IN ('youtube', 'podcast', 'email', 'linkedin', 'news')),  -- youtube | podcast | email | linkedin | news
     youtube_video_id VARCHAR(50)  UNIQUE,                   -- set only for youtube sources
     source_ref       TEXT         NOT NULL,                 -- watch url, page url or file path
     language         VARCHAR(10),                           -- native language detected (e.g. 'pt', 'en')
@@ -60,7 +60,7 @@ CREATE TRIGGER trg_transcripts_updated_at
 -- Documentation
 COMMENT ON TABLE transcripts IS 'High-quality transcripts (native language) for collected videos';
 COMMENT ON TABLE transcript_segments IS 'Timestamped segments per transcript (global offsets)';
-COMMENT ON COLUMN transcripts.source_type IS 'youtube | podcast';
+COMMENT ON COLUMN transcripts.source_type IS 'youtube | podcast | email | linkedin | news';
 COMMENT ON COLUMN transcripts.youtube_video_id IS 'YouTube video id; global idempotency key, NULL for non-youtube sources';
 COMMENT ON COLUMN transcripts.engine IS 'ASR engine used, e.g. groq/whisper-large-v3 or gemini/gemini-2.5-flash';
 COMMENT ON COLUMN transcripts.status IS 'done | failed | empty';
