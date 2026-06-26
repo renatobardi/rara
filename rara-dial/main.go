@@ -97,7 +97,12 @@ func main() {
 	defer conn.Close(context.Background())
 	log.Println("Connected to database successfully")
 
-	n, err := runWithFloor(context.Background(), &pgxDatabase{conn: conn}, httpFetch, publishedFloor)
+	providerName := os.Getenv("DIAL_PROVIDER")
+	if providerName == "" {
+		providerName = "dial-cloud"
+	}
+
+	n, err := runWithFloor(context.Background(), &pgxDatabase{conn: conn}, httpFetch, publishedFloor, providerName)
 	if err != nil {
 		log.Fatalf("podcast collector: %v", err)
 	}
@@ -109,7 +114,7 @@ func main() {
 // floor are skipped (if floor is set); episodes without a date are always kept.
 // A per-feed error is logged and the loop continues — one bad feed must not stall the others.
 // Returns the total episodes catalogued (not counting skipped).
-func runWithFloor(ctx context.Context, db Database, fetch Fetcher, floor *time.Time) (int, error) {
+func runWithFloor(ctx context.Context, db Database, fetch Fetcher, floor *time.Time, providerName string) (int, error) {
 	feeds, err := db.ActiveFeeds(ctx)
 	if err != nil {
 		return 0, err
@@ -157,7 +162,7 @@ func runWithFloor(ctx context.Context, db Database, fetch Fetcher, floor *time.T
 		}
 		total += catalogued
 	}
-	if err := db.StampProviderCollected(ctx, "dial"); err != nil {
+	if err := db.StampProviderCollected(ctx, providerName); err != nil {
 		log.Printf("stamp provider collected: %v", err)
 	}
 	return total, nil

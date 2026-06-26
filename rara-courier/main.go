@@ -101,8 +101,13 @@ func main() {
 	}
 	log.Println("OAuth access token obtained")
 
+	providerName := os.Getenv("COURIER_PROVIDER")
+	if providerName == "" {
+		providerName = "courier-cloud"
+	}
+
 	api := &httpGmailAPI{accessToken: accessToken}
-	n, err := run(context.Background(), &pgxDatabase{conn: conn}, api, max)
+	n, err := run(context.Background(), &pgxDatabase{conn: conn}, api, max, providerName)
 	if err != nil {
 		log.Fatalf("mail collector: %v", err)
 	}
@@ -151,7 +156,7 @@ func collectIDs(ctx context.Context, db Database, api GmailAPI, ids []string) in
 // fetch each, and upsert. Per-source list errors are logged and skipped — one bad source must
 // not stall the rest. The DB deduplicates by message_id (ON CONFLICT), so the same message
 // returned by two rules is upserted idempotently.
-func run(ctx context.Context, db Database, api GmailAPI, max int) (int, error) {
+func run(ctx context.Context, db Database, api GmailAPI, max int, providerName string) (int, error) {
 	sources, err := db.ListEmailSources(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("list email sources: %w", err)
@@ -169,7 +174,7 @@ func run(ctx context.Context, db Database, api GmailAPI, max int) (int, error) {
 		}
 		catalogued += collectIDs(ctx, db, api, ids)
 	}
-	if err := db.StampProviderCollected(ctx, "courier"); err != nil {
+	if err := db.StampProviderCollected(ctx, providerName); err != nil {
 		log.Printf("stamp provider courier: %v", err)
 	}
 	return catalogued, nil

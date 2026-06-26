@@ -115,7 +115,11 @@ func main() {
 	log.Println("ETL job completed successfully")
 	stampCtx, stampCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer stampCancel()
-	if err := stampProviderCollected(stampCtx, conn, "harvest"); err != nil {
+	providerName := os.Getenv("HARVEST_PROVIDER")
+	if providerName == "" {
+		providerName = "harvest-cloud"
+	}
+	if err := stampProviderCollected(stampCtx, conn, providerName); err != nil {
 		log.Printf("stamp provider collected: %v", err)
 	}
 }
