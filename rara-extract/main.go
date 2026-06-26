@@ -57,7 +57,21 @@ const (
 	provExtrairEmail    = "winnow-cloud" // email HTML/quote/signature cleaner
 	provExtrairLinkedIn = "scrub-cloud"  // LinkedIn post normalizer
 	provExtrairNews     = "glean-cloud"  // feed-article HTML/boilerplate cleaner
+	// VPC placements of the same three lanes (self-host runtime). The cleaner is
+	// chosen per-item by lane (cleanerForLane), so a VPC placement runs identical
+	// code to its cloud twin — the name only sets the claim identity
+	// (addon.Config.Provider) so each placement drains only its own item_steps.
+	provExtrairEmailVPC    = "winnow-vpc"
+	provExtrairLinkedInVPC = "scrub-vpc"
+	provExtrairNewsVPC     = "glean-vpc"
 )
+
+// validExtractProviders is the set of provider names this one app can serve across
+// both runtimes (cloud + VPC); GLEAN_PROVIDER must be one of these.
+var validExtractProviders = []string{
+	provExtrairEmail, provExtrairLinkedIn, provExtrairNews,
+	provExtrairEmailVPC, provExtrairLinkedInVPC, provExtrairNewsVPC,
+}
 
 // items.lane — the body read and the to-text source_type are lane-aware (a different domain table
 // per lane), while the cleaning stays a pure function chosen by lane.
@@ -76,7 +90,12 @@ const (
 )
 
 func isValidProvider(s string) bool {
-	return s == provExtrairEmail || s == provExtrairLinkedIn || s == provExtrairNews
+	for _, p := range validExtractProviders {
+		if s == p {
+			return true
+		}
+	}
+	return false
 }
 
 // ---------------------------------------------------------------------------
@@ -333,7 +352,7 @@ func main() {
 	}
 	provider := os.Getenv("GLEAN_PROVIDER")
 	if !isValidProvider(provider) {
-		log.Fatalf("GLEAN_PROVIDER must be %q, %q, or %q, got %q", provExtrairEmail, provExtrairLinkedIn, provExtrairNews, provider)
+		log.Fatalf("GLEAN_PROVIDER must be one of %v, got %q", validExtractProviders, provider)
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

@@ -272,12 +272,18 @@ func TestGleanHandlerWriteErrorFails(t *testing.T) {
 
 // TestIsValidProvider guards the GLEAN_PROVIDER allow-list (one app, two text providers).
 func TestIsValidProvider(t *testing.T) {
-	for _, ok := range []string{provExtrairEmail, provExtrairLinkedIn} {
+	// Both runtimes are valid: the VPC placement runs identical code (the cleaner is
+	// lane-driven), so glean-vpc/winnow-vpc/scrub-vpc must be accepted just like the
+	// cloud twins — otherwise the dispatched VPC worker log.Fatalf's on startup.
+	for _, ok := range []string{
+		provExtrairEmail, provExtrairLinkedIn, provExtrairNews,
+		provExtrairEmailVPC, provExtrairLinkedInVPC, provExtrairNewsVPC,
+	} {
 		if !isValidProvider(ok) {
 			t.Errorf("%q should be a valid provider", ok)
 		}
 	}
-	for _, bad := range []string{"", "extrair", "transcrever", "assay-cloud"} {
+	for _, bad := range []string{"", "extrair", "transcrever", "assay-cloud", "distill-vpc"} {
 		if isValidProvider(bad) {
 			t.Errorf("%q should not be a valid provider", bad)
 		}
