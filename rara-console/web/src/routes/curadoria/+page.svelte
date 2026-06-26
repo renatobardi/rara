@@ -212,11 +212,78 @@
 	function fmt(v: unknown): string {
 		return v == null ? '' : JSON.stringify(v, null, 2);
 	}
+
+	const pulsoCards = [
+		{ label: t.curadoria.pulsoEntrou, color: 'text-text' },
+		{ label: t.curadoria.pulsoManteve, color: 'text-green' },
+		{ label: t.curadoria.pulsoBarrou, color: 'text-red' },
+		{ label: t.curadoria.pulsoDuvida, color: 'text-primary' }
+	] as const;
+
+	const spineSteps = [
+		t.curadoria.spineStep1,
+		t.curadoria.spineStep2,
+		t.curadoria.spineStep3,
+		t.curadoria.spineStep4
+	] as const;
 </script>
 
-<!-- Interest Profile section -->
-<section class="mb-8">
-	<h2 class="mb-3 text-[15px] font-semibold">{t.curadoria.profileSection}</h2>
+<!-- ── 1. PULSO (~24h) ─────────────────────────────────────────────── -->
+<section class="mb-6">
+	<div class="mb-3 flex items-baseline gap-2">
+		<h2 class="text-[15px] font-semibold">{t.curadoria.pulsoZone}</h2>
+		<span class="text-[12px] text-muted">{t.curadoria.pulsoLabel}</span>
+	</div>
+	<div class="grid grid-cols-4 gap-3">
+		{#each pulsoCards as card}
+			<div class="rounded-card border border-border bg-surface px-4 py-3">
+				<div class="text-[11px] text-muted">{card.label}</div>
+				<div class="mt-1 text-[22px] font-semibold {card.color}">—</div>
+			</div>
+		{/each}
+	</div>
+</section>
+
+<!-- ── 2. SPINE ────────────────────────────────────────────────────── -->
+<div
+	class="mb-6 flex items-center overflow-hidden rounded-card border border-border bg-surface-2 px-5 py-3 text-[12px]"
+	aria-hidden="true"
+>
+	{#each spineSteps as step, i}
+		{#if i > 0}<span class="mx-3 text-border">→</span>{/if}
+		<span class="text-muted">{step}</span>
+	{/each}
+</div>
+
+<!-- ── 3. FILA DE REVISÃO (herói, shell) ──────────────────────────── -->
+<section class="mb-6">
+	<div class="mb-3 flex items-baseline gap-2">
+		<h2 class="text-[15px] font-semibold">{t.curadoria.filaZone}</h2>
+		<span class="text-[12px] text-muted">{t.curadoria.filaSubtitle}</span>
+	</div>
+	<div class="overflow-hidden rounded-card border border-border bg-surface">
+		<div class="flex h-32 items-center justify-center">
+			<div class="text-center">
+				<div class="text-[13px] text-muted">{t.curadoria.filaEmpty}</div>
+				<div class="mt-2 flex justify-center gap-2">
+					<button
+						disabled
+						class="cursor-default rounded-token border border-border bg-transparent px-4 py-1.5 text-[13px] text-muted opacity-40"
+					>{t.curadoria.filaKeep}</button>
+					<button
+						disabled
+						class="cursor-default rounded-token border border-border bg-transparent px-4 py-1.5 text-[13px] text-muted opacity-40"
+					>{t.curadoria.filaDrop}</button>
+				</div>
+				<div class="mt-2 text-[11px] text-muted opacity-60">{t.curadoria.filaComingSoon}</div>
+			</div>
+		</div>
+	</div>
+</section>
+
+<!-- ── 4. O GOSTO (funcional — Interest Profile) ──────────────────── -->
+<section class="mb-6">
+	<h2 class="mb-3 text-[15px] font-semibold">{t.curadoria.gostoZone}</h2>
 
 	{#if profileLoading}
 		<p class="text-[13px] text-muted">{t.curadoria.profileLoading}</p>
@@ -386,114 +453,135 @@
 	{/if}
 </section>
 
-<!-- Gate Rules section -->
-<section>
-	<h2 class="mb-3 text-[15px] font-semibold">{t.curadoria.gateSection}</h2>
-
-	{#if rulesLoading}
-		<p class="text-[13px] text-muted">{t.curadoria.gateLoading}</p>
-	{:else if rulesError}
-		<p class="text-[13px] text-red">{t.curadoria.gateError}</p>
-	{:else}
-		<!-- Rules table -->
-		<div class="mb-4 overflow-hidden rounded-card border border-border bg-surface">
-			{#if rules.length === 0}
-				<p class="px-4 py-3 text-[13px] text-muted">{t.curadoria.gateEmpty}</p>
-			{:else}
-				<table class="w-full text-[13px]">
-					<thead>
-						<tr class="border-b border-border text-left text-[11px] text-muted">
-							<th class="px-4 py-2 font-medium">{t.curadoria.gateAction}</th>
-							<th class="px-4 py-2 font-medium">{t.curadoria.gateMatchType}</th>
-							<th class="px-4 py-2 font-medium">{t.curadoria.gateValue}</th>
-							<th class="px-4 py-2 font-medium">{t.curadoria.gateEnabled}</th>
-							<th class="px-4 py-2"></th>
-						</tr>
-					</thead>
-					<tbody>
-						{#each rules as rule}
-							<tr class="border-b border-border last:border-b-0">
-								<td class="px-4 py-2">
-									<span
-										class="rounded-full px-2 py-0.5 text-[11px] font-medium
-										{rule.action === 'allow' ? 'bg-green/15 text-green' : 'bg-red/15 text-red'}"
-									>{rule.action}</span>
-								</td>
-								<td class="px-4 py-2 text-muted">{rule.match_type}</td>
-								<td class="px-4 py-2 font-mono">{rule.value}</td>
-								<td class="px-4 py-2">
-									<button
-										title={t.curadoria.gateToggle}
-										disabled={savingRule}
-										class="h-5 w-9 cursor-pointer rounded-full border-0 transition-colors disabled:cursor-default disabled:opacity-50 {rule.enabled ? 'bg-green' : 'bg-border'}"
-										onclick={() => toggleRule(rule)}
-									>
-										<span class="sr-only">{t.curadoria.gateToggle}</span>
-									</button>
-								</td>
-								<td class="px-4 py-2 text-right">
-									<button
-										class="cursor-pointer rounded-token border border-border bg-transparent px-2 py-0.5 text-[11px] hover:bg-hover"
-										onclick={() => editRule(rule)}
-									>{t.curadoria.gateEdit}</button>
-								</td>
-							</tr>
-						{/each}
-					</tbody>
-				</table>
-			{/if}
-		</div>
-
-		<!-- Add/edit rule form -->
-		<div class="overflow-hidden rounded-card border border-border bg-surface">
-			<div class="border-b border-border px-4 py-2 text-[12px] font-medium text-muted">
-				{t.curadoria.gateAddSection}
+<!-- ── 5. TRILHA DE DECISÕES (shell) ──────────────────────────────── -->
+<section class="mb-6">
+	<h2 class="mb-3 text-[15px] font-semibold">{t.curadoria.trilhaZone}</h2>
+	<div class="overflow-hidden rounded-card border border-border bg-surface">
+		<div class="flex h-24 items-center justify-center">
+			<div class="text-center">
+				<div class="text-[13px] text-muted">{t.curadoria.trilhaEmpty}</div>
+				<div class="mt-1 text-[11px] text-muted opacity-60">{t.curadoria.trilhaComingSoon}</div>
 			</div>
-			<div class="flex flex-wrap items-end gap-3 px-4 py-3">
-				<div>
-					<label class="mb-1 block text-[11px] text-muted" for="rule-action">{t.curadoria.gateAction}</label>
-					<select
-						id="rule-action"
-						bind:value={ruleAction}
-						class="rounded-token border border-border bg-surface-2 px-2 py-1 text-[13px] focus:outline-none focus:ring-1 focus:ring-primary/50"
-					>
-						<option value="allow">allow</option>
-						<option value="deny">deny</option>
-					</select>
-				</div>
-				<div>
-					<label class="mb-1 block text-[11px] text-muted" for="rule-match">{t.curadoria.gateMatchType}</label>
-					<select
-						id="rule-match"
-						bind:value={ruleMatchType}
-						class="rounded-token border border-border bg-surface-2 px-2 py-1 text-[13px] focus:outline-none focus:ring-1 focus:ring-primary/50"
-					>
-						<option value="channel">channel</option>
-						<option value="title_contains">title_contains</option>
-					</select>
-				</div>
-				<div class="flex-1">
-					<label class="mb-1 block text-[11px] text-muted" for="rule-value">{t.curadoria.gateValue}</label>
-					<input
-						id="rule-value"
-						type="text"
-						bind:value={ruleValue}
-						class="w-full rounded-token border border-border bg-surface-2 px-2 py-1 text-[13px] focus:outline-none focus:ring-1 focus:ring-primary/50"
-					/>
-				</div>
-				<div class="flex items-center gap-2">
-					<input id="rule-enabled" type="checkbox" bind:checked={ruleEnabled} class="h-4 w-4 cursor-pointer" />
-					<label class="cursor-pointer text-[13px]" for="rule-enabled">{t.curadoria.gateEnabled}</label>
-				</div>
-				<button
-					disabled={savingRule}
-					onclick={saveRule}
-					class="cursor-pointer rounded-token border border-border bg-transparent px-4 py-1.5 text-[13px] font-medium hover:bg-hover disabled:cursor-default disabled:opacity-50"
-				>{savingRule ? t.curadoria.gateSaving : t.curadoria.gateSave}</button>
-			</div>
-			{#if saveRuleError}
-				<p class="px-4 pb-3 text-[12px] text-red">{saveRuleError}</p>
-			{/if}
 		</div>
-	{/if}
+	</div>
 </section>
+
+<!-- ── 6. REGRAS DE GATE (secundária, colapsável) ─────────────────── -->
+<details class="group overflow-hidden rounded-card border border-border bg-surface">
+	<summary
+		class="flex cursor-pointer list-none items-center justify-between px-4 py-3 text-[13px] font-medium hover:bg-hover"
+	>
+		{t.curadoria.gateSection}
+		<span class="text-[12px] text-muted group-open:hidden">{t.curadoria.gateExpand}</span>
+		<span class="hidden text-[12px] text-muted group-open:inline">{t.curadoria.gateCollapse}</span>
+	</summary>
+
+	<div class="border-t border-border px-4 py-4">
+		{#if rulesLoading}
+			<p class="text-[13px] text-muted">{t.curadoria.gateLoading}</p>
+		{:else if rulesError}
+			<p class="text-[13px] text-red">{t.curadoria.gateError}</p>
+		{:else}
+			<!-- Rules table -->
+			<div class="mb-4 overflow-hidden rounded-card border border-border bg-surface">
+				{#if rules.length === 0}
+					<p class="px-4 py-3 text-[13px] text-muted">{t.curadoria.gateEmpty}</p>
+				{:else}
+					<table class="w-full text-[13px]">
+						<thead>
+							<tr class="border-b border-border text-left text-[11px] text-muted">
+								<th class="px-4 py-2 font-medium">{t.curadoria.gateAction}</th>
+								<th class="px-4 py-2 font-medium">{t.curadoria.gateMatchType}</th>
+								<th class="px-4 py-2 font-medium">{t.curadoria.gateValue}</th>
+								<th class="px-4 py-2 font-medium">{t.curadoria.gateEnabled}</th>
+								<th class="px-4 py-2"></th>
+							</tr>
+						</thead>
+						<tbody>
+							{#each rules as rule}
+								<tr class="border-b border-border last:border-b-0">
+									<td class="px-4 py-2">
+										<span
+											class="rounded-full px-2 py-0.5 text-[11px] font-medium
+											{rule.action === 'allow' ? 'bg-green/15 text-green' : 'bg-red/15 text-red'}"
+										>{rule.action}</span>
+									</td>
+									<td class="px-4 py-2 text-muted">{rule.match_type}</td>
+									<td class="px-4 py-2 font-mono">{rule.value}</td>
+									<td class="px-4 py-2">
+										<button
+											title={t.curadoria.gateToggle}
+											disabled={savingRule}
+											class="h-5 w-9 cursor-pointer rounded-full border-0 transition-colors disabled:cursor-default disabled:opacity-50 {rule.enabled ? 'bg-green' : 'bg-border'}"
+											onclick={() => toggleRule(rule)}
+										>
+											<span class="sr-only">{t.curadoria.gateToggle}</span>
+										</button>
+									</td>
+									<td class="px-4 py-2 text-right">
+										<button
+											class="cursor-pointer rounded-token border border-border bg-transparent px-2 py-0.5 text-[11px] hover:bg-hover"
+											onclick={() => editRule(rule)}
+										>{t.curadoria.gateEdit}</button>
+									</td>
+								</tr>
+							{/each}
+						</tbody>
+					</table>
+				{/if}
+			</div>
+
+			<!-- Add/edit rule form -->
+			<div class="overflow-hidden rounded-card border border-border bg-surface">
+				<div class="border-b border-border px-4 py-2 text-[12px] font-medium text-muted">
+					{t.curadoria.gateAddSection}
+				</div>
+				<div class="flex flex-wrap items-end gap-3 px-4 py-3">
+					<div>
+						<label class="mb-1 block text-[11px] text-muted" for="rule-action">{t.curadoria.gateAction}</label>
+						<select
+							id="rule-action"
+							bind:value={ruleAction}
+							class="rounded-token border border-border bg-surface-2 px-2 py-1 text-[13px] focus:outline-none focus:ring-1 focus:ring-primary/50"
+						>
+							<option value="allow">allow</option>
+							<option value="deny">deny</option>
+						</select>
+					</div>
+					<div>
+						<label class="mb-1 block text-[11px] text-muted" for="rule-match">{t.curadoria.gateMatchType}</label>
+						<select
+							id="rule-match"
+							bind:value={ruleMatchType}
+							class="rounded-token border border-border bg-surface-2 px-2 py-1 text-[13px] focus:outline-none focus:ring-1 focus:ring-primary/50"
+						>
+							<option value="channel">channel</option>
+							<option value="title_contains">title_contains</option>
+						</select>
+					</div>
+					<div class="flex-1">
+						<label class="mb-1 block text-[11px] text-muted" for="rule-value">{t.curadoria.gateValue}</label>
+						<input
+							id="rule-value"
+							type="text"
+							bind:value={ruleValue}
+							class="w-full rounded-token border border-border bg-surface-2 px-2 py-1 text-[13px] focus:outline-none focus:ring-1 focus:ring-primary/50"
+						/>
+					</div>
+					<div class="flex items-center gap-2">
+						<input id="rule-enabled" type="checkbox" bind:checked={ruleEnabled} class="h-4 w-4 cursor-pointer" />
+						<label class="cursor-pointer text-[13px]" for="rule-enabled">{t.curadoria.gateEnabled}</label>
+					</div>
+					<button
+						disabled={savingRule}
+						onclick={saveRule}
+						class="cursor-pointer rounded-token border border-border bg-transparent px-4 py-1.5 text-[13px] font-medium hover:bg-hover disabled:cursor-default disabled:opacity-50"
+					>{savingRule ? t.curadoria.gateSaving : t.curadoria.gateSave}</button>
+				</div>
+				{#if saveRuleError}
+					<p class="px-4 pb-3 text-[12px] text-red">{saveRuleError}</p>
+				{/if}
+			</div>
+		{/if}
+	</div>
+</details>
