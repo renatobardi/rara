@@ -151,10 +151,17 @@
 	let lastActivityByProvider = $derived(
 		new Map(metricsAll.map((m) => [m.provider, m.last_activity_at]))
 	);
+	// capabilities whose workers process item_steps (so last_activity_at is their "ran a job" clock).
+	// Collectors (clip, courier, dial, harvest, feed) aren't here — they only carry last_collect_at.
+	const ITEM_STEP_CAPABILITIES = new Set(['distill', 'gate', 'extract', 'transcribe', 'caption']);
+
 	// "última execução" per placement: collectors carry last_collect_at; item_steps workers
 	// fall back to last_activity_at. undefined = never ran.
 	function lastRun(p: Provider): string | undefined {
-		return p.last_collect_at ?? lastActivityByProvider.get(p.name);
+		if (p.last_collect_at) return p.last_collect_at;
+		return ITEM_STEP_CAPABILITIES.has(p.capability)
+			? lastActivityByProvider.get(p.name)
+			: undefined;
 	}
 
 	// reliability card (windowed)
@@ -699,7 +706,11 @@
 													</td>
 													<td class="py-2 pr-3 text-muted tabular-nums">
 														{#if lr}
-															<span title={new Date(lr).toLocaleString('pt-BR')}>{timeAgo(lr)}</span>
+															<time
+																datetime={lr}
+																title={new Date(lr).toLocaleString('pt-BR')}
+																aria-label={new Date(lr).toLocaleString('pt-BR')}
+															>{timeAgo(lr)}</time>
 														{:else}
 															<span class="text-muted" aria-label={t.workers.lastRunNever}>—</span>
 														{/if}
