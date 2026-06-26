@@ -234,7 +234,7 @@
 		<h2 class="text-[15px] font-semibold">{t.curadoria.pulsoZone}</h2>
 		<span class="text-[12px] text-muted">{t.curadoria.pulsoLabel}</span>
 	</div>
-	<div class="grid grid-cols-4 gap-3">
+	<div class="grid grid-cols-2 gap-3 sm:grid-cols-4">
 		{#each pulsoCards as card}
 			<div class="rounded-card border border-border bg-surface px-4 py-3">
 				<div class="text-[11px] text-muted">{card.label}</div>
@@ -510,13 +510,13 @@
 									<td class="px-4 py-2 font-mono">{rule.value}</td>
 									<td class="px-4 py-2">
 										<button
+											aria-label="{t.curadoria.gateToggle}: {rule.value}"
+											aria-pressed={rule.enabled}
 											title={t.curadoria.gateToggle}
 											disabled={savingRule}
 											class="h-5 w-9 cursor-pointer rounded-full border-0 transition-colors disabled:cursor-default disabled:opacity-50 {rule.enabled ? 'bg-green' : 'bg-border'}"
 											onclick={() => toggleRule(rule)}
-										>
-											<span class="sr-only">{t.curadoria.gateToggle}</span>
-										</button>
+										></button>
 									</td>
 									<td class="px-4 py-2 text-right">
 										<button
