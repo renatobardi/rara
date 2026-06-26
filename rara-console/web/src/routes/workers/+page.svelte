@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { t } from '$lib/strings';
+	import { timeAgo } from '$lib/timeAgo';
 	import WorkerForm from '$lib/WorkerForm.svelte';
 
 	const GLOBAL_SCOPE = 'global' as const;
@@ -20,6 +21,7 @@
 		activation: string;
 		enabled: boolean;
 		heartbeat_at?: string;
+		last_collect_at?: string;
 		last_error?: string;
 		constraints?: Constraints;
 		runner_url?: string;
@@ -144,6 +146,16 @@
 			return !best || m.last_activity_at > best ? m.last_activity_at : best;
 		}, '' as string)
 	);
+
+	// all-time last activity by placement name (item_steps workers: distill, gate, extract, …)
+	let lastActivityByProvider = $derived(
+		new Map(metricsAll.map((m) => [m.provider, m.last_activity_at]))
+	);
+	// "última execução" per placement: collectors carry last_collect_at; item_steps workers
+	// fall back to last_activity_at. undefined = never ran.
+	function lastRun(p: Provider): string | undefined {
+		return p.last_collect_at ?? lastActivityByProvider.get(p.name);
+	}
 
 	// reliability card (windowed)
 	let totalDoneW = $derived(metricsWindow.reduce((s, m) => s + m.done, 0));
@@ -663,6 +675,7 @@
 												<th class="py-1.5 pr-3 font-medium">{t.workers.colRuntime}</th>
 												<th class="py-1.5 pr-3 font-medium">{t.workers.colActivation}</th>
 												<th class="py-1.5 pr-3 font-medium">{t.workers.colEnabled}</th>
+												<th class="py-1.5 pr-3 font-medium">{t.workers.colLastRun}</th>
 												<th class="py-1.5 pr-3" aria-label={t.workers.lastErrorLabel}></th>
 												<th class="py-1.5 pr-3"></th>
 											</tr>
@@ -682,6 +695,14 @@
 														>
 															<span aria-hidden="true">{p.enabled ? '●' : '○'}</span>
 														</span>
+													</td>
+													<td class="py-2 pr-3 text-muted tabular-nums">
+														{#if lastRun(p)}
+															{@const ts = lastRun(p)!}
+															<span title={new Date(ts).toLocaleString('pt-BR')}>{timeAgo(ts)}</span>
+														{:else}
+															<span class="text-muted" aria-label={t.workers.lastRunNever}>—</span>
+														{/if}
 													</td>
 													<td class="py-2 pr-3">
 														{#if p.last_error}
@@ -719,7 +740,7 @@
 												</tr>
 												{#if formMode === 'edit' && formInitial?.name === p.name}
 													<tr>
-														<td colspan="6" class="px-4 py-3 pl-10">
+														<td colspan="7" class="px-4 py-3 pl-10">
 															<WorkerForm
 																initial={formInitial}
 																lockedApp={null}

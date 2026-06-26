@@ -90,6 +90,8 @@ export const t = {
 		colRuntime: 'Runtime',
 		colActivation: 'Ativação',
 		colEnabled: 'Ativo',
+		colLastRun: 'Última execução',
+		lastRunNever: 'Nunca executou',
 		enable: 'Ativar',
 		disable: 'Desativar',
 		saving: 'Salvando…',
