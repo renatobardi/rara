@@ -682,6 +682,7 @@
 										</thead>
 										<tbody>
 											{#each w.placements as p (p.name)}
+												{@const lr = lastRun(p)}
 												<tr class="border-b border-border/30 last:border-0 hover:bg-hover/60">
 													<td class="py-2 pl-10 pr-3 font-mono">{p.name}</td>
 													<td class="py-2 pr-3 text-muted">{p.runtime}</td>
@@ -697,9 +698,8 @@
 														</span>
 													</td>
 													<td class="py-2 pr-3 text-muted tabular-nums">
-														{#if lastRun(p)}
-															{@const ts = lastRun(p)!}
-															<span title={new Date(ts).toLocaleString('pt-BR')}>{timeAgo(ts)}</span>
+														{#if lr}
+															<span title={new Date(lr).toLocaleString('pt-BR')}>{timeAgo(lr)}</span>
 														{:else}
 															<span class="text-muted" aria-label={t.workers.lastRunNever}>—</span>
 														{/if}
