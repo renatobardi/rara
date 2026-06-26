@@ -13,8 +13,9 @@ Status: **#0 levantamento concluído** (este doc). Fatias seguintes a partir da 
 
 Cockpit único (sem abas), 5 zonas numa página `/curadoria`:
 
-1. **Pulso do dia (24h)** — contagem de decisões keep/drop/defer no período, tamanho da fila de
-   quarentena aguardando, e flag "há `interest_profile` proposed pendente?".
+1. **Pulso do dia (~24h)** — contagem de decisões keep/drop/defer no período (exata só com o summary
+   endpoint; aproximada no MVP de 3 fetches — ver §Gaps), tamanho da fila de quarentena aguardando, e
+   flag "há `interest_profile` proposed pendente?".
 2. **Spine do loop** — o desenho do ciclo (coleta → gate barato → gate rico → quarentena → feedback
    → perfil), estático/ilustrativo, ancorando as outras zonas.
 3. **Fila de revisão da quarentena (herói)** — listar itens em `quarantine`, aplicar veredito
@@ -52,7 +53,10 @@ server-side). Tudo abaixo confirmado no código no levantamento #0.
 - `gate_decisions.gate` → `gate_barato | gate_rico` (`main.go:82`)
 - `gate_decisions.decision` → `keep | drop | defer` (`main.go:88`)
 - `gate_decisions.decided_by` → `rules | profile | llm-judge` (sem CHECK, só comentário em
-  `migrations/001_initial_schema.sql:196`) — **não confundir** com `feedback.source`.
+  `migrations/001_initial_schema.sql:196`) — **não confundir** com `feedback.source`. ⚠️ Como a coluna
+  é livre (`VARCHAR(32)` sem constraint), a legenda/filtro da Trilha **não deve assumir conjunto
+  fechado**: tratar valor desconhecido como "outro" em vez de quebrar. (Endurecer com CHECK na engine
+  é melhoria opcional fora do escopo do #0.)
 - `interest_profile.status` → `proposed | active | superseded` (`migrations/006`, índice parcial único
   garante 1 só `active`)
 - `feedback.source` → `user_explicit | quarantine_review | kura_implicit` (`migrations/005`)
