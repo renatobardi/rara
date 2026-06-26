@@ -216,10 +216,12 @@ func SeedLinkedInLane(ctx context.Context, db Database) error {
 	for _, p := range []Provider{
 		{Name: provExtrairLinked, Capability: capExtrair, Runtime: runtimeCloudRun, Activation: activationOnDemand,
 			Worker: "scrub", App: "extract", Description: "Normalizador — post LinkedIn",
-			Constraints: []byte(`{"accepts":["linkedin"]}`), Enabled: true},
+			Constraints: []byte(`{"accepts":["linkedin"]}`), Enabled: true,
+			Env: []byte(`{"GLEAN_PROVIDER":"scrub-cloud"}`)},
 		{Name: provScrubLocal, Capability: capExtrair, Runtime: runtimeVPC, Activation: activationOnDemand,
 			Worker: "scrub", App: "extract", Description: "Normalizador — post LinkedIn",
-			Constraints: []byte(`{"accepts":["linkedin"]}`), RunnerURL: runnerURL, Enabled: vpcEnabled},
+			Constraints: []byte(`{"accepts":["linkedin"]}`), RunnerURL: runnerURL, Enabled: vpcEnabled,
+			Env: []byte(`{"GLEAN_PROVIDER":"scrub-vpc"}`)},
 	} {
 		if err := db.UpsertProvider(ctx, p); err != nil {
 			return err

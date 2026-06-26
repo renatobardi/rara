@@ -322,7 +322,8 @@ func SeedYouTubeLane(ctx context.Context, db Database) error {
 		// from datacenter IPs — HARD residential constraint with NO datacenter fallback.
 		{Name: provASRYouTube, Capability: capTranscrever, Runtime: runtimeLocal, Activation: activationResident,
 			Worker: "caption", App: "transcribe", Description: "Transcritor — vídeo YouTube (Mac)",
-			Constraints: []byte(`{"requires":"residential","accepts":["youtube"]}`), Enabled: true},
+			Constraints: []byte(`{"requires":"residential","accepts":["youtube"]}`), Enabled: true,
+			Env: []byte(`{"SCRIBE_PROVIDER":"caption-mac"}`)},
 	}
 	for _, p := range providers {
 		if err := db.UpsertProvider(ctx, p); err != nil {
@@ -371,10 +372,12 @@ func SeedPodcastLane(ctx context.Context, db Database) error {
 	for _, p := range []Provider{
 		{Name: provASRDirectAudio, Capability: capTranscrever, Runtime: runtimeCloudRun, Activation: activationOnDemand,
 			Worker: "echo", App: "transcribe", Description: "Transcritor — áudio/podcast",
-			Constraints: []byte(`{"accepts":["podcast"]}`), Enabled: true},
+			Constraints: []byte(`{"accepts":["podcast"]}`), Enabled: true,
+			Env: []byte(`{"SCRIBE_PROVIDER":"echo-cloud"}`)},
 		{Name: provEchoLocal, Capability: capTranscrever, Runtime: runtimeVPC, Activation: activationOnDemand,
 			Worker: "echo", App: "transcribe", Description: "Transcritor — áudio/podcast",
-			Constraints: []byte(`{"accepts":["podcast"]}`), RunnerURL: runnerURL, Enabled: vpcEnabled},
+			Constraints: []byte(`{"accepts":["podcast"]}`), RunnerURL: runnerURL, Enabled: vpcEnabled,
+			Env: []byte(`{"SCRIBE_PROVIDER":"echo-vpc"}`)},
 	} {
 		if err := db.UpsertProvider(ctx, p); err != nil {
 			return err
@@ -421,10 +424,12 @@ func SeedEmailLane(ctx context.Context, db Database) error {
 	for _, p := range []Provider{
 		{Name: provExtrairEmail, Capability: capExtrair, Runtime: runtimeCloudRun, Activation: activationOnDemand,
 			Worker: "winnow", App: "extract", Description: "Normalizador — e-mail",
-			Constraints: []byte(`{"accepts":["email"]}`), Enabled: true},
+			Constraints: []byte(`{"accepts":["email"]}`), Enabled: true,
+			Env: []byte(`{"GLEAN_PROVIDER":"winnow-cloud"}`)},
 		{Name: provWinnowLocal, Capability: capExtrair, Runtime: runtimeVPC, Activation: activationOnDemand,
 			Worker: "winnow", App: "extract", Description: "Normalizador — e-mail",
-			Constraints: []byte(`{"accepts":["email"]}`), RunnerURL: runnerURL, Enabled: vpcEnabled},
+			Constraints: []byte(`{"accepts":["email"]}`), RunnerURL: runnerURL, Enabled: vpcEnabled,
+			Env: []byte(`{"GLEAN_PROVIDER":"winnow-vpc"}`)},
 	} {
 		if err := db.UpsertProvider(ctx, p); err != nil {
 			return err
@@ -475,10 +480,12 @@ func SeedNewsLane(ctx context.Context, db Database) error {
 	for _, p := range []Provider{
 		{Name: provExtrairNews, Capability: capExtrair, Runtime: runtimeCloudRun, Activation: activationOnDemand,
 			Worker: "glean", App: "extract", Description: "Normalizador — feed (artigo)",
-			Constraints: []byte(`{"accepts":["news"]}`), Enabled: true},
+			Constraints: []byte(`{"accepts":["news"]}`), Enabled: true,
+			Env: []byte(`{"GLEAN_PROVIDER":"glean-cloud"}`)},
 		{Name: provGleanLocal, Capability: capExtrair, Runtime: runtimeVPC, Activation: activationOnDemand,
 			Worker: "glean", App: "extract", Description: "Normalizador — feed (artigo)",
-			Constraints: []byte(`{"accepts":["news"]}`), RunnerURL: runnerURL, Enabled: vpcEnabled},
+			Constraints: []byte(`{"accepts":["news"]}`), RunnerURL: runnerURL, Enabled: vpcEnabled,
+			Env: []byte(`{"GLEAN_PROVIDER":"glean-vpc"}`)},
 	} {
 		if err := db.UpsertProvider(ctx, p); err != nil {
 			return err

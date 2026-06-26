@@ -134,6 +134,42 @@ func TestSeedSharedProviderEnv(t *testing.T) {
 }
 
 // TestSeedIdempotent asserts re-seeding converges (no duplicate rows, stable flow id).
+// TestSeedExtractTranscribeProviderEnv asserts the extract (GLEAN_PROVIDER) and
+// transcribe (SCRIBE_PROVIDER) providers carry their claim-identity env for BOTH the
+// cloud and VPC placements. Without it the dispatcher wakes the worker with an empty
+// GLEAN_PROVIDER/SCRIBE_PROVIDER and the process log.Fatalf's on startup — the bug
+// that stalled extract (glean/winnow/scrub) and echo after the VPC cutover, while
+// gate/distill (already seeded with their identity env) kept running.
+func TestSeedExtractTranscribeProviderEnv(t *testing.T) {
+	ctx := context.Background()
+	db := newMockDatabase()
+	for _, seed := range []func(context.Context, Database) error{
+		SeedYouTubeLane, SeedPodcastLane, SeedEmailLane, SeedNewsLane, SeedLinkedInLane,
+	} {
+		if err := seed(ctx, db); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+	}
+	want := map[string]string{
+		// extract — GLEAN_PROVIDER = placement name (claim identity).
+		provExtrairEmail:  `{"GLEAN_PROVIDER":"winnow-cloud"}`,
+		provWinnowLocal:   `{"GLEAN_PROVIDER":"winnow-vpc"}`,
+		provExtrairNews:   `{"GLEAN_PROVIDER":"glean-cloud"}`,
+		provGleanLocal:    `{"GLEAN_PROVIDER":"glean-vpc"}`,
+		provExtrairLinked: `{"GLEAN_PROVIDER":"scrub-cloud"}`,
+		provScrubLocal:    `{"GLEAN_PROVIDER":"scrub-vpc"}`,
+		// transcribe — SCRIBE_PROVIDER = placement name.
+		provASRYouTube:     `{"SCRIBE_PROVIDER":"caption-mac"}`,
+		provASRDirectAudio: `{"SCRIBE_PROVIDER":"echo-cloud"}`,
+		provEchoLocal:      `{"SCRIBE_PROVIDER":"echo-vpc"}`,
+	}
+	for name, wantEnv := range want {
+		if got := string(db.providers[name].Env); got != wantEnv {
+			t.Errorf("provider %q env = %q, want %q", name, got, wantEnv)
+		}
+	}
+}
+
 func TestSeedIdempotent(t *testing.T) {
 	ctx := context.Background()
 	db := newMockDatabase()
