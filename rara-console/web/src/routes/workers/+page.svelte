@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { t } from '$lib/strings';
+	import { timeAgo } from '$lib/timeAgo';
 	import WorkerForm from '$lib/WorkerForm.svelte';
 
 	const GLOBAL_SCOPE = 'global' as const;
@@ -20,6 +21,7 @@
 		activation: string;
 		enabled: boolean;
 		heartbeat_at?: string;
+		last_collect_at?: string;
 		last_error?: string;
 		constraints?: Constraints;
 		runner_url?: string;
@@ -144,6 +146,23 @@
 			return !best || m.last_activity_at > best ? m.last_activity_at : best;
 		}, '' as string)
 	);
+
+	// all-time last activity by placement name (item_steps workers: distill, gate, extract, …)
+	let lastActivityByProvider = $derived(
+		new Map(metricsAll.map((m) => [m.provider, m.last_activity_at]))
+	);
+	// capabilities whose workers process item_steps (so last_activity_at is their "ran a job" clock).
+	// Collectors (clip, courier, dial, harvest, feed) aren't here — they only carry last_collect_at.
+	const ITEM_STEP_CAPABILITIES = new Set(['distill', 'gate', 'extract', 'transcribe', 'caption']);
+
+	// "última execução" per placement: collectors carry last_collect_at; item_steps workers
+	// fall back to last_activity_at. undefined = never ran.
+	function lastRun(p: Provider): string | undefined {
+		if (p.last_collect_at) return p.last_collect_at;
+		return ITEM_STEP_CAPABILITIES.has(p.capability)
+			? lastActivityByProvider.get(p.name)
+			: undefined;
+	}
 
 	// reliability card (windowed)
 	let totalDoneW = $derived(metricsWindow.reduce((s, m) => s + m.done, 0));
@@ -663,12 +682,14 @@
 												<th class="py-1.5 pr-3 font-medium">{t.workers.colRuntime}</th>
 												<th class="py-1.5 pr-3 font-medium">{t.workers.colActivation}</th>
 												<th class="py-1.5 pr-3 font-medium">{t.workers.colEnabled}</th>
+												<th class="py-1.5 pr-3 font-medium">{t.workers.colLastRun}</th>
 												<th class="py-1.5 pr-3" aria-label={t.workers.lastErrorLabel}></th>
 												<th class="py-1.5 pr-3"></th>
 											</tr>
 										</thead>
 										<tbody>
 											{#each w.placements as p (p.name)}
+												{@const lr = lastRun(p)}
 												<tr class="border-b border-border/30 last:border-0 hover:bg-hover/60">
 													<td class="py-2 pl-10 pr-3 font-mono">{p.name}</td>
 													<td class="py-2 pr-3 text-muted">{p.runtime}</td>
@@ -682,6 +703,17 @@
 														>
 															<span aria-hidden="true">{p.enabled ? '●' : '○'}</span>
 														</span>
+													</td>
+													<td class="py-2 pr-3 text-muted tabular-nums">
+														{#if lr}
+															<time
+																datetime={lr}
+																title={new Date(lr).toLocaleString('pt-BR')}
+																aria-label={new Date(lr).toLocaleString('pt-BR')}
+															>{timeAgo(lr)}</time>
+														{:else}
+															<span class="text-muted" aria-label={t.workers.lastRunNever}>—</span>
+														{/if}
 													</td>
 													<td class="py-2 pr-3">
 														{#if p.last_error}
@@ -719,7 +751,7 @@
 												</tr>
 												{#if formMode === 'edit' && formInitial?.name === p.name}
 													<tr>
-														<td colspan="6" class="px-4 py-3 pl-10">
+														<td colspan="7" class="px-4 py-3 pl-10">
 															<WorkerForm
 																initial={formInitial}
 																lockedApp={null}
