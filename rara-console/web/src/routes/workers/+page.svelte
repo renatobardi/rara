@@ -153,7 +153,8 @@
 	);
 	// capabilities whose workers process item_steps (so last_activity_at is their "ran a job" clock).
 	// Collectors (clip, courier, dial, harvest, feed) aren't here — they only carry last_collect_at.
-	const ITEM_STEP_CAPABILITIES = new Set(['distill', 'gate', 'extract', 'transcribe', 'caption']);
+	// Values must match rara-core/main.go cap* constants (L103-108) — Portuguese, not English.
+	const ITEM_STEP_CAPABILITIES = new Set(['destilar', 'gate_barato', 'gate_rico', 'extrair', 'transcrever']);
 
 	// "última execução" per placement: collectors carry last_collect_at; item_steps workers
 	// fall back to last_activity_at. undefined = never ran.
