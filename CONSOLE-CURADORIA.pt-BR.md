@@ -82,9 +82,13 @@ Criar:
   em uma chamada. **Decisão de design**: agregar no SQL (zona Pulso é hot) vs. somar no BFF. Recomendado
   no SQL (`store_reads.go`), porque o feed bruto não tem filtro de janela e cresce.
 - Alternativa lazy p/ MVP: BFF soma client-side sobre `/v1/decisions` + conta `/v1/quarantine` +
-  filtra `/v1/interest-profile/versions`. **3 chamadas, sem mudar a engine.** Vale começar assim e só
-  criar o summary se a latência incomodar. _(ponytail: ship a versão de 3 fetches; summary endpoint
-  quando medir lentidão.)_
+  filtra `/v1/interest-profile/versions`. **3 chamadas, sem mudar a engine.** ⚠️ **Atenção**:
+  `/v1/decisions` não tem filtro temporal — só `?limit` (cap 200) e ordem `id DESC`. Logo a soma de
+  3 fetches é **aproximada** ("últimas N decisões", não "24h exatas"): pode truncar se houver >200
+  decisões no dia, ou incluir decisões mais antigas num dia parado. Se o Pulso precisar de "24h
+  exatas", `GET /v1/decisions/summary?window=24h` (agregado no SQL) é o caminho correto — o fallback
+  só serve enquanto o rótulo da zona deixar claro que é aproximado. _(ponytail: ship 3 fetches rotulado
+  "~24h"; summary endpoint quando precisar de janela exata ou medir lentidão.)_
 
 **Fatia #4 (quarentena) — nada novo na surface.** `GET /v1/quarantine` + `POST /v1/quarantine/review`
 cobrem listar e veredito. A fatia é **só Console** (BFF `/api/quarantine*` + UI herói). Já-usável como
@@ -132,13 +136,20 @@ Baixo custo, alto valor pra zona Trilha. Sugiro embutir na fatia #2.
 Interest Profile (ler active/versions, propor, aprovar) e (2) Gate Rules (allow/deny). Nav em
 `web/src/routes/+layout.svelte:38` (`◐ /curadoria`), strings em `lib/strings.ts:339`. Handlers BFF em
 `main.go:441-517` (interest-profile + gate-rules + quarantine/review + feedback/distillation).
-**Decisão pendente**: as Gate Rules continuam na Curadoria nova ou migram pra outra tela? (não bloqueia
-o #0).
+**Decisão (default p/ não deixar allow/deny órfão)**: as Gate Rules **permanecem** na Curadoria nova
+como uma seção secundária (fora das 5 zonas do cockpit, num rodapé/disclosure "Regras de gate"),
+reusando os handlers `GET/PUT /v1/gate-rules` que já existem — assim o redesenho **não remove** acesso
+ao allow/deny. Migrar pra outra tela é um movimento opcional posterior; se acontecer, atualizar nav
+(`+layout.svelte`), strings (`lib/strings.ts`) e os handlers em `main.go`. Não bloqueia o #0.
 
 ### Padrão Console a seguir (não copiar ainda)
 
 BFF: handler `GET /api/...` re-encoda só params da allowlist (`sourceListParams`, `main.go:267`),
 injeta token server-side em `fetchCore`/`doCore` (`main.go:49`), passa 4xx do core verbatim. Path-params
-validados (`isSourceID`, `main.go:332`). Front SvelteKit: nav em `+layout.svelte`, página
+validados (`isSourceID`, `main.go:332`). Nota: o pass-through de 4xx é **deliberado** — a Console é um
+cockpit pessoal, single-user e atrás de token, então o texto de validação do core é útil pro operador
+e não cruza fronteira de confiança (não é superfície pública). Se uma fatia futura expuser a Console a
+mais usuários, revisitar: normalizar 4xx pro cliente e manter o corpo bruto só em log server-side.
+Front SvelteKit: nav em `+layout.svelte`, página
 `routes/<nome>/+page.svelte` com `$effect` + `fetch('/api/...')` (runes `$state/$derived`), strings
 externalizadas em `lib/strings.ts`. Referência completa: Fontes (`routes/fontes/+page.svelte`).
