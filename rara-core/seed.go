@@ -16,6 +16,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/url"
 	"os"
@@ -305,12 +306,12 @@ func SeedYouTubeLane(ctx context.Context, db Database) error {
 		{Name: provHarvest, Capability: capColetar, Runtime: runtimeCloudRun, Activation: activationOnDemand,
 			Enabled: true, Worker: "harvest", App: "harvest", Description: "Coletor de canais (YouTube)",
 			Constraints:           []byte(`{"accepts":["youtube"]}`),
-			Env:                   []byte(`{"HARVEST_PROVIDER":"harvest-cloud"}`),
+			Env:                   []byte(fmt.Sprintf(`{"HARVEST_PROVIDER":%q}`, provHarvest)),
 			CollectCadenceSeconds: intPtr(86400), RetryIntervalSeconds: intPtr(1800)},
 		{Name: provHarvestLocal, Capability: capColetar, Runtime: runtimeVPC, Activation: activationOnDemand,
 			Enabled: vpcEnabled, Worker: "harvest", App: "harvest", Description: "Coletor de canais (YouTube)",
 			Constraints: []byte(`{"accepts":["youtube"]}`),
-			Env:         []byte(`{"HARVEST_PROVIDER":"harvest-vpc"}`),
+			Env:         []byte(fmt.Sprintf(`{"HARVEST_PROVIDER":%q}`, provHarvestLocal)),
 			RunnerURL:   runnerURL, CollectCadenceSeconds: intPtr(86400), RetryIntervalSeconds: intPtr(1800)},
 		{Name: provShelf, Capability: capColetar, Runtime: runtimeCloudRun, Activation: activationOnDemand,
 			Enabled: true, Worker: "shelf", App: "shelf", Description: "Coletor de playlists (YouTube)",
@@ -360,12 +361,12 @@ func SeedPodcastLane(ctx context.Context, db Database) error {
 		{Name: provDial, Capability: capColetar, Runtime: runtimeCloudRun, Activation: activationOnDemand,
 			Enabled: true, Worker: "dial", App: "dial", Description: "Coletor de podcasts (RSS)",
 			Constraints:           []byte(`{"accepts":["podcast"]}`),
-			Env:                   []byte(`{"DIAL_PROVIDER":"dial-cloud"}`),
+			Env:                   []byte(fmt.Sprintf(`{"DIAL_PROVIDER":%q}`, provDial)),
 			CollectCadenceSeconds: intPtr(86400), RetryIntervalSeconds: intPtr(1800)},
 		{Name: provDialLocal, Capability: capColetar, Runtime: runtimeVPC, Activation: activationOnDemand,
 			Enabled: vpcEnabled, Worker: "dial", App: "dial", Description: "Coletor de podcasts (RSS)",
 			Constraints: []byte(`{"accepts":["podcast"]}`),
-			Env:         []byte(`{"DIAL_PROVIDER":"dial-vpc"}`),
+			Env:         []byte(fmt.Sprintf(`{"DIAL_PROVIDER":%q}`, provDialLocal)),
 			RunnerURL:   runnerURL, CollectCadenceSeconds: intPtr(86400), RetryIntervalSeconds: intPtr(1800)},
 	} {
 		if err := db.UpsertProvider(ctx, p); err != nil {
@@ -414,12 +415,12 @@ func SeedEmailLane(ctx context.Context, db Database) error {
 		{Name: provCourier, Capability: capColetar, Runtime: runtimeCloudRun, Activation: activationOnDemand,
 			Enabled: true, Worker: "courier", App: "courier", Description: "Coletor de e-mail (Gmail)",
 			Constraints:           []byte(`{"accepts":["email"]}`),
-			Env:                   []byte(`{"COURIER_PROVIDER":"courier-cloud"}`),
+			Env:                   []byte(fmt.Sprintf(`{"COURIER_PROVIDER":%q}`, provCourier)),
 			CollectCadenceSeconds: intPtr(21600), RetryIntervalSeconds: intPtr(1800)},
 		{Name: provCourierLocal, Capability: capColetar, Runtime: runtimeVPC, Activation: activationOnDemand,
 			Enabled: vpcEnabled, Worker: "courier", App: "courier", Description: "Coletor de e-mail (Gmail)",
 			Constraints: []byte(`{"accepts":["email"]}`),
-			Env:         []byte(`{"COURIER_PROVIDER":"courier-vpc"}`),
+			Env:         []byte(fmt.Sprintf(`{"COURIER_PROVIDER":%q}`, provCourierLocal)),
 			RunnerURL:   runnerURL, CollectCadenceSeconds: intPtr(21600), RetryIntervalSeconds: intPtr(1800)},
 	} {
 		if err := db.UpsertProvider(ctx, p); err != nil {
