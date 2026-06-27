@@ -158,13 +158,13 @@ type MockDatabase struct {
 	sources []SourceItem // backing store for sources_v mock (tests populate directly)
 
 	// --- source write backing stores (fatia #2) ---
-	ytChannels      map[int]mockYTChannel
-	ytChannelByKey  map[string]int // UNIQUE(youtube_channel_id) -> id
-	ytPlaylists     map[int]mockYTPlaylist
-	ytPlaylistByKey map[string]int // UNIQUE(youtube_playlist_id) -> id
-	feedSources     map[int]mockFeedSource
-	feedByNameEp    map[string]int // UNIQUE(name+"\x00"+endpoint) -> id
-	emailSources    map[int]mockEmailSource
+	ytChannels            map[int]mockYTChannel
+	ytChannelByKey        map[string]int // UNIQUE(youtube_channel_id) -> id
+	ytPlaylists           map[int]mockYTPlaylist
+	ytPlaylistByKey       map[string]int // UNIQUE(youtube_playlist_id) -> id
+	feedSources           map[int]mockFeedSource
+	feedByNameEp          map[string]int // UNIQUE(name+"\x00"+endpoint) -> id
+	emailSources          map[int]mockEmailSource
 	linkedinProfiles      map[int]mockLinkedInProfile
 	nextLinkedInProfileID int
 
@@ -187,37 +187,37 @@ type gateRuleKey struct {
 
 func newMockDatabase() *MockDatabase {
 	return &MockDatabase{
-		capabilities:    make(map[string]Capability),
-		providers:       make(map[string]Provider),
-		flows:           make(map[string]Flow),
-		flowByID:        make(map[int]bool),
-		flowSteps:       make(map[flowStepKey]FlowStep),
-		policies:        make(map[string]RoutingPolicy),
-		items:           make(map[string]Item),
-		itemByID:        make(map[int]Item),
-		itemSteps:       make(map[itemStepKey]ItemStep),
-		stepOrder:       make(map[itemStepKey]int),
-		gateRules:       make(map[gateRuleKey]GateRule),
-		profiles:        make(map[int]InterestProfile),
-		podcastFeeds:    make(map[int]PodcastFeed),
-		feedByURL:       make(map[string]int),
-		ytChannels:      make(map[int]mockYTChannel),
-		ytChannelByKey:  make(map[string]int),
-		ytPlaylists:     make(map[int]mockYTPlaylist),
-		ytPlaylistByKey: make(map[string]int),
-		feedSources:     make(map[int]mockFeedSource),
-		feedByNameEp:    make(map[string]int),
+		capabilities:          make(map[string]Capability),
+		providers:             make(map[string]Provider),
+		flows:                 make(map[string]Flow),
+		flowByID:              make(map[int]bool),
+		flowSteps:             make(map[flowStepKey]FlowStep),
+		policies:              make(map[string]RoutingPolicy),
+		items:                 make(map[string]Item),
+		itemByID:              make(map[int]Item),
+		itemSteps:             make(map[itemStepKey]ItemStep),
+		stepOrder:             make(map[itemStepKey]int),
+		gateRules:             make(map[gateRuleKey]GateRule),
+		profiles:              make(map[int]InterestProfile),
+		podcastFeeds:          make(map[int]PodcastFeed),
+		feedByURL:             make(map[string]int),
+		ytChannels:            make(map[int]mockYTChannel),
+		ytChannelByKey:        make(map[string]int),
+		ytPlaylists:           make(map[int]mockYTPlaylist),
+		ytPlaylistByKey:       make(map[string]int),
+		feedSources:           make(map[int]mockFeedSource),
+		feedByNameEp:          make(map[string]int),
 		emailSources:          make(map[int]mockEmailSource),
 		linkedinProfiles:      make(map[int]mockLinkedInProfile),
 		nextLinkedInProfileID: 1,
 		nextFlowID:            1,
-		nextItemID:      1,
-		nextFeedID:      1,
-		nextYTChanID:    1,
-		nextYTPlayID:    1,
-		nextFeedSrcID:   1,
-		nextEmailSrcID:  1,
-		nowFn:           time.Now,
+		nextItemID:            1,
+		nextFeedID:            1,
+		nextYTChanID:          1,
+		nextYTPlayID:          1,
+		nextFeedSrcID:         1,
+		nextEmailSrcID:        1,
+		nowFn:                 time.Now,
 	}
 }
 
