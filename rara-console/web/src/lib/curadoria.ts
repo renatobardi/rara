@@ -1,3 +1,63 @@
+export type StringDiff = { added: string[]; removed: string[]; changed: never[]; fallback?: false };
+export type StringDiffFallback = { added: []; removed: []; changed: never[]; fallback: true };
+export type WeightEntry = { key: string; value: unknown };
+export type WeightChange = { key: string; from: unknown; to: unknown };
+export type WeightDiff = { added: WeightEntry[]; removed: WeightEntry[]; changed: WeightChange[]; fallback?: false };
+export type WeightDiffFallback = { added: []; removed: []; changed: []; fallback: true };
+
+export type ProfileDiff = {
+	topics: StringDiff | StringDiffFallback;
+	authors: StringDiff | StringDiffFallback;
+	anti_topics: StringDiff | StringDiffFallback;
+	weights: WeightDiff | WeightDiffFallback;
+};
+
+type ProfileLike = {
+	topics?: unknown;
+	authors?: unknown;
+	anti_topics?: unknown;
+	weights?: unknown;
+};
+
+function diffStringArray(a: unknown, b: unknown): StringDiff | StringDiffFallback {
+	if (!Array.isArray(a) && a != null) return { added: [], removed: [], changed: [], fallback: true };
+	if (!Array.isArray(b) && b != null) return { added: [], removed: [], changed: [], fallback: true };
+	const setA = new Set<string>(Array.isArray(a) ? a : []);
+	const setB = new Set<string>(Array.isArray(b) ? b : []);
+	return {
+		added: [...setB].filter((x) => !setA.has(x)).sort(),
+		removed: [...setA].filter((x) => !setB.has(x)).sort(),
+		changed: [],
+	};
+}
+
+function diffWeights(a: unknown, b: unknown): WeightDiff | WeightDiffFallback {
+	const isObj = (v: unknown): v is Record<string, unknown> =>
+		v != null && typeof v === 'object' && !Array.isArray(v);
+	if (!isObj(a) && a != null) return { added: [], removed: [], changed: [], fallback: true };
+	if (!isObj(b) && b != null) return { added: [], removed: [], changed: [], fallback: true };
+	const objA = isObj(a) ? a : {};
+	const objB = isObj(b) ? b : {};
+	const keysA = new Set(Object.keys(objA));
+	const keysB = new Set(Object.keys(objB));
+	return {
+		added: [...keysB].filter((k) => !keysA.has(k)).sort().map((k) => ({ key: k, value: objB[k] })),
+		removed: [...keysA].filter((k) => !keysB.has(k)).sort().map((k) => ({ key: k, value: objA[k] })),
+		changed: [...keysA].filter((k) => keysB.has(k) && JSON.stringify(objA[k]) !== JSON.stringify(objB[k]))
+			.sort()
+			.map((k) => ({ key: k, from: objA[k], to: objB[k] })),
+	};
+}
+
+export function diffProfile(active: ProfileLike, proposed: ProfileLike): ProfileDiff {
+	return {
+		topics: diffStringArray(active.topics, proposed.topics),
+		authors: diffStringArray(active.authors, proposed.authors),
+		anti_topics: diffStringArray(active.anti_topics, proposed.anti_topics),
+		weights: diffWeights(active.weights, proposed.weights),
+	};
+}
+
 export type Decision = { decision: string; decided_by?: string | null; reason?: string | null; when?: string };
 export type ItemDecision = { id?: number; decision: 'keep' | 'drop' | 'defer'; decided_by?: string | null; reason?: string | null; score?: number | null };
 export type DeferReason = { score?: number | null; decided_by?: string | null; reason?: string | null };

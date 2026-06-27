@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { labelDecidedBy, aggregatePulso, latestDeferReason, signalForKey, type ItemDecision } from './curadoria';
+import { labelDecidedBy, aggregatePulso, latestDeferReason, signalForKey, diffProfile, type ItemDecision } from './curadoria';
 
 describe('labelDecidedBy', () => {
 	it('maps known values to PT labels', () => {
@@ -118,6 +118,75 @@ describe('latestDeferReason', () => {
 		// Both have id=0 via ??, reduce keeps the initial (first), which is 'a'
 		expect(result).not.toBeNull();
 		expect(result?.reason).toBe('a');
+	});
+});
+
+describe('diffProfile', () => {
+	it('adds items present in proposed but absent in active (string array field)', () => {
+		const active  = { topics: ['go', 'rust'], authors: [], anti_topics: [], weights: {} };
+		const proposed = { topics: ['go', 'rust', 'python'], authors: [], anti_topics: [], weights: {} };
+		const diff = diffProfile(active, proposed);
+		expect(diff.topics.added).toEqual(['python']);
+		expect(diff.topics.removed).toEqual([]);
+		expect(diff.topics.changed).toEqual([]);
+	});
+
+	it('removes items present in active but absent in proposed (string array field)', () => {
+		const active   = { topics: ['go', 'rust'], authors: [], anti_topics: [], weights: {} };
+		const proposed = { topics: ['go'], authors: [], anti_topics: [], weights: {} };
+		const diff = diffProfile(active, proposed);
+		expect(diff.topics.removed).toEqual(['rust']);
+		expect(diff.topics.added).toEqual([]);
+	});
+
+	it('reports no diff when string arrays are equal', () => {
+		const profile = { topics: ['go', 'rust'], authors: [], anti_topics: [], weights: {} };
+		const diff = diffProfile(profile, profile);
+		expect(diff.topics.added).toEqual([]);
+		expect(diff.topics.removed).toEqual([]);
+		expect(diff.topics.changed).toEqual([]);
+	});
+
+	it('diffs weights object: added key', () => {
+		const active   = { topics: [], authors: [], anti_topics: [], weights: { keep_threshold: 0.6 } };
+		const proposed = { topics: [], authors: [], anti_topics: [], weights: { keep_threshold: 0.6, boost: 1.2 } };
+		const diff = diffProfile(active, proposed);
+		expect(diff.weights.added).toEqual([{ key: 'boost', value: 1.2 }]);
+		expect(diff.weights.removed).toEqual([]);
+		expect(diff.weights.changed).toEqual([]);
+	});
+
+	it('diffs weights object: removed key', () => {
+		const active   = { topics: [], authors: [], anti_topics: [], weights: { keep_threshold: 0.6, boost: 1.2 } };
+		const proposed = { topics: [], authors: [], anti_topics: [], weights: { keep_threshold: 0.6 } };
+		const diff = diffProfile(active, proposed);
+		expect(diff.weights.removed).toEqual([{ key: 'boost', value: 1.2 }]);
+		expect(diff.weights.added).toEqual([]);
+	});
+
+	it('diffs weights object: changed value', () => {
+		const active   = { topics: [], authors: [], anti_topics: [], weights: { keep_threshold: 0.6 } };
+		const proposed = { topics: [], authors: [], anti_topics: [], weights: { keep_threshold: 0.8 } };
+		const diff = diffProfile(active, proposed);
+		expect(diff.weights.changed).toEqual([{ key: 'keep_threshold', from: 0.6, to: 0.8 }]);
+	});
+
+	it('handles null/undefined fields on either side (absent field → treat as empty)', () => {
+		const active   = { topics: ['go'], authors: undefined as unknown as string[], anti_topics: [], weights: {} };
+		const proposed = { topics: undefined as unknown as string[], authors: [], anti_topics: ['spam'], weights: {} };
+		const diff = diffProfile(active, proposed);
+		expect(diff.topics.removed).toEqual(['go']);
+		expect(diff.topics.added).toEqual([]);
+		expect(diff.anti_topics.added).toEqual(['spam']);
+	});
+
+	it('falls back gracefully when a field has unexpected shape (not array / not object)', () => {
+		const active   = { topics: 'not-an-array' as unknown as string[], authors: [], anti_topics: [], weights: 42 as unknown as Record<string, unknown> };
+		const proposed = { topics: ['go'], authors: [], anti_topics: [], weights: {} };
+		const diff = diffProfile(active, proposed);
+		// fallback: topics.fallback=true, no throws
+		expect(diff.topics.fallback).toBe(true);
+		expect(diff.weights.fallback).toBe(true);
 	});
 });
 

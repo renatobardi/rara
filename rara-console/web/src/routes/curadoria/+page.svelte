@@ -5,9 +5,11 @@
 		aggregatePulso,
 		latestDeferReason,
 		signalForKey,
+		diffProfile,
 		type Decision,
 		type QuarantineItem,
-		type ItemDecision
+		type ItemDecision,
+		type ProfileDiff
 	} from '$lib/curadoria';
 
 	type InterestProfile = {
@@ -59,6 +61,11 @@
 	let decisionsError = $state(false);
 
 	let pulso = $derived(aggregatePulso(decisions, versions));
+
+	let proposedProfile = $derived(versions.find((v) => v.status === 'proposed') ?? null);
+	let profileDiff = $derived(
+		activeProfile && proposedProfile ? diffProfile(activeProfile, proposedProfile) : null
+	) as unknown as ProfileDiff | null;
 
 	// propose form
 	let proposeVersion = $state('');
@@ -332,10 +339,6 @@
 		}
 	}
 
-	function fmt(v: unknown): string {
-		return v == null ? '' : JSON.stringify(v, null, 2);
-	}
-
 	const pulsoCards = $derived([
 		{ label: t.curadoria.pulsoEntrou, color: 'text-text', value: pulso.entrou },
 		{ label: t.curadoria.pulsoManteve, color: 'text-green', value: pulso.manteve },
@@ -475,7 +478,7 @@
 
 <svelte:window onkeydown={handleKeydown} />
 
-<!-- ── 4. O GOSTO (funcional — Interest Profile) ──────────────────── -->
+<!-- ── 4. O GOSTO (Interest Profile) ─────────────────────────────── -->
 <section id="gosto" class="mb-6">
 	<h2 class="mb-3 text-[15px] font-semibold">{t.curadoria.gostoZone}</h2>
 
@@ -484,45 +487,118 @@
 	{:else if profileError}
 		<p class="text-[13px] text-red">{t.curadoria.profileError}</p>
 	{:else}
+		<!-- Proposed version card (hero) -->
+		{#if proposedProfile && profileDiff}
+			{@const pv = proposedProfile}
+			<div class="mb-4 overflow-hidden rounded-card border border-primary/40 bg-surface">
+				<div class="flex items-center justify-between border-b border-primary/20 bg-primary/5 px-4 py-2">
+					<span class="text-[12px] font-medium text-primary">
+						{t.curadoria.profileProposedCard} · v{pv.version}
+					</span>
+					{#if approving === pv.version}
+						<span class="text-[12px] text-muted">{t.curadoria.profileApproving}</span>
+					{:else}
+						<button
+							class="cursor-pointer rounded-token border border-primary bg-primary/10 px-4 py-1 text-[13px] font-semibold text-primary hover:bg-primary/20"
+							onclick={() => approve(pv.version)}
+						>{t.curadoria.profileApproveBtn(pv.version)}</button>
+					{/if}
+				</div>
+				{#if approveError}
+					<p class="px-4 py-2 text-[12px] text-red">{approveError}</p>
+				{/if}
+				<div class="divide-y divide-border/50 px-4 py-3 text-[13px]">
+					{#if pv.narrative}
+						<div class="pb-3">
+							<div class="mb-1 text-[11px] font-medium uppercase tracking-wide text-muted">{t.curadoria.profileProposedNarrative}</div>
+							<p class="text-[13px] italic text-muted">{pv.narrative}</p>
+						</div>
+					{/if}
+					{#each ([['topics', t.curadoria.profileTopicsLabel], ['authors', t.curadoria.profileAuthorsLabel], ['anti_topics', t.curadoria.profileAntiTopicsLabel]] as const) as [field, label]}
+						{@const d = profileDiff[field]}
+						{#if d.fallback}
+							<div class="py-2">
+								<div class="mb-1 text-[11px] font-medium text-muted">{label}</div>
+								<p class="text-[12px] text-muted">{t.curadoria.profileDiffFallback}</p>
+							</div>
+						{:else if d.added.length > 0 || d.removed.length > 0}
+							<div class="py-2">
+								<div class="mb-1 text-[11px] font-medium text-muted">{label}</div>
+								<div class="flex flex-wrap gap-1">
+									{#each d.added as item}
+										<span class="rounded-full bg-green/15 px-2 py-0.5 text-[11px] text-green">+ {item}</span>
+									{/each}
+									{#each d.removed as item}
+										<span class="rounded-full bg-red/10 px-2 py-0.5 text-[11px] text-muted line-through opacity-60">− {item}</span>
+									{/each}
+								</div>
+							</div>
+						{/if}
+					{/each}
+					{#if profileDiff.weights.fallback}
+						<div class="py-2">
+							<div class="mb-1 text-[11px] font-medium text-muted">{t.curadoria.profileWeightsLabel}</div>
+							<p class="text-[12px] text-muted">{t.curadoria.profileDiffFallback}</p>
+						</div>
+					{:else if profileDiff.weights.added.length > 0 || profileDiff.weights.removed.length > 0 || profileDiff.weights.changed.length > 0}
+						<div class="py-2">
+							<div class="mb-1 text-[11px] font-medium text-muted">{t.curadoria.profileWeightsLabel}</div>
+							<div class="space-y-0.5 font-mono text-[12px]">
+								{#each profileDiff.weights.added as e}
+									<div class="text-green">+ {e.key}: {JSON.stringify(e.value)}</div>
+								{/each}
+								{#each profileDiff.weights.removed as e}
+									<div class="text-muted line-through opacity-60">− {e.key}: {JSON.stringify(e.value)}</div>
+								{/each}
+								{#each profileDiff.weights.changed as c}
+									<div class="text-primary">{c.key}: {JSON.stringify(c.from)} → {JSON.stringify(c.to)}</div>
+								{/each}
+							</div>
+						</div>
+					{/if}
+				</div>
+			</div>
+		{:else if !profileLoading}
+			<p class="mb-4 text-[13px] text-muted">{t.curadoria.profileStable}</p>
+		{/if}
+
 		<!-- Active version card -->
 		<div class="mb-4 overflow-hidden rounded-card border border-border bg-surface">
 			<div class="border-b border-border px-4 py-2 text-[12px] font-medium text-muted">
 				{t.curadoria.profileCurrent}
 			</div>
 			{#if activeProfile}
-				<div class="space-y-2 px-4 py-3 text-[13px]">
+				<div class="space-y-3 px-4 py-3 text-[13px]">
 					<div>
 						<span class="text-muted">{t.curadoria.profileVersion}:</span>
 						<span class="ml-1 font-semibold">v{activeProfile.version}</span>
 					</div>
 					{#if activeProfile.narrative}
 						<div>
-							<div class="text-muted">{t.curadoria.profileNarrative}:</div>
-							<p class="mt-1 text-[13px]">{activeProfile.narrative}</p>
+							<div class="mb-1 text-[11px] font-medium text-muted">{t.curadoria.profileNarrative}</div>
+							<p class="text-[13px]">{activeProfile.narrative}</p>
 						</div>
 					{/if}
-					{#if activeProfile.topics}
+					{#each ([['topics', t.curadoria.profileTopicsLabel, activeProfile.topics], ['authors', t.curadoria.profileAuthorsLabel, activeProfile.authors], ['anti_topics', t.curadoria.profileAntiTopicsLabel, activeProfile.anti_topics]] as const) as [, label, val]}
+						{#if Array.isArray(val) && val.length > 0}
+							<div>
+								<div class="mb-1 text-[11px] font-medium text-muted">{label}</div>
+								<div class="flex flex-wrap gap-1">
+									{#each val as item}
+										<span class="rounded-full border border-border px-2 py-0.5 text-[11px]">{item}</span>
+									{/each}
+								</div>
+							</div>
+						{/if}
+					{/each}
+					{#if activeProfile.weights && typeof activeProfile.weights === 'object' && !Array.isArray(activeProfile.weights)}
 						<div>
-							<div class="text-muted">Topics:</div>
-							<pre class="mt-1 overflow-x-auto rounded-token bg-surface-2 px-3 py-2 text-[12px]">{fmt(activeProfile.topics)}</pre>
-						</div>
-					{/if}
-					{#if activeProfile.authors}
-						<div>
-							<div class="text-muted">Authors:</div>
-							<pre class="mt-1 overflow-x-auto rounded-token bg-surface-2 px-3 py-2 text-[12px]">{fmt(activeProfile.authors)}</pre>
-						</div>
-					{/if}
-					{#if activeProfile.anti_topics}
-						<div>
-							<div class="text-muted">Anti-topics:</div>
-							<pre class="mt-1 overflow-x-auto rounded-token bg-surface-2 px-3 py-2 text-[12px]">{fmt(activeProfile.anti_topics)}</pre>
-						</div>
-					{/if}
-					{#if activeProfile.weights}
-						<div>
-							<div class="text-muted">Weights:</div>
-							<pre class="mt-1 overflow-x-auto rounded-token bg-surface-2 px-3 py-2 text-[12px]">{fmt(activeProfile.weights)}</pre>
+							<div class="mb-1 text-[11px] font-medium text-muted">{t.curadoria.profileWeightsLabel}</div>
+							<div class="space-y-0.5 font-mono text-[12px] text-muted">
+								{#each Object.entries(activeProfile.weights as Record<string, unknown>) as [k, v]}
+									<div>{k}: {JSON.stringify(v)}</div>
+								{/each}
+							</div>
 						</div>
 					{/if}
 				</div>
@@ -531,19 +607,19 @@
 			{/if}
 		</div>
 
-		<!-- Version history -->
+		<!-- Version history (colapsável) -->
 		{#if versions.length > 0}
-			<div class="mb-4 overflow-hidden rounded-card border border-border bg-surface">
-				<div class="border-b border-border px-4 py-2 text-[12px] font-medium text-muted">
+			<details class="mb-4 overflow-hidden rounded-card border border-border bg-surface">
+				<summary class="flex cursor-pointer list-none items-center justify-between px-4 py-2 text-[12px] font-medium text-muted hover:bg-hover">
 					{t.curadoria.profileVersions}
-				</div>
-				<table class="w-full text-[13px]">
+					<span class="text-[11px]">{t.curadoria.gateExpand}</span>
+				</summary>
+				<table class="w-full border-t border-border text-[13px]">
 					<thead>
 						<tr class="border-b border-border text-left text-[11px] text-muted">
 							<th class="px-4 py-2 font-medium">{t.curadoria.profileVersion}</th>
 							<th class="px-4 py-2 font-medium">{t.curadoria.profileStatus}</th>
 							<th class="px-4 py-2 font-medium">{t.curadoria.profileCreatedAt}</th>
-							<th class="px-4 py-2"></th>
 						</tr>
 					</thead>
 					<tbody>
@@ -551,34 +627,18 @@
 							<tr class="border-b border-border last:border-b-0">
 								<td class="px-4 py-2 font-medium">v{v.version}</td>
 								<td class="px-4 py-2">
-									<span
-										class="rounded-full px-2 py-0.5 text-[11px] font-medium
+									<span class="rounded-full px-2 py-0.5 text-[11px] font-medium
 										{v.status === 'active' ? 'bg-green/15 text-green' : v.status === 'proposed' ? 'bg-primary/15 text-primary' : 'text-muted'}"
 									>{v.status}</span>
 								</td>
 								<td class="px-4 py-2 text-muted">
 									{v.created_at ? new Date(v.created_at).toLocaleString('pt-BR') : '—'}
 								</td>
-								<td class="px-4 py-2 text-right">
-									{#if v.status === 'proposed'}
-										{#if approving === v.version}
-											<span class="text-[12px] text-muted">{t.curadoria.profileApproving}</span>
-										{:else}
-											<button
-												class="cursor-pointer rounded-token border border-primary/40 bg-transparent px-3 py-1 text-[12px] font-medium text-primary hover:bg-primary/10"
-												onclick={() => approve(v.version)}
-											>{t.curadoria.profileApprove}</button>
-										{/if}
-									{/if}
-								</td>
 							</tr>
 						{/each}
 					</tbody>
 				</table>
-				{#if approveError}
-					<p class="px-4 py-2 text-[12px] text-red">{approveError}</p>
-				{/if}
-			</div>
+			</details>
 		{/if}
 
 		<!-- Propose new version form -->
