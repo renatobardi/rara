@@ -191,7 +191,24 @@ export const t = {
 		hostsUp: '↑',
 		hostsDown: '↓',
 		hostsRemove: '×',
-		hostsAddPlaceholder: 'Adicionar host…'
+		hostsAddPlaceholder: 'Adicionar host…',
+		// ── Fontes-style redesign (Task 3 #244) ──
+		searchToggle: 'Buscar workers',
+		searchPlaceholder: 'Buscar por worker ou placement…',
+		filterClear: 'Limpar filtros',
+		colType: 'Tipo',
+		colWorkerGroup: 'Worker',
+		sortAZ: 'A → Z',
+		sortZA: 'Z → A',
+		sortNewest: 'Mais recente',
+		sortOldest: 'Mais antigo',
+		filterAllCapability: 'Todos os tipos',
+		filterAllRuntime: 'Todos os runtimes',
+		filterAllActivation: 'Todas as ativações',
+		filterAllStatus: 'Todos os status',
+		actionsLabel: 'Ações',
+		emptyFiltered: 'Nenhum worker para os filtros atuais.',
+		saveOkToast: 'Salvo.'
 	},
 	agents: {
 		title: 'Agents',
