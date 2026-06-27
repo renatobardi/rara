@@ -109,7 +109,7 @@
 		showNovaVersaoForm = true;
 	}
 
-	let novaVersaoDiff = $derived(() => {
+	let novaVersaoDiff = $derived.by(() => {
 		if (!activeProfile || !showNovaVersaoForm) return null;
 		try {
 			const proposed = {
