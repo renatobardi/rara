@@ -79,7 +79,12 @@ func main() {
 	conn := mustConnect(ctx, databaseURL)
 	defer conn.Close(ctx)
 
-	n, err := run(ctx, &pgxDatabase{conn: conn}, newBrightDataLinkedInSource())
+	providerName := os.Getenv("CLIP_PROVIDER")
+	if providerName == "" {
+		providerName = "clip-cloud"
+	}
+
+	n, err := run(ctx, &pgxDatabase{conn: conn}, newBrightDataLinkedInSource(), providerName)
 	if err != nil {
 		log.Fatalf("linkedin collector: %v", err)
 	}
@@ -104,7 +109,7 @@ func mustConnect(ctx context.Context, databaseURL string) *pgx.Conn {
 // a per-post quirk — so the whole run aborts. On success the provider stamp is updated so
 // rara-core's scheduler sees that this lane finished a collection cycle; a stamp error is logged
 // but does not fail the run (the posts are already safely stored). Returns the count of posts stored.
-func run(ctx context.Context, db Database, collector LinkedInCollector) (int, error) {
+func run(ctx context.Context, db Database, collector LinkedInCollector, providerName string) (int, error) {
 	posts, err := collector.FetchPosts(ctx)
 	if err != nil {
 		return 0, err
@@ -115,7 +120,7 @@ func run(ctx context.Context, db Database, collector LinkedInCollector) (int, er
 			stored++
 		}
 	}
-	if err := db.StampProviderCollected(ctx, "clip"); err != nil {
+	if err := db.StampProviderCollected(ctx, providerName); err != nil {
 		log.Printf("clip: stamp provider: %v", err)
 	}
 	return stored, nil

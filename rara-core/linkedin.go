@@ -202,10 +202,12 @@ func SeedLinkedInLane(ctx context.Context, db Database) error {
 		{Name: provBrightDataLinked, Capability: capColetar, Runtime: runtimeCloudRun, Activation: activationOnDemand,
 			Worker: "clip", App: "clip", Description: "Coletor de posts (LinkedIn)",
 			Constraints: []byte(`{"accepts":["linkedin"]}`), Enabled: true,
+			Env:                   []byte(fmt.Sprintf(`{"CLIP_PROVIDER":%q}`, provBrightDataLinked)),
 			CollectCadenceSeconds: intPtr(21600), RetryIntervalSeconds: intPtr(1800)},
 		{Name: provClipLocal, Capability: capColetar, Runtime: runtimeVPC, Activation: activationOnDemand,
 			Worker: "clip", App: "clip", Description: "Coletor de posts (LinkedIn)",
 			Constraints: []byte(`{"accepts":["linkedin"]}`), RunnerURL: runnerURL, Enabled: vpcEnabled,
+			Env:                   []byte(fmt.Sprintf(`{"CLIP_PROVIDER":%q}`, provClipLocal)),
 			CollectCadenceSeconds: intPtr(21600), RetryIntervalSeconds: intPtr(1800)},
 	} {
 		if err := db.UpsertProvider(ctx, p); err != nil {
