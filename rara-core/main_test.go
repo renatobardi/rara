@@ -798,16 +798,8 @@ func (m *MockDatabase) ListSources(_ context.Context, f SourceFilter) (SourcesRe
 		}
 		if f.Q != "" {
 			q := strings.ToLower(f.Q)
-			matchTag := false
-			for _, tg := range s.Tags {
-				if strings.Contains(strings.ToLower(tg), q) {
-					matchTag = true
-					break
-				}
-			}
 			if !strings.Contains(strings.ToLower(s.DisplayName), q) &&
-				!strings.Contains(strings.ToLower(s.ConfigSummary), q) &&
-				!matchTag {
+				!strings.Contains(strings.ToLower(s.ConfigSummary), q) {
 				continue
 			}
 		}
