@@ -12,10 +12,31 @@ CREATE TABLE IF NOT EXISTS target_linkedin_profiles (
     deleted_at  TIMESTAMPTZ,
     created_at  TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
     updated_at  TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE (profile_url)
+    UNIQUE (profile_url),
+    -- Only accept canonical LinkedIn profile URLs to prevent arbitrary URLs from being
+    -- passed to the Bright Data crawler.
+    CHECK (
+        profile_url LIKE 'https://www.linkedin.com/%'
+        OR profile_url LIKE 'https://linkedin.com/%'
+    )
 );
 
 COMMENT ON TABLE  target_linkedin_profiles             IS 'LinkedIn profiles the Bright Data crawler collects posts from; managed via Fontes UI';
 COMMENT ON COLUMN target_linkedin_profiles.profile_url IS 'Canonical LinkedIn profile URL (e.g. https://www.linkedin.com/in/handle)';
 COMMENT ON COLUMN target_linkedin_profiles.active      IS 'When false, profile is paused but not deleted';
 COMMENT ON COLUMN target_linkedin_profiles.deleted_at  IS 'Soft-delete timestamp; NULL = not deleted';
+
+-- Namespaced trigger so updated_at is refreshed on every UPDATE (rara-core owns the shared
+-- set_updated_at trigger on linkedin_posts; rara-clip owns this one for its own table).
+CREATE OR REPLACE FUNCTION clip_set_updated_at()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+    NEW.updated_at = NOW();
+    RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS clip_target_profiles_updated_at ON target_linkedin_profiles;
+CREATE TRIGGER clip_target_profiles_updated_at
+    BEFORE UPDATE ON target_linkedin_profiles
+    FOR EACH ROW EXECUTE FUNCTION clip_set_updated_at();

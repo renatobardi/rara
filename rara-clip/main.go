@@ -89,20 +89,26 @@ func main() {
 	}
 
 	db := &pgxDatabase{conn: conn}
-	urls, err := db.FetchTargetProfiles(ctx)
-	if err != nil {
-		log.Fatalf("clip: fetch target profiles: %v", err)
-	}
-	if len(urls) == 0 {
-		log.Printf("clip: no active profiles in target_linkedin_profiles, skipping")
-		return
-	}
-
-	n, err := run(ctx, db, newBrightDataLinkedInSource(urls), providerName)
+	n, err := collectLinkedIn(ctx, db, providerName)
 	if err != nil {
 		log.Fatalf("linkedin collector: %v", err)
 	}
 	log.Printf("LinkedIn job completed: %d posts catalogued", n)
+}
+
+// collectLinkedIn fetches active profiles from the DB and runs the collector. Returns early
+// with (0, nil) when no profiles are configured — not an error, just nothing to collect.
+// Extracted from main so the empty-list and fetch-error paths are unit-testable.
+func collectLinkedIn(ctx context.Context, db Database, providerName string) (int, error) {
+	urls, err := db.FetchTargetProfiles(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("fetch target profiles: %w", err)
+	}
+	if len(urls) == 0 {
+		log.Printf("clip: no active profiles in target_linkedin_profiles, skipping")
+		return 0, nil
+	}
+	return run(ctx, db, newBrightDataLinkedInSource(urls), providerName)
 }
 
 // mustConnect opens the Neon connection (bounded by a startup timeout) or exits — the only
@@ -305,18 +311,21 @@ func (d *pgxDatabase) FetchTargetProfiles(ctx context.Context) ([]string, error)
 	const q = `SELECT profile_url FROM target_linkedin_profiles WHERE active = true AND deleted_at IS NULL`
 	rows, err := d.conn.Query(ctx, q)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("query target_linkedin_profiles: %w", err)
 	}
 	defer rows.Close()
 	var urls []string
 	for rows.Next() {
 		var u string
 		if err := rows.Scan(&u); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("scan profile_url: %w", err)
 		}
 		urls = append(urls, u)
 	}
-	return urls, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate target_linkedin_profiles: %w", err)
+	}
+	return urls, nil
 }
 
 // StampProviderCollected updates the last_collect_at timestamp for the named provider row so

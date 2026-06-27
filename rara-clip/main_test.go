@@ -306,17 +306,37 @@ func TestFetchPostsNoURLs(t *testing.T) {
 	}
 }
 
-// FetchTargetProfiles returns the profiles stored in the mock, mirroring the DB seam.
-func TestFetchTargetProfilesReturnsProfiles(t *testing.T) {
-	ctx := context.Background()
-	db := newMockDatabase()
-	db.profiles = []string{urlA, urlB}
-	got, err := db.FetchTargetProfiles(ctx)
-	if err != nil {
-		t.Fatalf("FetchTargetProfiles: %v", err)
+// collectLinkedIn skips with (0, nil) when no profiles are configured — nothing to collect.
+func TestCollectLinkedInSkipsWhenNoProfiles(t *testing.T) {
+	db := newMockDatabase() // profiles = nil
+	n, err := collectLinkedIn(context.Background(), db, "clip-vpc")
+	if err != nil || n != 0 {
+		t.Errorf("want (0, nil) for empty profiles, got (%d, %v)", n, err)
 	}
-	if len(got) != 2 || got[0] != urlA || got[1] != urlB {
-		t.Errorf("profiles = %v, want [%s %s]", got, urlA, urlB)
+}
+
+// collectLinkedIn propagates a FetchTargetProfiles error to the caller.
+func TestCollectLinkedInPropagatesProfileFetchError(t *testing.T) {
+	sentinel := errors.New("db down")
+	db := newMockDatabase()
+	db.profileErr = sentinel
+	_, err := collectLinkedIn(context.Background(), db, "clip-vpc")
+	if !errors.Is(err, sentinel) {
+		t.Errorf("want profile fetch error in chain, got %v", err)
+	}
+}
+
+// collectLinkedIn with profiles runs the full collector path (covered by run tests via fakeCollector).
+func TestCollectLinkedInWithProfilesRunsCollector(t *testing.T) {
+	db := newMockDatabase()
+	db.profiles = []string{urlA}
+	// fakeCollector is wired via newBrightDataLinkedInSource — we can't inject it here, so we
+	// only verify that collectLinkedIn returns an error when FetchPosts fails (no bdata CLI).
+	// The full collector path is covered by the run() tests.
+	_, err := collectLinkedIn(context.Background(), db, "clip-vpc")
+	// bdata is not installed in tests; FetchPosts returns an error — that's expected.
+	if err == nil {
+		t.Error("expected error from missing bdata CLI")
 	}
 }
 
