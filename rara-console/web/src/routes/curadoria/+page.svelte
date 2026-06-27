@@ -63,9 +63,10 @@
 
 	let pulso = $derived(aggregatePulso(decisions, versions));
 
+	const emptyProfile = { topics: [], authors: [], anti_topics: [], weights: {} };
 	let proposedProfile = $derived(versions.find((v) => v.status === 'proposed') ?? null);
 	let profileDiff = $derived(
-		activeProfile && proposedProfile ? diffProfile(activeProfile, proposedProfile) : null
+		proposedProfile ? diffProfile(activeProfile ?? emptyProfile, proposedProfile) : null
 	) as unknown as ProfileDiff | null;
 
 	// propose form
@@ -130,6 +131,8 @@
 		if (reviewInFlight || !focusedItem) return;
 		reviewInFlight = true;
 		reviewError = '';
+		// bump seq at start so any in-flight refetch from a previous review is invalidated immediately
+		const seq = ++refetchSeq;
 		const item = focusedItem;
 		// optimistic: remove from queue
 		quarantine = quarantine.filter((q) => q.id !== item.id);
@@ -142,7 +145,6 @@
 			});
 			if (!r.ok) throw new Error('review failed');
 			// light refetch to stay honest — seq guard prevents stale responses from overwriting newer state
-			const seq = ++refetchSeq;
 			void fetch('/api/quarantine')
 				.then((r2) => (r2.ok ? r2.json() : Promise.reject(r2.status)))
 				.then((d: unknown) => {
@@ -613,10 +615,11 @@
 
 		<!-- Version history (colapsável) -->
 		{#if versions.length > 0}
-			<details class="mb-4 overflow-hidden rounded-card border border-border bg-surface">
+			<details class="group mb-4 overflow-hidden rounded-card border border-border bg-surface">
 				<summary class="flex cursor-pointer list-none items-center justify-between px-4 py-2 text-[12px] font-medium text-muted hover:bg-hover">
 					{t.curadoria.profileVersions}
-					<span class="text-[11px]">{t.curadoria.gateExpand}</span>
+					<span class="text-[11px] group-open:hidden">{t.curadoria.gateExpand}</span>
+					<span class="hidden text-[11px] group-open:inline">{t.curadoria.gateCollapse}</span>
 				</summary>
 				<table class="w-full border-t border-border text-[13px]">
 					<thead>

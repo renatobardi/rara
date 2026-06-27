@@ -196,6 +196,15 @@ describe('diffProfile', () => {
 		expect(diff.topics.fallback).toBe(true);
 	});
 
+	it('falls back on sparse array (holes that every() would skip)', () => {
+		// eslint-disable-next-line no-sparse-arrays
+		const sparse = [, 'go'] as unknown as string[];
+		const active   = { topics: sparse, authors: [], anti_topics: [], weights: {} };
+		const proposed = { topics: ['go'], authors: [], anti_topics: [], weights: {} };
+		const diff = diffProfile(active, proposed);
+		expect(diff.topics.fallback).toBe(true);
+	});
+
 	it('diffs weights changed correctly when objects have same keys in different order', () => {
 		const active   = { topics: [], authors: [], anti_topics: [], weights: { b: 2, a: 1 } };
 		const proposed = { topics: [], authors: [], anti_topics: [], weights: { a: 1, b: 2 } };

@@ -19,7 +19,9 @@ type ProfileLike = {
 	weights?: unknown;
 };
 
-const allStrings = (arr: unknown[]): arr is string[] => arr.every((x) => typeof x === 'string');
+// ponytail: Object.keys length check catches sparse-array holes that .every() silently skips
+const allStrings = (arr: unknown[]): arr is string[] =>
+	Object.keys(arr).length === arr.length && arr.every((x) => typeof x === 'string');
 
 function diffStringArray(a: unknown, b: unknown): StringDiff | StringDiffFallback {
 	const fb = { added: [] as [], removed: [] as [], changed: [] as never[], fallback: true as const };
