@@ -1272,10 +1272,12 @@ func (h *httpSurface) listSourceKinds(w http.ResponseWriter, r *http.Request) {
 func (h *httpSurface) listSources(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	f := SourceFilter{
-		Kind:   q.Get("kind"),
-		Status: q.Get("status"),
-		Tag:    q.Get("tag"),
-		Q:      q.Get("q"),
+		Kind:    q.Get("kind"),
+		Status:  q.Get("status"),
+		Tag:     q.Get("tag"),
+		Q:       q.Get("q"),
+		SortBy:  q.Get("sort_by"),
+		SortDir: q.Get("sort_dir"),
 	}
 	if ps := q.Get("page_size"); ps != "" {
 		if n, err := strconv.Atoi(ps); err == nil && n > 0 {

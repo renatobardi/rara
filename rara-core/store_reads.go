@@ -949,8 +949,11 @@ func (d *pgxDatabase) ListSources(ctx context.Context, f SourceFilter) (SourcesR
 		n++
 	}
 	if f.Q != "" {
-		// Same parameter index used twice — PostgreSQL supports reusing $N.
-		conds = append(conds, fmt.Sprintf("(display_name ILIKE $%d OR config_summary ILIKE $%d)", n, n))
+		// Same parameter index used three times — PostgreSQL supports reusing $N.
+		conds = append(conds, fmt.Sprintf(
+			"(display_name ILIKE $%d OR config_summary ILIKE $%d OR EXISTS (SELECT 1 FROM unnest(tags) _t WHERE _t ILIKE $%d))",
+			n, n, n,
+		))
 		args = append(args, "%"+f.Q+"%")
 		n++
 	}
@@ -1000,8 +1003,24 @@ func (d *pgxDatabase) ListSources(ctx context.Context, f SourceFilter) (SourcesR
 	}
 	offset := (page - 1) * pageSize
 
+	// Sort — allowlist prevents SQL injection; defaults to display_name ASC.
+	var allowedSort = map[string]string{
+		"display_name": "display_name",
+		"kind":         "kind",
+		"lane":         "lane",
+		"updated_at":   "updated_at",
+	}
+	sortCol := allowedSort[f.SortBy]
+	if sortCol == "" {
+		sortCol = "display_name"
+	}
+	sortDir := "ASC"
+	if strings.EqualFold(f.SortDir, "desc") {
+		sortDir = "DESC"
+	}
+
 	dataQ := `SELECT ` + sourceViewCols + ` FROM sources_v` + where +
-		` ORDER BY created_at DESC, api_id` +
+		` ORDER BY ` + sortCol + ` ` + sortDir + `, api_id` +
 		` LIMIT $` + strconv.Itoa(n) + ` OFFSET $` + strconv.Itoa(n+1)
 	args = append(args, pageSize, offset)
 

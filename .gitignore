@@ -13,3 +13,4 @@ run_*.log
 # (tailnet IPs, SA emails, Cloud Run URLs). Stays on the operator's machine only.
 # Narrow on purpose: does NOT match the committed *.pt-BR.md design docs nor rara-*/deploy/RUNBOOK.md.
 RUNBOOK-OPS-*.pt-BR.md
+.claude/launch.json

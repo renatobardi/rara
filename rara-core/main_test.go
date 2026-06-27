@@ -796,8 +796,16 @@ func (m *MockDatabase) ListSources(_ context.Context, f SourceFilter) (SourcesRe
 		}
 		if f.Q != "" {
 			q := strings.ToLower(f.Q)
+			matchTag := false
+			for _, tg := range s.Tags {
+				if strings.Contains(strings.ToLower(tg), q) {
+					matchTag = true
+					break
+				}
+			}
 			if !strings.Contains(strings.ToLower(s.DisplayName), q) &&
-				!strings.Contains(strings.ToLower(s.ConfigSummary), q) {
+				!strings.Contains(strings.ToLower(s.ConfigSummary), q) &&
+				!matchTag {
 				continue
 			}
 		}
@@ -824,6 +832,44 @@ func (m *MockDatabase) ListSources(_ context.Context, f SourceFilter) (SourcesRe
 	if page <= 0 {
 		page = 1
 	}
+	// Sort (mirrors allowlist in store_reads.go; always applied, default display_name).
+	sortBy := f.SortBy
+	if sortBy == "" {
+		sortBy = "display_name"
+	}
+	desc := strings.EqualFold(f.SortDir, "desc")
+	sort.Slice(filtered, func(i, j int) bool {
+		lessString := func(a, b string) bool {
+			if desc {
+				return a > b
+			}
+			return a < b
+		}
+		switch sortBy {
+		case "kind":
+			if filtered[i].Kind != filtered[j].Kind {
+				return lessString(filtered[i].Kind, filtered[j].Kind)
+			}
+		case "lane":
+			if filtered[i].Lane != filtered[j].Lane {
+				return lessString(filtered[i].Lane, filtered[j].Lane)
+			}
+		case "updated_at":
+			if !filtered[i].UpdatedAt.Equal(filtered[j].UpdatedAt) {
+				if desc {
+					return filtered[i].UpdatedAt.After(filtered[j].UpdatedAt)
+				}
+				return filtered[i].UpdatedAt.Before(filtered[j].UpdatedAt)
+			}
+		default:
+			if filtered[i].DisplayName != filtered[j].DisplayName {
+				return lessString(filtered[i].DisplayName, filtered[j].DisplayName)
+			}
+		}
+		// tiebreaker: api_id ASC (mirrors ", api_id" in store_reads.go ORDER BY)
+		return lessString(filtered[i].ApiID, filtered[j].ApiID)
+	})
+
 	start := (page - 1) * pageSize
 	end := start + pageSize
 	if start > len(filtered) {

@@ -366,6 +366,8 @@ type SourceFilter struct {
 	Q        string
 	Page     int
 	PageSize int
+	SortBy   string // allowlisted in ListSources; default display_name
+	SortDir  string // "asc" | "desc"; default asc
 }
 
 // SourceCounts holds per-status and per-kind badge counts over the result set.
