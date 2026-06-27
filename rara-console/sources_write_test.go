@@ -310,3 +310,20 @@ func TestHandleSourceConfig_Proxies(t *testing.T) {
 		t.Fatalf("got %d %s", rec.Code, rec.Body.String())
 	}
 }
+
+func TestHandleSourceConfig_RejectsBadID(t *testing.T) {
+	var path string
+	core := fakeSourcesWriteCore(t, "secret", nil, &path)
+	s := &server{coreURL: core.URL, token: "secret", client: core.Client()}
+
+	rec := httptest.NewRecorder()
+	req := newReqWithPathValue("GET", "/api/sources/x/config", "", map[string]string{"source_id": "../../v1/flows"})
+	s.handleSourceConfig(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400 for malformed source id", rec.Code)
+	}
+	if path != "" {
+		t.Errorf("malformed id reached the upstream at %q", path)
+	}
+}
