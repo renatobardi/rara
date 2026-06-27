@@ -1287,7 +1287,7 @@ func fakeC4Core(t *testing.T, token string) *httptest.Server {
 		if !requireBearer(w, r) {
 			return
 		}
-		_, _ = w.Write([]byte(`[{"id":1,"item_id":7,"gate":"gate_barato","decision":"keep","when":"2026-01-01T00:00:00Z"}]`))
+		_, _ = w.Write([]byte(`[{"id":1,"item_id":7,"gate":"gate_barato","decision":"keep","decided_by":"rules","reason":"matched rule","when":"2026-01-01T00:00:00Z"}]`))
 	})
 	mux.HandleFunc("GET /v1/items/{id}/decisions", func(w http.ResponseWriter, r *http.Request) {
 		if !requireBearer(w, r) {
@@ -1623,6 +1623,67 @@ func TestItemDecisionsRejectsBadID(t *testing.T) {
 
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("status=%d, want 400", rec.Code)
+	}
+}
+
+// TestDecisionsFeedExposesDecidedByAndReason verifies the BFF passes decided_by and reason
+// from core verbatim — closing the gap from #2 where these fields were added to /v1/decisions.
+func TestDecisionsFeedExposesDecidedByAndReason(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`[{"id":1,"item_id":7,"gate":"gate_barato","decision":"keep","decided_by":"rules","reason":"matched allow-list rule","when":"2026-01-01T00:00:00Z"}]`))
+	}))
+	defer srv.Close()
+	s := &server{coreURL: srv.URL, token: "t", client: srv.Client()}
+
+	rec := httptest.NewRecorder()
+	s.handleDecisionsFeed(rec, httptest.NewRequest("GET", "/api/decisions", nil))
+
+	var got []map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("want 1 decision, got %d", len(got))
+	}
+	if got[0]["decided_by"] != "rules" {
+		t.Errorf("decided_by = %v, want rules", got[0]["decided_by"])
+	}
+	if got[0]["reason"] != "matched allow-list rule" {
+		t.Errorf("reason = %v, want matched allow-list rule", got[0]["reason"])
+	}
+}
+
+// TestDecisionsFeedNullReasonPassedThrough verifies that when core returns reason:null
+// the BFF passes it as JSON null, not as a string "null" or empty string.
+func TestDecisionsFeedNullReasonPassedThrough(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`[{"id":1,"item_id":7,"gate":"gate_barato","decision":"drop","decided_by":"profile","reason":null,"when":"2026-01-01T00:00:00Z"}]`))
+	}))
+	defer srv.Close()
+	s := &server{coreURL: srv.URL, token: "t", client: srv.Client()}
+
+	rec := httptest.NewRecorder()
+	s.handleDecisionsFeed(rec, httptest.NewRequest("GET", "/api/decisions", nil))
+
+	// The raw body must not contain the string literal "null" for reason as a JSON string.
+	body := rec.Body.String()
+	if contains(body, `"reason":"null"`) || contains(body, `"reason":""`) {
+		t.Errorf("reason was coerced to string: %s", body)
+	}
+	// Verify reason is actually JSON null in the payload.
+	var got []map[string]any
+	if err := json.Unmarshal([]byte(body), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("want 1 decision, got %d", len(got))
+	}
+	v, ok := got[0]["reason"]
+	if !ok {
+		t.Fatal("reason field missing from response; want explicit JSON null")
+	}
+	if v != nil {
+		t.Errorf("reason = %v, want nil", v)
 	}
 }
 
