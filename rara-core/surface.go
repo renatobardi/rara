@@ -467,15 +467,16 @@ func (c *Core) AddFeedSource(ctx context.Context, kind, name, endpoint, displayN
 	if name == "" {
 		return 0, badInput("feed source name cannot be empty")
 	}
+	endpoint = strings.TrimSpace(endpoint)
 	if kind == "hn" {
 		// endpoint is optional for HN; if provided it must be a valid public URL.
-		if strings.TrimSpace(endpoint) != "" {
+		if endpoint != "" {
 			if err := validateEndpointURL(endpoint); err != nil {
 				return 0, err
 			}
 		}
 	} else {
-		if strings.TrimSpace(endpoint) == "" {
+		if endpoint == "" {
 			return 0, badInput("endpoint cannot be empty for kind %q", kind)
 		}
 		if err := validateEndpointURL(endpoint); err != nil {
@@ -582,16 +583,19 @@ func normalizeFeedSourceConfig(kind string, cfg map[string]string) (map[string]s
 		return nil, badInput("name cannot be empty")
 	}
 	out := map[string]string{"name": name}
-	endpoint := strings.TrimSpace(cfg["endpoint"])
 	if kind == "hn" {
-		// endpoint is optional for HN; if provided it must be a valid public URL.
-		if endpoint != "" {
-			if err := validateEndpointURL(endpoint); err != nil {
-				return nil, err
+		// endpoint is optional for HN; if key is present, write it (even empty, to enable clearing).
+		if raw, ok := cfg["endpoint"]; ok {
+			endpoint := strings.TrimSpace(raw)
+			if endpoint != "" {
+				if err := validateEndpointURL(endpoint); err != nil {
+					return nil, err
+				}
 			}
 			out["endpoint"] = endpoint
 		}
 	} else {
+		endpoint := strings.TrimSpace(cfg["endpoint"])
 		if endpoint == "" {
 			return nil, badInput("endpoint cannot be empty for kind %q", kind)
 		}

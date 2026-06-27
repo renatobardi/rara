@@ -638,3 +638,37 @@ func TestNormalizeFeedSourceConfigHNEndpoint(t *testing.T) {
 		t.Errorf("out[endpoint]=%q, want https://news.ycombinator.com/ask", out["endpoint"])
 	}
 }
+
+func TestAddFeedSourceHNEmptyEndpoint(t *testing.T) {
+	core, db, _ := newTestCore(t)
+	_, err := core.AddFeedSource(context.Background(), "hn", "Hacker News", "", "")
+	if err != nil {
+		t.Fatalf("AddFeedSource HN empty endpoint: %v", err)
+	}
+	if len(db.feedSources) == 0 {
+		t.Fatal("expected feed source to be stored")
+	}
+	if db.feedSources[1].Endpoint != "" {
+		t.Errorf("endpoint=%q, want empty string", db.feedSources[1].Endpoint)
+	}
+}
+
+func TestNormalizeFeedSourceConfigHNClearEndpoint(t *testing.T) {
+	core, _, _ := newTestCore(t)
+	// endpoint key present but empty — should write "" so PATCH can clear the field.
+	cfg := map[string]string{
+		"name":     "Hacker News",
+		"endpoint": "",
+	}
+	out, err := core.normalizeSourceConfig(context.Background(), "hn", cfg)
+	if err != nil {
+		t.Fatalf("normalizeSourceConfig hn clear: %v", err)
+	}
+	endpoint, ok := out["endpoint"]
+	if !ok {
+		t.Fatal("expected endpoint key in output to signal clearing, got absent key")
+	}
+	if endpoint != "" {
+		t.Errorf("out[endpoint]=%q, want empty string", endpoint)
+	}
+}

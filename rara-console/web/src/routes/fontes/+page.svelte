@@ -670,7 +670,8 @@
 	}
 
 	function onWindowClick(e: MouseEvent) {
-		const t = e.target as HTMLElement;
+		if (!(e.target instanceof Element)) return;
+		const t = e.target;
 		if (activeKebab && !t.closest('[data-kebab]')) activeKebab = null;
 		if (activePopover && !t.closest('[data-col-popover]')) activePopover = null;
 	}
@@ -953,8 +954,8 @@
 											</div>
 										{/if}
 									</th>
-									<!-- ⋮ kebab — sem cabeçalho de texto -->
-									<th class="w-10 px-2 py-2.5"></th>
+									<!-- ⋮ kebab -->
+									<th class="w-10 px-2 py-2.5" scope="col"><span class="sr-only">Ações</span></th>
 								</tr>
 							</thead>
 							<tbody>
@@ -1004,11 +1005,14 @@
 												<button
 													class="flex h-7 w-7 items-center justify-center rounded-token text-muted hover:bg-surface-2"
 													aria-label={`Ações: ${s.display_name || s.api_id}`}
+													aria-haspopup="menu"
+													aria-expanded={activeKebab === s.api_id}
+													aria-controls={`kebab-menu-${s.api_id}`}
 													onclick={(e) => { e.stopPropagation(); activeKebab = activeKebab === s.api_id ? null : s.api_id; }}
 													data-kebab
 												>⋮</button>
 												{#if activeKebab === s.api_id}
-													<div class="absolute right-0 top-full z-30 min-w-[160px] rounded-xl border border-border bg-bg py-1 shadow-xl" data-kebab>
+													<div id={`kebab-menu-${s.api_id}`} role="menu" class="absolute right-0 top-full z-30 min-w-[160px] rounded-xl border border-border bg-bg py-1 shadow-xl" data-kebab>
 														{#if supportsPause(s.kind)}
 															<button
 																class="w-full px-3 py-1.5 text-left text-[13px] text-muted hover:bg-hover disabled:opacity-50"
