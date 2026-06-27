@@ -467,7 +467,14 @@ func (c *Core) AddFeedSource(ctx context.Context, kind, name, endpoint, displayN
 	if name == "" {
 		return 0, badInput("feed source name cannot be empty")
 	}
-	if kind != "hn" {
+	if kind == "hn" {
+		// endpoint is optional for HN; if provided it must be a valid public URL.
+		if strings.TrimSpace(endpoint) != "" {
+			if err := validateEndpointURL(endpoint); err != nil {
+				return 0, err
+			}
+		}
+	} else {
 		if strings.TrimSpace(endpoint) == "" {
 			return 0, badInput("endpoint cannot be empty for kind %q", kind)
 		}
@@ -565,7 +572,7 @@ func normalizePodcastConfig(cfg map[string]string) (map[string]string, error) {
 	if err := validateEndpointURL(feedURL); err != nil {
 		return nil, err
 	}
-	return map[string]string{"feed_url": feedURL, "title": strings.TrimSpace(cfg["title"])}, nil
+	return map[string]string{"feed_url": feedURL}, nil
 }
 
 // normalizeFeedSourceConfig validates and normalizes rss/html/hn config.
@@ -575,8 +582,16 @@ func normalizeFeedSourceConfig(kind string, cfg map[string]string) (map[string]s
 		return nil, badInput("name cannot be empty")
 	}
 	out := map[string]string{"name": name}
-	if kind != "hn" {
-		endpoint := strings.TrimSpace(cfg["endpoint"])
+	endpoint := strings.TrimSpace(cfg["endpoint"])
+	if kind == "hn" {
+		// endpoint is optional for HN; if provided it must be a valid public URL.
+		if endpoint != "" {
+			if err := validateEndpointURL(endpoint); err != nil {
+				return nil, err
+			}
+			out["endpoint"] = endpoint
+		}
+	} else {
 		if endpoint == "" {
 			return nil, badInput("endpoint cannot be empty for kind %q", kind)
 		}
@@ -781,14 +796,12 @@ var sourceKindsRegistry = []SourceKind{
 		// channel_id accepts a raw channel id (UC…), an @handle, or a free-text name; it is
 		// resolved to the canonical youtube_channel_id via the YouTube API at creation time.
 		SourceField{Name: "channel_id", Label: "Channel ID, handle, or name", Type: "text", Required: true, Placeholder: "UCxxxx… , @handle, or channel name"},
-		SourceField{Name: "channel_name", Label: "Channel name", Type: "text"},
 	),
 	sourceKind("youtube_playlist", "YouTube Playlist", "youtube", "youtube", "rara-shelf",
 		SourceField{Name: "playlist_url", Label: "Playlist URL", Type: "url", Required: true, Placeholder: "https://youtube.com/playlist?list=..."},
 	),
 	sourceKind("podcast", "Podcast Feed", "podcast", "podcast", "rara-dial",
 		SourceField{Name: "feed_url", Label: "Feed URL", Type: "url", Required: true, Placeholder: "https://example.com/feed.rss"},
-		SourceField{Name: "title", Label: "Title", Type: "text"},
 	),
 	sourceKind("rss", "RSS Feed", "news", "rss", "rara-feed",
 		SourceField{Name: "endpoint", Label: "Feed URL", Type: "url", Required: true, Placeholder: "https://example.com/feed.rss"},
@@ -800,6 +813,7 @@ var sourceKindsRegistry = []SourceKind{
 	),
 	sourceKind("hn", "Hacker News", "news", "hackernews", "rara-feed",
 		SourceField{Name: "name", Label: "Name", Type: "text", Required: true},
+		SourceField{Name: "endpoint", Label: "Feed URL", Type: "url", Placeholder: "https://news.ycombinator.com/rss"},
 	),
 	sourceKind("email", "Email Reading Rule", "email", "mail", "rara-courier",
 		SourceField{Name: "gmail_query", Label: "Gmail query", Type: "text", Placeholder: "from:newsletter@example.com"},

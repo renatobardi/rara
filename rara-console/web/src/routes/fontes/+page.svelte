@@ -80,8 +80,9 @@
 	let sortBy = $state('display_name');
 	let sortDir = $state<'asc' | 'desc'>('asc');
 
-	// column header popovers + global search toggle
+	// column header popovers + global search toggle + row kebab menu
 	let activePopover = $state<string | null>(null);
+	let activeKebab = $state<string | null>(null); // api_id of row with open ⋮ menu
 	let searchOpen = $state(false);
 
 	// pagination (server-side)
@@ -658,6 +659,7 @@
 
 	function closeOnEsc(e: KeyboardEvent) {
 		if (e.key !== 'Escape') return;
+		if (activeKebab) { activeKebab = null; return; }
 		if (activePopover) { activePopover = null; return; }
 		if (searchOpen) { searchOpen = false; query = ''; applyFilters(); return; }
 		if (mutating) return;
@@ -668,8 +670,9 @@
 	}
 
 	function onWindowClick(e: MouseEvent) {
-		if (!activePopover) return;
-		if (!(e.target as HTMLElement).closest('[data-col-popover]')) activePopover = null;
+		const t = e.target as HTMLElement;
+		if (activeKebab && !t.closest('[data-kebab]')) activeKebab = null;
+		if (activePopover && !t.closest('[data-col-popover]')) activePopover = null;
 	}
 
 	// Move focus into a dialog when it opens and keep Tab cycling trapped inside it, so keyboard
@@ -720,28 +723,28 @@
 
 <section>
 	<div class="mb-5 flex items-center gap-2">
+		<button
+			class="flex h-[34px] w-[34px] flex-none items-center justify-center rounded-token border border-border text-muted hover:bg-hover {searchOpen ? 'bg-hover' : ''}"
+			aria-label={t.fontes.searchPlaceholder}
+			onclick={() => { searchOpen = !searchOpen; if (!searchOpen) { query = ''; applyFilters(); } }}
+		>
+			<svg viewBox="0 0 20 20" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true">
+				<circle cx="8.5" cy="8.5" r="5.5"/><path d="M13.5 13.5 18 18" stroke-linecap="round"/>
+			</svg>
+		</button>
+		{#if searchOpen}
+			<input
+				autofocus
+				bind:value={query}
+				placeholder={t.fontes.searchPlaceholder}
+				oninput={onSearchInput}
+				class="h-[34px] flex-1 rounded-token border border-border bg-bg px-3 text-[13px] outline-none focus:border-text/40"
+			/>
+		{/if}
+		{#if hasFilter}
+			<button class="text-[12px] text-muted hover:text-text" onclick={clearFilters}>{t.fontes.filterClear} ✕</button>
+		{/if}
 		{#if !loading && !error}
-			<button
-				class="flex h-[34px] w-[34px] items-center justify-center rounded-token border border-border text-muted hover:bg-hover {searchOpen ? 'bg-hover' : ''}"
-				aria-label={t.fontes.searchPlaceholder}
-				onclick={() => { searchOpen = !searchOpen; if (!searchOpen) { query = ''; applyFilters(); } }}
-			>
-				<svg viewBox="0 0 20 20" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true">
-					<circle cx="8.5" cy="8.5" r="5.5"/><path d="M13.5 13.5 18 18" stroke-linecap="round"/>
-				</svg>
-			</button>
-			{#if searchOpen}
-				<input
-					autofocus
-					bind:value={query}
-					placeholder={t.fontes.searchPlaceholder}
-					oninput={onSearchInput}
-					class="h-[34px] flex-1 rounded-token border border-border bg-bg px-3 text-[13px] outline-none focus:border-text/40"
-				/>
-			{/if}
-			{#if hasFilter}
-				<button class="text-[12px] text-muted hover:text-text" onclick={clearFilters}>{t.fontes.filterClear} ✕</button>
-			{/if}
 			<button
 				class="ml-auto flex-none rounded-token bg-text px-3.5 py-1.5 text-[13px] font-medium text-bg hover:opacity-90"
 				onclick={openWizard}>+ {t.fontes.newSource}</button
@@ -874,21 +877,6 @@
 											</div>
 										{/if}
 									</th>
-									<!-- Lane — sort only -->
-									<th class="relative px-4 py-2.5 font-medium" data-col-popover>
-										<button class="flex items-center gap-1 hover:text-text" aria-haspopup="true" aria-expanded={activePopover === 'lane'} aria-controls="popover-lane" onclick={(e) => { e.stopPropagation(); activePopover = activePopover === 'lane' ? null : 'lane'; }}>
-											{t.fontes.colLane}
-											<span class="opacity-40">▾</span>
-										</button>
-										{#if activePopover === 'lane'}
-											<div id="popover-lane" role="menu" class="absolute left-0 top-full z-30 min-w-[160px] rounded-xl border border-border bg-bg p-3 shadow-xl" data-col-popover>
-												<div class="flex gap-1">
-													<button class="flex-1 rounded-token border border-border px-2 py-1 text-[12px] {sortBy==='lane'&&sortDir==='asc'?'bg-surface-2 font-medium':''} hover:bg-hover" onclick={() => setSort('lane','asc')}>{t.fontes.colSortAZ}</button>
-													<button class="flex-1 rounded-token border border-border px-2 py-1 text-[12px] {sortBy==='lane'&&sortDir==='desc'?'bg-surface-2 font-medium':''} hover:bg-hover" onclick={() => setSort('lane','desc')}>{t.fontes.colSortZA}</button>
-												</div>
-											</div>
-										{/if}
-									</th>
 									<!-- Status — filter only (só 2 valores, sort irrelevante) -->
 									<th class="relative px-4 py-2.5 font-medium" data-col-popover>
 										<button class="flex items-center gap-1 hover:text-text" aria-haspopup="true" aria-expanded={activePopover === 'status'} aria-controls="popover-status" onclick={(e) => { e.stopPropagation(); activePopover = activePopover === 'status' ? null : 'status'; }}>
@@ -910,7 +898,23 @@
 											</div>
 										{/if}
 									</th>
-									<!-- Tags — sort + tag filter com datalist -->
+									<!-- Atualizado — sort only -->
+									<th class="relative px-4 py-2.5 font-medium" data-col-popover>
+										<button class="flex items-center gap-1 hover:text-text" aria-haspopup="true" aria-expanded={activePopover === 'updated'} aria-controls="popover-updated" onclick={(e) => { e.stopPropagation(); activePopover = activePopover === 'updated' ? null : 'updated'; }}>
+											{t.fontes.colUpdated}
+											{#if sortBy==='updated_at'}<span class="h-1.5 w-1.5 rounded-full bg-text"></span>{/if}
+											<span class="opacity-40">▾</span>
+										</button>
+										{#if activePopover === 'updated'}
+											<div id="popover-updated" role="menu" class="absolute left-0 top-full z-30 min-w-[180px] rounded-xl border border-border bg-bg p-3 shadow-xl" data-col-popover>
+												<div class="flex gap-1">
+													<button class="flex-1 rounded-token border border-border px-2 py-1 text-[12px] {sortBy==='updated_at'&&sortDir==='desc'?'bg-surface-2 font-medium':''} hover:bg-hover" onclick={() => setSort('updated_at','desc')}>{t.fontes.colSortNewest}</button>
+													<button class="flex-1 rounded-token border border-border px-2 py-1 text-[12px] {sortBy==='updated_at'&&sortDir==='asc'?'bg-surface-2 font-medium':''} hover:bg-hover" onclick={() => setSort('updated_at','asc')}>{t.fontes.colSortOldest}</button>
+												</div>
+											</div>
+										{/if}
+									</th>
+									<!-- Tags — sort + tag filter com datalist (penúltima) -->
 									<th class="relative px-4 py-2.5 font-medium" data-col-popover>
 										<button class="flex items-center gap-1 hover:text-text" aria-haspopup="true" aria-expanded={activePopover === 'tags'} aria-controls="popover-tags" onclick={(e) => { e.stopPropagation(); activePopover = activePopover === 'tags' ? null : 'tags'; }}>
 											{t.fontes.colTags}
@@ -918,7 +922,7 @@
 											<span class="opacity-40">▾</span>
 										</button>
 										{#if activePopover === 'tags'}
-											<div id="popover-tags" role="menu" class="absolute left-0 top-full z-30 min-w-[200px] rounded-xl border border-border bg-bg p-3 shadow-xl" data-col-popover>
+											<div id="popover-tags" role="menu" class="absolute right-0 top-full z-30 min-w-[200px] rounded-xl border border-border bg-bg p-3 shadow-xl" data-col-popover>
 												<div class="mb-2 flex gap-1">
 													<button class="flex-1 rounded-token border border-border px-2 py-1 text-[12px] {sortBy==='display_name'&&sortDir==='asc'?'bg-surface-2 font-medium':''} hover:bg-hover" onclick={() => setSort('display_name','asc')}>{t.fontes.colSortAZ}</button>
 													<button class="flex-1 rounded-token border border-border px-2 py-1 text-[12px] {sortBy==='display_name'&&sortDir==='desc'?'bg-surface-2 font-medium':''} hover:bg-hover" onclick={() => setSort('display_name','desc')}>{t.fontes.colSortZA}</button>
@@ -934,23 +938,23 @@
 											</div>
 										{/if}
 									</th>
-									<!-- Atualizado — sort only -->
+									<!-- Lane — sort only (última coluna de dados) -->
 									<th class="relative px-4 py-2.5 font-medium" data-col-popover>
-										<button class="flex items-center gap-1 hover:text-text" aria-haspopup="true" aria-expanded={activePopover === 'updated'} aria-controls="popover-updated" onclick={(e) => { e.stopPropagation(); activePopover = activePopover === 'updated' ? null : 'updated'; }}>
-											{t.fontes.colUpdated}
-											{#if sortBy==='updated_at'}<span class="h-1.5 w-1.5 rounded-full bg-text"></span>{/if}
+										<button class="flex items-center gap-1 hover:text-text" aria-haspopup="true" aria-expanded={activePopover === 'lane'} aria-controls="popover-lane" onclick={(e) => { e.stopPropagation(); activePopover = activePopover === 'lane' ? null : 'lane'; }}>
+											{t.fontes.colLane}
 											<span class="opacity-40">▾</span>
 										</button>
-										{#if activePopover === 'updated'}
-											<div id="popover-updated" role="menu" class="absolute right-0 top-full z-30 min-w-[180px] rounded-xl border border-border bg-bg p-3 shadow-xl" data-col-popover>
+										{#if activePopover === 'lane'}
+											<div id="popover-lane" role="menu" class="absolute right-0 top-full z-30 min-w-[160px] rounded-xl border border-border bg-bg p-3 shadow-xl" data-col-popover>
 												<div class="flex gap-1">
-													<button class="flex-1 rounded-token border border-border px-2 py-1 text-[12px] {sortBy==='updated_at'&&sortDir==='desc'?'bg-surface-2 font-medium':''} hover:bg-hover" onclick={() => setSort('updated_at','desc')}>{t.fontes.colSortNewest}</button>
-													<button class="flex-1 rounded-token border border-border px-2 py-1 text-[12px] {sortBy==='updated_at'&&sortDir==='asc'?'bg-surface-2 font-medium':''} hover:bg-hover" onclick={() => setSort('updated_at','asc')}>{t.fontes.colSortOldest}</button>
+													<button class="flex-1 rounded-token border border-border px-2 py-1 text-[12px] {sortBy==='lane'&&sortDir==='asc'?'bg-surface-2 font-medium':''} hover:bg-hover" onclick={() => setSort('lane','asc')}>{t.fontes.colSortAZ}</button>
+													<button class="flex-1 rounded-token border border-border px-2 py-1 text-[12px] {sortBy==='lane'&&sortDir==='desc'?'bg-surface-2 font-medium':''} hover:bg-hover" onclick={() => setSort('lane','desc')}>{t.fontes.colSortZA}</button>
 												</div>
 											</div>
 										{/if}
 									</th>
-									<th class="px-4 py-2.5 text-right font-medium">{t.fontes.colActions}</th>
+									<!-- ⋮ kebab — sem cabeçalho de texto -->
+									<th class="w-10 px-2 py-2.5"></th>
 								</tr>
 							</thead>
 							<tbody>
@@ -974,7 +978,6 @@
 										<td class="px-4 py-2.5 whitespace-nowrap text-muted">
 											<span aria-hidden="true" class="mr-1 opacity-70">{kindIcon(s.kind)}</span>{kindLabel(s.kind)}
 										</td>
-										<td class="px-4 py-2.5 text-muted">{s.lane}</td>
 										<td class="px-4 py-2.5 whitespace-nowrap">
 											<span class="inline-flex items-center gap-1.5 text-muted">
 												<span
@@ -983,6 +986,7 @@
 												{s.status === 'active' ? t.fontes.statusActive : t.fontes.statusPaused}
 											</span>
 										</td>
+										<td class="px-4 py-2.5 whitespace-nowrap tabular-nums text-muted">{fmtDate(s.updated_at)}</td>
 										<td class="px-4 py-2.5">
 											{#if s.tags.length > 0}
 												<div class="flex flex-wrap gap-1">
@@ -994,25 +998,35 @@
 												<span class="text-muted">{t.fontes.never}</span>
 											{/if}
 										</td>
-										<td class="px-4 py-2.5 whitespace-nowrap tabular-nums text-muted">{fmtDate(s.updated_at)}</td>
-										<td class="px-4 py-2.5 whitespace-nowrap text-right">
-											<div class="inline-flex gap-1.5">
-												{#if supportsPause(s.kind)}
-													<button
-														class="rounded-token border border-border px-2 py-1 text-[12px] text-muted hover:bg-surface-2 disabled:opacity-50"
-														disabled={toggling[s.api_id]}
-														aria-label={`${s.status === 'active' ? t.fontes.actionPause : t.fontes.actionResume}: ${s.display_name || s.api_id}`}
-														onclick={() => togglePause(s)}
-													>{s.status === 'active' ? t.fontes.actionPause : t.fontes.actionResume}</button>
+										<td class="px-4 py-2.5 text-muted">{s.lane}</td>
+										<td class="w-10 px-2 py-2.5 text-right">
+											<div class="relative inline-block" data-kebab>
+												<button
+													class="flex h-7 w-7 items-center justify-center rounded-token text-muted hover:bg-surface-2"
+													aria-label={`Ações: ${s.display_name || s.api_id}`}
+													onclick={(e) => { e.stopPropagation(); activeKebab = activeKebab === s.api_id ? null : s.api_id; }}
+													data-kebab
+												>⋮</button>
+												{#if activeKebab === s.api_id}
+													<div class="absolute right-0 top-full z-30 min-w-[160px] rounded-xl border border-border bg-bg py-1 shadow-xl" data-kebab>
+														{#if supportsPause(s.kind)}
+															<button
+																class="w-full px-3 py-1.5 text-left text-[13px] text-muted hover:bg-hover disabled:opacity-50"
+																disabled={toggling[s.api_id]}
+																onclick={() => { activeKebab = null; togglePause(s); }}
+															>{s.status === 'active' ? t.fontes.actionPause : t.fontes.actionResume}</button>
+														{/if}
+														<button
+															class="w-full px-3 py-1.5 text-left text-[13px] text-muted hover:bg-hover"
+															onclick={() => { activeKebab = null; openEdit(s); }}
+														>{t.fontes.actionEdit}</button>
+														<div class="my-1 border-t border-border"></div>
+														<button
+															class="w-full px-3 py-1.5 text-left text-[13px] text-red-500 hover:bg-hover"
+															onclick={() => { activeKebab = null; deleteTarget = s; }}
+														>{t.fontes.actionDelete}</button>
+													</div>
 												{/if}
-												<button
-													class="rounded-token border border-border px-2 py-1 text-[12px] text-muted hover:bg-surface-2"
-													aria-label={`${t.fontes.actionEdit}: ${s.display_name || s.api_id}`}
-													onclick={() => openEdit(s)}>{t.fontes.actionEdit}</button>
-												<button
-													class="rounded-token border border-border px-2 py-1 text-[12px] text-red-500 hover:bg-surface-2"
-													aria-label={`${t.fontes.actionDelete}: ${s.display_name || s.api_id}`}
-													onclick={() => (deleteTarget = s)}>{t.fontes.actionDelete}</button>
 											</div>
 										</td>
 									</tr>

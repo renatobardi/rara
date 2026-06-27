@@ -528,17 +528,21 @@ func TestHTTPGetSourceConfigNotFound(t *testing.T) {
 
 func TestPatchSource_EditPodcastFeedURL(t *testing.T) {
 	core, db, _ := newTestCore(t)
-	db.SeedPodcastFeed(3, "https://old.example/feed.rss", "Old", "")
+	db.SeedPodcastFeed(3, "https://old.example/feed.rss", "Scraped Title", "")
 
 	err := core.PatchSource(context.Background(), "podcast:3", SourcePatch{
-		Config: map[string]string{"feed_url": "https://new.example/feed.rss", "title": "New"},
+		Config: map[string]string{"feed_url": "https://new.example/feed.rss"},
 	})
 	if err != nil {
 		t.Fatalf("patch: %v", err)
 	}
 	got := db.podcastFeeds[3]
-	if got.FeedURL != "https://new.example/feed.rss" || got.Title != "New" {
-		t.Fatalf("podcast not updated: %+v", got)
+	// feed_url updated; title preserved from scraping (not sent in PATCH)
+	if got.FeedURL != "https://new.example/feed.rss" {
+		t.Errorf("feed_url not updated: %+v", got)
+	}
+	if got.Title != "Scraped Title" {
+		t.Errorf("title was zeroed (want preserved): %+v", got)
 	}
 }
 
@@ -594,5 +598,43 @@ func TestMCPListSources(t *testing.T) {
 	toolJSON(t, res, &result)
 	if result.Total != 1 || result.Items[0].Kind != "podcast" {
 		t.Errorf("rara_list_sources kind=podcast: %+v", result)
+	}
+}
+
+func TestAddFeedSourceHNWithEndpoint(t *testing.T) {
+	core, db, _ := newTestCore(t)
+	_, err := core.AddFeedSource(context.Background(), "hn", "Ask HN", "https://news.ycombinator.com/ask", "")
+	if err != nil {
+		t.Fatalf("AddFeedSource HN with endpoint: %v", err)
+	}
+	if len(db.feedSources) == 0 {
+		t.Fatal("expected feed source to be stored")
+	}
+	// mock starts IDs at 1
+	if db.feedSources[1].Endpoint != "https://news.ycombinator.com/ask" {
+		t.Errorf("endpoint=%q, want https://news.ycombinator.com/ask", db.feedSources[1].Endpoint)
+	}
+}
+
+func TestAddFeedSourceHNInvalidEndpoint(t *testing.T) {
+	core, _, _ := newTestCore(t)
+	_, err := core.AddFeedSource(context.Background(), "hn", "Bad HN", "not-a-url", "")
+	if err == nil {
+		t.Fatal("expected error for invalid HN endpoint, got nil")
+	}
+}
+
+func TestNormalizeFeedSourceConfigHNEndpoint(t *testing.T) {
+	core, _, _ := newTestCore(t)
+	cfg := map[string]string{
+		"name":     "Ask HN",
+		"endpoint": "https://news.ycombinator.com/ask",
+	}
+	out, err := core.normalizeSourceConfig(context.Background(), "hn", cfg)
+	if err != nil {
+		t.Fatalf("normalizeSourceConfig hn: %v", err)
+	}
+	if out["endpoint"] != "https://news.ycombinator.com/ask" {
+		t.Errorf("out[endpoint]=%q, want https://news.ycombinator.com/ask", out["endpoint"])
 	}
 }
