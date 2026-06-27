@@ -856,7 +856,9 @@ func (d *pgxDatabase) UpsertCapability(ctx context.Context, c Capability) error 
 	return err
 }
 
-func (d *pgxDatabase) UpsertProvider(ctx context.Context, p Provider) error {
+// prepareProvider validates p and applies name-based defaults for Worker and App. Called by both
+// UpsertProvider and SeedProvider so validation logic lives in exactly one place.
+func prepareProvider(p *Provider) error {
 	if !isValidRuntime(p.Runtime) {
 		return fmt.Errorf("invalid runtime %q", p.Runtime)
 	}
@@ -871,6 +873,35 @@ func (d *pgxDatabase) UpsertProvider(ctx context.Context, p Provider) error {
 	}
 	if p.App == "" {
 		p.App = p.Name
+	}
+	return nil
+}
+
+// execProviderUpsert runs the provider INSERT … ON CONFLICT SQL (q) with the standard $1–$13 args.
+// The two callers (UpsertProvider, SeedProvider) differ only in q — one includes enabled in SET,
+// the other does not — so the arg list and format string are shared here.
+func (d *pgxDatabase) execProviderUpsert(ctx context.Context, q string, p Provider, label string) error {
+	// heartbeat_at: owned by TouchProviderHeartbeat (runner proof-of-life). Excluded from INSERT
+	// and SET so seed never clobbers it — a re-seed must not evict a healthy provider from the
+	// router's health gate.
+	// last_collect_at: owned by the dispatcher (stamped after each successful wake). Excluded so
+	// seed never resets the cadence clock.
+	// last_attempt_at: owned by the dispatcher (stamped on every wake attempt). Excluded so
+	// seed never resets the retry throttle mid-flight.
+	_, err := d.conn.Exec(ctx, q,
+		p.Name, p.Capability, p.Runtime, p.Activation,
+		jsonOrEmpty(p.Constraints, "{}"), p.Enabled, nullStr(p.RunnerURL),
+		jsonOrEmpty(p.Env, "{}"), p.CollectCadenceSeconds, p.RetryIntervalSeconds,
+		nullStr(p.Worker), nullStr(p.App), nullStr(p.Description))
+	if err != nil {
+		return fmt.Errorf("%s provider %q: %w", label, p.Name, err)
+	}
+	return nil
+}
+
+func (d *pgxDatabase) UpsertProvider(ctx context.Context, p Provider) error {
+	if err := prepareProvider(&p); err != nil {
+		return err
 	}
 	const q = `
 		INSERT INTO providers
@@ -890,40 +921,14 @@ func (d *pgxDatabase) UpsertProvider(ctx context.Context, p Provider) error {
 			worker                  = EXCLUDED.worker,
 			app                     = EXCLUDED.app,
 			description             = EXCLUDED.description`
-	// heartbeat_at: owned by TouchProviderHeartbeat (runner proof-of-life). Excluded from INSERT
-	// and SET so seed never clobbers it — a re-seed must not evict a healthy provider from the
-	// router's health gate.
-	// last_collect_at: owned by the dispatcher (stamped after each successful wake). Excluded so
-	// seed never resets the cadence clock.
-	// last_attempt_at: owned by the dispatcher (stamped on every wake attempt). Excluded so
-	// seed never resets the retry throttle mid-flight.
-	_, err := d.conn.Exec(ctx, q,
-		p.Name, p.Capability, p.Runtime, p.Activation,
-		jsonOrEmpty(p.Constraints, "{}"), p.Enabled, nullStr(p.RunnerURL),
-		jsonOrEmpty(p.Env, "{}"), p.CollectCadenceSeconds, p.RetryIntervalSeconds, nullStr(p.Worker), nullStr(p.App), nullStr(p.Description))
-	if err != nil {
-		return fmt.Errorf("upsert provider %q: %w", p.Name, err)
-	}
-	return nil
+	return d.execProviderUpsert(ctx, q, p, "upsert")
 }
 
 // SeedProvider is like UpsertProvider but excludes enabled from the ON CONFLICT SET clause.
 // Re-seeding must never reset an operator's pause/disable toggle.
 func (d *pgxDatabase) SeedProvider(ctx context.Context, p Provider) error {
-	if !isValidRuntime(p.Runtime) {
-		return fmt.Errorf("invalid runtime %q", p.Runtime)
-	}
-	if !isValidActivation(p.Activation) {
-		return fmt.Errorf("invalid activation %q", p.Activation)
-	}
-	if !isJSONObject(p.Env) {
-		return fmt.Errorf("env must be a JSON object")
-	}
-	if p.Worker == "" {
-		p.Worker = p.Name
-	}
-	if p.App == "" {
-		p.App = p.Name
+	if err := prepareProvider(&p); err != nil {
+		return err
 	}
 	const q = `
 		INSERT INTO providers
@@ -943,15 +948,7 @@ func (d *pgxDatabase) SeedProvider(ctx context.Context, p Provider) error {
 			app                     = EXCLUDED.app,
 			description             = EXCLUDED.description`
 	// enabled: intentionally excluded from SET — operator-owned (console toggle).
-	// heartbeat_at / last_collect_at / last_attempt_at: runtime-owned, excluded for same reason.
-	_, err := d.conn.Exec(ctx, q,
-		p.Name, p.Capability, p.Runtime, p.Activation,
-		jsonOrEmpty(p.Constraints, "{}"), p.Enabled, nullStr(p.RunnerURL),
-		jsonOrEmpty(p.Env, "{}"), p.CollectCadenceSeconds, p.RetryIntervalSeconds, nullStr(p.Worker), nullStr(p.App), nullStr(p.Description))
-	if err != nil {
-		return fmt.Errorf("seed provider %q: %w", p.Name, err)
-	}
-	return nil
+	return d.execProviderUpsert(ctx, q, p, "seed")
 }
 
 func (d *pgxDatabase) UpsertFlow(ctx context.Context, f Flow) (int, error) {

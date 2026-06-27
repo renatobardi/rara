@@ -311,9 +311,11 @@ func decodeBrightDataPostsAt(raw []byte, now time.Time) ([]LinkedInPost, error) 
 					continue
 				}
 			}
-			text := firstNonEmpty(p.Title, p.Attribution)
-			if p.Title != "" && p.Attribution != "" {
-				text = p.Title + "\n\n" + p.Attribution
+			title := strings.TrimSpace(p.Title)
+			attribution := strings.TrimSpace(p.Attribution)
+			text := firstNonEmpty(title, attribution)
+			if title != "" && attribution != "" {
+				text = title + "\n\n" + attribution
 			}
 			if p.Link == "" && text == "" {
 				continue

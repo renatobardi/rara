@@ -1367,18 +1367,24 @@ func TestSeedProviderPreservesEnabled(t *testing.T) {
 	if err := db.UpsertCapability(ctx, Capability{Name: capTranscrever}); err != nil {
 		t.Fatalf("UpsertCapability: %v", err)
 	}
-	p := Provider{Name: "caption-mac", Capability: capTranscrever, Runtime: runtimeLocal, Activation: activationResident, Enabled: true}
+	p := Provider{Name: "caption-mac", Capability: capTranscrever, Runtime: runtimeLocal, Activation: activationResident, Enabled: true, Description: "v1"}
 	if err := db.SeedProvider(ctx, p); err != nil {
 		t.Fatalf("first SeedProvider: %v", err)
 	}
-	// Operator disables via the console; then core-job seed runs again with Enabled: true.
+	// Operator disables via the console; then core-job seed runs again with Enabled: true and
+	// an updated description — the toggle must be preserved, but the description must refresh.
 	db.providers["caption-mac"] = func() Provider { pp := db.providers["caption-mac"]; pp.Enabled = false; return pp }()
 	p.Enabled = true
+	p.Description = "v2"
 	if err := db.SeedProvider(ctx, p); err != nil {
 		t.Fatalf("second SeedProvider: %v", err)
 	}
-	if db.providers["caption-mac"].Enabled {
+	got := db.providers["caption-mac"]
+	if got.Enabled {
 		t.Errorf("re-seed must not overwrite the operator's enabled=false toggle")
+	}
+	if got.Description != "v2" {
+		t.Errorf("re-seed must refresh non-enabled fields: description = %q, want v2", got.Description)
 	}
 }
 

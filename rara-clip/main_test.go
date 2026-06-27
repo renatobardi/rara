@@ -330,6 +330,9 @@ func TestDecodeCompanyProfilesFiltersOldPosts(t *testing.T) {
 	if posts[0].URL != urlA {
 		t.Errorf("expected recent post first, got %+v", posts[0])
 	}
+	if posts[1].URL != "https://lnkd.in/c" {
+		t.Errorf("expected undated post second, got %+v", posts[1])
+	}
 }
 
 func TestNormalizeLinkedInCompanyURL(t *testing.T) {
