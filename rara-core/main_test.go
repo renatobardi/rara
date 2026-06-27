@@ -796,8 +796,16 @@ func (m *MockDatabase) ListSources(_ context.Context, f SourceFilter) (SourcesRe
 		}
 		if f.Q != "" {
 			q := strings.ToLower(f.Q)
+			matchTag := false
+			for _, tg := range s.Tags {
+				if strings.Contains(strings.ToLower(tg), q) {
+					matchTag = true
+					break
+				}
+			}
 			if !strings.Contains(strings.ToLower(s.DisplayName), q) &&
-				!strings.Contains(strings.ToLower(s.ConfigSummary), q) {
+				!strings.Contains(strings.ToLower(s.ConfigSummary), q) &&
+				!matchTag {
 				continue
 			}
 		}
@@ -824,6 +832,28 @@ func (m *MockDatabase) ListSources(_ context.Context, f SourceFilter) (SourcesRe
 	if page <= 0 {
 		page = 1
 	}
+	// Sort (mirrors allowlist in store_reads.go).
+	if f.SortBy != "" {
+		desc := strings.EqualFold(f.SortDir, "desc")
+		sort.Slice(filtered, func(i, j int) bool {
+			var a, b string
+			switch f.SortBy {
+			case "kind":
+				a, b = filtered[i].Kind, filtered[j].Kind
+			case "lane":
+				a, b = filtered[i].Lane, filtered[j].Lane
+			case "updated_at":
+				a, b = filtered[i].UpdatedAt.String(), filtered[j].UpdatedAt.String()
+			default:
+				a, b = filtered[i].DisplayName, filtered[j].DisplayName
+			}
+			if desc {
+				return a > b
+			}
+			return a < b
+		})
+	}
+
 	start := (page - 1) * pageSize
 	end := start + pageSize
 	if start > len(filtered) {

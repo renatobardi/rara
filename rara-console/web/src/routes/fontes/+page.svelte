@@ -76,6 +76,14 @@
 	let query = $state('');
 	let searchTimer: ReturnType<typeof setTimeout> | undefined;
 
+	// sort
+	let sortBy = $state('display_name');
+	let sortDir = $state<'asc' | 'desc'>('asc');
+
+	// column header popovers + global search toggle
+	let activePopover = $state<string | null>(null);
+	let searchOpen = $state(false);
+
 	// pagination (server-side)
 	let page = $state(1);
 	let pageSize = $state(20);
@@ -205,9 +213,30 @@
 		if (fStatus) q.set('status', fStatus);
 		if (fTag) q.set('tag', fTag);
 		if (query.trim()) q.set('q', query.trim());
+		if (sortBy !== 'display_name' || sortDir !== 'asc') {
+			q.set('sort_by', sortBy);
+			q.set('sort_dir', sortDir);
+		}
 		return q;
 	}
 	let hasFilter = $derived(!!(fKind || fStatus || fTag || query.trim()));
+
+	function clearFilters() {
+		fKind = '';
+		fStatus = '';
+		fTag = '';
+		query = '';
+		searchOpen = false;
+		activePopover = null;
+		applyFilters();
+	}
+
+	function setSort(col: string, dir: 'asc' | 'desc') {
+		sortBy = col;
+		sortDir = dir;
+		activePopover = null;
+		applyFilters();
+	}
 
 	// A monotonic token + AbortController so a slow page request can't overwrite a newer one and a
 	// superseded fetch is cancelled (race guard demanded by the filter/page churn).
@@ -623,11 +652,19 @@
 	let mutating = $derived(creating || editSaving || deleting || bulkBusy);
 
 	function closeOnEsc(e: KeyboardEvent) {
-		if (e.key !== 'Escape' || mutating) return;
+		if (e.key !== 'Escape') return;
+		if (activePopover) { activePopover = null; return; }
+		if (searchOpen) { searchOpen = false; query = ''; applyFilters(); return; }
+		if (mutating) return;
 		if (wizardOpen) wizardOpen = false;
 		else if (editSource) editSource = null;
 		else if (deleteTarget) deleteTarget = null;
 		else if (bulkDeleteOpen) bulkDeleteOpen = false;
+	}
+
+	function onWindowClick(e: MouseEvent) {
+		if (!activePopover) return;
+		if (!(e.target as HTMLElement).closest('[data-col-popover]')) activePopover = null;
 	}
 
 	// Move focus into a dialog when it opens and keep Tab cycling trapped inside it, so keyboard
@@ -674,14 +711,34 @@
 	}
 </script>
 
-<svelte:window onkeydown={closeOnEsc} />
+<svelte:window onkeydown={closeOnEsc} onclick={onWindowClick} />
 
 <section>
-	<div class="mb-5 flex items-start gap-4">
-		<p class="flex-1 text-[13px] text-muted">{t.fontes.subtitle}</p>
+	<div class="mb-5 flex items-center gap-2">
 		{#if !loading && !error}
 			<button
-				class="flex-none rounded-token bg-text px-3.5 py-1.5 text-[13px] font-medium text-bg hover:opacity-90"
+				class="flex h-[34px] w-[34px] items-center justify-center rounded-token border border-border text-muted hover:bg-hover {searchOpen ? 'bg-hover' : ''}"
+				aria-label={t.fontes.searchPlaceholder}
+				onclick={() => { searchOpen = !searchOpen; if (!searchOpen) { query = ''; applyFilters(); } }}
+			>
+				<svg viewBox="0 0 20 20" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true">
+					<circle cx="8.5" cy="8.5" r="5.5"/><path d="M13.5 13.5 18 18" stroke-linecap="round"/>
+				</svg>
+			</button>
+			{#if searchOpen}
+				<input
+					autofocus
+					bind:value={query}
+					placeholder={t.fontes.searchPlaceholder}
+					oninput={onSearchInput}
+					class="h-[34px] flex-1 rounded-token border border-border bg-bg px-3 text-[13px] outline-none focus:border-text/40"
+				/>
+			{/if}
+			{#if hasFilter}
+				<button class="text-[12px] text-muted hover:text-text" onclick={clearFilters}>{t.fontes.filterClear} ✕</button>
+			{/if}
+			<button
+				class="ml-auto flex-none rounded-token bg-text px-3.5 py-1.5 text-[13px] font-medium text-bg hover:opacity-90"
 				onclick={openWizard}>+ {t.fontes.newSource}</button
 			>
 		{/if}
@@ -698,54 +755,6 @@
 	{:else if error}
 		<p class="text-sm text-red-500">{t.fontes.error}</p>
 	{:else}
-		<!-- ── Filters ── -->
-		<div class="mb-4 flex flex-wrap items-center gap-2">
-			<input
-				type="search"
-				bind:value={query}
-				oninput={onSearchInput}
-				placeholder={t.fontes.searchPlaceholder}
-				aria-label={t.fontes.searchPlaceholder}
-				class="min-w-[240px] flex-1 rounded-token border border-border bg-bg px-3 py-1.5 text-[13px] outline-none focus:border-text/40"
-			/>
-			<select
-				bind:value={fKind}
-				onchange={applyFilters}
-				aria-label={t.fontes.colKind}
-				class="rounded-token border border-border bg-bg px-3 py-1.5 text-[13px] outline-none focus:border-text/40"
-			>
-				<option value="">{t.fontes.filterAllKinds}</option>
-				{#each kinds as k}
-					<option value={k.kind}>{k.label}{counts.by_kind[k.kind] ? ` (${counts.by_kind[k.kind]})` : ''}</option>
-				{/each}
-			</select>
-			<select
-				bind:value={fStatus}
-				onchange={applyFilters}
-				aria-label={t.fontes.colStatus}
-				class="rounded-token border border-border bg-bg px-3 py-1.5 text-[13px] outline-none focus:border-text/40"
-			>
-				<option value="">{t.fontes.filterAllStatus}</option>
-				<option value="active">{t.fontes.statusActive}{counts.by_status.active ? ` (${counts.by_status.active})` : ''}</option>
-				<option value="paused">{t.fontes.statusPaused}{counts.by_status.paused ? ` (${counts.by_status.paused})` : ''}</option>
-			</select>
-			{#if tagUniverse.length > 0}
-				<select
-					bind:value={fTag}
-					onchange={applyFilters}
-					aria-label={t.fontes.colTags}
-					class="rounded-token border border-border bg-bg px-3 py-1.5 text-[13px] outline-none focus:border-text/40"
-				>
-					<option value="">{t.fontes.filterAllTags}</option>
-					{#each tagUniverse as tag}
-						<option value={tag}>{tag}</option>
-					{/each}
-				</select>
-			{/if}
-			<span class="ml-auto text-[12px] tabular-nums text-muted">
-				{total} {total === 1 ? t.fontes.count : t.fontes.countPlural}
-			</span>
-		</div>
 
 		<!-- ── Bulk action bar ── -->
 		{#if selectedIds.length > 0}
@@ -796,10 +805,14 @@
 		{#if items.length === 0}
 			<p class="text-sm text-muted">{hasFilter ? t.fontes.emptyFiltered : t.fontes.empty}</p>
 		{:else}
+			<datalist id="tag-universe">
+				{#each tagUniverse as tag}<option value={tag}></option>{/each}
+			</datalist>
 			<div class="overflow-x-auto rounded-xl border border-border transition-opacity {refetching ? 'opacity-60' : ''}" aria-busy={refetching}>
 						<table class="w-full border-collapse text-[13px]">
 							<thead>
-								<tr class="border-b border-border bg-surface-2 text-left text-muted">
+
+						<tr class="border-b border-border bg-surface-2 text-left text-muted">
 									<th class="w-9 px-4 py-2.5">
 										<input
 											type="checkbox"
@@ -810,12 +823,128 @@
 											class="cursor-pointer align-middle"
 										/>
 									</th>
-									<th class="px-4 py-2.5 font-medium">{t.fontes.colName}</th>
-									<th class="px-4 py-2.5 font-medium">{t.fontes.colKind}</th>
-									<th class="px-4 py-2.5 font-medium">{t.fontes.colLane}</th>
-									<th class="px-4 py-2.5 font-medium">{t.fontes.colStatus}</th>
-									<th class="px-4 py-2.5 font-medium">{t.fontes.colTags}</th>
-									<th class="px-4 py-2.5 font-medium">{t.fontes.colUpdated}</th>
+									<!-- Nome — sort + text search (q) -->
+									<th class="relative px-4 py-2.5 font-medium" data-col-popover>
+										<button class="flex items-center gap-1 hover:text-text" onclick={(e) => { e.stopPropagation(); activePopover = activePopover === 'name' ? null : 'name'; }}>
+											{t.fontes.colName}
+											{#if query.trim()}<span class="h-1.5 w-1.5 rounded-full bg-text"></span>{/if}
+											<span class="opacity-40">▾</span>
+										</button>
+										{#if activePopover === 'name'}
+											<div class="absolute left-0 top-full z-30 min-w-[220px] rounded-xl border border-border bg-bg p-3 shadow-xl" data-col-popover>
+												<div class="mb-2 flex gap-1">
+													<button class="flex-1 rounded-token border border-border px-2 py-1 text-[12px] {sortBy==='display_name'&&sortDir==='asc'?'bg-surface-2 font-medium':''} hover:bg-hover" onclick={() => setSort('display_name','asc')}>{t.fontes.colSortAZ}</button>
+													<button class="flex-1 rounded-token border border-border px-2 py-1 text-[12px] {sortBy==='display_name'&&sortDir==='desc'?'bg-surface-2 font-medium':''} hover:bg-hover" onclick={() => setSort('display_name','desc')}>{t.fontes.colSortZA}</button>
+												</div>
+												<input
+													bind:value={query}
+													placeholder={t.fontes.searchPlaceholder}
+													oninput={onSearchInput}
+													class="w-full rounded-token border border-border bg-bg px-2 py-1.5 text-[12px] outline-none focus:border-text/40"
+												/>
+											</div>
+										{/if}
+									</th>
+									<!-- Tipo — sort + kind filter -->
+									<th class="relative px-4 py-2.5 font-medium" data-col-popover>
+										<button class="flex items-center gap-1 hover:text-text" onclick={(e) => { e.stopPropagation(); activePopover = activePopover === 'kind' ? null : 'kind'; }}>
+											{t.fontes.colKind}
+											{#if fKind}<span class="h-1.5 w-1.5 rounded-full bg-text"></span>{/if}
+											<span class="opacity-40">▾</span>
+										</button>
+										{#if activePopover === 'kind'}
+											<div class="absolute left-0 top-full z-30 min-w-[200px] rounded-xl border border-border bg-bg p-3 shadow-xl" data-col-popover>
+												<div class="mb-2 flex gap-1">
+													<button class="flex-1 rounded-token border border-border px-2 py-1 text-[12px] {sortBy==='kind'&&sortDir==='asc'?'bg-surface-2 font-medium':''} hover:bg-hover" onclick={() => setSort('kind','asc')}>{t.fontes.colSortAZ}</button>
+													<button class="flex-1 rounded-token border border-border px-2 py-1 text-[12px] {sortBy==='kind'&&sortDir==='desc'?'bg-surface-2 font-medium':''} hover:bg-hover" onclick={() => setSort('kind','desc')}>{t.fontes.colSortZA}</button>
+												</div>
+												<div class="flex flex-col gap-0.5">
+													<button class="rounded-token px-2 py-1 text-left text-[12px] {!fKind?'font-medium text-text':'text-muted'} hover:bg-hover" onclick={() => { fKind=''; activePopover=null; applyFilters(); }}>{t.fontes.filterAllKinds}</button>
+													{#each kinds as k}
+														<button class="rounded-token px-2 py-1 text-left text-[12px] {fKind===k.kind?'font-medium text-text':'text-muted'} hover:bg-hover" onclick={() => { fKind=k.kind; activePopover=null; applyFilters(); }}>
+															{k.label}{counts.by_kind[k.kind] ? ` (${counts.by_kind[k.kind]})` : ''}
+														</button>
+													{/each}
+												</div>
+											</div>
+										{/if}
+									</th>
+									<!-- Lane — sort only -->
+									<th class="relative px-4 py-2.5 font-medium" data-col-popover>
+										<button class="flex items-center gap-1 hover:text-text" onclick={(e) => { e.stopPropagation(); activePopover = activePopover === 'lane' ? null : 'lane'; }}>
+											{t.fontes.colLane}
+											<span class="opacity-40">▾</span>
+										</button>
+										{#if activePopover === 'lane'}
+											<div class="absolute left-0 top-full z-30 min-w-[160px] rounded-xl border border-border bg-bg p-3 shadow-xl" data-col-popover>
+												<div class="flex gap-1">
+													<button class="flex-1 rounded-token border border-border px-2 py-1 text-[12px] {sortBy==='lane'&&sortDir==='asc'?'bg-surface-2 font-medium':''} hover:bg-hover" onclick={() => setSort('lane','asc')}>{t.fontes.colSortAZ}</button>
+													<button class="flex-1 rounded-token border border-border px-2 py-1 text-[12px] {sortBy==='lane'&&sortDir==='desc'?'bg-surface-2 font-medium':''} hover:bg-hover" onclick={() => setSort('lane','desc')}>{t.fontes.colSortZA}</button>
+												</div>
+											</div>
+										{/if}
+									</th>
+									<!-- Status — filter only (só 2 valores, sort irrelevante) -->
+									<th class="relative px-4 py-2.5 font-medium" data-col-popover>
+										<button class="flex items-center gap-1 hover:text-text" onclick={(e) => { e.stopPropagation(); activePopover = activePopover === 'status' ? null : 'status'; }}>
+											{t.fontes.colStatus}
+											{#if fStatus}<span class="h-1.5 w-1.5 rounded-full bg-text"></span>{/if}
+											<span class="opacity-40">▾</span>
+										</button>
+										{#if activePopover === 'status'}
+											<div class="absolute left-0 top-full z-30 min-w-[160px] rounded-xl border border-border bg-bg p-3 shadow-xl" data-col-popover>
+												<div class="flex flex-col gap-0.5">
+													<button class="rounded-token px-2 py-1 text-left text-[12px] {!fStatus?'font-medium text-text':'text-muted'} hover:bg-hover" onclick={() => { fStatus=''; activePopover=null; applyFilters(); }}>{t.fontes.filterAllStatus}</button>
+													<button class="rounded-token px-2 py-1 text-left text-[12px] {fStatus==='active'?'font-medium text-text':'text-muted'} hover:bg-hover" onclick={() => { fStatus='active'; activePopover=null; applyFilters(); }}>
+														{t.fontes.statusActive}{counts.by_status.active ? ` (${counts.by_status.active})` : ''}
+													</button>
+													<button class="rounded-token px-2 py-1 text-left text-[12px] {fStatus==='paused'?'font-medium text-text':'text-muted'} hover:bg-hover" onclick={() => { fStatus='paused'; activePopover=null; applyFilters(); }}>
+														{t.fontes.statusPaused}{counts.by_status.paused ? ` (${counts.by_status.paused})` : ''}
+													</button>
+												</div>
+											</div>
+										{/if}
+									</th>
+									<!-- Tags — sort + tag filter com datalist -->
+									<th class="relative px-4 py-2.5 font-medium" data-col-popover>
+										<button class="flex items-center gap-1 hover:text-text" onclick={(e) => { e.stopPropagation(); activePopover = activePopover === 'tags' ? null : 'tags'; }}>
+											{t.fontes.colTags}
+											{#if fTag}<span class="h-1.5 w-1.5 rounded-full bg-text"></span>{/if}
+											<span class="opacity-40">▾</span>
+										</button>
+										{#if activePopover === 'tags'}
+											<div class="absolute left-0 top-full z-30 min-w-[200px] rounded-xl border border-border bg-bg p-3 shadow-xl" data-col-popover>
+												<div class="mb-2 flex gap-1">
+													<button class="flex-1 rounded-token border border-border px-2 py-1 text-[12px] {sortBy==='display_name'&&sortDir==='asc'?'bg-surface-2 font-medium':''} hover:bg-hover" onclick={() => setSort('display_name','asc')}>{t.fontes.colSortAZ}</button>
+													<button class="flex-1 rounded-token border border-border px-2 py-1 text-[12px] {sortBy==='display_name'&&sortDir==='desc'?'bg-surface-2 font-medium':''} hover:bg-hover" onclick={() => setSort('display_name','desc')}>{t.fontes.colSortZA}</button>
+												</div>
+												<input
+													bind:value={fTag}
+													list="tag-universe"
+													placeholder={t.fontes.filterAllTags}
+													oninput={() => { page=1; pageLoad(); }}
+													onchange={() => { activePopover=null; applyFilters(); }}
+													class="w-full rounded-token border border-border bg-bg px-2 py-1.5 text-[12px] outline-none focus:border-text/40"
+												/>
+											</div>
+										{/if}
+									</th>
+									<!-- Atualizado — sort only -->
+									<th class="relative px-4 py-2.5 font-medium" data-col-popover>
+										<button class="flex items-center gap-1 hover:text-text" onclick={(e) => { e.stopPropagation(); activePopover = activePopover === 'updated' ? null : 'updated'; }}>
+											{t.fontes.colUpdated}
+											{#if sortBy==='updated_at'}<span class="h-1.5 w-1.5 rounded-full bg-text"></span>{/if}
+											<span class="opacity-40">▾</span>
+										</button>
+										{#if activePopover === 'updated'}
+											<div class="absolute right-0 top-full z-30 min-w-[180px] rounded-xl border border-border bg-bg p-3 shadow-xl" data-col-popover>
+												<div class="flex gap-1">
+													<button class="flex-1 rounded-token border border-border px-2 py-1 text-[12px] {sortBy==='updated_at'&&sortDir==='desc'?'bg-surface-2 font-medium':''} hover:bg-hover" onclick={() => setSort('updated_at','desc')}>{t.fontes.colSortNewest}</button>
+													<button class="flex-1 rounded-token border border-border px-2 py-1 text-[12px] {sortBy==='updated_at'&&sortDir==='asc'?'bg-surface-2 font-medium':''} hover:bg-hover" onclick={() => setSort('updated_at','asc')}>{t.fontes.colSortOldest}</button>
+												</div>
+											</div>
+										{/if}
+									</th>
 									<th class="px-4 py-2.5 text-right font-medium">{t.fontes.colActions}</th>
 								</tr>
 							</thead>
@@ -885,11 +1014,15 @@
 								{/each}
 							</tbody>
 						</table>
-				{#if total > PAGE_SIZES[0]}
-					<div class="flex items-center justify-between px-4 py-2 text-[11px] text-muted">
-						<span class="tabular-nums">
+				<div class="flex items-center justify-between px-4 py-2 text-[11px] text-muted">
+					<span class="tabular-nums">
+						{#if total > PAGE_SIZES[0]}
 							{t.fontes.pageRange.replace('{from}', String(pageFrom)).replace('{to}', String(pageTo)).replace('{total}', String(total))}
-						</span>
+						{:else}
+							{total} {total === 1 ? t.fontes.count : t.fontes.countPlural}
+						{/if}
+					</span>
+				{#if total > PAGE_SIZES[0]}
 						<div class="flex items-center gap-3">
 							<span class="flex gap-0.5">
 								{#each PAGE_SIZES as sz}
@@ -917,8 +1050,8 @@
 								>›</button>
 							</span>
 						</div>
-					</div>
-				{/if}
+					{/if}
+				</div>
 			</div>
 		{/if}
 	{/if}
@@ -1013,6 +1146,8 @@
 		>
 			<h2 id="fontes-edit-title" class="mb-1 text-[15px] font-semibold">{t.fontes.editTitle}</h2>
 			<p class="mb-4 text-[11px] text-muted">{editSource.api_id} · {kindLabel(editSource.kind)}</p>
+			<!-- form wrapper: Enter submits (#234) -->
+			<form onsubmit={(e) => { e.preventDefault(); submitEdit(); }}>
 			<div class="flex flex-col gap-3">
 				<label class="flex flex-col gap-1 text-[13px]">
 					<span class="text-muted">{t.fontes.editDisplayName}</span>
@@ -1029,13 +1164,15 @@
 							{#each editTags as tag}
 								<span class="inline-flex items-center gap-1 rounded-full border border-border bg-surface-2 px-2 py-0.5 text-[11px] text-muted">
 									{tag}
-									<button class="opacity-60 hover:opacity-100" aria-label={t.fontes.editTagRemove} onclick={() => removeEditTag(tag)}>×</button>
+									<button type="button" class="opacity-60 hover:opacity-100" aria-label={t.fontes.editTagRemove} onclick={() => removeEditTag(tag)}>×</button>
 								</span>
 							{/each}
 						</div>
 					{/if}
+					<!-- #239 datalist para sugestão de tags -->
 					<input
 						bind:value={editTagInput}
+						list="tag-universe"
 						placeholder={t.fontes.editTagAdd}
 						onkeydown={(e) => {
 							if (e.key === 'Enter') {
@@ -1051,7 +1188,8 @@
 					<p class="text-[12px] text-muted">{t.fontes.editLoading}</p>
 				{:else if editKind}
 					{#each editKind.fields ?? [] as f (f.name)}
-						{#if f.name !== 'display_name'}
+						<!-- #237: 'name' is an immutable DB key for rss/html/hn — only display_name is editable -->
+						{#if f.name !== 'display_name' && !(f.name === 'name' && ['rss','html','hn'].includes(editSource.kind))}
 							<label class="flex flex-col gap-1 text-[13px]">
 								<span class="text-muted">{f.label}{f.required ? ' *' : ''}</span>
 								<input
@@ -1069,12 +1207,13 @@
 				{/if}
 			</div>
 			<div class="mt-5 flex justify-end gap-2">
-				<button class="rounded-token border border-border px-3 py-1.5 text-[13px] text-muted hover:bg-surface-2 disabled:opacity-50" disabled={editSaving || editConfigLoading} onclick={() => (editSource = null)}>{t.fontes.wizardCancel}</button>
+				<button type="button" class="rounded-token border border-border px-3 py-1.5 text-[13px] text-muted hover:bg-surface-2 disabled:opacity-50" disabled={editSaving || editConfigLoading} onclick={() => (editSource = null)}>{t.fontes.wizardCancel}</button>
 				<button
+					type="submit"
 					class="rounded-token bg-text px-3.5 py-1.5 text-[13px] font-medium text-bg hover:opacity-90 disabled:opacity-50"
-					disabled={editSaving || editConfigLoading}
-					onclick={submitEdit}>{editSaving ? t.fontes.editSaving : t.fontes.editSave}</button>
+					disabled={editSaving || editConfigLoading}>{editSaving ? t.fontes.editSaving : t.fontes.editSave}</button>
 			</div>
+			</form>
 		</div>
 	</div>
 {/if}

@@ -107,7 +107,7 @@
 		</div>
 	</aside>
 
-	<main class="overflow-y-auto bg-bg">
+	<main class="overflow-x-hidden overflow-y-auto bg-bg">
 		<div
 			class="sticky top-0 z-10 flex items-center gap-4 border-b border-border px-6 py-3 backdrop-blur-md"
 			style="background:color-mix(in srgb, var(--bg) 82%, transparent)"

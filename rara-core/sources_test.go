@@ -277,6 +277,55 @@ func TestHTTPListSources(t *testing.T) {
 	}
 }
 
+func TestListSourcesSearchByTag(t *testing.T) {
+	core, db, _ := newTestCore(t)
+	db.sources = []SourceItem{
+		{ApiID: "rss:1", Kind: "rss", DisplayName: "Tech Blog", Tags: []string{"tech", "news"}, Status: "active"},
+		{ApiID: "rss:2", Kind: "rss", DisplayName: "Sports Feed", Tags: []string{"sports"}, Status: "active"},
+	}
+	h := NewSurfaceMux(core, testToken)
+
+	rec := do(t, h, http.MethodGet, "/v1/sources?q=tech", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got %d: %s", rec.Code, rec.Body.String())
+	}
+	var result SourcesResult
+	if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Total != 1 {
+		t.Errorf("total=%d, want 1 (tag match only)", result.Total)
+	}
+	if len(result.Items) > 0 && result.Items[0].ApiID != "rss:1" {
+		t.Errorf("items[0]=%q, want rss:1", result.Items[0].ApiID)
+	}
+}
+
+func TestListSourcesSortByKindDesc(t *testing.T) {
+	core, db, _ := newTestCore(t)
+	db.sources = []SourceItem{
+		{ApiID: "rss:1", Kind: "rss", DisplayName: "A", Tags: []string{}, Status: "active"},
+		{ApiID: "podcast:1", Kind: "podcast", DisplayName: "B", Tags: []string{}, Status: "active"},
+	}
+	h := NewSurfaceMux(core, testToken)
+
+	rec := do(t, h, http.MethodGet, "/v1/sources?sort_by=kind&sort_dir=desc", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got %d: %s", rec.Code, rec.Body.String())
+	}
+	var result SourcesResult
+	if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Items) != 2 {
+		t.Fatalf("want 2 items, got %d", len(result.Items))
+	}
+	// desc by kind: rss > podcast
+	if result.Items[0].Kind != "rss" {
+		t.Errorf("items[0].kind=%q, want rss (desc sort)", result.Items[0].Kind)
+	}
+}
+
 func TestHTTPGetSourceFound(t *testing.T) {
 	core, db, _ := newTestCore(t)
 	db.sources = []SourceItem{
