@@ -544,6 +544,11 @@
 									{/each}
 								</div>
 							</div>
+						{:else}
+							<div class="py-2">
+								<div class="mb-1 text-[11px] font-medium text-muted">{label}</div>
+								<p class="text-[12px] text-muted">{t.curadoria.profileDiffNoChanges}</p>
+							</div>
 						{/if}
 					{/each}
 					{#if profileDiff.weights.fallback}
@@ -600,6 +605,11 @@
 									{/each}
 								</div>
 							</div>
+						{:else if val != null && !Array.isArray(val)}
+							<div>
+								<div class="mb-1 text-[11px] font-medium text-muted">{label}</div>
+								<pre class="text-[11px] text-muted">{JSON.stringify(val)}</pre>
+							</div>
 						{/if}
 					{/each}
 					{#if activeProfile.weights && typeof activeProfile.weights === 'object' && !Array.isArray(activeProfile.weights)}
@@ -610,6 +620,11 @@
 									<div>{k}: {JSON.stringify(v)}</div>
 								{/each}
 							</div>
+						</div>
+					{:else if activeProfile.weights != null}
+						<div>
+							<div class="mb-1 text-[11px] font-medium text-muted">{t.curadoria.profileWeightsLabel}</div>
+							<pre class="text-[11px] text-muted">{JSON.stringify(activeProfile.weights)}</pre>
 						</div>
 					{/if}
 				</div>
