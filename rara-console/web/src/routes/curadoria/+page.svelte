@@ -1,6 +1,14 @@
 <script lang="ts">
 	import { t } from '$lib/strings';
-	import { labelDecidedBy, aggregatePulso, type Decision } from '$lib/curadoria';
+	import {
+		labelDecidedBy,
+		aggregatePulso,
+		latestDeferReason,
+		signalForKey,
+		type Decision,
+		type QuarantineItem,
+		type ItemDecision
+	} from '$lib/curadoria';
 
 	type InterestProfile = {
 		version: number;
@@ -25,6 +33,19 @@
 		score?: number | null;
 		when: string;
 	};
+
+	// --- quarantine queue state ---
+	let quarantine = $state<QuarantineItem[]>([]);
+	let quarantineLoading = $state(true);
+	let quarantineError = $state(false);
+	let focusedIndex = $state(0);
+	let focusedDecisions = $state<ItemDecision[]>([]);
+	let focusedDecisionsLoading = $state(false);
+	let reviewInFlight = $state(false);
+	let reviewError = $state('');
+
+	let focusedItem = $derived(quarantine[focusedIndex] ?? null);
+	let deferReason = $derived(latestDeferReason(focusedDecisions));
 
 	// --- interest profile state ---
 	let activeProfile = $state<InterestProfile | null>(null);
@@ -65,6 +86,84 @@
 	let ruleEnabled = $state(true);
 	let savingRule = $state(false);
 	let saveRuleError = $state('');
+
+	$effect(() => {
+		fetch('/api/quarantine')
+			.then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
+			.then((d: unknown) => {
+				quarantine = Array.isArray(d) ? (d as QuarantineItem[]) : [];
+				focusedIndex = 0;
+			})
+			.catch(() => (quarantineError = true))
+			.finally(() => (quarantineLoading = false));
+	});
+
+	$effect(() => {
+		const item = focusedItem;
+		if (!item) {
+			focusedDecisions = [];
+			focusedDecisionsLoading = false;
+			return;
+		}
+		const controller = new AbortController();
+		const itemId = item.id;
+		focusedDecisionsLoading = true;
+		focusedDecisions = [];
+		fetch(`/api/items/${itemId}/decisions`, { signal: controller.signal })
+			.then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
+			.then((d: unknown) => { focusedDecisions = Array.isArray(d) ? (d as ItemDecision[]) : []; })
+			.catch((e) => { if (e?.name !== 'AbortError') focusedDecisions = []; })
+			.finally(() => (focusedDecisionsLoading = false));
+		return () => controller.abort();
+	});
+
+	async function sendReview(signal: 'up' | 'down') {
+		if (reviewInFlight || !focusedItem) return;
+		reviewInFlight = true;
+		reviewError = '';
+		const item = focusedItem;
+		// optimistic: remove from queue
+		quarantine = quarantine.filter((q) => q.id !== item.id);
+		focusedIndex = quarantine.length === 0 ? 0 : Math.min(focusedIndex, quarantine.length - 1);
+		try {
+			const r = await fetch('/api/quarantine/review', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ item_id: item.id, signal })
+			});
+			if (!r.ok) throw new Error('review failed');
+			// light refetch to stay honest
+			void fetch('/api/quarantine')
+				.then((r2) => (r2.ok ? r2.json() : Promise.reject(r2.status)))
+				.then((d: unknown) => {
+					if (Array.isArray(d)) {
+						quarantine = d as QuarantineItem[];
+						focusedIndex = Math.min(focusedIndex, Math.max(0, quarantine.length - 1));
+					}
+				})
+				.catch(() => { reviewError = t.curadoria.filaReviewError; });
+		} catch {
+			// restore on error
+			quarantine = [item, ...quarantine];
+			focusedIndex = 0;
+			reviewError = t.curadoria.filaReviewError;
+		} finally {
+			reviewInFlight = false;
+		}
+	}
+
+	function handleKeydown(e: KeyboardEvent) {
+		const target = e.target as HTMLElement | null;
+		if (
+			e.altKey || e.ctrlKey || e.metaKey ||
+			target?.closest('input, textarea, select, button, [contenteditable="true"]')
+		) return;
+		const signal = signalForKey(e.key);
+		if (signal && !reviewInFlight && focusedItem) {
+			e.preventDefault();
+			sendReview(signal);
+		}
+	}
 
 	$effect(() => {
 		Promise.all([
@@ -290,31 +389,91 @@
 	{/each}
 </div>
 
-<!-- ── 3. FILA DE REVISÃO (herói, shell) ──────────────────────────── -->
+<!-- ── 3. FILA DE REVISÃO (herói) ─────────────────────────────────── -->
 <section class="mb-6">
 	<div class="mb-3 flex items-baseline gap-2">
 		<h2 class="text-[15px] font-semibold">{t.curadoria.filaZone}</h2>
-		<span class="text-[12px] text-muted">{t.curadoria.filaSubtitle}</span>
+		{#if !quarantineLoading && !quarantineError && quarantine.length > 0}
+			<span class="text-[12px] text-muted">{quarantine.length} {t.curadoria.filaSubtitle}</span>
+		{:else}
+			<span class="text-[12px] text-muted">{t.curadoria.filaSubtitle}</span>
+		{/if}
 	</div>
-	<div class="overflow-hidden rounded-card border border-border bg-surface">
-		<div class="flex h-32 items-center justify-center">
-			<div class="text-center">
-				<div class="text-[13px] text-muted">{t.curadoria.filaEmpty}</div>
-				<div class="mt-2 flex justify-center gap-2">
-					<button
-						disabled
-						class="cursor-default rounded-token border border-border bg-transparent px-4 py-1.5 text-[13px] text-muted opacity-40"
-					>{t.curadoria.filaKeep}</button>
-					<button
-						disabled
-						class="cursor-default rounded-token border border-border bg-transparent px-4 py-1.5 text-[13px] text-muted opacity-40"
-					>{t.curadoria.filaDrop}</button>
-				</div>
-				<div class="mt-2 text-[11px] text-muted opacity-60">{t.curadoria.filaComingSoon}</div>
+
+	{#if quarantineLoading}
+		<p class="text-[13px] text-muted">{t.curadoria.filaLoading}</p>
+	{:else if quarantineError}
+		<p class="text-[13px] text-red">{t.curadoria.filaError}</p>
+	{:else if quarantine.length === 0}
+		<div class="overflow-hidden rounded-card border border-border bg-surface">
+			<div class="flex h-32 items-center justify-center">
+				<p class="text-[13px] text-muted">{t.curadoria.filaEmpty}</p>
 			</div>
 		</div>
-	</div>
+	{:else}
+		<div class="overflow-hidden rounded-card border border-border bg-surface">
+			{#if focusedItem}
+				<div class="p-5">
+					<!-- item header -->
+					<div class="mb-1 flex items-center gap-2">
+						<span class="rounded-full border border-border px-2 py-0.5 text-[11px] text-muted">{focusedItem.lane}</span>
+						{#if focusedItem.channel}
+							<span class="text-[12px] text-muted">{focusedItem.channel}</span>
+						{/if}
+					</div>
+					<h3 class="mb-2 text-[14px] font-medium">{focusedItem.title ?? focusedItem.source_ref ?? String(focusedItem.id)}</h3>
+					{#if focusedItem.summary}
+						<p class="mb-4 text-[13px] text-muted">{focusedItem.summary}</p>
+					{/if}
+
+					<!-- why fence panel -->
+					<details class="mb-4 text-[12px]">
+						<summary class="cursor-pointer text-muted hover:text-text">{t.curadoria.filaWhyFence}</summary>
+						{#if focusedDecisionsLoading}
+							<p class="mt-2 text-muted">{t.curadoria.pulsoLoading}</p>
+						{:else if deferReason}
+							<dl class="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
+								{#if deferReason.score != null}
+									<dt class="text-muted">score</dt>
+									<dd>{deferReason.score}</dd>
+								{/if}
+								<dt class="text-muted">{t.curadoria.filaDecidedBy}</dt>
+								<dd>{labelDecidedBy(deferReason.decided_by)}</dd>
+								{#if deferReason.reason}
+									<dt class="text-muted">{t.curadoria.filaReason}</dt>
+									<dd>{deferReason.reason}</dd>
+								{/if}
+							</dl>
+						{:else}
+							<p class="mt-2 text-muted">—</p>
+						{/if}
+					</details>
+
+					<!-- actions -->
+					{#if reviewError}
+						<p class="mb-2 text-[12px] text-red">{reviewError}</p>
+					{/if}
+					<div class="flex gap-2">
+						<button
+							onclick={() => sendReview('up')}
+							disabled={reviewInFlight}
+							class="rounded-token border border-green px-4 py-1.5 text-[13px] text-green hover:bg-green/10 disabled:opacity-40"
+						>{t.curadoria.filaKeep} →</button>
+						<button
+							onclick={() => sendReview('down')}
+							disabled={reviewInFlight}
+							class="rounded-token border border-red px-4 py-1.5 text-[13px] text-red hover:bg-red/10 disabled:opacity-40"
+						>← {t.curadoria.filaDrop}</button>
+					</div>
+					<!-- progress -->
+					<p class="mt-3 text-[11px] text-muted">{focusedIndex + 1} / {quarantine.length}</p>
+				</div>
+			{/if}
+		</div>
+	{/if}
 </section>
+
+<svelte:window onkeydown={handleKeydown} />
 
 <!-- ── 4. O GOSTO (funcional — Interest Profile) ──────────────────── -->
 <section id="gosto" class="mb-6">
