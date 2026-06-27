@@ -506,7 +506,7 @@ func (d *pgxDatabase) ListRecentDecisions(ctx context.Context, limit int) ([]Rec
 		limit = 200
 	}
 	const q = `
-		SELECT id, item_id, gate, decision, score, created_at
+		SELECT id, item_id, gate, decision, score, created_at, decided_by, reason
 		FROM gate_decisions
 		ORDER BY id DESC
 		LIMIT $1`
@@ -519,10 +519,12 @@ func (d *pgxDatabase) ListRecentDecisions(ctx context.Context, limit int) ([]Rec
 	for rows.Next() {
 		var dec RecentDecision
 		var when time.Time
-		if err := rows.Scan(&dec.ID, &dec.ItemID, &dec.Gate, &dec.Decision, &dec.Score, &when); err != nil {
-			return nil, err
+		var reason *string
+		if err := rows.Scan(&dec.ID, &dec.ItemID, &dec.Gate, &dec.Decision, &dec.Score, &when, &dec.DecidedBy, &reason); err != nil {
+			return nil, fmt.Errorf("scan recent decisions: %w", err)
 		}
 		dec.When = when.UTC().Format(time.RFC3339)
+		dec.Reason = reason
 		out = append(out, dec)
 	}
 	return out, rows.Err()

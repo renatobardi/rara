@@ -494,12 +494,14 @@ type GateDecision struct {
 // id and when are omitted from GateDecision (per-item trail doesn't need them) but
 // required here so the feed can be sorted and paginated client-side.
 type RecentDecision struct {
-	ID       int      `json:"id"`
-	ItemID   int      `json:"item_id"`
-	Gate     string   `json:"gate"`
-	Decision string   `json:"decision"`
-	Score    *float64 `json:"score,omitempty"`
-	When     string   `json:"when"` // RFC3339
+	ID        int      `json:"id"`
+	ItemID    int      `json:"item_id"`
+	Gate      string   `json:"gate"`
+	Decision  string   `json:"decision"`
+	Score     *float64 `json:"score,omitempty"`
+	When      string   `json:"when"` // RFC3339
+	DecidedBy string   `json:"decided_by"`
+	Reason    *string  `json:"reason,omitempty"`
 }
 
 // Feedback is one append-only learning signal. CreatedAt is read-only (set by the DB default on

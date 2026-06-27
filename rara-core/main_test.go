@@ -1325,13 +1325,20 @@ func (m *MockDatabase) ListRecentDecisions(_ context.Context, limit int) ([]Rece
 	out := make([]RecentDecision, 0, min(limit, n))
 	for i := n - 1; i >= 0 && len(out) < limit; i-- {
 		d := m.gateDecisions[i]
+		var reason *string
+		if d.Reason != "" {
+			r := d.Reason
+			reason = &r
+		}
 		out = append(out, RecentDecision{
-			ID:       i + 1,
-			ItemID:   d.ItemID,
-			Gate:     d.Gate,
-			Decision: d.Decision,
-			Score:    d.Score,
-			When:     "2026-01-01T00:00:00Z",
+			ID:        i + 1,
+			ItemID:    d.ItemID,
+			Gate:      d.Gate,
+			Decision:  d.Decision,
+			Score:     d.Score,
+			When:      "2026-01-01T00:00:00Z",
+			DecidedBy: d.DecidedBy,
+			Reason:    reason,
 		})
 	}
 	return out, nil
@@ -2246,5 +2253,55 @@ func TestSeedPodcastLaneEchoAppIsTranscribe(t *testing.T) {
 	}
 	if p.App != "transcribe" {
 		t.Errorf("echo-cloud App = %q, want %q", p.App, "transcribe")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ListRecentDecisions — global audit feed must expose decided_by + reason
+// ---------------------------------------------------------------------------
+
+// The global feed must project decided_by and reason so the Trilha cockpit zone
+// does not need 1 per-item fetch per row. reason is nullable (omitempty in JSON);
+// decided_by is an open set (not an enum) — quarantine_review is a known extra value.
+func TestListRecentDecisionsExposesDecidedByAndReason(t *testing.T) {
+	ctx := context.Background()
+	db := newMockDatabase()
+	fid := seedFlow(t, db)
+	itemID, err := db.UpsertItem(ctx, Item{Lane: "news", SourceRef: "u1", FlowID: fid, FlowVersion: 1, Status: itemDiscovered})
+	if err != nil {
+		t.Fatalf("UpsertItem: %v", err)
+	}
+
+	reason := "top-ranked by llm"
+	if err := db.InsertGateDecision(ctx, GateDecision{ItemID: itemID, Gate: gateBarato, Decision: decisionKeep, DecidedBy: "llm-judge", Reason: reason}); err != nil {
+		t.Fatalf("InsertGateDecision llm-judge: %v", err)
+	}
+	if err := db.InsertGateDecision(ctx, GateDecision{ItemID: itemID, Gate: gateBarato, Decision: decisionDrop, DecidedBy: "quarantine_review"}); err != nil {
+		t.Fatalf("InsertGateDecision quarantine_review: %v", err)
+	}
+
+	decs, err := db.ListRecentDecisions(ctx, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(decs) != 2 {
+		t.Fatalf("want 2 decisions, got %d", len(decs))
+	}
+
+	// newest first: quarantine_review (index 0), then llm-judge (index 1)
+	qr := decs[0]
+	if qr.DecidedBy != "quarantine_review" {
+		t.Errorf("decs[0].DecidedBy = %q, want %q", qr.DecidedBy, "quarantine_review")
+	}
+	if qr.Reason != nil {
+		t.Errorf("decs[0].Reason should be nil (no reason stored), got %v", *qr.Reason)
+	}
+
+	llm := decs[1]
+	if llm.DecidedBy != "llm-judge" {
+		t.Errorf("decs[1].DecidedBy = %q, want %q", llm.DecidedBy, "llm-judge")
+	}
+	if llm.Reason == nil || *llm.Reason != reason {
+		t.Errorf("decs[1].Reason = %v, want %q", llm.Reason, reason)
 	}
 }
