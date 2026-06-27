@@ -37,6 +37,8 @@
 		gate: string;
 		score?: number | null;
 		when: string;
+		lane?: string;
+		source_ref?: string;
 	};
 
 	// --- tab state ---
@@ -591,10 +593,23 @@
 							 d.decision === 'drop' ? 'bg-border text-text' :
 							 'bg-primary/15 text-primary'}">{d.decision}</span>
 						<div class="min-w-0 flex-1">
-							<span class="text-muted">{t.curadoria.trilhaItemRef} {d.item_id}</span>
-							{#if d.decided_by}
-								<span class="ml-1 text-muted opacity-60">· {t.curadoria.trilhaDecidedByLabel} {labelDecidedBy(d.decided_by)}</span>
-							{/if}
+							<div class="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+								{#if d.lane && d.source_ref && sourceUrl(d.lane, d.source_ref)}
+									<a href={sourceUrl(d.lane, d.source_ref)} target="_blank" rel="noopener noreferrer"
+									   class="text-primary hover:underline">{t.curadoria.trilhaSourceLink} #{d.item_id}</a>
+								{:else}
+									<span class="text-muted">{t.curadoria.trilhaItemRef} {d.item_id}</span>
+								{/if}
+								{#if d.lane}
+									<span class="rounded-full border border-border px-1.5 py-0.5 text-[11px] text-muted">{d.lane}</span>
+								{/if}
+								{#if d.decided_by}
+									<span class="text-muted opacity-60">· {labelDecidedBy(d.decided_by)}</span>
+								{/if}
+								<span class="ml-auto shrink-0 text-[11px] text-muted">
+									{new Date(d.when).toLocaleString('pt-BR')}
+								</span>
+							</div>
 							{#if d.reason}
 								<p class="mt-0.5 text-[12px] text-muted">{d.reason}</p>
 							{/if}
