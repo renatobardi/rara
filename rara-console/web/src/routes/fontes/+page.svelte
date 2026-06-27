@@ -62,8 +62,9 @@
 
 	let items = $state<SourceItem[]>([]); // current server page of rows matching the active filter
 	let kinds = $state<SourceKind[]>([]);
+	// ponytail: derived from current page instead of full-scan; good enough for autocomplete in the edit modal
+	let tagUniverse = $derived([...new Set(items.flatMap((s) => s.tags))].sort());
 	let counts = $state<Counts>({ by_status: {}, by_kind: {} }); // GLOBAL badge counts (unfiltered)
-	let tagUniverse = $state<string[]>([]); // GLOBAL tag list (unfiltered) for the tag dropdown
 	let total = $state(0); // total rows matching the active filter (across all pages)
 	let loading = $state(true);
 	let error = $state(false);
@@ -72,7 +73,6 @@
 	// filters
 	let fKind = $state('');
 	let fStatus = $state('');
-	let fTag = $state('');
 	let query = $state('');
 	let searchTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -151,8 +151,7 @@
 		return ICONS[kindMap.get(kind)?.icon ?? ''] ?? '•';
 	}
 
-	// Defensive: the BFF is trusted, but a malformed row must not crash the table. Keep only
-	// objects with a string api_id and coerce tags to an array (the .includes/.length paths assume it).
+	// Defensive: keep only rows with a string api_id and coerce tags to an array.
 	function normItems(raw: unknown): SourceItem[] {
 		if (!Array.isArray(raw)) return [];
 		return raw
@@ -190,8 +189,6 @@
 		return fallback;
 	}
 
-	// Does this kind support tags / pause? The registry flags default to true; an explicit false
-	// hides the affordance and drops the field from the payload (capability model, not hardcoded).
 	function supportsTags(kind: string): boolean {
 		const k = kindMap.get(kind);
 		return k ? k.supports_tags !== false : false;
@@ -212,7 +209,6 @@
 		const q = new URLSearchParams();
 		if (fKind) q.set('kind', fKind);
 		if (fStatus) q.set('status', fStatus);
-		if (fTag) q.set('tag', fTag);
 		if (query.trim()) q.set('q', query.trim());
 		if (sortBy !== 'display_name' || sortDir !== 'asc') {
 			q.set('sort_by', sortBy);
@@ -220,12 +216,11 @@
 		}
 		return q;
 	}
-	let hasFilter = $derived(!!(fKind || fStatus || fTag || query.trim()));
+	let hasFilter = $derived(!!(fKind || fStatus || query.trim()));
 
 	function clearFilters() {
 		fKind = '';
 		fStatus = '';
-		fTag = '';
 		query = '';
 		searchOpen = false;
 		activePopover = null;
@@ -282,32 +277,14 @@
 		}
 	}
 
-	// globalLoad keeps the dropdown badges (counts) and the tag filter (tagUniverse) GLOBAL —
-	// independent of the active filter. Counts come back global from the surface (computed over the
-	// whole set, not the page), but tagUniverse must see every row, so this pages through the full
-	// unfiltered dataset accumulating tags (bounded by MAX_PAGES as a runaway guard).
+	// globalLoad keeps the dropdown badges (counts) GLOBAL — independent of the active filter.
+	// Counts are computed server-side over the whole set, so a single page_size=1 fetch suffices.
 	async function globalLoad() {
 		try {
-			const tags = new Set<string>();
-			let p = 1;
-			let totalRows = Infinity;
-			let seen = 0;
-			const MAX_PAGES = 50; // 50 × GLOBAL_CAP = 10k sources — far past any realistic count
-			while (p <= MAX_PAGES) {
-				const res = await fetch(`/api/sources?page=${p}&page_size=${GLOBAL_CAP}`);
-				if (!res.ok) return;
-				const data: SourcesResult = await res.json();
-				if (p === 1) {
-					counts = normCounts(data?.counts);
-					totalRows = data?.total ?? 0;
-				}
-				const rows = normItems(data?.items);
-				for (const s of rows) for (const tag of s.tags) tags.add(tag);
-				seen += rows.length;
-				if (rows.length === 0 || seen >= totalRows) break;
-				p++;
-			}
-			tagUniverse = [...tags].sort();
+			const res = await fetch('/api/sources?page=1&page_size=1');
+			if (!res.ok) return;
+			const data: SourcesResult = await res.json();
+			counts = normCounts(data?.counts);
 		} catch {
 			/* badges degrade silently — the table itself uses pageLoad */
 		}
@@ -534,7 +511,7 @@
 			if (seq !== editSeq) return; // stale: a newer openEdit already ran
 			if (res.ok) editConfig = await res.json();
 		} catch {
-			/* leave fields blank; operator can still edit name/tags */
+			/* leave fields blank; operator can still edit name */
 		} finally {
 			if (seq === editSeq) editConfigLoading = false;
 		}
@@ -915,30 +892,6 @@
 											</div>
 										{/if}
 									</th>
-									<!-- Tags — sort + tag filter com datalist (penúltima) -->
-									<th class="relative px-4 py-2.5 font-medium" data-col-popover>
-										<button class="flex items-center gap-1 hover:text-text" aria-haspopup="true" aria-expanded={activePopover === 'tags'} aria-controls="popover-tags" onclick={(e) => { e.stopPropagation(); activePopover = activePopover === 'tags' ? null : 'tags'; }}>
-											{t.fontes.colTags}
-											{#if fTag}<span class="h-1.5 w-1.5 rounded-full bg-text"></span>{/if}
-											<span class="opacity-40">▾</span>
-										</button>
-										{#if activePopover === 'tags'}
-											<div id="popover-tags" role="menu" class="absolute right-0 top-full z-30 min-w-[200px] rounded-xl border border-border bg-bg p-3 shadow-xl" data-col-popover>
-												<div class="mb-2 flex gap-1">
-													<button class="flex-1 rounded-token border border-border px-2 py-1 text-[12px] {sortBy==='display_name'&&sortDir==='asc'?'bg-surface-2 font-medium':''} hover:bg-hover" onclick={() => setSort('display_name','asc')}>{t.fontes.colSortAZ}</button>
-													<button class="flex-1 rounded-token border border-border px-2 py-1 text-[12px] {sortBy==='display_name'&&sortDir==='desc'?'bg-surface-2 font-medium':''} hover:bg-hover" onclick={() => setSort('display_name','desc')}>{t.fontes.colSortZA}</button>
-												</div>
-												<input
-													bind:value={fTag}
-													list="tag-universe"
-													placeholder={t.fontes.filterAllTags}
-													oninput={() => { resetSelectionForRefilter(); page=1; pageLoad(); }}
-													onchange={() => { activePopover=null; applyFilters(); }}
-													class="w-full rounded-token border border-border bg-bg px-2 py-1.5 text-[12px] outline-none focus:border-text/40"
-												/>
-											</div>
-										{/if}
-									</th>
 									<!-- Lane — sort only (última coluna de dados) -->
 									<th class="relative px-4 py-2.5 font-medium" data-col-popover>
 										<button class="flex items-center gap-1 hover:text-text" aria-haspopup="true" aria-expanded={activePopover === 'lane'} aria-controls="popover-lane" onclick={(e) => { e.stopPropagation(); activePopover = activePopover === 'lane' ? null : 'lane'; }}>
@@ -988,17 +941,6 @@
 											</span>
 										</td>
 										<td class="px-4 py-2.5 whitespace-nowrap tabular-nums text-muted">{fmtDate(s.updated_at)}</td>
-										<td class="px-4 py-2.5">
-											{#if s.tags.length > 0}
-												<div class="flex flex-wrap gap-1">
-													{#each s.tags as tag}
-														<span class="rounded-full border border-border bg-surface-2 px-2 py-0.5 text-[10px] text-muted">{tag}</span>
-													{/each}
-												</div>
-											{:else}
-												<span class="text-muted">{t.fontes.never}</span>
-											{/if}
-										</td>
 										<td class="px-4 py-2.5 text-muted">{s.lane}</td>
 										<td class="w-10 px-2 py-2.5 text-right">
 											<div class="relative inline-block" data-kebab>
@@ -1192,7 +1134,6 @@
 							{/each}
 						</div>
 					{/if}
-					<!-- #239 datalist para sugestão de tags -->
 					<input
 						bind:value={editTagInput}
 						list="tag-universe"
