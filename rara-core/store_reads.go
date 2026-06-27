@@ -953,8 +953,8 @@ func (d *pgxDatabase) ListSources(ctx context.Context, f SourceFilter) (SourcesR
 	if f.Q != "" {
 		// Same parameter index used three times — PostgreSQL supports reusing $N.
 		conds = append(conds, fmt.Sprintf(
-			"(display_name ILIKE $%d OR config_summary ILIKE $%d OR EXISTS (SELECT 1 FROM unnest(tags) _t WHERE _t ILIKE $%d))",
-			n, n, n,
+			"(display_name ILIKE $%d OR config_summary ILIKE $%d)",
+			n, n,
 		))
 		args = append(args, "%"+f.Q+"%")
 		n++

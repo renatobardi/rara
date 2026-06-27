@@ -277,15 +277,18 @@ func TestHTTPListSources(t *testing.T) {
 	}
 }
 
-func TestListSourcesSearchByTag(t *testing.T) {
+// TestListSourcesSearchByQDoesNotMatchTags verifies that the q filter matches only
+// display_name and config_summary, not tags — tags are no longer visible in the console UI.
+func TestListSourcesSearchByQDoesNotMatchTags(t *testing.T) {
 	core, db, _ := newTestCore(t)
 	db.sources = []SourceItem{
-		{ApiID: "rss:1", Kind: "rss", DisplayName: "Tech Blog", Tags: []string{"tech", "news"}, Status: "active"},
+		// "exclusive-tag" appears only in Tags, never in DisplayName or ConfigSummary.
+		{ApiID: "rss:1", Kind: "rss", DisplayName: "News Blog", Tags: []string{"exclusive-tag"}, Status: "active"},
 		{ApiID: "rss:2", Kind: "rss", DisplayName: "Sports Feed", Tags: []string{"sports"}, Status: "active"},
 	}
 	h := NewSurfaceMux(core, testToken)
 
-	rec := do(t, h, http.MethodGet, "/v1/sources?q=tech", "")
+	rec := do(t, h, http.MethodGet, "/v1/sources?q=exclusive-tag", "")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("got %d: %s", rec.Code, rec.Body.String())
 	}
@@ -293,11 +296,8 @@ func TestListSourcesSearchByTag(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
 		t.Fatal(err)
 	}
-	if result.Total != 1 {
-		t.Errorf("total=%d, want 1 (tag match only)", result.Total)
-	}
-	if len(result.Items) > 0 && result.Items[0].ApiID != "rss:1" {
-		t.Errorf("items[0]=%q, want rss:1", result.Items[0].ApiID)
+	if result.Total != 0 {
+		t.Errorf("total=%d, want 0: q must not match on tags", result.Total)
 	}
 }
 
