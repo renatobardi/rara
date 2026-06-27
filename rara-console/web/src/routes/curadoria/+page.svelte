@@ -6,6 +6,9 @@
 		latestDeferReason,
 		signalForKey,
 		diffProfile,
+		sourceUrl,
+		filterQuarantine,
+		type FilterState,
 		type Decision,
 		type QuarantineItem,
 		type ItemDecision,
@@ -36,6 +39,9 @@
 		when: string;
 	};
 
+	// --- tab state ---
+	let activeTab = $state<'decidir' | 'historico' | 'ajustes'>('decidir');
+
 	// --- quarantine queue state ---
 	let quarantine = $state<QuarantineItem[]>([]);
 	let quarantineLoading = $state(true);
@@ -47,7 +53,11 @@
 	let reviewError = $state('');
 	let refetchSeq = 0;
 
-	let focusedItem = $derived(quarantine[focusedIndex] ?? null);
+	// --- filter state (aba Decidir) ---
+	let filterState = $state<FilterState>({ dateFrom: '', dateTo: '', tipo: '', canal: '', sortDir: 'newest' });
+
+	let filteredQueue = $derived(filterQuarantine(quarantine, filterState));
+	let focusedItem = $derived(filteredQueue[focusedIndex] ?? null);
 	let deferReason = $derived(latestDeferReason(focusedDecisions));
 
 	// --- interest profile state ---
@@ -400,12 +410,26 @@
 	{/each}
 </div>
 
+<!-- ── TAB NAV ───────────────────────────────────────────────────────── -->
+<div class="mb-6 flex gap-1 border-b border-border">
+	{#each ([['decidir', t.curadoria.tabDecidir], ['historico', t.curadoria.tabHistorico], ['ajustes', t.curadoria.tabAjustes]] as const) as [tab, label]}
+		<button
+			onclick={() => (activeTab = tab)}
+			class="px-4 py-2 text-[13px] font-medium transition-colors
+				{activeTab === tab
+					? 'border-b-2 border-primary text-primary'
+					: 'text-muted hover:text-text'}"
+		>{label}</button>
+	{/each}
+</div>
+
+{#if activeTab === 'decidir'}
 <!-- ── 3. FILA DE REVISÃO (herói) ─────────────────────────────────── -->
 <section class="mb-6">
 	<div class="mb-3 flex items-baseline gap-2">
 		<h2 class="text-[15px] font-semibold">{t.curadoria.filaZone}</h2>
-		{#if !quarantineLoading && !quarantineError && quarantine.length > 0}
-			<span class="text-[12px] text-muted">{quarantine.length} {t.curadoria.filaSubtitle}</span>
+		{#if !quarantineLoading && !quarantineError && filteredQueue.length > 0}
+			<span class="text-[12px] text-muted">{filteredQueue.length} {t.curadoria.filaSubtitle}</span>
 		{:else}
 			<span class="text-[12px] text-muted">{t.curadoria.filaSubtitle}</span>
 		{/if}
@@ -422,6 +446,52 @@
 			</div>
 		</div>
 	{:else}
+		<!-- filters -->
+		<details class="mb-4 text-[13px]">
+			<summary class="cursor-pointer text-muted hover:text-text mb-2">{t.curadoria.filterSortBy}</summary>
+			<div class="rounded-card border border-border bg-surface p-3 space-y-2">
+				<div class="flex flex-wrap gap-3 items-end">
+					<div>
+						<label class="mb-1 block text-[11px] text-muted" for="f-from">{t.curadoria.filterDateFrom}</label>
+						<input id="f-from" type="date" bind:value={filterState.dateFrom}
+							class="rounded-token border border-border bg-surface-2 px-2 py-1 text-[12px] focus:outline-none focus:ring-1 focus:ring-primary/50" />
+					</div>
+					<div>
+						<label class="mb-1 block text-[11px] text-muted" for="f-to">{t.curadoria.filterDateTo}</label>
+						<input id="f-to" type="date" bind:value={filterState.dateTo}
+							class="rounded-token border border-border bg-surface-2 px-2 py-1 text-[12px] focus:outline-none focus:ring-1 focus:ring-primary/50" />
+					</div>
+					<div>
+						<label class="mb-1 block text-[11px] text-muted" for="f-tipo">{t.curadoria.filterTipo}</label>
+						<select id="f-tipo" bind:value={filterState.tipo}
+							class="rounded-token border border-border bg-surface-2 px-2 py-1 text-[12px] focus:outline-none focus:ring-1 focus:ring-primary/50">
+							<option value="">Todos</option>
+							{#each [...new Set(quarantine.map(q => q.lane))].sort() as lane}
+								<option value={lane}>{lane}</option>
+							{/each}
+						</select>
+					</div>
+					<div class="flex-1 min-w-[120px]">
+						<label class="mb-1 block text-[11px] text-muted" for="f-canal">{t.curadoria.filterCanal}</label>
+						<input id="f-canal" type="text" bind:value={filterState.canal} placeholder="ex: Lex Fridman"
+							class="w-full rounded-token border border-border bg-surface-2 px-2 py-1 text-[12px] focus:outline-none focus:ring-1 focus:ring-primary/50" />
+					</div>
+					<div>
+						<label class="mb-1 block text-[11px] text-muted" for="f-sort">{t.curadoria.filterSortBy}</label>
+						<select id="f-sort" bind:value={filterState.sortDir}
+							class="rounded-token border border-border bg-surface-2 px-2 py-1 text-[12px] focus:outline-none focus:ring-1 focus:ring-primary/50">
+							<option value="newest">{t.curadoria.filterSortNewest}</option>
+							<option value="oldest">{t.curadoria.filterSortOldest}</option>
+						</select>
+					</div>
+					<button onclick={() => (filterState = { dateFrom: '', dateTo: '', tipo: '', canal: '', sortDir: 'newest' })}
+						class="rounded-token border border-border px-3 py-1 text-[12px] text-muted hover:bg-hover">
+						{t.curadoria.filterClear}
+					</button>
+				</div>
+			</div>
+		</details>
+
 		<div class="overflow-hidden rounded-card border border-border bg-surface">
 			{#if focusedItem}
 				<div class="p-5">
@@ -432,20 +502,34 @@
 							<span class="text-[12px] text-muted">{focusedItem.channel}</span>
 						{/if}
 					</div>
-					<h3 class="mb-2 text-[14px] font-medium">{focusedItem.title ?? focusedItem.source_ref ?? String(focusedItem.id)}</h3>
+					{@const itemUrl = sourceUrl(focusedItem.lane, focusedItem.source_ref ?? '')}
+					{#if itemUrl}
+						<a href={itemUrl} target="_blank" rel="noopener noreferrer"
+							class="mb-2 block text-[14px] font-medium hover:underline text-primary">
+							{focusedItem.title ?? focusedItem.source_ref ?? String(focusedItem.id)}
+						</a>
+					{:else}
+						<h3 class="mb-2 text-[14px] font-medium">{focusedItem.title ?? focusedItem.source_ref ?? String(focusedItem.id)}</h3>
+					{/if}
+					<div class="mb-3 flex flex-wrap gap-x-3 gap-y-1 text-[12px] text-muted">
+						<span><span class="font-medium">{t.curadoria.filterTipo}:</span> {focusedItem.lane}</span>
+						{#if focusedItem.published_at}
+							<span>{new Date(focusedItem.published_at).toLocaleString('pt-BR')}</span>
+						{/if}
+					</div>
 					{#if focusedItem.summary}
 						<p class="mb-4 text-[13px] text-muted">{focusedItem.summary}</p>
 					{/if}
 
 					<!-- why fence panel -->
-					<details class="mb-4 text-[12px]">
-						<summary class="cursor-pointer text-muted hover:text-text">{t.curadoria.filaWhyFence}</summary>
+					<div class="mb-4 text-[12px]">
+						<p class="mb-2 font-medium text-muted">{t.curadoria.filaWhyFence}</p>
 						{#if focusedDecisionsLoading}
-							<p class="mt-2 text-muted">{t.curadoria.pulsoLoading}</p>
+							<p class="text-muted">{t.curadoria.pulsoLoading}</p>
 						{:else if deferReason}
-							<dl class="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
+							<dl class="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
 								{#if deferReason.score != null}
-									<dt class="text-muted">score</dt>
+									<dt class="text-muted">{t.curadoria.filaScore}</dt>
 									<dd>{deferReason.score}</dd>
 								{/if}
 								<dt class="text-muted">{t.curadoria.filaDecidedBy}</dt>
@@ -456,9 +540,9 @@
 								{/if}
 							</dl>
 						{:else}
-							<p class="mt-2 text-muted">—</p>
+							<p class="text-muted">—</p>
 						{/if}
-					</details>
+					</div>
 
 					<!-- actions -->
 					{#if reviewError}
@@ -477,15 +561,53 @@
 						>← {t.curadoria.filaDrop}</button>
 					</div>
 					<!-- progress -->
-					<p class="mt-3 text-[11px] text-muted">{focusedIndex + 1} / {quarantine.length}</p>
+					<p class="mt-3 text-[11px] text-muted">{focusedIndex + 1} / {filteredQueue.length}</p>
 				</div>
 			{/if}
 		</div>
 	{/if}
 </section>
+{/if}
 
 <svelte:window onkeydown={handleKeydown} />
 
+{#if activeTab === 'historico'}
+<!-- ── 5. TRILHA DE DECISÕES ───────────────────────────────────────── -->
+<section class="mb-6">
+	<h2 class="mb-3 text-[15px] font-semibold">{t.curadoria.trilhaZone}</h2>
+	<div class="overflow-hidden rounded-card border border-border bg-surface">
+		{#if decisionsLoading}
+			<p class="px-4 py-3 text-[13px] text-muted">{t.curadoria.trilhaLoading}</p>
+		{:else if decisionsError}
+			<p class="px-4 py-3 text-[13px] text-red">{t.curadoria.trilhaError}</p>
+		{:else if decisions.length === 0}
+			<p class="px-4 py-3 text-[13px] text-muted">{t.curadoria.trilhaEmpty}</p>
+		{:else}
+			<ul class="divide-y divide-border">
+				{#each decisions as d}
+					<li class="flex items-start gap-3 px-4 py-2.5 text-[13px]">
+						<span class="mt-0.5 shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium
+							{d.decision === 'keep' ? 'bg-green/15 text-green' :
+							 d.decision === 'drop' ? 'bg-border text-text' :
+							 'bg-primary/15 text-primary'}">{d.decision}</span>
+						<div class="min-w-0 flex-1">
+							<span class="text-muted">{t.curadoria.trilhaItemRef} {d.item_id}</span>
+							{#if d.decided_by}
+								<span class="ml-1 text-muted opacity-60">· {t.curadoria.trilhaDecidedByLabel} {labelDecidedBy(d.decided_by)}</span>
+							{/if}
+							{#if d.reason}
+								<p class="mt-0.5 text-[12px] text-muted">{d.reason}</p>
+							{/if}
+						</div>
+					</li>
+				{/each}
+			</ul>
+		{/if}
+	</div>
+</section>
+{/if}
+
+{#if activeTab === 'ajustes'}
 <!-- ── 4. O GOSTO (Interest Profile) ─────────────────────────────── -->
 <section id="gosto" class="mb-6">
 	<h2 class="mb-3 text-[15px] font-semibold">{t.curadoria.gostoZone}</h2>
@@ -734,40 +856,6 @@
 	{/if}
 </section>
 
-<!-- ── 5. TRILHA DE DECISÕES ───────────────────────────────────────── -->
-<section class="mb-6">
-	<h2 class="mb-3 text-[15px] font-semibold">{t.curadoria.trilhaZone}</h2>
-	<div class="overflow-hidden rounded-card border border-border bg-surface">
-		{#if decisionsLoading}
-			<p class="px-4 py-3 text-[13px] text-muted">{t.curadoria.trilhaLoading}</p>
-		{:else if decisionsError}
-			<p class="px-4 py-3 text-[13px] text-red">{t.curadoria.trilhaError}</p>
-		{:else if decisions.length === 0}
-			<p class="px-4 py-3 text-[13px] text-muted">{t.curadoria.trilhaEmpty}</p>
-		{:else}
-			<ul class="divide-y divide-border">
-				{#each decisions as d}
-					<li class="flex items-start gap-3 px-4 py-2.5 text-[13px]">
-						<span class="mt-0.5 shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium
-							{d.decision === 'keep' ? 'bg-green/15 text-green' :
-							 d.decision === 'drop' ? 'bg-border text-text' :
-							 'bg-primary/15 text-primary'}">{d.decision}</span>
-						<div class="min-w-0 flex-1">
-							<span class="text-muted">{t.curadoria.trilhaItemRef} {d.item_id}</span>
-							{#if d.decided_by}
-								<span class="ml-1 text-muted opacity-60">· {t.curadoria.trilhaDecidedByLabel} {labelDecidedBy(d.decided_by)}</span>
-							{/if}
-							{#if d.reason}
-								<p class="mt-0.5 text-[12px] text-muted">{d.reason}</p>
-							{/if}
-						</div>
-					</li>
-				{/each}
-			</ul>
-		{/if}
-	</div>
-</section>
-
 <!-- ── 6. REGRAS DE GATE (secundária, colapsável) ─────────────────── -->
 <details class="group overflow-hidden rounded-card border border-border bg-surface">
 	<summary
@@ -887,3 +975,4 @@
 		{/if}
 	</div>
 </details>
+{/if}
