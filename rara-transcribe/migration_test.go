@@ -18,15 +18,17 @@ func TestMigration005WidensSourceType(t *testing.T) {
 		t.Fatalf("read migration 005: %v", err)
 	}
 	sql := string(b)
-	for _, st := range []string{"youtube", "podcast", "email", "linkedin", "news"} {
-		if !strings.Contains(sql, "'"+st+"'") {
-			t.Errorf("migration 005 must allow source_type %q", st)
-		}
-	}
 	for _, c := range []string{"transcripts_source_type_check", "chk_transcripts_source_type"} {
 		if !strings.Contains(sql, "DROP CONSTRAINT IF EXISTS "+c) {
 			t.Errorf("migration 005 must drop legacy constraint %q", c)
 		}
+	}
+	if !strings.Contains(sql, "ADD CONSTRAINT chk_transcripts_source_type") {
+		t.Error("migration 005 must re-add chk_transcripts_source_type")
+	}
+	const wantClause = "CHECK (source_type IN ('youtube', 'podcast', 'email', 'linkedin', 'news'))"
+	if !strings.Contains(sql, wantClause) {
+		t.Errorf("migration 005 CHECK clause missing or incomplete; want %q", wantClause)
 	}
 }
 
@@ -37,10 +39,8 @@ func TestInitialSchemaSourceTypeWidened(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read migration 001: %v", err)
 	}
-	sql := string(b)
-	for _, st := range []string{"email", "linkedin", "news"} {
-		if !strings.Contains(sql, "'"+st+"'") {
-			t.Errorf("001 inline source_type CHECK must include %q", st)
-		}
+	const wantClause = "CHECK (source_type IN ('youtube', 'podcast', 'email', 'linkedin', 'news'))"
+	if !strings.Contains(string(b), wantClause) {
+		t.Errorf("001 source_type CHECK must cover all five lanes; want %q", wantClause)
 	}
 }

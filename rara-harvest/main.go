@@ -117,7 +117,7 @@ func main() {
 	defer stampCancel()
 	providerName := os.Getenv("HARVEST_PROVIDER")
 	if providerName == "" {
-		providerName = "harvest-cloud"
+		log.Fatalf("HARVEST_PROVIDER environment variable is required")
 	}
 	if err := stampProviderCollected(stampCtx, conn, providerName); err != nil {
 		log.Printf("stamp provider collected: %v", err)
