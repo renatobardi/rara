@@ -670,9 +670,7 @@ func (m *MockDatabase) UpdateSourceConfig(_ context.Context, apiID string, cfg m
 			delete(m.feedByURL, f.FeedURL)
 		}
 		f.FeedURL = feedURL
-		if t := cfg["title"]; t != "" {
-			f.Title = t
-		}
+		f.Title = cfg["title"]
 		m.podcastFeeds[id] = f
 		m.feedByURL[feedURL] = id
 	case "rss", "html":

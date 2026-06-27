@@ -314,6 +314,7 @@ func TestHTTPSourcesRequireAuth(t *testing.T) {
 		{http.MethodGet, "/v1/source-kinds"},
 		{http.MethodGet, "/v1/sources"},
 		{http.MethodGet, "/v1/sources/podcast:1"},
+		{http.MethodGet, "/v1/sources/podcast:1/config"},
 	} {
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest(tc.method, tc.target, nil)
