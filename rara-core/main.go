@@ -1204,27 +1204,27 @@ func (d *pgxDatabase) UpdateSourceConfig(ctx context.Context, apiID string, cfg 
 	switch kind {
 	case "youtube_channel":
 		tag, err = d.conn.Exec(ctx,
-			`UPDATE target_channels SET youtube_channel_id=$2, channel_name=$3, updated_at=CURRENT_TIMESTAMP WHERE id=$1`,
+			`UPDATE target_channels SET youtube_channel_id=$2, channel_name=$3, updated_at=CURRENT_TIMESTAMP WHERE id=$1 AND deleted_at IS NULL`,
 			id, cfg["youtube_channel_id"], cfg["channel_name"])
 	case "youtube_playlist":
 		tag, err = d.conn.Exec(ctx,
-			`UPDATE playlists SET youtube_playlist_id=$2, title=$3, updated_at=CURRENT_TIMESTAMP WHERE id=$1`,
+			`UPDATE playlists SET youtube_playlist_id=$2, title=$3, updated_at=CURRENT_TIMESTAMP WHERE id=$1 AND deleted_at IS NULL`,
 			id, cfg["youtube_playlist_id"], cfg["title"])
 	case "podcast":
 		tag, err = d.conn.Exec(ctx,
-			`UPDATE podcast_feeds SET feed_url=$2, title=NULLIF($3,''), updated_at=CURRENT_TIMESTAMP WHERE id=$1`,
+			`UPDATE podcast_feeds SET feed_url=$2, title=NULLIF($3,''), updated_at=CURRENT_TIMESTAMP WHERE id=$1 AND deleted_at IS NULL`,
 			id, cfg["feed_url"], cfg["title"])
 	case "rss", "html":
 		tag, err = d.conn.Exec(ctx,
-			`UPDATE feed_sources SET name=$2, endpoint=$3, updated_at=CURRENT_TIMESTAMP WHERE id=$1`,
-			id, cfg["name"], cfg["endpoint"])
+			`UPDATE feed_sources SET name=$2, endpoint=$3, updated_at=CURRENT_TIMESTAMP WHERE id=$1 AND source_type=$4 AND deleted_at IS NULL`,
+			id, cfg["name"], cfg["endpoint"], kind)
 	case "hn":
 		tag, err = d.conn.Exec(ctx,
-			`UPDATE feed_sources SET name=$2, updated_at=CURRENT_TIMESTAMP WHERE id=$1`,
-			id, cfg["name"])
+			`UPDATE feed_sources SET name=$2, updated_at=CURRENT_TIMESTAMP WHERE id=$1 AND source_type=$3 AND deleted_at IS NULL`,
+			id, cfg["name"], kind)
 	case "linkedin_profile":
 		tag, err = d.conn.Exec(ctx,
-			`UPDATE target_linkedin_profiles SET profile_url=$2, updated_at=CURRENT_TIMESTAMP WHERE id=$1`,
+			`UPDATE target_linkedin_profiles SET profile_url=$2, updated_at=CURRENT_TIMESTAMP WHERE id=$1 AND deleted_at IS NULL`,
 			id, cfg["profile_url"])
 	default:
 		return fmt.Errorf("UpdateSourceConfig: unknown kind %q", kind)
@@ -1234,7 +1234,7 @@ func (d *pgxDatabase) UpdateSourceConfig(ctx context.Context, apiID string, cfg 
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" { // unique_violation
 			return badInput("another source already uses this URL/handle")
 		}
-		return err
+		return fmt.Errorf("update source config %q: %w", apiID, err)
 	}
 	if tag.RowsAffected() == 0 {
 		return badInput("source %q not found", apiID)

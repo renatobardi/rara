@@ -122,6 +122,7 @@
 	let editError = $state('');
 	let editConfig = $state<Record<string, string>>({});
 	let editConfigLoading = $state(false);
+	let editSeq = 0;
 
 	// delete (single)
 	let deleteTarget = $state<SourceItem | null>(null);
@@ -497,13 +498,15 @@
 		editConfig = {};
 		// Pre-fill the per-kind config fields (URL/handle/name/title) from the backend.
 		editConfigLoading = true;
+		const seq = ++editSeq;
 		try {
 			const res = await fetch(apiPath(s.api_id, '/config'));
+			if (seq !== editSeq) return; // stale: a newer openEdit already ran
 			if (res.ok) editConfig = await res.json();
 		} catch {
 			/* leave fields blank; operator can still edit name/tags */
 		} finally {
-			editConfigLoading = false;
+			if (seq === editSeq) editConfigLoading = false;
 		}
 	}
 	function addEditTag() {
@@ -536,9 +539,9 @@
 					editSaving = false;
 					return;
 				}
-				if (v) cfg[f.name] = v;
+				cfg[f.name] = v; // include empty strings so optional fields can be cleared
 			}
-			if (Object.keys(cfg).length > 0) payload.config = cfg;
+			payload.config = cfg;
 		}
 		try {
 			const res = await fetch(apiPath(editSource.api_id), {

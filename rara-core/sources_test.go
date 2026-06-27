@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -421,13 +422,26 @@ func TestGetSourceConfig_LinkedInProfile(t *testing.T) {
 }
 
 func TestGetSourceConfig_Email(t *testing.T) {
-	core, _, _ := newTestCore(t)
+	core, db, _ := newTestCore(t)
+	db.SeedEmailSource(1, "from:newsletter@example.com", "", "")
+
 	cfg, found, err := core.SourceConfig(context.Background(), "email:1")
 	if err != nil || !found {
 		t.Fatalf("email kind: found=%v err=%v", found, err)
 	}
 	if len(cfg) != 0 {
 		t.Fatalf("email kind must return empty map, got %v", cfg)
+	}
+}
+
+func TestGetSourceConfig_EmailNotFound(t *testing.T) {
+	core, _, _ := newTestCore(t)
+	_, found, err := core.SourceConfig(context.Background(), "email:999")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if found {
+		t.Fatal("want found=false for missing email source")
 	}
 }
 
@@ -489,6 +503,9 @@ func TestPatchSource_EditEndpointRejectsBadURL(t *testing.T) {
 	if err == nil {
 		t.Fatal("want validation error for non-http endpoint")
 	}
+	if !strings.Contains(err.Error(), "http") && !strings.Contains(err.Error(), "scheme") {
+		t.Errorf("want scheme error, got: %v", err)
+	}
 }
 
 func TestPatchSource_DuplicateURLConflict(t *testing.T) {
@@ -502,6 +519,9 @@ func TestPatchSource_DuplicateURLConflict(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("want conflict error on duplicate feed_url")
+	}
+	if !strings.Contains(err.Error(), "already uses") {
+		t.Errorf("want conflict message, got: %v", err)
 	}
 }
 

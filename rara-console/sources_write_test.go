@@ -44,6 +44,13 @@ func fakeSourcesWriteCore(t *testing.T, token string, gotMethod, gotPath *string
 	mux.HandleFunc("POST /v1/sources/{source_id}/resume", func(w http.ResponseWriter, r *http.Request) {
 		record(w, r, `{"ok":true}`)
 	})
+	// Catch-all: record any unexpected upstream request so tests can assert path == "".
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if gotPath != nil {
+			*gotPath = r.URL.Path
+		}
+		http.Error(w, "unexpected route", http.StatusNotFound)
+	})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return srv

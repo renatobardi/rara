@@ -445,6 +445,14 @@ func validateEndpointURL(endpoint string) error {
 				return badInput("endpoint %q is not a public address", host)
 			}
 		}
+		// Block common SSRF hostnames that aren't caught by literal-IP check above.
+		// DNS-based SSRF is deferred to the collector (rara-feed validates at fetch time).
+		lh := strings.ToLower(host)
+		if lh == "localhost" || lh == "0.0.0.0" ||
+			strings.HasSuffix(lh, ".local") || strings.HasSuffix(lh, ".localhost") ||
+			lh == "metadata.google.internal" || strings.HasPrefix(lh, "169.254.") {
+			return badInput("endpoint %q is not a public address", host)
+		}
 	}
 	return nil
 }
@@ -512,78 +520,103 @@ func (c *Core) AddEmailSource(ctx context.Context, gmailQuery, label, fromFilter
 	return c.db.CreateEmailSource(ctx, gmailQuery, label, fromFilter, displayName)
 }
 
+// normalizeYouTubeChannelConfig validates and normalizes a youtube_channel config.
+func (c *Core) normalizeYouTubeChannelConfig(ctx context.Context, cfg map[string]string) (map[string]string, error) {
+	ref := strings.TrimSpace(cfg["channel_id"])
+	if ref == "" {
+		return nil, badInput("channel_id cannot be empty")
+	}
+	id := ref
+	if c.resolveChannel != nil {
+		resolved, err := c.resolveChannel(ctx, ref)
+		if err != nil {
+			return nil, err
+		}
+		id = resolved
+	}
+	out := map[string]string{"youtube_channel_id": id}
+	name := strings.TrimSpace(cfg["channel_name"])
+	if name == "" {
+		name = ref
+	}
+	out["channel_name"] = name
+	return out, nil
+}
+
+// normalizeYouTubePlaylistConfig validates and normalizes a youtube_playlist config.
+func normalizeYouTubePlaylistConfig(cfg map[string]string) (map[string]string, error) {
+	raw := strings.TrimSpace(cfg["playlist_url"])
+	if raw == "" {
+		return nil, badInput("playlist_url cannot be empty")
+	}
+	plID, err := extractPlaylistID(raw)
+	if err != nil {
+		return nil, badInput("%v", err)
+	}
+	return map[string]string{"youtube_playlist_id": plID, "title": raw}, nil
+}
+
+// normalizePodcastConfig validates and normalizes a podcast config.
+func normalizePodcastConfig(cfg map[string]string) (map[string]string, error) {
+	feedURL := strings.TrimSpace(cfg["feed_url"])
+	if feedURL == "" {
+		return nil, badInput("feed_url cannot be empty")
+	}
+	if err := validateEndpointURL(feedURL); err != nil {
+		return nil, err
+	}
+	return map[string]string{"feed_url": feedURL, "title": strings.TrimSpace(cfg["title"])}, nil
+}
+
+// normalizeFeedSourceConfig validates and normalizes rss/html/hn config.
+func normalizeFeedSourceConfig(kind string, cfg map[string]string) (map[string]string, error) {
+	name := strings.TrimSpace(cfg["name"])
+	if name == "" {
+		return nil, badInput("name cannot be empty")
+	}
+	out := map[string]string{"name": name}
+	if kind != "hn" {
+		endpoint := strings.TrimSpace(cfg["endpoint"])
+		if endpoint == "" {
+			return nil, badInput("endpoint cannot be empty for kind %q", kind)
+		}
+		if err := validateEndpointURL(endpoint); err != nil {
+			return nil, err
+		}
+		out["endpoint"] = endpoint
+	}
+	return out, nil
+}
+
+// normalizeLinkedInConfig validates and normalizes a linkedin_profile config.
+func normalizeLinkedInConfig(cfg map[string]string) (map[string]string, error) {
+	u, err := normalizeLinkedInProfileURL(cfg["profile_url"])
+	if err != nil {
+		return nil, err
+	}
+	return map[string]string{"profile_url": u}, nil
+}
+
 // normalizeSourceConfig validates a kind's editable fields the same way create does,
 // returning the normalized fields (resolved channel id, parsed playlist id, normalized
 // LinkedIn url). The returned map is what UpdateSourceConfig writes.
 func (c *Core) normalizeSourceConfig(ctx context.Context, kind string, cfg map[string]string) (map[string]string, error) {
-	out := map[string]string{}
 	switch kind {
 	case "youtube_channel":
-		ref := strings.TrimSpace(cfg["channel_id"])
-		if ref == "" {
-			return nil, badInput("channel_id cannot be empty")
-		}
-		id := ref
-		if c.resolveChannel != nil {
-			resolved, err := c.resolveChannel(ctx, ref)
-			if err != nil {
-				return nil, err
-			}
-			id = resolved
-		}
-		out["youtube_channel_id"] = id
-		name := strings.TrimSpace(cfg["channel_name"])
-		if name == "" {
-			name = ref
-		}
-		out["channel_name"] = name
+		return c.normalizeYouTubeChannelConfig(ctx, cfg)
 	case "youtube_playlist":
-		raw := strings.TrimSpace(cfg["playlist_url"])
-		if raw == "" {
-			return nil, badInput("playlist_url cannot be empty")
-		}
-		plID, err := extractPlaylistID(raw)
-		if err != nil {
-			return nil, badInput("%v", err)
-		}
-		out["youtube_playlist_id"], out["title"] = plID, raw
+		return normalizeYouTubePlaylistConfig(cfg)
 	case "podcast":
-		feedURL := strings.TrimSpace(cfg["feed_url"])
-		if feedURL == "" {
-			return nil, badInput("feed_url cannot be empty")
-		}
-		if err := validateEndpointURL(feedURL); err != nil {
-			return nil, err
-		}
-		out["feed_url"], out["title"] = feedURL, strings.TrimSpace(cfg["title"])
+		return normalizePodcastConfig(cfg)
 	case "rss", "html", "hn":
-		name := strings.TrimSpace(cfg["name"])
-		if name == "" {
-			return nil, badInput("name cannot be empty")
-		}
-		out["name"] = name
-		if kind != "hn" {
-			endpoint := strings.TrimSpace(cfg["endpoint"])
-			if endpoint == "" {
-				return nil, badInput("endpoint cannot be empty for kind %q", kind)
-			}
-			if err := validateEndpointURL(endpoint); err != nil {
-				return nil, err
-			}
-			out["endpoint"] = endpoint
-		}
+		return normalizeFeedSourceConfig(kind, cfg)
 	case "linkedin_profile":
-		u, err := normalizeLinkedInProfileURL(cfg["profile_url"])
-		if err != nil {
-			return nil, err
-		}
-		out["profile_url"] = u
+		return normalizeLinkedInConfig(cfg)
 	case "email":
 		return nil, badInput("editing email config is out of scope")
 	default:
 		return nil, badInput("unknown kind %q", kind)
 	}
-	return out, nil
 }
 
 // PatchSource updates display_name, tags, and/or config fields on any source identified by api_id.
@@ -593,18 +626,24 @@ func (c *Core) PatchSource(ctx context.Context, apiID string, patch SourcePatch)
 	if !ok {
 		return badInput("invalid source id %q (want kind:N)", apiID)
 	}
+	// Validate everything before any write.
+	var normalizedConfig map[string]string
 	if len(patch.Config) > 0 {
-		norm, err := c.normalizeSourceConfig(ctx, kind, patch.Config)
+		nc, err := c.normalizeSourceConfig(ctx, kind, patch.Config)
 		if err != nil {
 			return err
 		}
-		if err := c.db.UpdateSourceConfig(ctx, apiID, norm); err != nil {
+		normalizedConfig = nc
+	}
+	// Writes: metadata first (display_name/tags), then config.
+	// Not fully atomic (no transaction), but all validation errors are caught above.
+	if patch.DisplayName != nil || patch.Tags != nil {
+		if err := c.db.PatchSourceMeta(ctx, apiID, patch.DisplayName, patch.Tags); err != nil {
 			return err
 		}
 	}
-	// display_name / tags update (existing behavior; no-op when both nil).
-	if patch.DisplayName != nil || patch.Tags != nil {
-		return c.db.PatchSourceMeta(ctx, apiID, patch.DisplayName, patch.Tags)
+	if normalizedConfig != nil {
+		return c.db.UpdateSourceConfig(ctx, apiID, normalizedConfig)
 	}
 	return nil
 }

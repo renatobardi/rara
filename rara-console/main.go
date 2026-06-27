@@ -365,12 +365,12 @@ func (s *server) handleSourceConfig(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid source id"})
 		return
 	}
-	body, err := s.fetchCore(r.Context(), "/v1/sources/"+id+"/config")
+	status, body, err := s.fetchCoreWithStatus(r.Context(), "/v1/sources/"+id+"/config")
 	if err != nil {
 		badGateway(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, json.RawMessage(body))
+	writeJSON(w, status, json.RawMessage(body))
 }
 
 // handleDeleteSource proxies DELETE /v1/sources/{source_id} — soft-delete (source disappears).
