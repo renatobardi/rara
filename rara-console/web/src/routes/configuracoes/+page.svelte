@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { onMount } from 'svelte';
 	import { t } from '$lib/strings';
 
 	type ProviderHealth = { total: number; enabled: number; stale: number };
@@ -23,6 +24,7 @@
 
 	const GLOBAL_SCOPE = 'global' as const;
 	let workers = $state<Worker[]>([]);
+	let workersError = $state(false);
 	let policies = $state<RoutingPolicy[]>([]);
 	let policiesLoading = $state(true);
 	let policiesError = $state(false);
@@ -221,11 +223,11 @@
 			.finally(() => (loadingUsage = false));
 	});
 
-	$effect(() => {
+	onMount(() => {
 		fetch('/api/workers')
 			.then((r) => (r.ok ? r.json() : Promise.reject()))
 			.then((d) => { workers = Array.isArray(d) ? d : []; })
-			.catch(() => { workers = []; });
+			.catch(() => { workers = []; workersError = true; });
 
 		fetch('/api/routing-policies')
 			.then((r) => (r.ok ? r.json() : Promise.reject()))
@@ -308,6 +310,7 @@
 <section class="mb-8">
 	<div class="mb-4 flex items-center gap-3">
 		<h2 class="text-[14px] font-semibold text-muted">{t.settings.metricsWorkersSection}</h2>
+		{#if workersError}<p class="text-[13px] text-red">{t.settings.workersLoadError}</p>{/if}
 		<!-- period selector -->
 		<div class="ml-auto flex rounded-lg border border-border bg-surface-2 p-0.5 text-[12px]">
 			{#each PERIODS as period}
@@ -412,7 +415,9 @@
 <section class="mb-8">
 	<h2 class="mb-3 text-[14px] font-semibold text-muted">{t.settings.routingSection}</h2>
 
-	{#if policiesLoading}
+	{#if workersError}
+		<p class="text-[13px] text-red">{t.settings.workersLoadError}</p>
+	{:else if policiesLoading}
 		<p class="text-[13px] text-muted">{t.workers.policiesLoading}</p>
 	{:else if policiesError}
 		<p class="text-[13px] text-red">{t.workers.policiesError}</p>

@@ -121,11 +121,13 @@
 	type Toast = { id: number; kind: 'ok' | 'err'; msg: string };
 	let toasts = $state<Toast[]>([]);
 	let toastSeq = 0;
+	const toastTimers: ReturnType<typeof setTimeout>[] = [];
 	function toast(kind: 'ok' | 'err', msg: string) {
 		const id = ++toastSeq;
 		toasts = [...toasts, { id, kind, msg }];
-		setTimeout(() => (toasts = toasts.filter((x) => x.id !== id)), 4000);
+		toastTimers.push(setTimeout(() => (toasts = toasts.filter((x) => x.id !== id)), 4000));
 	}
+	$effect(() => () => toastTimers.forEach(clearTimeout));
 
 	// ── flat rows ──
 	type FlatRow = { workerName: string; capability: string; placement: Provider };

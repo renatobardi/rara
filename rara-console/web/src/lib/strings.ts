@@ -355,6 +355,7 @@ export const t = {
 		// routing section (moved from workers)
 		routingSection: 'Roteamento',
 		metricsWorkersSection: 'Métricas Workers',
+		workersLoadError: 'Não foi possível carregar os workers.',
 		loading: 'Carregando configurações…',
 		error: 'Não foi possível carregar as configurações.'
 	},
