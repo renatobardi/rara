@@ -632,6 +632,9 @@ type Database interface {
 	ListSources(ctx context.Context, f SourceFilter) (SourcesResult, error)
 	// GetSource returns one source by api_id (found=false if absent).
 	GetSource(ctx context.Context, apiID string) (SourceItem, bool, error)
+	// GetSourceConfig returns one source's raw editable fields keyed by registry field name
+	// (see sourceKindsRegistry). found=false if the id is absent. Used to pre-fill the Edit modal.
+	GetSourceConfig(ctx context.Context, apiID string) (map[string]string, bool, error)
 
 	// Spine (idempotent upserts).
 	UpsertItem(ctx context.Context, it Item) (int, error)

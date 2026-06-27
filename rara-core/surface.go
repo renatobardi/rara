@@ -702,6 +702,14 @@ func (c *Core) Source(ctx context.Context, apiID string) (SourceItem, bool, erro
 	return c.db.GetSource(ctx, apiID)
 }
 
+// SourceConfig returns the raw editable fields of one source for the Edit modal.
+func (c *Core) SourceConfig(ctx context.Context, apiID string) (map[string]string, bool, error) {
+	if _, _, ok := parseSourceID(apiID); !ok {
+		return nil, false, badInput("invalid source id %q (want kind:N)", apiID)
+	}
+	return c.db.GetSourceConfig(ctx, apiID)
+}
+
 // InterestProfile returns the ACTIVE preferences document (the version in force the gate reads),
 // not merely the latest — a `proposed` revision is invisible here until approved.
 func (c *Core) InterestProfile(ctx context.Context) (InterestProfile, bool, error) {
@@ -955,6 +963,7 @@ func NewSurfaceMux(core *Core, token string) http.Handler {
 	mux.HandleFunc("GET /v1/source-kinds", h.listSourceKinds)
 	mux.HandleFunc("GET /v1/sources", h.listSources)
 	mux.HandleFunc("GET /v1/sources/{source_id}", h.getSource)
+	mux.HandleFunc("GET /v1/sources/{source_id}/config", h.getSourceConfig)
 
 	// Sources — fatia #2 writes. Bulk registered first (exact path wins over {kind} wildcard).
 	mux.HandleFunc("POST /v1/sources/bulk", h.bulkSources)
@@ -1166,6 +1175,20 @@ func (h *httpSurface) getSource(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, src)
+}
+
+func (h *httpSurface) getSourceConfig(w http.ResponseWriter, r *http.Request) {
+	apiID := r.PathValue("source_id")
+	cfg, found, err := h.core.SourceConfig(r.Context(), apiID)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	if !found {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "source not found"})
+		return
+	}
+	writeJSON(w, http.StatusOK, cfg)
 }
 
 // --- source write handlers (fatia #2) ---

@@ -727,6 +727,92 @@ func (m *MockDatabase) GetSource(_ context.Context, apiID string) (SourceItem, b
 	return SourceItem{}, false, nil
 }
 
+// ---------------------------------------------------------------------------
+// Seed helpers for GetSourceConfig tests — insert at a caller-specified id so
+// tests can assert a known api_id without relying on auto-increment order.
+// ---------------------------------------------------------------------------
+
+// SeedYouTubePlaylist inserts a playlist row at id with the given playlistID/title/displayName.
+func (m *MockDatabase) SeedYouTubePlaylist(id int, playlistID, title, displayName string) {
+	m.ytPlaylists[id] = mockYTPlaylist{ID: id, PlaylistID: playlistID, Title: title, DisplayName: displayName, Tags: []string{}, Active: true}
+	m.ytPlaylistByKey[playlistID] = id
+}
+
+// SeedYouTubeChannel inserts a channel row at id with the given channelID/channelName/displayName.
+func (m *MockDatabase) SeedYouTubeChannel(id int, channelID, channelName, displayName string) {
+	m.ytChannels[id] = mockYTChannel{ID: id, ChannelID: channelID, ChannelName: channelName, DisplayName: displayName, Tags: []string{}, Active: true}
+	m.ytChannelByKey[channelID] = id
+}
+
+// SeedPodcastFeed inserts a podcast_feed row at id with the given feedURL/title/displayName.
+func (m *MockDatabase) SeedPodcastFeed(id int, feedURL, title, displayName string) {
+	m.podcastFeeds[id] = PodcastFeed{ID: id, FeedURL: feedURL, Title: title, DisplayName: displayName, Active: true}
+	m.feedByURL[feedURL] = id
+}
+
+// SeedFeedSource inserts a feed_source row at id with the given name/sourceType/endpoint/displayName.
+func (m *MockDatabase) SeedFeedSource(id int, name, sourceType, endpoint, displayName string) {
+	key := name + "\x00" + endpoint
+	m.feedSources[id] = mockFeedSource{ID: id, Name: name, SourceType: sourceType, Endpoint: endpoint, DisplayName: displayName, Tags: []string{}, Enabled: true}
+	m.feedByNameEp[key] = id
+}
+
+// SeedLinkedInProfile inserts a linkedin_profile row at id with the given profileURL/displayName.
+func (m *MockDatabase) SeedLinkedInProfile(id int, profileURL, displayName string) {
+	m.linkedinProfiles[id] = mockLinkedInProfile{ID: id, ProfileURL: profileURL, DisplayName: displayName, Tags: []string{}, Active: true}
+}
+
+// GetSourceConfig reads raw editable fields from the mock backing stores, keyed by registry field name.
+// ponytail: mirrors pgxDatabase.GetSourceConfig; per-kind switch reads from the same mock maps the Upsert methods populate.
+func (m *MockDatabase) GetSourceConfig(_ context.Context, apiID string) (map[string]string, bool, error) {
+	kind, id, ok := parseSourceID(apiID)
+	if !ok {
+		return nil, false, fmt.Errorf("GetSourceConfig: invalid api_id %q", apiID)
+	}
+	switch kind {
+	case "youtube_channel":
+		ch, ok := m.ytChannels[id]
+		if !ok {
+			return nil, false, nil
+		}
+		return map[string]string{"channel_id": ch.ChannelID, "channel_name": ch.ChannelName}, true, nil
+	case "youtube_playlist":
+		pl, ok := m.ytPlaylists[id]
+		if !ok {
+			return nil, false, nil
+		}
+		return map[string]string{"playlist_url": "https://www.youtube.com/playlist?list=" + pl.PlaylistID}, true, nil
+	case "podcast":
+		f, ok := m.podcastFeeds[id]
+		if !ok {
+			return nil, false, nil
+		}
+		return map[string]string{"feed_url": f.FeedURL, "title": f.Title}, true, nil
+	case "rss", "html":
+		fs, ok := m.feedSources[id]
+		if !ok {
+			return nil, false, nil
+		}
+		return map[string]string{"name": fs.Name, "endpoint": fs.Endpoint}, true, nil
+	case "hn":
+		fs, ok := m.feedSources[id]
+		if !ok {
+			return nil, false, nil
+		}
+		return map[string]string{"name": fs.Name}, true, nil
+	case "linkedin_profile":
+		p, ok := m.linkedinProfiles[id]
+		if !ok {
+			return nil, false, nil
+		}
+		return map[string]string{"profile_url": p.ProfileURL}, true, nil
+	case "email":
+		return map[string]string{}, true, nil
+	default:
+		return nil, false, fmt.Errorf("GetSourceConfig: unknown kind %q", kind)
+	}
+}
+
 func (m *MockDatabase) UpsertGateRule(_ context.Context, r GateRule) error {
 	if !isValidRuleAction(r.Action) || !isValidMatchType(r.MatchType) {
 		return errCheckViolation
