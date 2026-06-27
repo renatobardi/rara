@@ -1678,7 +1678,11 @@ func TestDecisionsFeedNullReasonPassedThrough(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("want 1 decision, got %d", len(got))
 	}
-	if v, ok := got[0]["reason"]; ok && v != nil {
+	v, ok := got[0]["reason"]
+	if !ok {
+		t.Fatal("reason field missing from response; want explicit JSON null")
+	}
+	if v != nil {
 		t.Errorf("reason = %v, want nil", v)
 	}
 }

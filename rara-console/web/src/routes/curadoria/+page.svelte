@@ -90,7 +90,10 @@
 
 		fetch('/api/decisions?limit=200')
 			.then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
-			.then((d: RecentDecision[]) => (decisions = d ?? []))
+			.then((d: unknown) => {
+				if (!Array.isArray(d)) throw new Error('unexpected decisions payload');
+				decisions = d as RecentDecision[];
+			})
 			.catch(() => (decisionsError = true))
 			.finally(() => (decisionsLoading = false));
 	});
