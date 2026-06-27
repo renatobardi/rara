@@ -152,39 +152,30 @@ ao allow/deny. Migrar pra outra tela é um movimento opcional posterior; se acon
 
 ## 4. Verificação E2E — MVP entregue (2026-06-27)
 
-Smoke test contra o ambiente de produção (branch `main` do Neon, projeto `sweet-math-91321704`,
-região `aws-sa-east-1`). Nenhum dado foi criado artificialmente — todas as evidências são reais.
+Smoke test contra o ambiente de produção (branch `main` do Neon). Nenhum dado foi criado
+artificialmente — todas as evidências são reais.
 
 ### Setup — quarentena tem itens reais
 
 ```sql
 SELECT COUNT(*) FROM items WHERE status = 'quarantine';
--- total: 1022
+-- total: >1000
 ```
 
-1022 itens aguardam revisão. Exemplos dos 5 mais recentes:
-
-| item_id | source_ref |
-|---|---|
-| 68202989 | twz.com/air/its-official-f-35s-are-now-being-delivered-without-radars |
-| 68202988 | github.com/kageroumado/adrafinil |
-| 68024365 | foxmoss.com/blog/radish/ |
-| 68024364 | gadgetreview.com/arrest-him-the-moment-police-... |
-| 67844528 | arstechnica.com/tech-policy/2026/06/anthropic-claims-alibaba... |
-
-Todos com `gate_decisions.decision='defer'` e `decided_by='llm'` (gate_barato, `reason: "Insufficient
-information to determine relevance"` ou similar).
+Mais de 1000 itens aguardam revisão — URLs públicas de notícias/repos (nenhum dado privado),
+todos com `gate_decisions.decision='defer'` e `decided_by='llm'` (gate_barato,
+`reason: "Insufficient information to determine relevance"` ou similar).
 
 ### Passo 2 — Fila de revisão lista os itens (UI)
 
-`GET /v1/quarantine` retorna a lista acima. A zona herói exibe cada item com seu `source_ref`,
+`GET /v1/quarantine` retorna a lista. A zona herói exibe cada item com seu `source_ref`,
 e o painel lateral mostra a decisão `defer` mais recente com `score`, `decided_by` e `reason`.
 Valores `decided_by` fora do conjunto documentado são exibidos como "outro" (comportamento
 defensivo implementado na fatia #3).
 
 ### Passo 3 — Manter (rescue: signal="up")
 
-Evidência no DB de uma sessão de revisão realizada em 2026-06-27T13:09–13:11Z:
+Evidência no DB de uma sessão de revisão realizada em prod (múltiplos itens):
 
 ```sql
 SELECT id, target_ref, signal, source, created_at
@@ -192,19 +183,19 @@ FROM feedback WHERE source = 'quarantine_review'
 ORDER BY id DESC LIMIT 10;
 ```
 
-```
-id=843  target_ref=552741  signal=up   source=quarantine_review  2026-06-27T13:11:04Z
-id=842  target_ref=552740  signal=up   source=quarantine_review  2026-06-27T13:10:56Z
-id=841  target_ref=552738  signal=down source=quarantine_review  2026-06-27T13:10:52Z
-id=840  target_ref=552737  signal=up   source=quarantine_review  2026-06-27T13:10:48Z
+```text
+-- exemplo ilustrativo (IDs e timestamps anonimizados):
+id=N+2  target_ref=<item_A>  signal=up   source=quarantine_review  <timestamp>
+id=N+1  target_ref=<item_B>  signal=up   source=quarantine_review  <timestamp>
+id=N    target_ref=<item_C>  signal=down source=quarantine_review  <timestamp>
 ...
 ```
 
-Para item 552741 (rescue `up`), `gate_decisions`:
+Para qualquer item resgatado (rescue `up`), `gate_decisions` após a ação:
 
-```
-gate=gate_barato  decision=defer  decided_by=llm   reason="Insufficient..."  2026-06-17T10:39:45Z
-gate=gate_barato  decision=keep   decided_by=quarantine_review  reason="rescued by human review"  2026-06-27T13:11:04Z
+```text
+gate=gate_barato  decision=defer  decided_by=llm   reason="Insufficient..."  <t0>
+gate=gate_barato  decision=keep   decided_by=quarantine_review  reason="rescued by human review"  <t1>
 ```
 
 Contrato verificado:
@@ -212,24 +203,25 @@ Contrato verificado:
 - `gate_decisions` ganhou append `keep` + `decided_by=quarantine_review` ✅
 - Item saiu de `quarantine` (reconciler avança nas próximas passadas) ✅
 
-Pulso nas últimas 24h: **38 keep · 7 drop** (via `SELECT COUNT(*) FILTER (WHERE signal='up')
-… FROM feedback WHERE source='quarantine_review' AND created_at > NOW() - INTERVAL '24h'`).
+Pulso nas últimas 24h: dezenas de keep e drop confirmados (via `SELECT COUNT(*) FILTER
+(WHERE signal='up') … FROM feedback WHERE source='quarantine_review' AND created_at > NOW()
+- INTERVAL '24h'`).
 
 ### Passo 4 — Descartar (confirm drop: signal="down")
 
-Item 552738 (`signal=down`) → `items.status='filtered'` confirmado em prod. Feedback gravado
+Item com `signal=down` → `items.status='filtered'` confirmado em prod. Feedback gravado
 com `source=quarantine_review`, `signal=down`. ✅
 
 ### Passo 5 — Pulso + Trilha refletem
 
 `GET /v1/decisions?limit=200` retorna o feed global com `decided_by` e `reason` (extensão
-implementada na fatia #2, PR #248). Exemplos reais:
+implementada na fatia #2, PR #248). Exemplo do padrão retornado:
 
-```
-id=6479  item_id=552741  gate=gate_barato  decision=keep  decided_by=quarantine_review
-         reason="rescued by human review"  2026-06-27T13:11:04Z
-id=6478  item_id=552740  decision=keep  decided_by=quarantine_review  ...
-id=6477  item_id=552737  decision=keep  decided_by=quarantine_review  ...
+```text
+-- exemplo ilustrativo (IDs anonimizados):
+gate=gate_barato  decision=keep  decided_by=quarantine_review
+                  reason="rescued by human review"
+gate=gate_barato  decision=keep  decided_by=quarantine_review  ...
 ```
 
 A Trilha exibe `decided_by=quarantine_review` com rótulo "outro" (valor fora do conjunto
@@ -237,14 +229,13 @@ A Trilha exibe `decided_by=quarantine_review` com rótulo "outro" (valor fora do
 
 ### Passo 6 — Perfil: aprovar proposed → active
 
-Estado atual do `interest_profile` em prod:
+Estado atual do `interest_profile` em prod (versões anonimizadas):
 
-```
-version=5  status=active    created_at=2026-06-26T07:02:06Z
-version=4  status=superseded  ...
-version=3  status=superseded  ...
-version=2  status=superseded  ...
-version=1  status=superseded  ...
+```text
+version=N    status=active      created_at=<data mais recente>
+version=N-1  status=superseded  ...
+version=N-2  status=superseded  ...
+...
 ```
 
 O ciclo de aprovação funcionou corretamente em múltiplas iterações: apenas 1 perfil `active`
