@@ -189,6 +189,25 @@ func TestRunContinuesOnUpsertError(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// partitionURLs — routes profile URLs to the right pipeline.
+// ---------------------------------------------------------------------------
+
+func TestPartitionURLs(t *testing.T) {
+	persons, companies := partitionURLs([]string{
+		"https://www.linkedin.com/in/satyanadella/",
+		"https://www.linkedin.com/company/langchain/posts/",
+		"https://www.linkedin.com/showcase/google-antigravity/posts/",
+		"https://www.linkedin.com/in/fabiobragaoliveira/",
+	})
+	if len(persons) != 2 {
+		t.Errorf("persons = %v, want 2", persons)
+	}
+	if len(companies) != 2 {
+		t.Errorf("companies = %v, want 2", companies)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // decodeBrightDataPosts — pure normalizer over the CLI's varying JSON keys.
 // ---------------------------------------------------------------------------
 
@@ -241,6 +260,31 @@ func TestDecodeBrightDataPostsDropsEmpty(t *testing.T) {
 func TestDecodeBrightDataPostsInvalidJSON(t *testing.T) {
 	if _, err := decodeBrightDataPosts([]byte(`not json`)); err == nil {
 		t.Error("invalid JSON should error")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// decodeCompanyProfiles — company/showcase pipeline (updates[] format).
+// ---------------------------------------------------------------------------
+
+func TestDecodeCompanyProfiles(t *testing.T) {
+	raw := []byte(`[{"name":"LangChain","updates":[
+		{"post_url":"https://lnkd.in/a","text":"hello world","title":"ignored when text set"},
+		{"post_url":"https://lnkd.in/b","text":"","title":"title only"},
+		{"post_url":"","text":"","title":""}
+	]}]`)
+	posts, err := decodeCompanyProfiles(raw)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(posts) != 2 {
+		t.Fatalf("want 2 posts (empty dropped), got %d: %v", len(posts), posts)
+	}
+	if posts[0].URL != urlA || posts[0].Author != "LangChain" || posts[0].Text != "hello world" {
+		t.Errorf("post 0 = %+v", posts[0])
+	}
+	if posts[1].Text != "title only" {
+		t.Errorf("post 1 (title fallback) = %+v", posts[1])
 	}
 }
 

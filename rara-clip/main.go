@@ -39,9 +39,10 @@ import (
 // its own env, so rara-clip never names or handles the credential.
 // Target profile URLs come from target_linkedin_profiles in the DB (not an env var).
 const (
-	envDatabaseURL    = "DATABASE_URL"
-	envBdataBin       = "BDATA_BIN"
-	envBrightDataArgs = "BRIGHTDATA_LINKEDIN_ARGS"
+	envDatabaseURL        = "DATABASE_URL"
+	envBdataBin           = "BDATA_BIN"
+	envBrightDataArgs     = "BRIGHTDATA_LINKEDIN_ARGS"
+	envBrightDataCoArgs   = "BRIGHTDATA_COMPANY_ARGS"
 )
 
 // LinkedInPost is one collected post: its canonical URL (the spine's natural key), the post text,
@@ -96,9 +97,22 @@ func main() {
 	log.Printf("LinkedIn job completed: %d posts catalogued", n)
 }
 
-// collectLinkedIn fetches active profiles from the DB and runs the collector. Returns early
-// with (0, nil) when no profiles are configured — not an error, just nothing to collect.
-// Extracted from main so the empty-list and fetch-error paths are unit-testable.
+// partitionURLs splits profile URLs by type: /company/ and /showcase/ go to companies; everything
+// else (expected to be /in/ person profiles) goes to persons.
+func partitionURLs(urls []string) (persons, companies []string) {
+	for _, u := range urls {
+		if strings.Contains(u, "/company/") || strings.Contains(u, "/showcase/") {
+			companies = append(companies, u)
+		} else {
+			persons = append(persons, u)
+		}
+	}
+	return
+}
+
+// collectLinkedIn fetches active profiles from the DB and collects posts from each. Person profiles
+// (/in/) use linkedin_person_profile; company/showcase pages use linkedin_company_profile. Both are
+// collected before the provider is stamped so a partial failure leaves the stamp unset.
 func collectLinkedIn(ctx context.Context, db Database, providerName string) (int, error) {
 	urls, err := db.FetchTargetProfiles(ctx)
 	if err != nil {
@@ -108,7 +122,26 @@ func collectLinkedIn(ctx context.Context, db Database, providerName string) (int
 		log.Printf("clip: no active profiles in target_linkedin_profiles, skipping")
 		return 0, nil
 	}
-	return run(ctx, db, newBrightDataLinkedInSource(urls), providerName)
+	persons, companies := partitionURLs(urls)
+	total := 0
+	if len(persons) > 0 {
+		n, err := store(ctx, db, newBrightDataLinkedInSource(persons))
+		if err != nil {
+			return total, fmt.Errorf("person profiles: %w", err)
+		}
+		total += n
+	}
+	if len(companies) > 0 {
+		n, err := store(ctx, db, newBrightDataCompanySource(companies))
+		if err != nil {
+			return total, fmt.Errorf("company profiles: %w", err)
+		}
+		total += n
+	}
+	if err := db.StampProviderCollected(ctx, providerName); err != nil {
+		log.Printf("clip: stamp provider: %v", err)
+	}
+	return total, nil
 }
 
 // mustConnect opens the Neon connection (bounded by a startup timeout) or exits — the only
@@ -124,26 +157,32 @@ func mustConnect(ctx context.Context, databaseURL string) *pgx.Conn {
 	return conn
 }
 
-// run is the collector loop: fetch the current batch from Bright Data and catalog each post (see
-// catalogPost for the per-post policy). A fetch error IS propagated — it is a real source fault, not
-// a per-post quirk — so the whole run aborts. On success the provider stamp is updated so
-// rara-core's scheduler sees that this lane finished a collection cycle; a stamp error is logged
-// but does not fail the run (the posts are already safely stored). Returns the count of posts stored.
-func run(ctx context.Context, db Database, collector LinkedInCollector, providerName string) (int, error) {
+// store fetches posts from collector and catalogs each one. Separated from run so collectLinkedIn
+// can call multiple collectors (person + company) and stamp once after all succeed.
+func store(ctx context.Context, db Database, collector LinkedInCollector) (int, error) {
 	posts, err := collector.FetchPosts(ctx)
 	if err != nil {
 		return 0, err
 	}
-	stored := 0
+	n := 0
 	for _, p := range posts {
 		if catalogPost(ctx, db, p) {
-			stored++
+			n++
 		}
+	}
+	return n, nil
+}
+
+// run fetches, stores, and stamps the provider — convenience wrapper for a single-collector path.
+func run(ctx context.Context, db Database, collector LinkedInCollector, providerName string) (int, error) {
+	n, err := store(ctx, db, collector)
+	if err != nil {
+		return 0, err
 	}
 	if err := db.StampProviderCollected(ctx, providerName); err != nil {
 		log.Printf("clip: stamp provider: %v", err)
 	}
-	return stored, nil
+	return n, nil
 }
 
 // catalogPost normalizes one fetched post and upserts it, reporting whether it was stored. A partial
@@ -282,6 +321,73 @@ type brightDataProfilePost struct {
 	Title       string `json:"title"`
 	Attribution string `json:"attribution"` // excerpt / first paragraph
 	Link        string `json:"link"`
+}
+
+// ---------------------------------------------------------------------------
+// Bright Data company collector — linkedin_company_profile pipeline.
+// ---------------------------------------------------------------------------
+
+type brightDataCompanySource struct {
+	bin  string
+	args []string
+	urls []string
+}
+
+func newBrightDataCompanySource(urls []string) *brightDataCompanySource {
+	bin := os.Getenv(envBdataBin)
+	if bin == "" {
+		bin = "bdata"
+	}
+	args := os.Getenv(envBrightDataCoArgs)
+	if args == "" {
+		args = "pipelines linkedin_company_profile --json"
+	}
+	return &brightDataCompanySource{bin: bin, args: strings.Fields(args), urls: urls}
+}
+
+func (s *brightDataCompanySource) FetchPosts(ctx context.Context) ([]LinkedInPost, error) {
+	if len(s.urls) == 0 {
+		return nil, fmt.Errorf("brightdata company: no URLs to collect")
+	}
+	args := append(append([]string{}, s.args...), s.urls...)
+	cmd := exec.CommandContext(ctx, s.bin, args...)
+	cmd.Stderr = os.Stderr
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("brightdata company: %s: %w", s.bin, err)
+	}
+	return decodeCompanyProfiles(out)
+}
+
+// decodeCompanyProfiles parses linkedin_company_profile output — an array of company objects each
+// carrying an "updates" sub-array — into a flat []LinkedInPost.
+func decodeCompanyProfiles(raw []byte) ([]LinkedInPost, error) {
+	var profiles []brightDataCompanyProfile
+	if err := json.Unmarshal(raw, &profiles); err != nil {
+		return nil, fmt.Errorf("brightdata company: decode JSON: %w", err)
+	}
+	var out []LinkedInPost
+	for _, prof := range profiles {
+		for _, u := range prof.Updates {
+			text := firstNonEmpty(u.Text, u.Title)
+			if u.PostURL == "" && text == "" {
+				continue
+			}
+			out = append(out, LinkedInPost{URL: u.PostURL, Author: prof.Name, Text: text})
+		}
+	}
+	return out, nil
+}
+
+type brightDataCompanyProfile struct {
+	Name    string                    `json:"name"`
+	Updates []brightDataCompanyUpdate `json:"updates"`
+}
+
+type brightDataCompanyUpdate struct {
+	PostURL string `json:"post_url"`
+	Text    string `json:"text"`
+	Title   string `json:"title"`
 }
 
 // ---------------------------------------------------------------------------
