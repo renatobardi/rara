@@ -832,34 +832,43 @@ func (m *MockDatabase) ListSources(_ context.Context, f SourceFilter) (SourcesRe
 	if page <= 0 {
 		page = 1
 	}
-	// Sort (mirrors allowlist in store_reads.go).
-	if f.SortBy != "" {
-		desc := strings.EqualFold(f.SortDir, "desc")
-		sort.Slice(filtered, func(i, j int) bool {
-			var a, b string
-			switch f.SortBy {
-			case "kind":
-				a, b = filtered[i].Kind, filtered[j].Kind
-			case "lane":
-				a, b = filtered[i].Lane, filtered[j].Lane
-			case "updated_at":
-				a, b = filtered[i].UpdatedAt.Format(time.RFC3339Nano), filtered[j].UpdatedAt.Format(time.RFC3339Nano)
-			default:
-				a, b = filtered[i].DisplayName, filtered[j].DisplayName
-			}
-			if a == b {
-				// tiebreaker: api_id ASC (mirrors store_reads.go)
-				if desc {
-					return filtered[i].ApiID > filtered[j].ApiID
-				}
-				return filtered[i].ApiID < filtered[j].ApiID
-			}
+	// Sort (mirrors allowlist in store_reads.go; always applied, default display_name).
+	sortBy := f.SortBy
+	if sortBy == "" {
+		sortBy = "display_name"
+	}
+	desc := strings.EqualFold(f.SortDir, "desc")
+	sort.Slice(filtered, func(i, j int) bool {
+		lessString := func(a, b string) bool {
 			if desc {
 				return a > b
 			}
 			return a < b
-		})
-	}
+		}
+		switch sortBy {
+		case "kind":
+			if filtered[i].Kind != filtered[j].Kind {
+				return lessString(filtered[i].Kind, filtered[j].Kind)
+			}
+		case "lane":
+			if filtered[i].Lane != filtered[j].Lane {
+				return lessString(filtered[i].Lane, filtered[j].Lane)
+			}
+		case "updated_at":
+			if !filtered[i].UpdatedAt.Equal(filtered[j].UpdatedAt) {
+				if desc {
+					return filtered[i].UpdatedAt.After(filtered[j].UpdatedAt)
+				}
+				return filtered[i].UpdatedAt.Before(filtered[j].UpdatedAt)
+			}
+		default:
+			if filtered[i].DisplayName != filtered[j].DisplayName {
+				return lessString(filtered[i].DisplayName, filtered[j].DisplayName)
+			}
+		}
+		// tiebreaker: api_id ASC (mirrors ", api_id" in store_reads.go ORDER BY)
+		return lessString(filtered[i].ApiID, filtered[j].ApiID)
+	})
 
 	start := (page - 1) * pageSize
 	end := start + pageSize
