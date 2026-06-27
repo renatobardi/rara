@@ -25,8 +25,8 @@ function diffStringArray(a: unknown, b: unknown): StringDiff | StringDiffFallbac
 	const setA = new Set<string>(Array.isArray(a) ? a : []);
 	const setB = new Set<string>(Array.isArray(b) ? b : []);
 	return {
-		added: [...setB].filter((x) => !setA.has(x)).sort(),
-		removed: [...setA].filter((x) => !setB.has(x)).sort(),
+		added: [...setB].filter((x) => !setA.has(x)).sort((a, b) => a.localeCompare(b)),
+		removed: [...setA].filter((x) => !setB.has(x)).sort((a, b) => a.localeCompare(b)),
 		changed: [],
 	};
 }
@@ -41,10 +41,10 @@ function diffWeights(a: unknown, b: unknown): WeightDiff | WeightDiffFallback {
 	const keysA = new Set(Object.keys(objA));
 	const keysB = new Set(Object.keys(objB));
 	return {
-		added: [...keysB].filter((k) => !keysA.has(k)).sort().map((k) => ({ key: k, value: objB[k] })),
-		removed: [...keysA].filter((k) => !keysB.has(k)).sort().map((k) => ({ key: k, value: objA[k] })),
+		added: [...keysB].filter((k) => !keysA.has(k)).sort((a, b) => a.localeCompare(b)).map((k) => ({ key: k, value: objB[k] })),
+		removed: [...keysA].filter((k) => !keysB.has(k)).sort((a, b) => a.localeCompare(b)).map((k) => ({ key: k, value: objA[k] })),
 		changed: [...keysA].filter((k) => keysB.has(k) && JSON.stringify(objA[k]) !== JSON.stringify(objB[k]))
-			.sort()
+			.sort((a, b) => a.localeCompare(b))
 			.map((k) => ({ key: k, from: objA[k], to: objB[k] })),
 	};
 }
