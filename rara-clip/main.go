@@ -39,10 +39,10 @@ import (
 // its own env, so rara-clip never names or handles the credential.
 // Target profile URLs come from target_linkedin_profiles in the DB (not an env var).
 const (
-	envDatabaseURL        = "DATABASE_URL"
-	envBdataBin           = "BDATA_BIN"
-	envBrightDataArgs     = "BRIGHTDATA_LINKEDIN_ARGS"
-	envBrightDataCoArgs   = "BRIGHTDATA_COMPANY_ARGS"
+	envDatabaseURL      = "DATABASE_URL"
+	envBdataBin         = "BDATA_BIN"
+	envBrightDataArgs   = "BRIGHTDATA_LINKEDIN_ARGS"
+	envBrightDataCoArgs = "BRIGHTDATA_COMPANY_ARGS"
 )
 
 // LinkedInPost is one collected post: its canonical URL (the spine's natural key), the post text,
