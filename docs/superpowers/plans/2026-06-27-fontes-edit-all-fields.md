@@ -392,7 +392,7 @@ func (c *Core) normalizeSourceConfig(ctx context.Context, kind string, cfg map[s
 		if err != nil {
 			return nil, badInput("%v", err)
 		}
-		out["youtube_playlist_id"], out["title"] = plID, raw
+		out["youtube_playlist_id"] = plID
 	case "podcast":
 		feedURL := strings.TrimSpace(cfg["feed_url"])
 		if feedURL == "" {
@@ -448,11 +448,10 @@ func (c *Core) PatchSource(ctx context.Context, apiID string, patch SourcePatch)
 		if err != nil {
 			return err
 		}
-		if err := c.db.UpdateSourceConfig(ctx, apiID, norm); err != nil {
-			return err
-		}
+		// Atomically apply config + meta in one call to avoid partial updates.
+		return c.db.PatchSourceFull(ctx, apiID, norm, patch.DisplayName, patch.Tags)
 	}
-	// display_name / tags update (existing behavior; no-op when both nil).
+	// display_name / tags only — no config change (existing behavior; no-op when both nil).
 	if patch.DisplayName != nil || patch.Tags != nil {
 		return c.db.PatchSourceMeta(ctx, apiID, patch.DisplayName, patch.Tags)
 	}
@@ -460,59 +459,66 @@ func (c *Core) PatchSource(ctx context.Context, apiID string, patch SourcePatch)
 }
 ```
 
-- [ ] **Step 6: Add `UpdateSourceConfig` to the interface + pgx impl (main.go)**
+- [ ] **Step 6: Add `PatchSourceFull` to the interface + pgx impl (main.go)**
+
+`PatchSourceFull` runs config + meta writes in a single transaction so the source is never
+partially updated. `DisplayName`/`Tags` are nil-safe (same semantics as `PatchSourceMeta`).
 
 Interface (near `PatchSourceMeta` ~line 627):
 
 ```go
-	// UpdateSourceConfig writes a source's normalized config fields (from normalizeSourceConfig)
-	// to its owner table. A UNIQUE violation (duplicate URL/handle) is returned as a badInput.
-	UpdateSourceConfig(ctx context.Context, apiID string, cfg map[string]string) error
+	// PatchSourceFull atomically writes a source's normalized config fields and optional
+	// display_name/tags in one transaction. A UNIQUE violation is returned as a badInput.
+	PatchSourceFull(ctx context.Context, apiID string, cfg map[string]string, displayName *string, tags []string) error
 ```
 
 Impl (beside `PatchSourceMeta` ~line 1136):
 
 ```go
-func (d *pgxDatabase) UpdateSourceConfig(ctx context.Context, apiID string, cfg map[string]string) error {
+func (d *pgxDatabase) PatchSourceFull(ctx context.Context, apiID string, cfg map[string]string, displayName *string, tags []string) error {
 	kind, id, ok := parseSourceID(apiID)
 	if !ok {
-		return fmt.Errorf("UpdateSourceConfig: invalid api_id %q", apiID)
+		return fmt.Errorf("PatchSourceFull: invalid api_id %q", apiID)
 	}
+	tx, err := d.conn.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
 	var (
 		tag pgconn.CommandTag
-		err error
 	)
 	switch kind {
 	case "youtube_channel":
-		tag, err = d.conn.Exec(ctx,
+		tag, err = tx.Exec(ctx,
 			`UPDATE target_channels SET youtube_channel_id=$2, channel_name=$3, updated_at=CURRENT_TIMESTAMP WHERE id=$1`,
 			id, cfg["youtube_channel_id"], cfg["channel_name"])
 	case "youtube_playlist":
-		tag, err = d.conn.Exec(ctx,
-			`UPDATE playlists SET youtube_playlist_id=$2, title=$3, updated_at=CURRENT_TIMESTAMP WHERE id=$1`,
-			id, cfg["youtube_playlist_id"], cfg["title"])
+		tag, err = tx.Exec(ctx,
+			`UPDATE playlists SET youtube_playlist_id=$2, updated_at=CURRENT_TIMESTAMP WHERE id=$1`,
+			id, cfg["youtube_playlist_id"])
 	case "podcast":
-		tag, err = d.conn.Exec(ctx,
+		tag, err = tx.Exec(ctx,
 			`UPDATE podcast_feeds SET feed_url=$2, title=NULLIF($3,''), updated_at=CURRENT_TIMESTAMP WHERE id=$1`,
 			id, cfg["feed_url"], cfg["title"])
 	case "rss", "html":
-		tag, err = d.conn.Exec(ctx,
+		tag, err = tx.Exec(ctx,
 			`UPDATE feed_sources SET name=$2, endpoint=$3, updated_at=CURRENT_TIMESTAMP WHERE id=$1`,
 			id, cfg["name"], cfg["endpoint"])
 	case "hn":
-		tag, err = d.conn.Exec(ctx,
+		tag, err = tx.Exec(ctx,
 			`UPDATE feed_sources SET name=$2, updated_at=CURRENT_TIMESTAMP WHERE id=$1`,
 			id, cfg["name"])
 	case "linkedin_profile":
-		tag, err = d.conn.Exec(ctx,
+		tag, err = tx.Exec(ctx,
 			`UPDATE target_linkedin_profiles SET profile_url=$2, updated_at=CURRENT_TIMESTAMP WHERE id=$1`,
 			id, cfg["profile_url"])
 	default:
-		return fmt.Errorf("UpdateSourceConfig: unknown kind %q", kind)
+		return fmt.Errorf("PatchSourceFull: unknown kind %q", kind)
 	}
 	if err != nil {
 		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == "23505" { // unique_violation
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
 			return badInput("another source already uses this URL/handle")
 		}
 		return err
@@ -520,13 +526,18 @@ func (d *pgxDatabase) UpdateSourceConfig(ctx context.Context, apiID string, cfg 
 	if tag.RowsAffected() == 0 {
 		return badInput("source %q not found", apiID)
 	}
-	return nil
+	if displayName != nil || tags != nil {
+		if err := patchSourceMetaTx(ctx, tx, apiID, displayName, tags); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
 }
 ```
 
-> `badInput` must be reachable from main.go (it is defined in surface.go, same package). Confirm `pgconn`/`errors` are imported in main.go (pgconn already used by `PatchSourceMeta`).
+> `patchSourceMetaTx` is the transaction-aware variant of `PatchSourceMeta` — extract the SQL body from `PatchSourceMeta` into it and have both call it. `pgconn`/`errors` are already imported.
 
-- [ ] **Step 7: Implement Seed helpers + `UpdateSourceConfig` in MockDatabase (main_test.go)**
+- [ ] **Step 7: Implement Seed helpers + `PatchSourceFull` in MockDatabase (main_test.go)**
 
 Mirror the SQL: store per-kind rows, enforce the same UNIQUE keys the real tables have (so `TestPatchSource_DuplicateURLConflict` exercises the conflict path against the mock). Example for podcast:
 
@@ -535,7 +546,7 @@ func (m *MockDatabase) SeedPodcast(id int, feedURL, title, displayName string) {
 	m.podcasts[id] = mockPodcast{feedURL: feedURL, title: title, displayName: displayName}
 }
 
-func (m *MockDatabase) UpdateSourceConfig(ctx context.Context, apiID string, cfg map[string]string) error {
+func (m *MockDatabase) PatchSourceFull(ctx context.Context, apiID string, cfg map[string]string, displayName *string, tags []string) error {
 	kind, id, _ := parseSourceID(apiID)
 	switch kind {
 	case "podcast":
@@ -548,6 +559,10 @@ func (m *MockDatabase) UpdateSourceConfig(ctx context.Context, apiID string, cfg
 		p.feedURL, p.title = cfg["feed_url"], cfg["title"]
 		m.podcasts[id] = p
 	// … rss/html/hn, youtube_channel, youtube_playlist, linkedin_profile mirror their UNIQUE keys …
+	}
+	// apply display_name / tags (same logic as MockDatabase.PatchSourceMeta)
+	if displayName != nil || tags != nil {
+		// … mirror PatchSourceMeta mock logic here …
 	}
 	return nil
 }
@@ -748,9 +763,9 @@ Fetch the source's config on open, render the kind's fields (reuse the wizard's 
 					editError = `${f.label}: ${t.fontes.wizardRequired}`;
 					return;
 				}
-				if (v) cfg[f.name] = v;
+				cfg[f.name] = v; // always include key so backend can clear optional fields
 			}
-			if (Object.keys(cfg).length > 0) payload.config = cfg;
+			payload.config = cfg;
 		}
 ```
 

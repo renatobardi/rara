@@ -107,4 +107,4 @@ SELECT
 FROM target_linkedin_profiles
 WHERE deleted_at IS NULL;
 
-COMMENT ON VIEW sources_v IS 'Unified read-only view of all collectable sources; deleted_at IS NULL; config_summary shows the actionable URL for every kind';
+COMMENT ON VIEW sources_v IS 'Unified read-only view of all collectable sources; deleted_at IS NULL; config_summary shows the actionable URL for URL-based kinds (youtube_channel, youtube_playlist, podcast, rss, html, hn, linkedin_profile); email uses a human-readable label/query instead';

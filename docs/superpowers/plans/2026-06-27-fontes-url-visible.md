@@ -11,8 +11,8 @@
 ## Global Constraints
 
 - Migration file numbering: next available is `027` (026 = `026_linkedin_profile_source.sql`).
-- All migrations are idempotent: `CREATE OR REPLACE VIEW` satisfies this.
-- The view must be a **full re-declaration** of `sources_v` — PostgreSQL does not support partial view replacement. Copy the complete body from `026_linkedin_profile_source.sql` and change only the two `config_summary` lines.
+- All migrations are idempotent: `DROP VIEW IF EXISTS sources_v; CREATE VIEW sources_v AS …` satisfies this.
+- The view must be a **full re-declaration** of `sources_v` — PostgreSQL does not support partial view replacement. Copy the complete body from `026_linkedin_profile_source.sql` and change only the two `config_summary` lines. Use `DROP VIEW IF EXISTS` + `CREATE VIEW` (not `CREATE OR REPLACE VIEW`) because `config_summary` changes type from `varchar` to `text`; PostgreSQL forbids column type changes via `CREATE OR REPLACE VIEW`.
 - No changes to `sources_v_deleted` — that view was retired in 025/026 (there is no live `sources_v_deleted`; 025 rebuilt `sources_v` itself; 026 did the same).
 - TDD applies to rara-core Go code, not to SQL views. SQL view correctness is verified by running the migration against a Neon branch and querying the view.
 
@@ -68,10 +68,13 @@ The other source types already expose a URL:
 -- Fix config_summary for youtube_channel and youtube_playlist rows in sources_v.
 -- Previously both used the human-readable name/title (identical to display_name, no URL).
 -- Now they expose a constructed YouTube URL so the Fontes UI subtitle is actionable.
--- Full view re-declaration required by PostgreSQL (CREATE OR REPLACE VIEW replaces the body).
+-- Full view re-declaration required by PostgreSQL.
+-- DROP + CREATE (not CREATE OR REPLACE): config_summary changes from varchar to text; PostgreSQL
+-- forbids column type changes via CREATE OR REPLACE VIEW.
 -- Idempotent — safe to re-apply.
 
-CREATE OR REPLACE VIEW sources_v AS
+DROP VIEW IF EXISTS sources_v;
+CREATE VIEW sources_v AS
 
 -- YouTube channels — rara-harvest
 SELECT
@@ -230,5 +233,5 @@ git commit -m "fix(core): show YouTube channel/playlist URL in sources_v config_
 
 - **Podcast/RSS/HTML/HN/LinkedIn already correct.** Those types map `config_summary` to `feed_url`, `endpoint`, or `profile_url` — all actionable URLs. No change needed.
 - **LinkedIn left as-is (operator decision).** `linkedin_profile` is a single kind labeled "LinkedIn Profile / Company" (`surface.go:681`) over one table (`target_linkedin_profiles`); it stores both `/in/` and `/company/` URLs. Today `display_name = COALESCE(display_name, profile_url)` and `config_summary = profile_url`, so when no `display_name` is set the URL appears in both columns. The operator will set the human display name manually per row — **do NOT derive a handle/slug from the URL** and do NOT change the LinkedIn branch of the view.
-- **No frontend change.** `+page.svelte` lines 800-802 already render `config_summary` as a clickable-title subtitle. The browser can follow the YouTube URL via the `title` attribute on hover today; if we want it as a real `<a>` link in the future, that's a separate UI task.
+- **No frontend change.** `+page.svelte` lines 800-802 already render `config_summary` as a subtitle `<span>` with a `title` tooltip on hover. The URL is visible on hover but is **not** a clickable `<a>` link. Turning it into a real link is a separate UI task.
 - **Email out of scope** per the user's explicit instruction.
