@@ -645,6 +645,120 @@ func (m *MockDatabase) PatchSourceMeta(_ context.Context, apiID string, displayN
 	return nil
 }
 
+// UpdateSourceConfig writes normalized config fields to the appropriate mock backing store,
+// enforcing the same UNIQUE constraints the real tables have (duplicate URL/handle → badInput).
+func (m *MockDatabase) UpdateSourceConfig(_ context.Context, apiID string, cfg map[string]string) error {
+	kind, id, ok := parseSourceID(apiID)
+	if !ok {
+		return fmt.Errorf("mock: invalid api_id %q", apiID)
+	}
+	switch kind {
+	case "podcast":
+		feedURL := cfg["feed_url"]
+		// Enforce UNIQUE(feed_url): scan other rows for duplicates.
+		for other, p := range m.podcastFeeds {
+			if other != id && p.FeedURL == feedURL {
+				return badInput("another source already uses this URL/handle")
+			}
+		}
+		f, exists := m.podcastFeeds[id]
+		if !exists {
+			return badInput("source %q not found", apiID)
+		}
+		// Remove old feedByURL entry if URL is changing.
+		if f.FeedURL != feedURL {
+			delete(m.feedByURL, f.FeedURL)
+		}
+		f.FeedURL = feedURL
+		if t := cfg["title"]; t != "" {
+			f.Title = t
+		}
+		m.podcastFeeds[id] = f
+		m.feedByURL[feedURL] = id
+	case "rss", "html":
+		name := cfg["name"]
+		endpoint := cfg["endpoint"]
+		// Enforce UNIQUE(name, endpoint) via feedByNameEp.
+		newKey := name + "\x00" + endpoint
+		if existingID, clash := m.feedByNameEp[newKey]; clash && existingID != id {
+			return badInput("another source already uses this URL/handle")
+		}
+		fs, exists := m.feedSources[id]
+		if !exists {
+			return badInput("source %q not found", apiID)
+		}
+		oldKey := fs.Name + "\x00" + fs.Endpoint
+		if oldKey != newKey {
+			delete(m.feedByNameEp, oldKey)
+		}
+		fs.Name = name
+		fs.Endpoint = endpoint
+		m.feedSources[id] = fs
+		m.feedByNameEp[newKey] = id
+	case "hn":
+		name := cfg["name"]
+		fs, exists := m.feedSources[id]
+		if !exists {
+			return badInput("source %q not found", apiID)
+		}
+		// hn has no endpoint; UNIQUE is just name for the mock.
+		oldKey := fs.Name + "\x00" + fs.Endpoint
+		newKey := name + "\x00" + fs.Endpoint
+		if existingID, clash := m.feedByNameEp[newKey]; clash && existingID != id {
+			return badInput("another source already uses this URL/handle")
+		}
+		delete(m.feedByNameEp, oldKey)
+		fs.Name = name
+		m.feedSources[id] = fs
+		m.feedByNameEp[newKey] = id
+	case "youtube_channel":
+		chID := cfg["youtube_channel_id"]
+		if existingID, clash := m.ytChannelByKey[chID]; clash && existingID != id {
+			return badInput("another source already uses this URL/handle")
+		}
+		ch, exists := m.ytChannels[id]
+		if !exists {
+			return badInput("source %q not found", apiID)
+		}
+		delete(m.ytChannelByKey, ch.ChannelID)
+		ch.ChannelID = chID
+		ch.ChannelName = cfg["channel_name"]
+		m.ytChannels[id] = ch
+		m.ytChannelByKey[chID] = id
+	case "youtube_playlist":
+		plID := cfg["youtube_playlist_id"]
+		if existingID, clash := m.ytPlaylistByKey[plID]; clash && existingID != id {
+			return badInput("another source already uses this URL/handle")
+		}
+		pl, exists := m.ytPlaylists[id]
+		if !exists {
+			return badInput("source %q not found", apiID)
+		}
+		delete(m.ytPlaylistByKey, pl.PlaylistID)
+		pl.PlaylistID = plID
+		pl.Title = cfg["title"]
+		m.ytPlaylists[id] = pl
+		m.ytPlaylistByKey[plID] = id
+	case "linkedin_profile":
+		profileURL := cfg["profile_url"]
+		// Enforce UNIQUE(profile_url).
+		for other, p := range m.linkedinProfiles {
+			if other != id && p.ProfileURL == profileURL {
+				return badInput("another source already uses this URL/handle")
+			}
+		}
+		p, exists := m.linkedinProfiles[id]
+		if !exists {
+			return badInput("source %q not found", apiID)
+		}
+		p.ProfileURL = profileURL
+		m.linkedinProfiles[id] = p
+	default:
+		return fmt.Errorf("mock: UpdateSourceConfig: unknown kind %q", kind)
+	}
+	return nil
+}
+
 func (m *MockDatabase) ListSources(_ context.Context, f SourceFilter) (SourcesResult, error) {
 	var filtered []SourceItem
 	for _, s := range m.sources {

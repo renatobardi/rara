@@ -459,6 +459,52 @@ func TestHTTPGetSourceConfigNotFound(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Core — PatchSource config editing (Task 2)
+// ---------------------------------------------------------------------------
+
+func TestPatchSource_EditPodcastFeedURL(t *testing.T) {
+	core, db, _ := newTestCore(t)
+	db.SeedPodcastFeed(3, "https://old.example/feed.rss", "Old", "")
+
+	err := core.PatchSource(context.Background(), "podcast:3", SourcePatch{
+		Config: map[string]string{"feed_url": "https://new.example/feed.rss", "title": "New"},
+	})
+	if err != nil {
+		t.Fatalf("patch: %v", err)
+	}
+	got := db.podcastFeeds[3]
+	if got.FeedURL != "https://new.example/feed.rss" || got.Title != "New" {
+		t.Fatalf("podcast not updated: %+v", got)
+	}
+}
+
+func TestPatchSource_EditEndpointRejectsBadURL(t *testing.T) {
+	core, db, _ := newTestCore(t)
+	db.SeedFeedSource(5, "Blog", "rss", "https://ok.example/feed", "")
+
+	err := core.PatchSource(context.Background(), "rss:5", SourcePatch{
+		Config: map[string]string{"name": "Blog", "endpoint": "ftp://nope"},
+	})
+	if err == nil {
+		t.Fatal("want validation error for non-http endpoint")
+	}
+}
+
+func TestPatchSource_DuplicateURLConflict(t *testing.T) {
+	core, db, _ := newTestCore(t)
+	db.SeedPodcastFeed(1, "https://a.example/feed", "A", "")
+	db.SeedPodcastFeed(2, "https://b.example/feed", "B", "")
+
+	// Editing #2's feed_url to #1's existing URL must conflict.
+	err := core.PatchSource(context.Background(), "podcast:2", SourcePatch{
+		Config: map[string]string{"feed_url": "https://a.example/feed"},
+	})
+	if err == nil {
+		t.Fatal("want conflict error on duplicate feed_url")
+	}
+}
+
+// ---------------------------------------------------------------------------
 // MCP — rara_list_sources
 // ---------------------------------------------------------------------------
 
