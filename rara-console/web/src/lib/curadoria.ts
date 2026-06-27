@@ -40,7 +40,7 @@ function diffStringArray(a: unknown, b: unknown): StringDiff | StringDiffFallbac
 function stableStringify(v: unknown): string {
 	if (v === null || typeof v !== 'object' || Array.isArray(v)) return JSON.stringify(v);
 	const obj = v as Record<string, unknown>;
-	return '{' + Object.keys(obj).sort().map((k) => JSON.stringify(k) + ':' + stableStringify(obj[k])).join(',') + '}';
+	return '{' + Object.keys(obj).sort((a, b) => a.localeCompare(b)).map((k) => JSON.stringify(k) + ':' + stableStringify(obj[k])).join(',') + '}';
 }
 
 function diffWeights(a: unknown, b: unknown): WeightDiff | WeightDiffFallback {
