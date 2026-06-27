@@ -73,7 +73,6 @@
 	let formInitial = $state<Provider | null>(null);
 	let formLockedWorker = $state<string | null>(null);
 	let formLockedCapability = $state<string | null>(null);
-	let formLockedConstraints = $state<Constraints | null>(null);
 	let formLockedApp = $state<string | null>(null);
 
 	function fetchWorkers() {
@@ -235,7 +234,6 @@
 		formMode = 'add';
 		formLockedWorker = null;
 		formLockedCapability = null;
-		formLockedConstraints = null;
 		formLockedApp = null;
 	}
 
@@ -244,7 +242,6 @@
 		formMode = 'edit';
 		formLockedWorker = null;
 		formLockedCapability = null;
-		formLockedConstraints = null;
 		formLockedApp = null;
 	}
 
@@ -253,7 +250,6 @@
 		formInitial = null;
 		formLockedWorker = null;
 		formLockedCapability = null;
-		formLockedConstraints = null;
 		formLockedApp = null;
 	}
 

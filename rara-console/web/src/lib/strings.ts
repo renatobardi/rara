@@ -96,7 +96,6 @@ export const t = {
 		disable: 'Desativar',
 		saving: 'Salvando…',
 		saveError: 'Erro ao salvar worker.',
-		saveOk: 'Salvo.',
 		// CRUD form
 		colWorker: 'Worker',
 		colPlacements: 'Placements',

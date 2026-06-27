@@ -224,7 +224,8 @@
 	$effect(() => {
 		fetch('/api/workers')
 			.then((r) => (r.ok ? r.json() : Promise.reject()))
-			.then((d) => { workers = Array.isArray(d) ? d : []; });
+			.then((d) => { workers = Array.isArray(d) ? d : []; })
+			.catch(() => { workers = []; });
 
 		fetch('/api/routing-policies')
 			.then((r) => (r.ok ? r.json() : Promise.reject()))
