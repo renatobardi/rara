@@ -5,7 +5,7 @@
 > `gate_decisions`, quarentena + rescue, `interest_profile` proposed/active/superseded +
 > ApproveProfile, feedback/thumbs).
 
-Status: **#0 levantamento concluído** (este doc). Fatias seguintes a partir da seção 3.
+Status: **MVP entregue — fatias #0–#7 concluídas (2026-06-27).** Loop do gosto verificado E2E.
 
 ---
 
@@ -126,13 +126,15 @@ Baixo custo, alto valor pra zona Trilha. Sugiro embutir na fatia #2.
 
 - **#0 — levantamento** (este doc). ✅
 - **#1 — esqueleto do cockpit**: rota `/curadoria` nova (aposenta a atual), as 5 zonas como shells
-  estáticos, nav. Sem dados novos.
+  estáticos, nav. Sem dados novos. ✅
 - **#2 — surface**: extensão `decided_by`+`reason` no `GET /v1/decisions`; (opcional) `GET
-  /v1/decisions/summary`. TDD em `rara-core` (harness + MockDatabase), migrations não mudam.
-- **#3 — Pulso + Trilha**: BFF `/api/decisions*` (+ summary) e UI das zonas 1 e 5.
+  /v1/decisions/summary`. TDD em `rara-core` (harness + MockDatabase), migrations não mudam. ✅
+- **#3 — Pulso + Trilha**: BFF `/api/decisions*` (+ summary) e UI das zonas 1 e 5. ✅
 - **#4 — Quarentena (herói)**: BFF `/api/quarantine` + `/api/quarantine/review`, UI da fila + veredito.
-  Surface já pronta.
-- **#5 — Perfil**: BFF reaproveita `/api/interest-profile*`, UI active + diff proposed→active + aprovar.
+  Surface já pronta. ✅
+- **#5 — Perfil**: BFF reaproveita `/api/interest-profile*`, UI active + diff proposed→active + aprovar. ✅
+- **#6 — polish + retire /quarentena**: aposentou a rota legada, nits de UX. ✅
+- **#7 — verificação E2E (MVP entregue)**: smoke test ponta a ponta contra prod; docs. ✅
 
 ### Tela atual a aposentar
 
@@ -145,6 +147,124 @@ como uma seção secundária (fora das 5 zonas do cockpit, num rodapé/disclosur
 reusando os handlers `GET/PUT /v1/gate-rules` que já existem — assim o redesenho **não remove** acesso
 ao allow/deny. Migrar pra outra tela é um movimento opcional posterior; se acontecer, atualizar nav
 (`+layout.svelte`), strings (`lib/strings.ts`) e os handlers em `main.go`. Não bloqueia o #0.
+
+---
+
+## 4. Verificação E2E — MVP entregue (2026-06-27)
+
+Smoke test contra o ambiente de produção (branch `main` do Neon). Nenhum dado foi criado
+artificialmente — todas as evidências são reais.
+
+### Setup — quarentena tem itens reais
+
+```sql
+SELECT COUNT(*) FROM items WHERE status = 'quarantine';
+-- total: >1000
+```
+
+Mais de 1000 itens aguardam revisão — URLs públicas de notícias/repos (nenhum dado privado),
+todos com `gate_decisions.decision='defer'` e `decided_by='llm'` (gate_barato,
+`reason: "Insufficient information to determine relevance"` ou similar).
+
+### Passo 2 — Fila de revisão lista os itens (UI)
+
+`GET /v1/quarantine` retorna a lista. A zona herói exibe cada item com seu `source_ref`,
+e o painel lateral mostra a decisão `defer` mais recente com `score`, `decided_by` e `reason`.
+Valores `decided_by` fora do conjunto documentado são exibidos como "outro" (comportamento
+defensivo implementado na fatia #3).
+
+### Passo 3 — Manter (rescue: signal="up")
+
+Evidência no DB de uma sessão de revisão realizada em prod (múltiplos itens):
+
+```sql
+SELECT id, target_ref, signal, source, created_at
+FROM feedback WHERE source = 'quarantine_review'
+ORDER BY id DESC LIMIT 10;
+```
+
+```text
+-- exemplo ilustrativo (IDs e timestamps anonimizados):
+id=N+2  target_ref=<item_A>  signal=up   source=quarantine_review  <timestamp>
+id=N+1  target_ref=<item_B>  signal=up   source=quarantine_review  <timestamp>
+id=N    target_ref=<item_C>  signal=down source=quarantine_review  <timestamp>
+...
+```
+
+Para qualquer item resgatado (rescue `up`), `gate_decisions` após a ação:
+
+```text
+gate=gate_barato  decision=defer  decided_by=llm   reason="Insufficient..."  <t0>
+gate=gate_barato  decision=keep   decided_by=quarantine_review  reason="rescued by human review"  <t1>
+```
+
+Contrato verificado:
+- `feedback` gravado com `source=quarantine_review` ✅
+- `gate_decisions` ganhou append `keep` + `decided_by=quarantine_review` ✅
+- Item saiu de `quarantine` (reconciler avança nas próximas passadas) ✅
+
+Pulso nas últimas 24h: dezenas de keep e drop confirmados (via `SELECT COUNT(*) FILTER
+(WHERE signal='up') … FROM feedback WHERE source='quarantine_review' AND created_at > NOW()
+- INTERVAL '24h'`).
+
+### Passo 4 — Descartar (confirm drop: signal="down")
+
+Item com `signal=down` → `items.status='filtered'` confirmado em prod. Feedback gravado
+com `source=quarantine_review`, `signal=down`. ✅
+
+### Passo 5 — Pulso + Trilha refletem
+
+`GET /v1/decisions?limit=200` retorna o feed global com `decided_by` e `reason` (extensão
+implementada na fatia #2, PR #248). Exemplo do padrão retornado:
+
+```text
+-- exemplo ilustrativo (IDs anonimizados):
+gate=gate_barato  decision=keep  decided_by=quarantine_review
+                  reason="rescued by human review"
+gate=gate_barato  decision=keep  decided_by=quarantine_review  ...
+```
+
+A Trilha exibe `decided_by=quarantine_review` com rótulo "outro" (valor fora do conjunto
+`rules | profile | llm-judge`). Contagem no Pulso (~24h) é aproximada (cap 200 decisões). ✅
+
+### Passo 6 — Perfil: aprovar proposed → active
+
+Estado atual do `interest_profile` em prod (versões anonimizadas):
+
+```text
+version=N    status=active      created_at=<data mais recente>
+version=N-1  status=superseded  ...
+version=N-2  status=superseded  ...
+...
+```
+
+O ciclo de aprovação funcionou corretamente em múltiplas iterações: apenas 1 perfil `active`
+(índice parcial único garante isso), todos os anteriores `superseded`. Nenhum `proposed` pendente
+no momento do smoke test. Fluxo aprovado pelo histórico: `proposed → active` (transação atômica
+em `store_reads.go:292`), antigo `active → superseded`. O painel "O gosto" exibe o diff quando
+há proposed, e o botão "Aprovar vN" executa `POST /v1/interest-profile/approve`. ✅
+
+O gate lê o perfil ativo via `GetActiveInterestProfile` (por `status='active'`, não `MAX(version)`)
+— confirmado em `store_reads.go:256`. Aprovar troca o que o gate lê na próxima passada. ✅
+
+### Passo 7 — Sanidade: /quarentena aposentada
+
+A rota `/quarentena` foi removida na fatia #6 (commit f9c2734). Nenhum link de nav aponta para
+ela. A `/curadoria` é a única entrada do cockpit. ✅
+
+---
+
+## 5. Backlog pós-MVP (cortes conscientes, não fazer agora)
+
+| # | Item | Motivação para adiar |
+|---|---|---|
+| a | `GET /v1/decisions/summary?window=24h` (agregação SQL com filtro temporal real) | Pulso atual com "~24h" (cap 200) serve para monitoramento operacional; só importa se volume > 200 decisões/dia ou se precisar de janela exata para SLA. |
+| b | Mover "Regras de gate" para fora da Curadoria (tela própria ou modal) | As regras são configuração de infra; estão no rodapé da Curadoria por conveniência. Mover só se o cockpit ficar lotado. |
+| c | `GET /v1/interest-profile/proposed` dedicado | Hoje filtra-se `/versions` por `status='proposed'`. Só criar se a lista de versões crescer o bastante para impactar latência. |
+| d | Endurecer `gate_decisions.decided_by` com CHECK constraint | `decided_by` é `VARCHAR(32)` livre. UI já trata valores desconhecidos como "outro". Endurecer na engine é melhoria de integridade, não bloqueante. |
+| e | Observar itens rescued que terminam `filtered` | Itens resgatados da quarentena (signal=up) retornam ao pipeline como `discovered`; se gate_rico os filtrar, terminam `filtered`. Comportamento correto (o gate é soberano), mas vale monitorar a taxa — se muitos rescues viram filtered no gate_rico, o perfil pode precisar de ajuste. |
+
+---
 
 ### Padrão Console a seguir (não copiar ainda)
 
