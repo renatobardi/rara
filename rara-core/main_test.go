@@ -676,14 +676,14 @@ func (m *MockDatabase) UpdateSourceConfig(_ context.Context, apiID string, cfg m
 	case "rss", "html":
 		name := cfg["name"]
 		endpoint := cfg["endpoint"]
+		fs, exists := m.feedSources[id]
+		if !exists || fs.SourceType != kind {
+			return badInput("source %q not found", apiID)
+		}
 		// Enforce UNIQUE(name, endpoint) via feedByNameEp.
 		newKey := name + "\x00" + endpoint
 		if existingID, clash := m.feedByNameEp[newKey]; clash && existingID != id {
 			return badInput("another source already uses this URL/handle")
-		}
-		fs, exists := m.feedSources[id]
-		if !exists {
-			return badInput("source %q not found", apiID)
 		}
 		oldKey := fs.Name + "\x00" + fs.Endpoint
 		if oldKey != newKey {
@@ -696,7 +696,7 @@ func (m *MockDatabase) UpdateSourceConfig(_ context.Context, apiID string, cfg m
 	case "hn":
 		name := cfg["name"]
 		fs, exists := m.feedSources[id]
-		if !exists {
+		if !exists || fs.SourceType != kind {
 			return badInput("source %q not found", apiID)
 		}
 		// hn has no endpoint; UNIQUE is just name for the mock.
@@ -753,6 +753,22 @@ func (m *MockDatabase) UpdateSourceConfig(_ context.Context, apiID string, cfg m
 		m.linkedinProfiles[id] = p
 	default:
 		return fmt.Errorf("mock: UpdateSourceConfig: unknown kind %q", kind)
+	}
+	return nil
+}
+
+// PatchSourceFull delegates to PatchSourceMeta + UpdateSourceConfig sequentially.
+// In-memory maps make this effectively atomic for tests.
+func (m *MockDatabase) PatchSourceFull(_ context.Context, apiID string, displayName *string, tags []string, cfg map[string]string) error {
+	if displayName != nil || tags != nil {
+		if err := m.PatchSourceMeta(context.Background(), apiID, displayName, tags); err != nil {
+			return err
+		}
+	}
+	if len(cfg) > 0 {
+		if err := m.UpdateSourceConfig(context.Background(), apiID, cfg); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -874,6 +890,11 @@ func (m *MockDatabase) SeedLinkedInProfile(id int, profileURL, displayName strin
 	m.linkedinProfiles[id] = mockLinkedInProfile{ID: id, ProfileURL: profileURL, DisplayName: displayName, Tags: []string{}, Active: true}
 }
 
+// SeedEmailSource inserts an email_source row at id with the given gmailQuery/label/displayName.
+func (m *MockDatabase) SeedEmailSource(id int, gmailQuery, label, displayName string) {
+	m.emailSources[id] = mockEmailSource{ID: id, GmailQuery: gmailQuery, Label: label, DisplayName: displayName, Tags: []string{}, Enabled: true}
+}
+
 // GetSourceConfig reads raw editable fields from the mock backing stores, keyed by registry field name.
 // ponytail: mirrors pgxDatabase.GetSourceConfig; per-kind switch reads from the same mock maps the Upsert methods populate.
 func (m *MockDatabase) GetSourceConfig(_ context.Context, apiID string) (map[string]string, bool, error) {
@@ -902,13 +923,13 @@ func (m *MockDatabase) GetSourceConfig(_ context.Context, apiID string) (map[str
 		return map[string]string{"feed_url": f.FeedURL, "title": f.Title}, true, nil
 	case "rss", "html":
 		fs, ok := m.feedSources[id]
-		if !ok {
+		if !ok || fs.SourceType != kind {
 			return nil, false, nil
 		}
 		return map[string]string{"name": fs.Name, "endpoint": fs.Endpoint}, true, nil
 	case "hn":
 		fs, ok := m.feedSources[id]
-		if !ok {
+		if !ok || fs.SourceType != kind {
 			return nil, false, nil
 		}
 		return map[string]string{"name": fs.Name}, true, nil
@@ -919,6 +940,9 @@ func (m *MockDatabase) GetSourceConfig(_ context.Context, apiID string) (map[str
 		}
 		return map[string]string{"profile_url": p.ProfileURL}, true, nil
 	case "email":
+		if _, ok := m.emailSources[id]; !ok {
+			return nil, false, nil
+		}
 		return map[string]string{}, true, nil
 	default:
 		return nil, false, fmt.Errorf("GetSourceConfig: unknown kind %q", kind)

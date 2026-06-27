@@ -586,6 +586,12 @@ type GateRule struct {
 // partial patch, or you will clobber existing columns. (The SQL seed in 001 uses
 // ON CONFLICT DO NOTHING precisely so re-applying the migration never clobbers.)
 // ---------------------------------------------------------------------------
+// executor is satisfied by both *pgxpool.Pool and pgx.Tx, allowing per-kind
+// SQL helpers to run inside or outside a transaction without duplication.
+type executor interface {
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+}
+
 type Database interface {
 	// Config (idempotent, full-record upserts).
 	UpsertCapability(ctx context.Context, c Capability) error
@@ -630,6 +636,9 @@ type Database interface {
 	// UpdateSourceConfig writes a source's normalized config fields (from normalizeSourceConfig)
 	// to its owner table. A UNIQUE violation (duplicate URL/handle) is returned as a badInput.
 	UpdateSourceConfig(ctx context.Context, apiID string, cfg map[string]string) error
+	// PatchSourceFull atomically updates display_name, tags, and config fields in one transaction.
+	// Nil displayName/tags leave those fields unchanged; nil/empty cfg skips config update.
+	PatchSourceFull(ctx context.Context, apiID string, displayName *string, tags []string, cfg map[string]string) error
 
 	// --- Unified source listing (fatia #1, sources_v) ---------------------------
 	// ListSources returns sources from sources_v with optional filters and pagination.
@@ -1141,42 +1150,41 @@ func (d *pgxDatabase) SetSourceDeleted(ctx context.Context, apiID string) error 
 	return nil
 }
 
-// PatchSourceMeta dispatches display_name / tags update to the right table.
-func (d *pgxDatabase) PatchSourceMeta(ctx context.Context, apiID string, displayName *string, tags []string) error {
+// patchSourceMetaExec runs the display_name/tags UPDATE on the correct table via q.
+// AND deleted_at IS NULL ensures soft-deleted sources are not accidentally updated.
+func patchSourceMetaExec(ctx context.Context, q executor, apiID string, displayName *string, tags []string) error {
 	kind, id, ok := parseSourceID(apiID)
 	if !ok {
 		return fmt.Errorf("PatchSourceMeta: invalid api_id %q", apiID)
 	}
-	// Build targeted UPDATE: only overwrite display_name if provided; tags always written when non-nil.
-	// ponytail: five-case switch — one UPDATE per table; no abstraction needed.
 	var (
 		tag pgconn.CommandTag
 		err error
 	)
 	switch kind {
 	case "youtube_channel":
-		tag, err = d.conn.Exec(ctx,
-			`UPDATE target_channels SET display_name=COALESCE($2,display_name), tags=COALESCE($3,tags), updated_at=CURRENT_TIMESTAMP WHERE id=$1`,
+		tag, err = q.Exec(ctx,
+			`UPDATE target_channels SET display_name=COALESCE($2,display_name), tags=COALESCE($3,tags), updated_at=CURRENT_TIMESTAMP WHERE id=$1 AND deleted_at IS NULL`,
 			id, displayName, tags)
 	case "youtube_playlist":
-		tag, err = d.conn.Exec(ctx,
-			`UPDATE playlists SET display_name=COALESCE($2,display_name), tags=COALESCE($3,tags), updated_at=CURRENT_TIMESTAMP WHERE id=$1`,
+		tag, err = q.Exec(ctx,
+			`UPDATE playlists SET display_name=COALESCE($2,display_name), tags=COALESCE($3,tags), updated_at=CURRENT_TIMESTAMP WHERE id=$1 AND deleted_at IS NULL`,
 			id, displayName, tags)
 	case "podcast":
-		tag, err = d.conn.Exec(ctx,
-			`UPDATE podcast_feeds SET display_name=COALESCE($2,display_name), tags=COALESCE($3,tags), updated_at=CURRENT_TIMESTAMP WHERE id=$1`,
+		tag, err = q.Exec(ctx,
+			`UPDATE podcast_feeds SET display_name=COALESCE($2,display_name), tags=COALESCE($3,tags), updated_at=CURRENT_TIMESTAMP WHERE id=$1 AND deleted_at IS NULL`,
 			id, displayName, tags)
 	case "rss", "html", "hn":
-		tag, err = d.conn.Exec(ctx,
-			`UPDATE feed_sources SET display_name=COALESCE($2,display_name), tags=COALESCE($3,tags), updated_at=CURRENT_TIMESTAMP WHERE id=$1`,
+		tag, err = q.Exec(ctx,
+			`UPDATE feed_sources SET display_name=COALESCE($2,display_name), tags=COALESCE($3,tags), updated_at=CURRENT_TIMESTAMP WHERE id=$1 AND deleted_at IS NULL`,
 			id, displayName, tags)
 	case "email":
-		tag, err = d.conn.Exec(ctx,
-			`UPDATE email_sources SET display_name=COALESCE($2,display_name), tags=COALESCE($3,tags), updated_at=CURRENT_TIMESTAMP WHERE id=$1`,
+		tag, err = q.Exec(ctx,
+			`UPDATE email_sources SET display_name=COALESCE($2,display_name), tags=COALESCE($3,tags), updated_at=CURRENT_TIMESTAMP WHERE id=$1 AND deleted_at IS NULL`,
 			id, displayName, tags)
 	case "linkedin_profile":
-		tag, err = d.conn.Exec(ctx,
-			`UPDATE target_linkedin_profiles SET display_name=COALESCE($2,display_name), tags=COALESCE($3,tags), updated_at=CURRENT_TIMESTAMP WHERE id=$1`,
+		tag, err = q.Exec(ctx,
+			`UPDATE target_linkedin_profiles SET display_name=COALESCE($2,display_name), tags=COALESCE($3,tags), updated_at=CURRENT_TIMESTAMP WHERE id=$1 AND deleted_at IS NULL`,
 			id, displayName, tags)
 	default:
 		return fmt.Errorf("PatchSourceMeta: unknown kind %q", kind)
@@ -1190,9 +1198,14 @@ func (d *pgxDatabase) PatchSourceMeta(ctx context.Context, apiID string, display
 	return nil
 }
 
-// UpdateSourceConfig writes normalized config fields (produced by normalizeSourceConfig) to the
-// source's owner table. A UNIQUE violation (duplicate URL/handle) is mapped to a badInput error.
-func (d *pgxDatabase) UpdateSourceConfig(ctx context.Context, apiID string, cfg map[string]string) error {
+// PatchSourceMeta dispatches display_name / tags update to the right table.
+func (d *pgxDatabase) PatchSourceMeta(ctx context.Context, apiID string, displayName *string, tags []string) error {
+	return patchSourceMetaExec(ctx, d.conn, apiID, displayName, tags)
+}
+
+// updateSourceConfigExec writes normalized config fields to the source's owner table via q.
+// A UNIQUE violation (duplicate URL/handle) is mapped to a badInput error.
+func updateSourceConfigExec(ctx context.Context, q executor, apiID string, cfg map[string]string) error {
 	kind, id, ok := parseSourceID(apiID)
 	if !ok {
 		return fmt.Errorf("UpdateSourceConfig: invalid api_id %q", apiID)
@@ -1203,28 +1216,28 @@ func (d *pgxDatabase) UpdateSourceConfig(ctx context.Context, apiID string, cfg 
 	)
 	switch kind {
 	case "youtube_channel":
-		tag, err = d.conn.Exec(ctx,
-			`UPDATE target_channels SET youtube_channel_id=$2, channel_name=$3, updated_at=CURRENT_TIMESTAMP WHERE id=$1`,
+		tag, err = q.Exec(ctx,
+			`UPDATE target_channels SET youtube_channel_id=$2, channel_name=$3, updated_at=CURRENT_TIMESTAMP WHERE id=$1 AND deleted_at IS NULL`,
 			id, cfg["youtube_channel_id"], cfg["channel_name"])
 	case "youtube_playlist":
-		tag, err = d.conn.Exec(ctx,
-			`UPDATE playlists SET youtube_playlist_id=$2, title=$3, updated_at=CURRENT_TIMESTAMP WHERE id=$1`,
+		tag, err = q.Exec(ctx,
+			`UPDATE playlists SET youtube_playlist_id=$2, title=$3, updated_at=CURRENT_TIMESTAMP WHERE id=$1 AND deleted_at IS NULL`,
 			id, cfg["youtube_playlist_id"], cfg["title"])
 	case "podcast":
-		tag, err = d.conn.Exec(ctx,
-			`UPDATE podcast_feeds SET feed_url=$2, title=NULLIF($3,''), updated_at=CURRENT_TIMESTAMP WHERE id=$1`,
+		tag, err = q.Exec(ctx,
+			`UPDATE podcast_feeds SET feed_url=$2, title=NULLIF($3,''), updated_at=CURRENT_TIMESTAMP WHERE id=$1 AND deleted_at IS NULL`,
 			id, cfg["feed_url"], cfg["title"])
 	case "rss", "html":
-		tag, err = d.conn.Exec(ctx,
-			`UPDATE feed_sources SET name=$2, endpoint=$3, updated_at=CURRENT_TIMESTAMP WHERE id=$1`,
-			id, cfg["name"], cfg["endpoint"])
+		tag, err = q.Exec(ctx,
+			`UPDATE feed_sources SET name=$2, endpoint=$3, updated_at=CURRENT_TIMESTAMP WHERE id=$1 AND source_type=$4 AND deleted_at IS NULL`,
+			id, cfg["name"], cfg["endpoint"], kind)
 	case "hn":
-		tag, err = d.conn.Exec(ctx,
-			`UPDATE feed_sources SET name=$2, updated_at=CURRENT_TIMESTAMP WHERE id=$1`,
-			id, cfg["name"])
+		tag, err = q.Exec(ctx,
+			`UPDATE feed_sources SET name=$2, updated_at=CURRENT_TIMESTAMP WHERE id=$1 AND source_type=$3 AND deleted_at IS NULL`,
+			id, cfg["name"], kind)
 	case "linkedin_profile":
-		tag, err = d.conn.Exec(ctx,
-			`UPDATE target_linkedin_profiles SET profile_url=$2, updated_at=CURRENT_TIMESTAMP WHERE id=$1`,
+		tag, err = q.Exec(ctx,
+			`UPDATE target_linkedin_profiles SET profile_url=$2, updated_at=CURRENT_TIMESTAMP WHERE id=$1 AND deleted_at IS NULL`,
 			id, cfg["profile_url"])
 	default:
 		return fmt.Errorf("UpdateSourceConfig: unknown kind %q", kind)
@@ -1234,12 +1247,39 @@ func (d *pgxDatabase) UpdateSourceConfig(ctx context.Context, apiID string, cfg 
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" { // unique_violation
 			return badInput("another source already uses this URL/handle")
 		}
-		return err
+		return fmt.Errorf("update source config %q: %w", apiID, err)
 	}
 	if tag.RowsAffected() == 0 {
 		return badInput("source %q not found", apiID)
 	}
 	return nil
+}
+
+// UpdateSourceConfig writes normalized config fields (produced by normalizeSourceConfig) to the
+// source's owner table. A UNIQUE violation (duplicate URL/handle) is mapped to a badInput error.
+func (d *pgxDatabase) UpdateSourceConfig(ctx context.Context, apiID string, cfg map[string]string) error {
+	return updateSourceConfigExec(ctx, d.conn, apiID, cfg)
+}
+
+// PatchSourceFull atomically updates display_name/tags and config in one transaction,
+// preventing partial writes when both are provided in the same PATCH request.
+func (d *pgxDatabase) PatchSourceFull(ctx context.Context, apiID string, displayName *string, tags []string, cfg map[string]string) error {
+	tx, err := d.conn.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("PatchSourceFull: begin: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	if displayName != nil || tags != nil {
+		if err := patchSourceMetaExec(ctx, tx, apiID, displayName, tags); err != nil {
+			return err
+		}
+	}
+	if len(cfg) > 0 {
+		if err := updateSourceConfigExec(ctx, tx, apiID, cfg); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
 }
 
 // parseSourceID splits "kind:N" → (kind, N, true); returns ("", 0, false) on bad input.

@@ -122,6 +122,7 @@
 	let editError = $state('');
 	let editConfig = $state<Record<string, string>>({});
 	let editConfigLoading = $state(false);
+	let editSeq = 0;
 
 	// delete (single)
 	let deleteTarget = $state<SourceItem | null>(null);
@@ -497,13 +498,15 @@
 		editConfig = {};
 		// Pre-fill the per-kind config fields (URL/handle/name/title) from the backend.
 		editConfigLoading = true;
+		const seq = ++editSeq;
 		try {
 			const res = await fetch(apiPath(s.api_id, '/config'));
+			if (seq !== editSeq) return; // stale: a newer openEdit already ran
 			if (res.ok) editConfig = await res.json();
 		} catch {
 			/* leave fields blank; operator can still edit name/tags */
 		} finally {
-			editConfigLoading = false;
+			if (seq === editSeq) editConfigLoading = false;
 		}
 	}
 	function addEditTag() {
@@ -516,6 +519,7 @@
 	}
 	async function submitEdit() {
 		if (!editSource) return;
+		if (editConfigLoading) return;
 		editSaving = true;
 		editError = '';
 		const payload: { display_name: string; tags?: string[]; config?: Record<string, string> } = {
@@ -536,9 +540,9 @@
 					editSaving = false;
 					return;
 				}
-				if (v) cfg[f.name] = v;
+				cfg[f.name] = v; // include empty strings so optional fields can be cleared
 			}
-			if (Object.keys(cfg).length > 0) payload.config = cfg;
+			payload.config = cfg;
 		}
 		try {
 			const res = await fetch(apiPath(editSource.api_id), {
@@ -1065,10 +1069,10 @@
 				{/if}
 			</div>
 			<div class="mt-5 flex justify-end gap-2">
-				<button class="rounded-token border border-border px-3 py-1.5 text-[13px] text-muted hover:bg-surface-2 disabled:opacity-50" disabled={editSaving} onclick={() => (editSource = null)}>{t.fontes.wizardCancel}</button>
+				<button class="rounded-token border border-border px-3 py-1.5 text-[13px] text-muted hover:bg-surface-2 disabled:opacity-50" disabled={editSaving || editConfigLoading} onclick={() => (editSource = null)}>{t.fontes.wizardCancel}</button>
 				<button
 					class="rounded-token bg-text px-3.5 py-1.5 text-[13px] font-medium text-bg hover:opacity-90 disabled:opacity-50"
-					disabled={editSaving}
+					disabled={editSaving || editConfigLoading}
 					onclick={submitEdit}>{editSaving ? t.fontes.editSaving : t.fontes.editSave}</button>
 			</div>
 		</div>
