@@ -843,9 +843,16 @@ func (m *MockDatabase) ListSources(_ context.Context, f SourceFilter) (SourcesRe
 			case "lane":
 				a, b = filtered[i].Lane, filtered[j].Lane
 			case "updated_at":
-				a, b = filtered[i].UpdatedAt.String(), filtered[j].UpdatedAt.String()
+				a, b = filtered[i].UpdatedAt.Format(time.RFC3339Nano), filtered[j].UpdatedAt.Format(time.RFC3339Nano)
 			default:
 				a, b = filtered[i].DisplayName, filtered[j].DisplayName
+			}
+			if a == b {
+				// tiebreaker: api_id ASC (mirrors store_reads.go)
+				if desc {
+					return filtered[i].ApiID > filtered[j].ApiID
+				}
+				return filtered[i].ApiID < filtered[j].ApiID
 			}
 			if desc {
 				return a > b

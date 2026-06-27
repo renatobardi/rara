@@ -559,7 +559,12 @@
 			payload.tags = editTags;
 		}
 		// Collect required-field validation + non-empty config (skip email, which has no editable fields here).
-		const cfgFields = (editKind?.fields ?? []).filter((f) => f.name !== 'display_name');
+		const srcKind = editSource.kind;
+		const cfgFields = (editKind?.fields ?? []).filter(
+			(f) =>
+				f.name !== 'display_name' &&
+				!(f.name === 'name' && ['rss', 'html', 'hn'].includes(srcKind))
+		);
 		if (cfgFields.length > 0) {
 			const cfg: Record<string, string> = {};
 			for (const f of cfgFields) {
@@ -825,13 +830,13 @@
 									</th>
 									<!-- Nome — sort + text search (q) -->
 									<th class="relative px-4 py-2.5 font-medium" data-col-popover>
-										<button class="flex items-center gap-1 hover:text-text" onclick={(e) => { e.stopPropagation(); activePopover = activePopover === 'name' ? null : 'name'; }}>
+										<button class="flex items-center gap-1 hover:text-text" aria-haspopup="true" aria-expanded={activePopover === 'name'} aria-controls="popover-name" onclick={(e) => { e.stopPropagation(); activePopover = activePopover === 'name' ? null : 'name'; }}>
 											{t.fontes.colName}
 											{#if query.trim()}<span class="h-1.5 w-1.5 rounded-full bg-text"></span>{/if}
 											<span class="opacity-40">▾</span>
 										</button>
 										{#if activePopover === 'name'}
-											<div class="absolute left-0 top-full z-30 min-w-[220px] rounded-xl border border-border bg-bg p-3 shadow-xl" data-col-popover>
+											<div id="popover-name" role="menu" class="absolute left-0 top-full z-30 min-w-[220px] rounded-xl border border-border bg-bg p-3 shadow-xl" data-col-popover>
 												<div class="mb-2 flex gap-1">
 													<button class="flex-1 rounded-token border border-border px-2 py-1 text-[12px] {sortBy==='display_name'&&sortDir==='asc'?'bg-surface-2 font-medium':''} hover:bg-hover" onclick={() => setSort('display_name','asc')}>{t.fontes.colSortAZ}</button>
 													<button class="flex-1 rounded-token border border-border px-2 py-1 text-[12px] {sortBy==='display_name'&&sortDir==='desc'?'bg-surface-2 font-medium':''} hover:bg-hover" onclick={() => setSort('display_name','desc')}>{t.fontes.colSortZA}</button>
@@ -847,13 +852,13 @@
 									</th>
 									<!-- Tipo — sort + kind filter -->
 									<th class="relative px-4 py-2.5 font-medium" data-col-popover>
-										<button class="flex items-center gap-1 hover:text-text" onclick={(e) => { e.stopPropagation(); activePopover = activePopover === 'kind' ? null : 'kind'; }}>
+										<button class="flex items-center gap-1 hover:text-text" aria-haspopup="true" aria-expanded={activePopover === 'kind'} aria-controls="popover-kind" onclick={(e) => { e.stopPropagation(); activePopover = activePopover === 'kind' ? null : 'kind'; }}>
 											{t.fontes.colKind}
 											{#if fKind}<span class="h-1.5 w-1.5 rounded-full bg-text"></span>{/if}
 											<span class="opacity-40">▾</span>
 										</button>
 										{#if activePopover === 'kind'}
-											<div class="absolute left-0 top-full z-30 min-w-[200px] rounded-xl border border-border bg-bg p-3 shadow-xl" data-col-popover>
+											<div id="popover-kind" role="menu" class="absolute left-0 top-full z-30 min-w-[200px] rounded-xl border border-border bg-bg p-3 shadow-xl" data-col-popover>
 												<div class="mb-2 flex gap-1">
 													<button class="flex-1 rounded-token border border-border px-2 py-1 text-[12px] {sortBy==='kind'&&sortDir==='asc'?'bg-surface-2 font-medium':''} hover:bg-hover" onclick={() => setSort('kind','asc')}>{t.fontes.colSortAZ}</button>
 													<button class="flex-1 rounded-token border border-border px-2 py-1 text-[12px] {sortBy==='kind'&&sortDir==='desc'?'bg-surface-2 font-medium':''} hover:bg-hover" onclick={() => setSort('kind','desc')}>{t.fontes.colSortZA}</button>
@@ -871,12 +876,12 @@
 									</th>
 									<!-- Lane — sort only -->
 									<th class="relative px-4 py-2.5 font-medium" data-col-popover>
-										<button class="flex items-center gap-1 hover:text-text" onclick={(e) => { e.stopPropagation(); activePopover = activePopover === 'lane' ? null : 'lane'; }}>
+										<button class="flex items-center gap-1 hover:text-text" aria-haspopup="true" aria-expanded={activePopover === 'lane'} aria-controls="popover-lane" onclick={(e) => { e.stopPropagation(); activePopover = activePopover === 'lane' ? null : 'lane'; }}>
 											{t.fontes.colLane}
 											<span class="opacity-40">▾</span>
 										</button>
 										{#if activePopover === 'lane'}
-											<div class="absolute left-0 top-full z-30 min-w-[160px] rounded-xl border border-border bg-bg p-3 shadow-xl" data-col-popover>
+											<div id="popover-lane" role="menu" class="absolute left-0 top-full z-30 min-w-[160px] rounded-xl border border-border bg-bg p-3 shadow-xl" data-col-popover>
 												<div class="flex gap-1">
 													<button class="flex-1 rounded-token border border-border px-2 py-1 text-[12px] {sortBy==='lane'&&sortDir==='asc'?'bg-surface-2 font-medium':''} hover:bg-hover" onclick={() => setSort('lane','asc')}>{t.fontes.colSortAZ}</button>
 													<button class="flex-1 rounded-token border border-border px-2 py-1 text-[12px] {sortBy==='lane'&&sortDir==='desc'?'bg-surface-2 font-medium':''} hover:bg-hover" onclick={() => setSort('lane','desc')}>{t.fontes.colSortZA}</button>
@@ -886,13 +891,13 @@
 									</th>
 									<!-- Status — filter only (só 2 valores, sort irrelevante) -->
 									<th class="relative px-4 py-2.5 font-medium" data-col-popover>
-										<button class="flex items-center gap-1 hover:text-text" onclick={(e) => { e.stopPropagation(); activePopover = activePopover === 'status' ? null : 'status'; }}>
+										<button class="flex items-center gap-1 hover:text-text" aria-haspopup="true" aria-expanded={activePopover === 'status'} aria-controls="popover-status" onclick={(e) => { e.stopPropagation(); activePopover = activePopover === 'status' ? null : 'status'; }}>
 											{t.fontes.colStatus}
 											{#if fStatus}<span class="h-1.5 w-1.5 rounded-full bg-text"></span>{/if}
 											<span class="opacity-40">▾</span>
 										</button>
 										{#if activePopover === 'status'}
-											<div class="absolute left-0 top-full z-30 min-w-[160px] rounded-xl border border-border bg-bg p-3 shadow-xl" data-col-popover>
+											<div id="popover-status" role="menu" class="absolute left-0 top-full z-30 min-w-[160px] rounded-xl border border-border bg-bg p-3 shadow-xl" data-col-popover>
 												<div class="flex flex-col gap-0.5">
 													<button class="rounded-token px-2 py-1 text-left text-[12px] {!fStatus?'font-medium text-text':'text-muted'} hover:bg-hover" onclick={() => { fStatus=''; activePopover=null; applyFilters(); }}>{t.fontes.filterAllStatus}</button>
 													<button class="rounded-token px-2 py-1 text-left text-[12px] {fStatus==='active'?'font-medium text-text':'text-muted'} hover:bg-hover" onclick={() => { fStatus='active'; activePopover=null; applyFilters(); }}>
@@ -907,13 +912,13 @@
 									</th>
 									<!-- Tags — sort + tag filter com datalist -->
 									<th class="relative px-4 py-2.5 font-medium" data-col-popover>
-										<button class="flex items-center gap-1 hover:text-text" onclick={(e) => { e.stopPropagation(); activePopover = activePopover === 'tags' ? null : 'tags'; }}>
+										<button class="flex items-center gap-1 hover:text-text" aria-haspopup="true" aria-expanded={activePopover === 'tags'} aria-controls="popover-tags" onclick={(e) => { e.stopPropagation(); activePopover = activePopover === 'tags' ? null : 'tags'; }}>
 											{t.fontes.colTags}
 											{#if fTag}<span class="h-1.5 w-1.5 rounded-full bg-text"></span>{/if}
 											<span class="opacity-40">▾</span>
 										</button>
 										{#if activePopover === 'tags'}
-											<div class="absolute left-0 top-full z-30 min-w-[200px] rounded-xl border border-border bg-bg p-3 shadow-xl" data-col-popover>
+											<div id="popover-tags" role="menu" class="absolute left-0 top-full z-30 min-w-[200px] rounded-xl border border-border bg-bg p-3 shadow-xl" data-col-popover>
 												<div class="mb-2 flex gap-1">
 													<button class="flex-1 rounded-token border border-border px-2 py-1 text-[12px] {sortBy==='display_name'&&sortDir==='asc'?'bg-surface-2 font-medium':''} hover:bg-hover" onclick={() => setSort('display_name','asc')}>{t.fontes.colSortAZ}</button>
 													<button class="flex-1 rounded-token border border-border px-2 py-1 text-[12px] {sortBy==='display_name'&&sortDir==='desc'?'bg-surface-2 font-medium':''} hover:bg-hover" onclick={() => setSort('display_name','desc')}>{t.fontes.colSortZA}</button>
@@ -922,7 +927,7 @@
 													bind:value={fTag}
 													list="tag-universe"
 													placeholder={t.fontes.filterAllTags}
-													oninput={() => { page=1; pageLoad(); }}
+													oninput={() => { resetSelectionForRefilter(); page=1; pageLoad(); }}
 													onchange={() => { activePopover=null; applyFilters(); }}
 													class="w-full rounded-token border border-border bg-bg px-2 py-1.5 text-[12px] outline-none focus:border-text/40"
 												/>
@@ -931,13 +936,13 @@
 									</th>
 									<!-- Atualizado — sort only -->
 									<th class="relative px-4 py-2.5 font-medium" data-col-popover>
-										<button class="flex items-center gap-1 hover:text-text" onclick={(e) => { e.stopPropagation(); activePopover = activePopover === 'updated' ? null : 'updated'; }}>
+										<button class="flex items-center gap-1 hover:text-text" aria-haspopup="true" aria-expanded={activePopover === 'updated'} aria-controls="popover-updated" onclick={(e) => { e.stopPropagation(); activePopover = activePopover === 'updated' ? null : 'updated'; }}>
 											{t.fontes.colUpdated}
 											{#if sortBy==='updated_at'}<span class="h-1.5 w-1.5 rounded-full bg-text"></span>{/if}
 											<span class="opacity-40">▾</span>
 										</button>
 										{#if activePopover === 'updated'}
-											<div class="absolute right-0 top-full z-30 min-w-[180px] rounded-xl border border-border bg-bg p-3 shadow-xl" data-col-popover>
+											<div id="popover-updated" role="menu" class="absolute right-0 top-full z-30 min-w-[180px] rounded-xl border border-border bg-bg p-3 shadow-xl" data-col-popover>
 												<div class="flex gap-1">
 													<button class="flex-1 rounded-token border border-border px-2 py-1 text-[12px] {sortBy==='updated_at'&&sortDir==='desc'?'bg-surface-2 font-medium':''} hover:bg-hover" onclick={() => setSort('updated_at','desc')}>{t.fontes.colSortNewest}</button>
 													<button class="flex-1 rounded-token border border-border px-2 py-1 text-[12px] {sortBy==='updated_at'&&sortDir==='asc'?'bg-surface-2 font-medium':''} hover:bg-hover" onclick={() => setSort('updated_at','asc')}>{t.fontes.colSortOldest}</button>
