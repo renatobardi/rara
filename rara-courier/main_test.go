@@ -185,7 +185,7 @@ func TestRunCollectsEmails(t *testing.T) {
 			"b": {MessageID: "b", Subject: "Second", Body: "body b"},
 		},
 	}
-	n, err := run(ctx, db, api, 100)
+	n, err := run(ctx, db, api, 100, "courier-vpc")
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
@@ -198,10 +198,10 @@ func TestRunIdempotent(t *testing.T) {
 	ctx := context.Background()
 	db := newMockDatabase()
 	api := &fakeGmail{ids: []string{"a"}, messages: map[string]Email{"a": {MessageID: "a", Body: "x"}}}
-	if _, err := run(ctx, db, api, 100); err != nil {
+	if _, err := run(ctx, db, api, 100, "courier-vpc"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := run(ctx, db, api, 100); err != nil {
+	if _, err := run(ctx, db, api, 100, "courier-vpc"); err != nil {
 		t.Fatal(err)
 	}
 	if len(db.emails) != 1 {
@@ -217,7 +217,7 @@ func TestRunSkipsBadMessage(t *testing.T) {
 		messages: map[string]Email{"b": {MessageID: "b", Body: "ok"}},
 		getErr:   map[string]error{"a": errors.New("boom")},
 	}
-	n, err := run(ctx, db, api, 100)
+	n, err := run(ctx, db, api, 100, "courier-vpc")
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
@@ -239,7 +239,7 @@ func TestRunSourceListErrorSkipsSource(t *testing.T) {
 		// listErr only when queried with the first source's query
 		listErrFor: map[string]error{"label:Broken": errors.New("api down")},
 	}
-	n, err := run(ctx, db, api, 100)
+	n, err := run(ctx, db, api, 100, "courier-vpc")
 	if err != nil {
 		t.Fatalf("run should not abort on per-source list error: %v", err)
 	}
@@ -252,7 +252,7 @@ func TestRunListEmailSourcesErrorAborts(t *testing.T) {
 	// If ListEmailSources itself fails, the run must abort with an error.
 	db := &MockDatabase{emails: map[string]Email{}, err: errors.New("db down")}
 	api := &fakeGmail{}
-	if _, err := run(context.Background(), db, api, 100); err == nil {
+	if _, err := run(context.Background(), db, api, 100, "courier-vpc"); err == nil {
 		t.Error("ListEmailSources error should abort the run")
 	}
 }
@@ -262,7 +262,7 @@ func TestRunNoSourcesMeansNoop(t *testing.T) {
 	db := newMockDatabase() // starts with default source
 	db.sources = nil        // clear to simulate no active rules
 	api := &fakeGmail{ids: []string{"a"}, messages: map[string]Email{"a": {MessageID: "a", Body: "x"}}}
-	n, err := run(context.Background(), db, api, 100)
+	n, err := run(context.Background(), db, api, 100, "courier-vpc")
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
@@ -283,7 +283,7 @@ func TestRunMultiSourceDedup(t *testing.T) {
 		ids:      []string{"shared"},
 		messages: map[string]Email{"shared": shared},
 	}
-	_, err := run(ctx, db, api, 100)
+	_, err := run(ctx, db, api, 100, "courier-vpc")
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
@@ -299,11 +299,11 @@ func TestRunStampsProviderOnSuccess(t *testing.T) {
 		ids:      []string{"a"},
 		messages: map[string]Email{"a": {MessageID: "a", Body: "body"}},
 	}
-	if _, err := run(ctx, db, api, 100); err != nil {
+	if _, err := run(ctx, db, api, 100, "courier-vpc"); err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	if len(db.stamped) != 1 || db.stamped[0] != "courier" {
-		t.Errorf("stamped = %v, want [courier]", db.stamped)
+	if len(db.stamped) != 1 || db.stamped[0] != "courier-vpc" {
+		t.Errorf("stamped = %v, want [courier-vpc]", db.stamped)
 	}
 }
 
@@ -316,7 +316,7 @@ func TestRunStampErrorIsBestEffort(t *testing.T) {
 		ids:      []string{"a"},
 		messages: map[string]Email{"a": {MessageID: "a", Body: "body"}},
 	}
-	n, err := run(ctx, db, api, 100)
+	n, err := run(ctx, db, api, 100, "courier-vpc")
 	if err != nil {
 		t.Fatalf("run returned error on stamp failure (should be best-effort): %v", err)
 	}

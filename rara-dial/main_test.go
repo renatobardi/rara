@@ -181,7 +181,7 @@ func staticFetcher(body string) Fetcher {
 // run is the no-floor collector loop — a test helper so the floor-agnostic cases stay concise.
 // Production always goes through runWithFloor (floor from PODCAST_MIN_PUBLISHED).
 func run(ctx context.Context, db Database, fetch Fetcher) (int, error) {
-	return runWithFloor(ctx, db, fetch, nil)
+	return runWithFloor(ctx, db, fetch, nil, "dial-vpc")
 }
 
 // TestRunCollectsEpisodes: the loop fetches each active feed, parses it, refreshes the title,
@@ -356,7 +356,7 @@ func TestPublishedFloorFiltersOldEpisodes(t *testing.T) {
 	db.feeds = []Feed{{ID: 1, FeedURL: "https://example.com/feed.xml", Active: true}}
 
 	floor, _ := parsePublishedFloor("2025-07-01")
-	n, err := runWithFloor(ctx, db, staticFetcher(feed), floor)
+	n, err := runWithFloor(ctx, db, staticFetcher(feed), floor, "dial-vpc")
 	if err != nil {
 		t.Fatalf("runWithFloor: %v", err)
 	}
@@ -396,7 +396,7 @@ func TestPublishedFloorKeepsEpisodesWithoutDate(t *testing.T) {
 	db.feeds = []Feed{{ID: 1, FeedURL: "https://example.com/feed.xml", Active: true}}
 
 	floor, _ := parsePublishedFloor("2025-07-01")
-	n, err := runWithFloor(ctx, db, staticFetcher(feed), floor)
+	n, err := runWithFloor(ctx, db, staticFetcher(feed), floor, "dial-vpc")
 	if err != nil {
 		t.Fatalf("runWithFloor: %v", err)
 	}
@@ -444,7 +444,7 @@ func TestPublishedFloorDisabledWhenEmpty(t *testing.T) {
 	db := newMockDatabase()
 	db.feeds = []Feed{{ID: 1, FeedURL: "https://example.com/feed.xml", Active: true}}
 
-	n, err := runWithFloor(ctx, db, staticFetcher(sampleFeed), nil)
+	n, err := runWithFloor(ctx, db, staticFetcher(sampleFeed), nil, "dial-vpc")
 	if err != nil {
 		t.Fatalf("runWithFloor: %v", err)
 	}
@@ -453,21 +453,21 @@ func TestPublishedFloorDisabledWhenEmpty(t *testing.T) {
 	}
 }
 
-// TestRunWithFloorStampsProviderOnSuccess: a successful run must stamp the "dial" provider
-// exactly once so the control plane knows when dial last collected.
+// TestRunWithFloorStampsProviderOnSuccess: a successful run must stamp the provider name
+// passed in — exactly once — so the control plane knows when dial last collected.
 func TestRunWithFloorStampsProviderOnSuccess(t *testing.T) {
 	ctx := context.Background()
 	db := newMockDatabase()
 	db.feeds = []Feed{{ID: 1, FeedURL: "https://example.com/feed.xml", Active: true}}
 
-	if _, err := runWithFloor(ctx, db, staticFetcher(sampleFeed), nil); err != nil {
+	if _, err := runWithFloor(ctx, db, staticFetcher(sampleFeed), nil, "dial-vpc"); err != nil {
 		t.Fatalf("runWithFloor: %v", err)
 	}
 	if len(db.stamped) != 1 {
 		t.Fatalf("StampProviderCollected called %d times, want 1", len(db.stamped))
 	}
-	if db.stamped[0] != "dial" {
-		t.Errorf("stamped provider = %q, want %q", db.stamped[0], "dial")
+	if db.stamped[0] != "dial-vpc" {
+		t.Errorf("stamped provider = %q, want %q", db.stamped[0], "dial-vpc")
 	}
 }
 
@@ -479,7 +479,7 @@ func TestStampProviderCollectedErrorIsBestEffort(t *testing.T) {
 	db.feeds = []Feed{{ID: 1, FeedURL: "https://example.com/feed.xml", Active: true}}
 	db.stampErr = errors.New("providers table not found")
 
-	_, err := runWithFloor(ctx, db, staticFetcher(sampleFeed), nil)
+	_, err := runWithFloor(ctx, db, staticFetcher(sampleFeed), nil, "dial-vpc")
 	if err != nil {
 		t.Errorf("runWithFloor returned error %v; stamp failure must be best-effort (logged only)", err)
 	}
