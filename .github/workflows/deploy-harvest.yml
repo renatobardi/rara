@@ -113,6 +113,7 @@ jobs:
             --region "$REGION"
             --project "$GCP_PROJECT"
             --set-secrets "DATABASE_URL=database-url:latest,YOUTUBE_API_KEY=youtube-api-key:latest"
+            --set-env-vars "HARVEST_PROVIDER=harvest-cloud"
             --max-retries 1
             --task-timeout 900s
             --memory 512Mi
