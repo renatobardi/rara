@@ -27,7 +27,7 @@ export function labelDecidedBy(decidedBy?: string | null): string {
 export function latestDeferReason(decisions: ItemDecision[]): DeferReason | null {
 	const defers = decisions.filter((d) => d.decision === 'defer');
 	if (!defers.length) return null;
-	const latest = defers.reduce((a, b) => ((b.id ?? 0) > (a.id ?? 0) ? b : a));
+	const latest = defers.reduce((a, b) => ((b.id ?? 0) > (a.id ?? 0) ? b : a), defers[0]);
 	return { score: latest.score, decided_by: latest.decided_by, reason: latest.reason };
 }
 
