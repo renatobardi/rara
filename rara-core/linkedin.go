@@ -210,7 +210,7 @@ func SeedLinkedInLane(ctx context.Context, db Database) error {
 			Env:                   []byte(fmt.Sprintf(`{"CLIP_PROVIDER":%q}`, provClipLocal)),
 			CollectCadenceSeconds: intPtr(21600), RetryIntervalSeconds: intPtr(1800)},
 	} {
-		if err := db.UpsertProvider(ctx, p); err != nil {
+		if err := db.SeedProvider(ctx, p); err != nil {
 			return err
 		}
 	}
@@ -225,7 +225,7 @@ func SeedLinkedInLane(ctx context.Context, db Database) error {
 			Constraints: []byte(`{"accepts":["linkedin"]}`), RunnerURL: runnerURL, Enabled: vpcEnabled,
 			Env: []byte(`{"GLEAN_PROVIDER":"scrub-vpc"}`)},
 	} {
-		if err := db.UpsertProvider(ctx, p); err != nil {
+		if err := db.SeedProvider(ctx, p); err != nil {
 			return err
 		}
 	}

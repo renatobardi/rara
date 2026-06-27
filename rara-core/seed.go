@@ -177,7 +177,7 @@ func seedSharedProviders(ctx context.Context, db Database) error {
 			Env:         []byte(`{"SIFT_GATE":"gate_rico","SIFT_PROVIDER":"assay-vpc","LITELLM_MODEL":` + string(mGate) + `}`)},
 	}
 	for _, p := range providers {
-		if err := db.UpsertProvider(ctx, p); err != nil {
+		if err := db.SeedProvider(ctx, p); err != nil {
 			return err
 		}
 	}
@@ -329,7 +329,7 @@ func SeedYouTubeLane(ctx context.Context, db Database) error {
 			Env: []byte(`{"SCRIBE_PROVIDER":"caption-mac"}`)},
 	}
 	for _, p := range providers {
-		if err := db.UpsertProvider(ctx, p); err != nil {
+		if err := db.SeedProvider(ctx, p); err != nil {
 			return err
 		}
 	}
@@ -369,7 +369,7 @@ func SeedPodcastLane(ctx context.Context, db Database) error {
 			Env:         []byte(fmt.Sprintf(`{"DIAL_PROVIDER":%q}`, provDialLocal)),
 			RunnerURL:   runnerURL, CollectCadenceSeconds: intPtr(86400), RetryIntervalSeconds: intPtr(1800)},
 	} {
-		if err := db.UpsertProvider(ctx, p); err != nil {
+		if err := db.SeedProvider(ctx, p); err != nil {
 			return err
 		}
 	}
@@ -384,7 +384,7 @@ func SeedPodcastLane(ctx context.Context, db Database) error {
 			Constraints: []byte(`{"accepts":["podcast"]}`), RunnerURL: runnerURL, Enabled: vpcEnabled,
 			Env: []byte(`{"SCRIBE_PROVIDER":"echo-vpc"}`)},
 	} {
-		if err := db.UpsertProvider(ctx, p); err != nil {
+		if err := db.SeedProvider(ctx, p); err != nil {
 			return err
 		}
 	}
@@ -423,7 +423,7 @@ func SeedEmailLane(ctx context.Context, db Database) error {
 			Env:         []byte(fmt.Sprintf(`{"COURIER_PROVIDER":%q}`, provCourierLocal)),
 			RunnerURL:   runnerURL, CollectCadenceSeconds: intPtr(21600), RetryIntervalSeconds: intPtr(1800)},
 	} {
-		if err := db.UpsertProvider(ctx, p); err != nil {
+		if err := db.SeedProvider(ctx, p); err != nil {
 			return err
 		}
 	}
@@ -438,7 +438,7 @@ func SeedEmailLane(ctx context.Context, db Database) error {
 			Constraints: []byte(`{"accepts":["email"]}`), RunnerURL: runnerURL, Enabled: vpcEnabled,
 			Env: []byte(`{"GLEAN_PROVIDER":"winnow-vpc"}`)},
 	} {
-		if err := db.UpsertProvider(ctx, p); err != nil {
+		if err := db.SeedProvider(ctx, p); err != nil {
 			return err
 		}
 	}
@@ -479,7 +479,7 @@ func SeedNewsLane(ctx context.Context, db Database) error {
 			Constraints: []byte(`{"accepts":["news"]}`),
 			RunnerURL:   runnerURL, CollectCadenceSeconds: intPtr(21600), RetryIntervalSeconds: intPtr(1800)},
 	} {
-		if err := db.UpsertProvider(ctx, p); err != nil {
+		if err := db.SeedProvider(ctx, p); err != nil {
 			return err
 		}
 	}
@@ -494,7 +494,7 @@ func SeedNewsLane(ctx context.Context, db Database) error {
 			Constraints: []byte(`{"accepts":["news"]}`), RunnerURL: runnerURL, Enabled: vpcEnabled,
 			Env: []byte(`{"GLEAN_PROVIDER":"glean-vpc"}`)},
 	} {
-		if err := db.UpsertProvider(ctx, p); err != nil {
+		if err := db.SeedProvider(ctx, p); err != nil {
 			return err
 		}
 	}

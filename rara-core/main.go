@@ -588,6 +588,10 @@ type Database interface {
 	// Config (idempotent, full-record upserts).
 	UpsertCapability(ctx context.Context, c Capability) error
 	UpsertProvider(ctx context.Context, p Provider) error
+	// SeedProvider is like UpsertProvider but intentionally omits enabled from the ON CONFLICT
+	// SET clause so that re-seeding never clobbers an operator's pause/disable toggle.
+	// All seed functions (core-job seed <lane>) must use this instead of UpsertProvider.
+	SeedProvider(ctx context.Context, p Provider) error
 	UpsertFlow(ctx context.Context, f Flow) (int, error)
 	UpsertFlowStep(ctx context.Context, s FlowStep) error
 	UpsertRoutingPolicy(ctx context.Context, p RoutingPolicy) error
@@ -899,6 +903,53 @@ func (d *pgxDatabase) UpsertProvider(ctx context.Context, p Provider) error {
 		jsonOrEmpty(p.Env, "{}"), p.CollectCadenceSeconds, p.RetryIntervalSeconds, nullStr(p.Worker), nullStr(p.App), nullStr(p.Description))
 	if err != nil {
 		return fmt.Errorf("upsert provider %q: %w", p.Name, err)
+	}
+	return nil
+}
+
+// SeedProvider is like UpsertProvider but excludes enabled from the ON CONFLICT SET clause.
+// Re-seeding must never reset an operator's pause/disable toggle.
+func (d *pgxDatabase) SeedProvider(ctx context.Context, p Provider) error {
+	if !isValidRuntime(p.Runtime) {
+		return fmt.Errorf("invalid runtime %q", p.Runtime)
+	}
+	if !isValidActivation(p.Activation) {
+		return fmt.Errorf("invalid activation %q", p.Activation)
+	}
+	if !isJSONObject(p.Env) {
+		return fmt.Errorf("env must be a JSON object")
+	}
+	if p.Worker == "" {
+		p.Worker = p.Name
+	}
+	if p.App == "" {
+		p.App = p.Name
+	}
+	const q = `
+		INSERT INTO providers
+			(name, capability, runtime, activation, constraints, enabled,
+			 runner_url, env, collect_cadence_seconds, retry_interval_seconds, worker, app, description)
+		VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8::jsonb, $9, $10, $11, $12, $13)
+		ON CONFLICT (name) DO UPDATE SET
+			capability              = EXCLUDED.capability,
+			runtime                 = EXCLUDED.runtime,
+			activation              = EXCLUDED.activation,
+			constraints             = EXCLUDED.constraints,
+			runner_url              = EXCLUDED.runner_url,
+			env                     = EXCLUDED.env,
+			collect_cadence_seconds = EXCLUDED.collect_cadence_seconds,
+			retry_interval_seconds  = EXCLUDED.retry_interval_seconds,
+			worker                  = EXCLUDED.worker,
+			app                     = EXCLUDED.app,
+			description             = EXCLUDED.description`
+	// enabled: intentionally excluded from SET — operator-owned (console toggle).
+	// heartbeat_at / last_collect_at / last_attempt_at: runtime-owned, excluded for same reason.
+	_, err := d.conn.Exec(ctx, q,
+		p.Name, p.Capability, p.Runtime, p.Activation,
+		jsonOrEmpty(p.Constraints, "{}"), p.Enabled, nullStr(p.RunnerURL),
+		jsonOrEmpty(p.Env, "{}"), p.CollectCadenceSeconds, p.RetryIntervalSeconds, nullStr(p.Worker), nullStr(p.App), nullStr(p.Description))
+	if err != nil {
+		return fmt.Errorf("seed provider %q: %w", p.Name, err)
 	}
 	return nil
 }
