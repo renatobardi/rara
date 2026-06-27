@@ -4,7 +4,7 @@
 
 **Goal:** Make the fontes UI show the YouTube channel/playlist URL below the source name — the same way podcast, RSS, HTML, and HN already do.
 
-**Architecture:** Single new migration (`027_sources_v_youtube_url.sql`) that rebuilds `sources_v` via `CREATE OR REPLACE VIEW`, changing the `config_summary` for `youtube_channel` and `youtube_playlist` rows from a name/title repeat to a constructed YouTube URL. No Go code changes and no frontend changes needed — the Svelte table already renders `config_summary` as a subtitle whenever it is non-empty.
+**Architecture:** Single new migration (`027_sources_v_youtube_url.sql`) that rebuilds `sources_v` via `DROP VIEW IF EXISTS` + `CREATE VIEW` (not `CREATE OR REPLACE VIEW` — PostgreSQL rejects that when `config_summary` changes type from `varchar` to `text`), changing the `config_summary` for `youtube_channel` and `youtube_playlist` rows from a name/title repeat to a constructed YouTube URL. No Go code changes and no frontend changes needed — the Svelte table already renders `config_summary` as a subtitle whenever it is non-empty.
 
 **Tech Stack:** PostgreSQL (Neon), Go migrations applied by `database-core.yml` CI.
 
