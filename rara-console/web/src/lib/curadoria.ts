@@ -113,6 +113,55 @@ export function signalForKey(key: string): 'up' | 'down' | null {
 	return null;
 }
 
+// Maps (lane, source_ref) to a navigable URL, or null when no URL can be derived.
+// YouTube: source_ref is the video ID. LinkedIn/news: source_ref is the URL itself.
+// Podcast (GUID) and email (message-id) have no public URL.
+export function sourceUrl(lane: string, sourceRef: string): string | null {
+	if (lane === 'youtube') return `https://www.youtube.com/watch?v=${sourceRef}`;
+	if (lane === 'linkedin' || lane === 'news') return sourceRef;
+	return null;
+}
+
+export type FilterState = {
+	dateFrom: string;   // ISO date string (YYYY-MM-DD) or ''
+	dateTo: string;     // ISO date string (YYYY-MM-DD) or ''
+	tipo: string;       // lane filter or ''
+	canal: string;      // channel substring filter or ''
+	sortDir: 'newest' | 'oldest';
+};
+
+// Filters and sorts quarantine items client-side. Items without published_at are
+// excluded when any date filter is active (unknown age can't satisfy a date constraint).
+export function filterQuarantine(items: QuarantineItem[], f: FilterState): QuarantineItem[] {
+	const hasDateFilter = f.dateFrom !== '' || f.dateTo !== '';
+	let result = items.filter((item) => {
+		if (f.tipo && item.lane !== f.tipo) return false;
+		if (f.canal && !item.channel?.toLowerCase().includes(f.canal.toLowerCase())) return false;
+		if (hasDateFilter) {
+			if (!item.published_at) return false;
+			const d = item.published_at.slice(0, 10); // 'YYYY-MM-DD'
+			if (f.dateFrom && d < f.dateFrom) return false;
+			if (f.dateTo && d > f.dateTo) return false;
+		}
+		return true;
+	});
+	result = [...result].sort((a, b) => {
+		const ta = a.published_at ?? '';
+		const tb = b.published_at ?? '';
+		return f.sortDir === 'newest' ? tb.localeCompare(ta) : ta.localeCompare(tb);
+	});
+	return result;
+}
+
+// Returns true when a ProfileDiff has no additions, removals, or changes in any field.
+// Fallback fields (unexpected format) are treated as empty — we don't block save when
+// diff can't be computed.
+export function isDiffEmpty(diff: ProfileDiff): boolean {
+	const stringEmpty = (d: ProfileDiff['topics']) => d.fallback || (d.added.length === 0 && d.removed.length === 0);
+	const weightsEmpty = (d: ProfileDiff['weights']) => d.fallback || (d.added.length === 0 && d.removed.length === 0 && d.changed.length === 0);
+	return stringEmpty(diff.topics) && stringEmpty(diff.authors) && stringEmpty(diff.anti_topics) && weightsEmpty(diff.weights);
+}
+
 // Aggregates decisions within the last 24h + profile versions into Pulso counts.
 // Pass `now` (ms epoch) in tests for determinism; defaults to Date.now() in production.
 // Decisions without a `when` timestamp are excluded (defensive: unknown age).
