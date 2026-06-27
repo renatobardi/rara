@@ -519,6 +519,7 @@
 	}
 	async function submitEdit() {
 		if (!editSource) return;
+		if (editConfigLoading) return;
 		editSaving = true;
 		editError = '';
 		const payload: { display_name: string; tags?: string[]; config?: Record<string, string> } = {
@@ -1068,10 +1069,10 @@
 				{/if}
 			</div>
 			<div class="mt-5 flex justify-end gap-2">
-				<button class="rounded-token border border-border px-3 py-1.5 text-[13px] text-muted hover:bg-surface-2 disabled:opacity-50" disabled={editSaving} onclick={() => (editSource = null)}>{t.fontes.wizardCancel}</button>
+				<button class="rounded-token border border-border px-3 py-1.5 text-[13px] text-muted hover:bg-surface-2 disabled:opacity-50" disabled={editSaving || editConfigLoading} onclick={() => (editSource = null)}>{t.fontes.wizardCancel}</button>
 				<button
 					class="rounded-token bg-text px-3.5 py-1.5 text-[13px] font-medium text-bg hover:opacity-90 disabled:opacity-50"
-					disabled={editSaving}
+					disabled={editSaving || editConfigLoading}
 					onclick={submitEdit}>{editSaving ? t.fontes.editSaving : t.fontes.editSave}</button>
 			</div>
 		</div>

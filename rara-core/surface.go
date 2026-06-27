@@ -447,7 +447,7 @@ func validateEndpointURL(endpoint string) error {
 		}
 		// Block common SSRF hostnames that aren't caught by literal-IP check above.
 		// DNS-based SSRF is deferred to the collector (rara-feed validates at fetch time).
-		lh := strings.ToLower(host)
+		lh := strings.TrimRight(strings.ToLower(host), ".")
 		if lh == "localhost" || lh == "0.0.0.0" ||
 			strings.HasSuffix(lh, ".local") || strings.HasSuffix(lh, ".localhost") ||
 			lh == "metadata.google.internal" || strings.HasPrefix(lh, "169.254.") {
@@ -626,7 +626,7 @@ func (c *Core) PatchSource(ctx context.Context, apiID string, patch SourcePatch)
 	if !ok {
 		return badInput("invalid source id %q (want kind:N)", apiID)
 	}
-	// Validate everything before any write.
+	// Validate before any write so validation errors cause no partial state.
 	var normalizedConfig map[string]string
 	if len(patch.Config) > 0 {
 		nc, err := c.normalizeSourceConfig(ctx, kind, patch.Config)
@@ -635,17 +635,7 @@ func (c *Core) PatchSource(ctx context.Context, apiID string, patch SourcePatch)
 		}
 		normalizedConfig = nc
 	}
-	// Writes: metadata first (display_name/tags), then config.
-	// Not fully atomic (no transaction), but all validation errors are caught above.
-	if patch.DisplayName != nil || patch.Tags != nil {
-		if err := c.db.PatchSourceMeta(ctx, apiID, patch.DisplayName, patch.Tags); err != nil {
-			return err
-		}
-	}
-	if normalizedConfig != nil {
-		return c.db.UpdateSourceConfig(ctx, apiID, normalizedConfig)
-	}
-	return nil
+	return c.db.PatchSourceFull(ctx, apiID, patch.DisplayName, patch.Tags, normalizedConfig)
 }
 
 // PauseSource sets a source to paused (active/enabled=false). Idempotent.

@@ -757,6 +757,22 @@ func (m *MockDatabase) UpdateSourceConfig(_ context.Context, apiID string, cfg m
 	return nil
 }
 
+// PatchSourceFull delegates to PatchSourceMeta + UpdateSourceConfig sequentially.
+// In-memory maps make this effectively atomic for tests.
+func (m *MockDatabase) PatchSourceFull(_ context.Context, apiID string, displayName *string, tags []string, cfg map[string]string) error {
+	if displayName != nil || tags != nil {
+		if err := m.PatchSourceMeta(context.Background(), apiID, displayName, tags); err != nil {
+			return err
+		}
+	}
+	if len(cfg) > 0 {
+		if err := m.UpdateSourceConfig(context.Background(), apiID, cfg); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (m *MockDatabase) ListSources(_ context.Context, f SourceFilter) (SourcesResult, error) {
 	var filtered []SourceItem
 	for _, s := range m.sources {
@@ -907,13 +923,13 @@ func (m *MockDatabase) GetSourceConfig(_ context.Context, apiID string) (map[str
 		return map[string]string{"feed_url": f.FeedURL, "title": f.Title}, true, nil
 	case "rss", "html":
 		fs, ok := m.feedSources[id]
-		if !ok {
+		if !ok || fs.SourceType != kind {
 			return nil, false, nil
 		}
 		return map[string]string{"name": fs.Name, "endpoint": fs.Endpoint}, true, nil
 	case "hn":
 		fs, ok := m.feedSources[id]
-		if !ok {
+		if !ok || fs.SourceType != kind {
 			return nil, false, nil
 		}
 		return map[string]string{"name": fs.Name}, true, nil
