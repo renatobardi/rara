@@ -68,7 +68,7 @@ func TestRunCatalogsPosts(t *testing.T) {
 		{URL: urlB, Author: "Ana", Text: "on distributed systems"},
 	}}
 
-	n, err := run(ctx, db, collector)
+	n, err := run(ctx, db, collector, "clip-vpc")
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
@@ -92,7 +92,7 @@ func TestRunSkipsPartialRows(t *testing.T) {
 		{URL: "https://lnkd.in/markup", Text: "<div></div>"}, // partial: markup-only
 	}}
 
-	n, err := run(ctx, db, collector)
+	n, err := run(ctx, db, collector, "clip-vpc")
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
@@ -106,10 +106,10 @@ func TestRunSkipsPartialRows(t *testing.T) {
 func TestRunIdempotentOnURL(t *testing.T) {
 	ctx := context.Background()
 	db := newMockDatabase()
-	if _, err := run(ctx, db, &fakeCollector{posts: []LinkedInPost{{URL: urlX, Text: "first"}}}); err != nil {
+	if _, err := run(ctx, db, &fakeCollector{posts: []LinkedInPost{{URL: urlX, Text: "first"}}}, "clip-vpc"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := run(ctx, db, &fakeCollector{posts: []LinkedInPost{{URL: urlX, Text: "edited"}}}); err != nil {
+	if _, err := run(ctx, db, &fakeCollector{posts: []LinkedInPost{{URL: urlX, Text: "edited"}}}, "clip-vpc"); err != nil {
 		t.Fatal(err)
 	}
 	if len(db.posts) != 1 {
@@ -125,10 +125,10 @@ func TestRunIdempotentOnURL(t *testing.T) {
 func TestRunTrimsURLKey(t *testing.T) {
 	ctx := context.Background()
 	db := newMockDatabase()
-	if _, err := run(ctx, db, &fakeCollector{posts: []LinkedInPost{{URL: urlX, Text: "a"}}}); err != nil {
+	if _, err := run(ctx, db, &fakeCollector{posts: []LinkedInPost{{URL: urlX, Text: "a"}}}, "clip-vpc"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := run(ctx, db, &fakeCollector{posts: []LinkedInPost{{URL: "  " + urlX + "  ", Text: "b"}}}); err != nil {
+	if _, err := run(ctx, db, &fakeCollector{posts: []LinkedInPost{{URL: "  " + urlX + "  ", Text: "b"}}}, "clip-vpc"); err != nil {
 		t.Fatal(err)
 	}
 	if len(db.posts) != 1 {
@@ -146,18 +146,18 @@ func TestRunStampsProviderOnSuccess(t *testing.T) {
 		{URL: urlA, Author: authorRenato, Text: "on platform engineering"},
 	}}
 
-	if _, err := run(ctx, db, collector); err != nil {
+	if _, err := run(ctx, db, collector, "clip-vpc"); err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	if len(db.stamped) != 1 || db.stamped[0] != "clip" {
-		t.Errorf("stamped = %v, want [clip]", db.stamped)
+	if len(db.stamped) != 1 || db.stamped[0] != "clip-vpc" {
+		t.Errorf("stamped = %v, want [clip-vpc]", db.stamped)
 	}
 }
 
 // A fetch error aborts the run (it is a real source fault, not a per-post quirk).
 func TestRunPropagatesFetchError(t *testing.T) {
 	sentinel := errors.New("bright data unavailable")
-	if _, err := run(context.Background(), newMockDatabase(), &fakeCollector{err: sentinel}); !errors.Is(err, sentinel) {
+	if _, err := run(context.Background(), newMockDatabase(), &fakeCollector{err: sentinel}, "clip-vpc"); !errors.Is(err, sentinel) {
 		t.Fatalf("fetch error should propagate, got %v", err)
 	}
 }
@@ -172,7 +172,7 @@ func TestRunContinuesOnUpsertError(t *testing.T) {
 		{URL: "https://lnkd.in/bad", Text: "boom"},
 		{URL: "https://lnkd.in/good", Text: "ok"},
 	}}
-	n, err := run(ctx, db, collector)
+	n, err := run(ctx, db, collector, "clip-vpc")
 	if err != nil {
 		t.Fatalf("a per-post upsert error must not abort the run: %v", err)
 	}
@@ -312,7 +312,7 @@ func TestRunStampErrorIsNotFatal(t *testing.T) {
 		{URL: urlA, Author: authorRenato, Text: "on platform engineering"},
 	}}
 
-	_, err := run(ctx, db, collector)
+	_, err := run(ctx, db, collector, "clip-vpc")
 	if err != nil {
 		t.Fatalf("stamp error must not be fatal: run returned %v", err)
 	}
