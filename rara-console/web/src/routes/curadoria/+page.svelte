@@ -82,6 +82,7 @@
 	// approve state: version number being approved, or null
 	let approving = $state<number | null>(null);
 	let approveError = $state('');
+	let approveNotice = $state('');
 
 	// --- gate rules state ---
 	let rules = $state<GateRule[]>([]);
@@ -269,6 +270,7 @@
 	async function approve(version: number) {
 		approving = version;
 		approveError = '';
+		approveNotice = '';
 		try {
 			const r = await fetch('/api/interest-profile/approve', {
 				method: 'POST',
@@ -291,7 +293,7 @@
 					[activeProfile, versions] = refreshed as [InterestProfile | null, InterestProfile[]];
 				} else {
 					// Approve succeeded but refresh failed — user sees stale state
-					approveError = 'Aprovado! Recarregue a página para ver o histórico atualizado.';
+					approveNotice = t.curadoria.profileApproveRefreshNotice;
 				}
 			}
 		} catch {
@@ -512,6 +514,9 @@
 				</div>
 				{#if approveError}
 					<p class="px-4 py-2 text-[12px] text-red">{approveError}</p>
+				{/if}
+				{#if approveNotice}
+					<p class="px-4 py-2 text-[12px] text-muted">{approveNotice}</p>
 				{/if}
 				<div class="divide-y divide-border/50 px-4 py-3 text-[13px]">
 					{#if pv.narrative}

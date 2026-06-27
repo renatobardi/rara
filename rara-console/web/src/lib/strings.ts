@@ -5,7 +5,6 @@ export const t = {
 	nav: {
 		overview: 'Visão geral',
 		pipeline: 'Pipeline',
-		quarantine: 'Quarentena',
 		distillations: 'Distillations',
 		secTrain: 'Treinar',
 		curation: 'Curadoria',
@@ -53,18 +52,6 @@ export const t = {
 			quarantine: 'Quarentena',
 			failed: 'Falhou'
 		}
-	},
-	quarantine: {
-		title: 'Quarentena',
-		loading: 'Carregando quarentena…',
-		error: 'Não foi possível ler a quarentena.',
-		empty: 'Nenhum item em quarentena.',
-		rescue: 'Me interesso',
-		confirmDrop: 'Não me interessa',
-		reviewing: 'Processando…',
-		reviewError: 'Erro ao processar decisão.',
-		retry: 'Tentar novamente',
-		keyboardHint: 'y = Me interesso · n = Não me interessa · j/k = navegar'
 	},
 	distillations: {
 		title: 'Distillations',
@@ -428,6 +415,7 @@ export const t = {
 		profileDiffNoChanges: 'Sem alterações neste campo.',
 		profileDiffFallback: 'Formato inesperado — diferença não computada.',
 		profileApproveBtn: (v: number) => `Aprovar v${v}`,
+		profileApproveRefreshNotice: 'Aprovado! Recarregue a página para ver o histórico atualizado.',
 		gateSection: 'Regras de gate',
 		gateLoading: 'Carregando regras…',
 		gateError: 'Não foi possível carregar as regras.',

@@ -32,7 +32,6 @@
 	const nav = [
 		{ icon: '◍', label: t.nav.overview, href: '/' },
 		{ icon: '▤', label: t.nav.pipeline, href: '/pipeline' },
-		{ icon: '⚑', label: t.nav.quarantine, href: '/quarentena' },
 		{ icon: '✦', label: t.nav.distillations, href: '/distillations' },
 		{ section: t.nav.secTrain },
 		{ icon: '◐', label: t.nav.curation, href: '/curadoria' },
@@ -47,7 +46,6 @@
 	const pageTitles: Record<string, string> = {
 		'/': t.nav.overview,
 		'/pipeline': t.nav.pipeline,
-		'/quarentena': t.nav.quarantine,
 		'/distillations': t.nav.distillations,
 		'/curadoria': t.nav.curation,
 		'/fontes': t.nav.fontes,
