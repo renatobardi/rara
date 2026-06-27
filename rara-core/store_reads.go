@@ -1042,3 +1042,83 @@ func (d *pgxDatabase) GetSource(ctx context.Context, apiID string) (SourceItem, 
 	}
 	return s, true, nil
 }
+
+// GetSourceConfig reads the raw editable fields for one source, keyed by registry field name.
+// ponytail: per-kind switch mirrors PatchSourceMeta — each kind owns its own table.
+func (d *pgxDatabase) GetSourceConfig(ctx context.Context, apiID string) (map[string]string, bool, error) {
+	kind, id, ok := parseSourceID(apiID)
+	if !ok {
+		return nil, false, fmt.Errorf("GetSourceConfig: invalid api_id %q", apiID)
+	}
+	cfg := map[string]string{}
+	switch kind {
+	case "youtube_channel":
+		var chID, name string
+		err := d.conn.QueryRow(ctx,
+			`SELECT youtube_channel_id, COALESCE(channel_name,'') FROM target_channels WHERE id=$1 AND deleted_at IS NULL`, id,
+		).Scan(&chID, &name)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, false, nil
+		}
+		if err != nil {
+			return nil, false, err
+		}
+		cfg["channel_id"], cfg["channel_name"] = chID, name
+	case "youtube_playlist":
+		var plID string
+		err := d.conn.QueryRow(ctx,
+			`SELECT youtube_playlist_id FROM playlists WHERE id=$1 AND deleted_at IS NULL`, id,
+		).Scan(&plID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, false, nil
+		}
+		if err != nil {
+			return nil, false, err
+		}
+		cfg["playlist_url"] = "https://www.youtube.com/playlist?list=" + plID
+	case "podcast":
+		var feedURL, title string
+		err := d.conn.QueryRow(ctx,
+			`SELECT feed_url, COALESCE(title,'') FROM podcast_feeds WHERE id=$1 AND deleted_at IS NULL`, id,
+		).Scan(&feedURL, &title)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, false, nil
+		}
+		if err != nil {
+			return nil, false, err
+		}
+		cfg["feed_url"], cfg["title"] = feedURL, title
+	case "rss", "html", "hn":
+		var name, endpoint string
+		err := d.conn.QueryRow(ctx,
+			`SELECT name, COALESCE(endpoint,'') FROM feed_sources WHERE id=$1 AND deleted_at IS NULL`, id,
+		).Scan(&name, &endpoint)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, false, nil
+		}
+		if err != nil {
+			return nil, false, err
+		}
+		cfg["name"] = name
+		if kind != "hn" {
+			cfg["endpoint"] = endpoint
+		}
+	case "linkedin_profile":
+		var profileURL string
+		err := d.conn.QueryRow(ctx,
+			`SELECT profile_url FROM target_linkedin_profiles WHERE id=$1 AND deleted_at IS NULL`, id,
+		).Scan(&profileURL)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, false, nil
+		}
+		if err != nil {
+			return nil, false, err
+		}
+		cfg["profile_url"] = profileURL
+	case "email":
+		return map[string]string{}, true, nil // out of scope; modal shows name+tags only
+	default:
+		return nil, false, fmt.Errorf("GetSourceConfig: unknown kind %q", kind)
+	}
+	return cfg, true, nil
+}

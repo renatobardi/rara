@@ -357,6 +357,22 @@ func (s *server) handlePatchSource(w http.ResponseWriter, r *http.Request) {
 	proxyWrite(w, status, body, err)
 }
 
+// handleSourceConfig proxies GET /v1/sources/{source_id}/config — the source's raw editable
+// fields, used to pre-fill the Edit modal.
+func (s *server) handleSourceConfig(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("source_id")
+	if !isSourceID(id) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid source id"})
+		return
+	}
+	body, err := s.fetchCore(r.Context(), "/v1/sources/"+id+"/config")
+	if err != nil {
+		badGateway(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, json.RawMessage(body))
+}
+
 // handleDeleteSource proxies DELETE /v1/sources/{source_id} — soft-delete (source disappears).
 func (s *server) handleDeleteSource(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("source_id")
@@ -833,6 +849,7 @@ func main() {
 	// Fontes CRUD writes (fatia #4). Deeper /pause|/resume patterns win over the {source_id}
 	// catch-all. Podcast creation rides the {kind} create like every other kind (#4b).
 	mux.HandleFunc("POST /api/sources/{kind}", s.handleAddSource)
+	mux.HandleFunc("GET /api/sources/{source_id}/config", s.handleSourceConfig)
 	mux.HandleFunc("PATCH /api/sources/{source_id}", s.handlePatchSource)
 	mux.HandleFunc("DELETE /api/sources/{source_id}", s.handleDeleteSource)
 	mux.HandleFunc("POST /api/sources/{source_id}/pause", s.handlePauseSource)

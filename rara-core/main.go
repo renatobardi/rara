@@ -386,9 +386,11 @@ type SourcesResult struct {
 // SourcePatch carries the optional fields that PATCH /v1/sources/{source_id} may update.
 // A nil DisplayName leaves the column unchanged; a non-nil value overwrites it.
 // A nil Tags slice leaves the array unchanged; a non-nil (even empty) slice overwrites it.
+// A nil Config map leaves config fields unchanged; a non-nil map validates and overwrites.
 type SourcePatch struct {
-	DisplayName *string  `json:"display_name"`
-	Tags        []string `json:"tags"`
+	DisplayName *string           `json:"display_name"`
+	Tags        []string          `json:"tags"`
+	Config      map[string]string `json:"config"` // raw editable fields, keyed by registry field name; nil = unchanged
 }
 
 // BulkSourceEntry is the per-item result inside a BulkSourcesResult.
@@ -625,6 +627,9 @@ type Database interface {
 	// PatchSourceMeta updates display_name and/or tags; dispatches by api_id prefix.
 	// A nil displayName preserves the existing value; a non-nil tags slice overwrites the array.
 	PatchSourceMeta(ctx context.Context, apiID string, displayName *string, tags []string) error
+	// UpdateSourceConfig writes a source's normalized config fields (from normalizeSourceConfig)
+	// to its owner table. A UNIQUE violation (duplicate URL/handle) is returned as a badInput.
+	UpdateSourceConfig(ctx context.Context, apiID string, cfg map[string]string) error
 
 	// --- Unified source listing (fatia #1, sources_v) ---------------------------
 	// ListSources returns sources from sources_v with optional filters and pagination.
@@ -632,6 +637,9 @@ type Database interface {
 	ListSources(ctx context.Context, f SourceFilter) (SourcesResult, error)
 	// GetSource returns one source by api_id (found=false if absent).
 	GetSource(ctx context.Context, apiID string) (SourceItem, bool, error)
+	// GetSourceConfig returns one source's raw editable fields keyed by registry field name
+	// (see sourceKindsRegistry). found=false if the id is absent. Used to pre-fill the Edit modal.
+	GetSourceConfig(ctx context.Context, apiID string) (map[string]string, bool, error)
 
 	// Spine (idempotent upserts).
 	UpsertItem(ctx context.Context, it Item) (int, error)
@@ -1178,6 +1186,58 @@ func (d *pgxDatabase) PatchSourceMeta(ctx context.Context, apiID string, display
 	}
 	if tag.RowsAffected() == 0 {
 		return fmt.Errorf("source %q: %w", apiID, errNotFound)
+	}
+	return nil
+}
+
+// UpdateSourceConfig writes normalized config fields (produced by normalizeSourceConfig) to the
+// source's owner table. A UNIQUE violation (duplicate URL/handle) is mapped to a badInput error.
+func (d *pgxDatabase) UpdateSourceConfig(ctx context.Context, apiID string, cfg map[string]string) error {
+	kind, id, ok := parseSourceID(apiID)
+	if !ok {
+		return fmt.Errorf("UpdateSourceConfig: invalid api_id %q", apiID)
+	}
+	var (
+		tag pgconn.CommandTag
+		err error
+	)
+	switch kind {
+	case "youtube_channel":
+		tag, err = d.conn.Exec(ctx,
+			`UPDATE target_channels SET youtube_channel_id=$2, channel_name=$3, updated_at=CURRENT_TIMESTAMP WHERE id=$1`,
+			id, cfg["youtube_channel_id"], cfg["channel_name"])
+	case "youtube_playlist":
+		tag, err = d.conn.Exec(ctx,
+			`UPDATE playlists SET youtube_playlist_id=$2, title=$3, updated_at=CURRENT_TIMESTAMP WHERE id=$1`,
+			id, cfg["youtube_playlist_id"], cfg["title"])
+	case "podcast":
+		tag, err = d.conn.Exec(ctx,
+			`UPDATE podcast_feeds SET feed_url=$2, title=NULLIF($3,''), updated_at=CURRENT_TIMESTAMP WHERE id=$1`,
+			id, cfg["feed_url"], cfg["title"])
+	case "rss", "html":
+		tag, err = d.conn.Exec(ctx,
+			`UPDATE feed_sources SET name=$2, endpoint=$3, updated_at=CURRENT_TIMESTAMP WHERE id=$1`,
+			id, cfg["name"], cfg["endpoint"])
+	case "hn":
+		tag, err = d.conn.Exec(ctx,
+			`UPDATE feed_sources SET name=$2, updated_at=CURRENT_TIMESTAMP WHERE id=$1`,
+			id, cfg["name"])
+	case "linkedin_profile":
+		tag, err = d.conn.Exec(ctx,
+			`UPDATE target_linkedin_profiles SET profile_url=$2, updated_at=CURRENT_TIMESTAMP WHERE id=$1`,
+			id, cfg["profile_url"])
+	default:
+		return fmt.Errorf("UpdateSourceConfig: unknown kind %q", kind)
+	}
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" { // unique_violation
+			return badInput("another source already uses this URL/handle")
+		}
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return badInput("source %q not found", apiID)
 	}
 	return nil
 }

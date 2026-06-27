@@ -247,7 +247,7 @@ export const t = {
 		editSaving: 'Salvando…',
 		editSaveOk: 'Fonte atualizada.',
 		editSaveError: 'Não foi possível salvar a fonte.',
-		editFieldsNote: 'Os campos de configuração do tipo não são editáveis aqui — só nome e tags. Para trocar a URL/handle, exclua e recrie.',
+		editLoading: 'Carregando campos…',
 		// delete
 		deleteTitle: 'Excluir fonte',
 		deleteConfirm: 'Excluir “{name}”? O cadastro some da lista; o conteúdo já coletado é preservado.',

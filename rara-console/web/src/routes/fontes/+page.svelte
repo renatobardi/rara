@@ -120,6 +120,8 @@
 	let editTagInput = $state('');
 	let editSaving = $state(false);
 	let editError = $state('');
+	let editConfig = $state<Record<string, string>>({});
+	let editConfigLoading = $state(false);
 
 	// delete (single)
 	let deleteTarget = $state<SourceItem | null>(null);
@@ -129,6 +131,8 @@
 	let toggling = $state<Record<string, boolean>>({});
 
 	let kindMap = $derived(new Map(kinds.map((k) => [k.kind, k])));
+	// Fields to render in the Edit modal for the current source's kind (same registry the wizard uses).
+	const editKind = $derived(editSource ? kindMap.get(editSource.kind) : undefined);
 
 	function kindLabel(kind: string): string {
 		return kindMap.get(kind)?.label ?? kind;
@@ -483,13 +487,24 @@
 		}
 	}
 
-	// ── Edit (display_name + tags) ──
-	function openEdit(s: SourceItem) {
+	// ── Edit (display_name + tags + config) ──
+	async function openEdit(s: SourceItem) {
 		editSource = s;
 		editDisplayName = s.display_name;
 		editTags = [...s.tags];
 		editTagInput = '';
 		editError = '';
+		editConfig = {};
+		// Pre-fill the per-kind config fields (URL/handle/name/title) from the backend.
+		editConfigLoading = true;
+		try {
+			const res = await fetch(apiPath(s.api_id, '/config'));
+			if (res.ok) editConfig = await res.json();
+		} catch {
+			/* leave fields blank; operator can still edit name/tags */
+		} finally {
+			editConfigLoading = false;
+		}
 	}
 	function addEditTag() {
 		const tag = editTagInput.trim();
@@ -503,11 +518,27 @@
 		if (!editSource) return;
 		editSaving = true;
 		editError = '';
-		// Only send tags for kinds that support them (the registry capability model).
-		const payload: { display_name: string; tags?: string[] } = { display_name: editDisplayName.trim() };
+		const payload: { display_name: string; tags?: string[]; config?: Record<string, string> } = {
+			display_name: editDisplayName.trim()
+		};
 		if (supportsTags(editSource.kind)) {
 			addEditTag(); // commit any tag still typed in the input but not yet Enter-ed
 			payload.tags = editTags;
+		}
+		// Collect required-field validation + non-empty config (skip email, which has no editable fields here).
+		const cfgFields = (editKind?.fields ?? []).filter((f) => f.name !== 'display_name');
+		if (cfgFields.length > 0) {
+			const cfg: Record<string, string> = {};
+			for (const f of cfgFields) {
+				const v = (editConfig[f.name] ?? '').trim();
+				if (f.required && !v) {
+					editError = `${f.label}: ${t.fontes.wizardRequired}`;
+					editSaving = false;
+					return;
+				}
+				if (v) cfg[f.name] = v;
+			}
+			if (Object.keys(cfg).length > 0) payload.config = cfg;
 		}
 		try {
 			const res = await fetch(apiPath(editSource.api_id), {
@@ -1012,7 +1043,23 @@
 					/>
 				</div>
 				{/if}
-				<p class="text-[11px] text-muted">{t.fontes.editFieldsNote}</p>
+				{#if editConfigLoading}
+					<p class="text-[12px] text-muted">{t.fontes.editLoading}</p>
+				{:else if editKind}
+					{#each editKind.fields ?? [] as f (f.name)}
+						{#if f.name !== 'display_name'}
+							<label class="flex flex-col gap-1 text-[13px]">
+								<span class="text-muted">{f.label}{f.required ? ' *' : ''}</span>
+								<input
+									type={f.type === 'url' ? 'url' : 'text'}
+									bind:value={editConfig[f.name]}
+									placeholder={f.placeholder ?? ''}
+									class="rounded-token border border-border bg-bg px-3 py-1.5 outline-none focus:border-text/40"
+								/>
+							</label>
+						{/if}
+					{/each}
+				{/if}
 				{#if editError}
 					<p class="text-[12px] text-red-500">{editError}</p>
 				{/if}

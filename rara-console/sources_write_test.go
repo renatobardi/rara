@@ -284,3 +284,46 @@ func TestSourceWritesNeverLeakToken(t *testing.T) {
 		t.Errorf("write response leaked the surface token: %s", rec.Body.String())
 	}
 }
+
+func TestHandleSourceConfig_Proxies(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /v1/sources/{source_id}/config", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer secret" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		if r.URL.Path != "/v1/sources/podcast:3/config" {
+			t.Fatalf("unexpected upstream path %q", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"feed_url":"https://x/feed","title":"X"}`))
+	})
+	core := httptest.NewServer(mux)
+	t.Cleanup(core.Close)
+	s := &server{coreURL: core.URL, token: "secret", client: core.Client()}
+
+	rec := httptest.NewRecorder()
+	req := newReqWithPathValue("GET", "/api/sources/podcast:3/config", "", map[string]string{"source_id": "podcast:3"})
+	s.handleSourceConfig(rec, req)
+
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "feed_url") {
+		t.Fatalf("got %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleSourceConfig_RejectsBadID(t *testing.T) {
+	var path string
+	core := fakeSourcesWriteCore(t, "secret", nil, &path)
+	s := &server{coreURL: core.URL, token: "secret", client: core.Client()}
+
+	rec := httptest.NewRecorder()
+	req := newReqWithPathValue("GET", "/api/sources/x/config", "", map[string]string{"source_id": "../../v1/flows"})
+	s.handleSourceConfig(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400 for malformed source id", rec.Code)
+	}
+	if path != "" {
+		t.Errorf("malformed id reached the upstream at %q", path)
+	}
+}

@@ -471,25 +471,36 @@ func (c *Core) AddFeedSource(ctx context.Context, kind, name, endpoint, displayN
 	return c.db.UpsertFeedSource(ctx, name, kind, endpoint, cls, displayName)
 }
 
+// normalizeLinkedInProfileURL validates and normalizes a LinkedIn profile/company URL.
+// It accepts both linkedin.com and www.linkedin.com prefixes, normalizing to www.
+// Returns the normalized URL or a badInput error.
+func normalizeLinkedInProfileURL(raw string) (string, error) {
+	u := strings.TrimSpace(raw)
+	if u == "" {
+		return "", badInput("profile_url cannot be empty")
+	}
+	// Normalize linkedin.com → www.linkedin.com so the same profile isn't stored twice.
+	u = strings.Replace(u, "https://linkedin.com/", "https://www.linkedin.com/", 1)
+	if !strings.HasPrefix(u, "https://www.linkedin.com/") {
+		return "", badInput("profile_url must be a LinkedIn URL (https://www.linkedin.com/… or https://linkedin.com/…)")
+	}
+	// Restrict to collectable path types; /feed/, /jobs/, etc. are not profile URLs.
+	path := strings.TrimPrefix(u, "https://www.linkedin.com")
+	if !strings.HasPrefix(path, "/in/") && !strings.HasPrefix(path, "/company/") && !strings.HasPrefix(path, "/showcase/") {
+		return "", badInput("profile_url must point to a person (/in/), company (/company/), or showcase (/showcase/) page")
+	}
+	return u, nil
+}
+
 // AddLinkedInProfile upserts a LinkedIn profile URL into target_linkedin_profiles.
 // profileURL must be a canonical LinkedIn profile or company URL (https://www.linkedin.com/…
 // or https://linkedin.com/…). Idempotent on profile_url.
 func (c *Core) AddLinkedInProfile(ctx context.Context, profileURL, displayName string) (int, error) {
-	profileURL = strings.TrimSpace(profileURL)
-	if profileURL == "" {
-		return 0, badInput("profile_url cannot be empty")
+	normalized, err := normalizeLinkedInProfileURL(profileURL)
+	if err != nil {
+		return 0, err
 	}
-	// Normalize linkedin.com → www.linkedin.com so the same profile isn't stored twice.
-	profileURL = strings.Replace(profileURL, "https://linkedin.com/", "https://www.linkedin.com/", 1)
-	if !strings.HasPrefix(profileURL, "https://www.linkedin.com/") {
-		return 0, badInput("profile_url must be a LinkedIn URL (https://www.linkedin.com/… or https://linkedin.com/…)")
-	}
-	// Restrict to collectable path types; /feed/, /jobs/, etc. are not profile URLs.
-	path := strings.TrimPrefix(profileURL, "https://www.linkedin.com")
-	if !strings.HasPrefix(path, "/in/") && !strings.HasPrefix(path, "/company/") && !strings.HasPrefix(path, "/showcase/") {
-		return 0, badInput("profile_url must point to a person (/in/), company (/company/), or showcase (/showcase/) page")
-	}
-	return c.db.CreateLinkedInProfile(ctx, profileURL, displayName)
+	return c.db.CreateLinkedInProfile(ctx, normalized, displayName)
 }
 
 // AddEmailSource adds an email reading rule to the courier's table.
@@ -501,13 +512,101 @@ func (c *Core) AddEmailSource(ctx context.Context, gmailQuery, label, fromFilter
 	return c.db.CreateEmailSource(ctx, gmailQuery, label, fromFilter, displayName)
 }
 
-// PatchSource updates display_name and/or tags on any source identified by api_id.
-// Neither field is required; omitting both is a valid no-op.
+// normalizeSourceConfig validates a kind's editable fields the same way create does,
+// returning the normalized fields (resolved channel id, parsed playlist id, normalized
+// LinkedIn url). The returned map is what UpdateSourceConfig writes.
+func (c *Core) normalizeSourceConfig(ctx context.Context, kind string, cfg map[string]string) (map[string]string, error) {
+	out := map[string]string{}
+	switch kind {
+	case "youtube_channel":
+		ref := strings.TrimSpace(cfg["channel_id"])
+		if ref == "" {
+			return nil, badInput("channel_id cannot be empty")
+		}
+		id := ref
+		if c.resolveChannel != nil {
+			resolved, err := c.resolveChannel(ctx, ref)
+			if err != nil {
+				return nil, err
+			}
+			id = resolved
+		}
+		out["youtube_channel_id"] = id
+		name := strings.TrimSpace(cfg["channel_name"])
+		if name == "" {
+			name = ref
+		}
+		out["channel_name"] = name
+	case "youtube_playlist":
+		raw := strings.TrimSpace(cfg["playlist_url"])
+		if raw == "" {
+			return nil, badInput("playlist_url cannot be empty")
+		}
+		plID, err := extractPlaylistID(raw)
+		if err != nil {
+			return nil, badInput("%v", err)
+		}
+		out["youtube_playlist_id"], out["title"] = plID, raw
+	case "podcast":
+		feedURL := strings.TrimSpace(cfg["feed_url"])
+		if feedURL == "" {
+			return nil, badInput("feed_url cannot be empty")
+		}
+		if err := validateEndpointURL(feedURL); err != nil {
+			return nil, err
+		}
+		out["feed_url"], out["title"] = feedURL, strings.TrimSpace(cfg["title"])
+	case "rss", "html", "hn":
+		name := strings.TrimSpace(cfg["name"])
+		if name == "" {
+			return nil, badInput("name cannot be empty")
+		}
+		out["name"] = name
+		if kind != "hn" {
+			endpoint := strings.TrimSpace(cfg["endpoint"])
+			if endpoint == "" {
+				return nil, badInput("endpoint cannot be empty for kind %q", kind)
+			}
+			if err := validateEndpointURL(endpoint); err != nil {
+				return nil, err
+			}
+			out["endpoint"] = endpoint
+		}
+	case "linkedin_profile":
+		u, err := normalizeLinkedInProfileURL(cfg["profile_url"])
+		if err != nil {
+			return nil, err
+		}
+		out["profile_url"] = u
+	case "email":
+		return nil, badInput("editing email config is out of scope")
+	default:
+		return nil, badInput("unknown kind %q", kind)
+	}
+	return out, nil
+}
+
+// PatchSource updates display_name, tags, and/or config fields on any source identified by api_id.
+// All fields are optional; omitting all is a valid no-op.
 func (c *Core) PatchSource(ctx context.Context, apiID string, patch SourcePatch) error {
-	if _, _, ok := parseSourceID(apiID); !ok {
+	kind, _, ok := parseSourceID(apiID)
+	if !ok {
 		return badInput("invalid source id %q (want kind:N)", apiID)
 	}
-	return c.db.PatchSourceMeta(ctx, apiID, patch.DisplayName, patch.Tags)
+	if len(patch.Config) > 0 {
+		norm, err := c.normalizeSourceConfig(ctx, kind, patch.Config)
+		if err != nil {
+			return err
+		}
+		if err := c.db.UpdateSourceConfig(ctx, apiID, norm); err != nil {
+			return err
+		}
+	}
+	// display_name / tags update (existing behavior; no-op when both nil).
+	if patch.DisplayName != nil || patch.Tags != nil {
+		return c.db.PatchSourceMeta(ctx, apiID, patch.DisplayName, patch.Tags)
+	}
+	return nil
 }
 
 // PauseSource sets a source to paused (active/enabled=false). Idempotent.
@@ -700,6 +799,14 @@ func (c *Core) Sources(ctx context.Context, f SourceFilter) (SourcesResult, erro
 // Source returns a single source by api_id (found=false if absent).
 func (c *Core) Source(ctx context.Context, apiID string) (SourceItem, bool, error) {
 	return c.db.GetSource(ctx, apiID)
+}
+
+// SourceConfig returns the raw editable fields of one source for the Edit modal.
+func (c *Core) SourceConfig(ctx context.Context, apiID string) (map[string]string, bool, error) {
+	if _, _, ok := parseSourceID(apiID); !ok {
+		return nil, false, badInput("invalid source id %q (want kind:N)", apiID)
+	}
+	return c.db.GetSourceConfig(ctx, apiID)
 }
 
 // InterestProfile returns the ACTIVE preferences document (the version in force the gate reads),
@@ -955,6 +1062,7 @@ func NewSurfaceMux(core *Core, token string) http.Handler {
 	mux.HandleFunc("GET /v1/source-kinds", h.listSourceKinds)
 	mux.HandleFunc("GET /v1/sources", h.listSources)
 	mux.HandleFunc("GET /v1/sources/{source_id}", h.getSource)
+	mux.HandleFunc("GET /v1/sources/{source_id}/config", h.getSourceConfig)
 
 	// Sources — fatia #2 writes. Bulk registered first (exact path wins over {kind} wildcard).
 	mux.HandleFunc("POST /v1/sources/bulk", h.bulkSources)
@@ -1166,6 +1274,20 @@ func (h *httpSurface) getSource(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, src)
+}
+
+func (h *httpSurface) getSourceConfig(w http.ResponseWriter, r *http.Request) {
+	apiID := r.PathValue("source_id")
+	cfg, found, err := h.core.SourceConfig(r.Context(), apiID)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	if !found {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "source not found"})
+		return
+	}
+	writeJSON(w, http.StatusOK, cfg)
 }
 
 // --- source write handlers (fatia #2) ---

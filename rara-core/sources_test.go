@@ -314,6 +314,7 @@ func TestHTTPSourcesRequireAuth(t *testing.T) {
 		{http.MethodGet, "/v1/source-kinds"},
 		{http.MethodGet, "/v1/sources"},
 		{http.MethodGet, "/v1/sources/podcast:1"},
+		{http.MethodGet, "/v1/sources/podcast:1/config"},
 	} {
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest(tc.method, tc.target, nil)
@@ -322,6 +323,185 @@ func TestHTTPSourcesRequireAuth(t *testing.T) {
 		if rec.Code != http.StatusUnauthorized {
 			t.Errorf("%s %s with wrong token: got %d, want 401", tc.method, tc.target, rec.Code)
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Core — GetSourceConfig (Edit modal pre-fill)
+// ---------------------------------------------------------------------------
+
+func TestGetSourceConfig_YouTubePlaylist(t *testing.T) {
+	core, db, _ := newTestCore(t)
+	// Seed a playlist row id=7 with a known youtube_playlist_id.
+	db.SeedYouTubePlaylist(7, "PLabc123", "My List", "")
+
+	cfg, found, err := core.SourceConfig(context.Background(), "youtube_playlist:7")
+	if err != nil || !found {
+		t.Fatalf("found=%v err=%v", found, err)
+	}
+	if got := cfg["playlist_url"]; got != "https://www.youtube.com/playlist?list=PLabc123" {
+		t.Fatalf("playlist_url = %q", got)
+	}
+}
+
+func TestGetSourceConfig_NotFound(t *testing.T) {
+	core, _, _ := newTestCore(t)
+	_, found, err := core.SourceConfig(context.Background(), "podcast:999")
+	if err != nil || found {
+		t.Fatalf("want found=false err=nil, got found=%v err=%v", found, err)
+	}
+}
+
+func TestGetSourceConfig_YouTubeChannel(t *testing.T) {
+	core, db, _ := newTestCore(t)
+	db.SeedYouTubeChannel(3, "UCabc", "Test Channel", "")
+
+	cfg, found, err := core.SourceConfig(context.Background(), "youtube_channel:3")
+	if err != nil || !found {
+		t.Fatalf("found=%v err=%v", found, err)
+	}
+	if cfg["channel_id"] != "UCabc" || cfg["channel_name"] != "Test Channel" {
+		t.Fatalf("cfg = %v", cfg)
+	}
+}
+
+func TestGetSourceConfig_Podcast(t *testing.T) {
+	core, db, _ := newTestCore(t)
+	db.SeedPodcastFeed(5, "https://example.com/feed.xml", "My Pod", "")
+
+	cfg, found, err := core.SourceConfig(context.Background(), "podcast:5")
+	if err != nil || !found {
+		t.Fatalf("found=%v err=%v", found, err)
+	}
+	if cfg["feed_url"] != "https://example.com/feed.xml" || cfg["title"] != "My Pod" {
+		t.Fatalf("cfg = %v", cfg)
+	}
+}
+
+func TestGetSourceConfig_RSS(t *testing.T) {
+	core, db, _ := newTestCore(t)
+	db.SeedFeedSource(2, "My RSS", "rss", "https://example.com/rss", "")
+
+	cfg, found, err := core.SourceConfig(context.Background(), "rss:2")
+	if err != nil || !found {
+		t.Fatalf("found=%v err=%v", found, err)
+	}
+	if cfg["name"] != "My RSS" || cfg["endpoint"] != "https://example.com/rss" {
+		t.Fatalf("cfg = %v", cfg)
+	}
+}
+
+func TestGetSourceConfig_HN(t *testing.T) {
+	core, db, _ := newTestCore(t)
+	db.SeedFeedSource(4, "HN Top", "hn", "", "")
+
+	cfg, found, err := core.SourceConfig(context.Background(), "hn:4")
+	if err != nil || !found {
+		t.Fatalf("found=%v err=%v", found, err)
+	}
+	if cfg["name"] != "HN Top" {
+		t.Fatalf("cfg = %v", cfg)
+	}
+	if _, hasEndpoint := cfg["endpoint"]; hasEndpoint {
+		t.Fatalf("hn kind must not include endpoint field, cfg = %v", cfg)
+	}
+}
+
+func TestGetSourceConfig_LinkedInProfile(t *testing.T) {
+	core, db, _ := newTestCore(t)
+	db.SeedLinkedInProfile(9, "https://linkedin.com/in/johndoe", "")
+
+	cfg, found, err := core.SourceConfig(context.Background(), "linkedin_profile:9")
+	if err != nil || !found {
+		t.Fatalf("found=%v err=%v", found, err)
+	}
+	if cfg["profile_url"] != "https://linkedin.com/in/johndoe" {
+		t.Fatalf("cfg = %v", cfg)
+	}
+}
+
+func TestGetSourceConfig_Email(t *testing.T) {
+	core, _, _ := newTestCore(t)
+	cfg, found, err := core.SourceConfig(context.Background(), "email:1")
+	if err != nil || !found {
+		t.Fatalf("email kind: found=%v err=%v", found, err)
+	}
+	if len(cfg) != 0 {
+		t.Fatalf("email kind must return empty map, got %v", cfg)
+	}
+}
+
+func TestHTTPGetSourceConfig(t *testing.T) {
+	core, db, _ := newTestCore(t)
+	db.SeedYouTubePlaylist(7, "PLabc123", "My List", "")
+	h := NewSurfaceMux(core, testToken)
+
+	rec := do(t, h, http.MethodGet, "/v1/sources/youtube_playlist:7/config", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got %d: %s", rec.Code, rec.Body.String())
+	}
+	var cfg map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &cfg); err != nil {
+		t.Fatal(err)
+	}
+	if cfg["playlist_url"] != "https://www.youtube.com/playlist?list=PLabc123" {
+		t.Errorf("playlist_url = %q", cfg["playlist_url"])
+	}
+}
+
+func TestHTTPGetSourceConfigNotFound(t *testing.T) {
+	core, _, _ := newTestCore(t)
+	h := NewSurfaceMux(core, testToken)
+
+	rec := do(t, h, http.MethodGet, "/v1/sources/podcast:999/config", "")
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("want 404, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Core — PatchSource config editing (Task 2)
+// ---------------------------------------------------------------------------
+
+func TestPatchSource_EditPodcastFeedURL(t *testing.T) {
+	core, db, _ := newTestCore(t)
+	db.SeedPodcastFeed(3, "https://old.example/feed.rss", "Old", "")
+
+	err := core.PatchSource(context.Background(), "podcast:3", SourcePatch{
+		Config: map[string]string{"feed_url": "https://new.example/feed.rss", "title": "New"},
+	})
+	if err != nil {
+		t.Fatalf("patch: %v", err)
+	}
+	got := db.podcastFeeds[3]
+	if got.FeedURL != "https://new.example/feed.rss" || got.Title != "New" {
+		t.Fatalf("podcast not updated: %+v", got)
+	}
+}
+
+func TestPatchSource_EditEndpointRejectsBadURL(t *testing.T) {
+	core, db, _ := newTestCore(t)
+	db.SeedFeedSource(5, "Blog", "rss", "https://ok.example/feed", "")
+
+	err := core.PatchSource(context.Background(), "rss:5", SourcePatch{
+		Config: map[string]string{"name": "Blog", "endpoint": "ftp://nope"},
+	})
+	if err == nil {
+		t.Fatal("want validation error for non-http endpoint")
+	}
+}
+
+func TestPatchSource_DuplicateURLConflict(t *testing.T) {
+	core, db, _ := newTestCore(t)
+	db.SeedPodcastFeed(1, "https://a.example/feed", "A", "")
+	db.SeedPodcastFeed(2, "https://b.example/feed", "B", "")
+
+	// Editing #2's feed_url to #1's existing URL must conflict.
+	err := core.PatchSource(context.Background(), "podcast:2", SourcePatch{
+		Config: map[string]string{"feed_url": "https://a.example/feed"},
+	})
+	if err == nil {
+		t.Fatal("want conflict error on duplicate feed_url")
 	}
 }
 
