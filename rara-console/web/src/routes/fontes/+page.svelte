@@ -237,6 +237,8 @@
 	// superseded fetch is cancelled (race guard demanded by the filter/page churn).
 	let pageLoadSeq = 0;
 	let pageLoadCtrl: AbortController | null = null;
+	let globalLoadSeq = 0;
+	let globalLoadCtrl: AbortController | null = null;
 
 	// pageLoad fetches the current server page of rows matching the active filter. The selection is
 	// cleared by the callers that change the result set (refilters), not here — page nav keeps it so
@@ -279,16 +281,24 @@
 	// globalLoad keeps badge counts and tagUniverse GLOBAL — independent of the active filter.
 	// One fetch of GLOBAL_CAP items is enough: counts are computed server-side over the full set,
 	// and tag suggestions cover up to GLOBAL_CAP sources (far past any realistic count).
+	// AbortController + seq guard prevent a slow response from overwriting newer state.
 	async function globalLoad() {
+		const seq = ++globalLoadSeq;
+		globalLoadCtrl?.abort();
+		const ctrl = new AbortController();
+		globalLoadCtrl = ctrl;
 		try {
-			const res = await fetch(`/api/sources?page=1&page_size=${GLOBAL_CAP}`);
+			const res = await fetch(`/api/sources?page=1&page_size=${GLOBAL_CAP}`, { signal: ctrl.signal });
+			if (seq !== globalLoadSeq) return;
 			if (!res.ok) return;
 			const data: SourcesResult = await res.json();
+			if (seq !== globalLoadSeq) return;
 			counts = normCounts(data?.counts);
 			const tags = new Set<string>();
 			for (const s of normItems(data?.items)) for (const tag of s.tags) tags.add(tag);
 			tagUniverse = [...tags].sort();
-		} catch {
+		} catch (e) {
+			if ((e as DOMException)?.name === 'AbortError') return;
 			/* badges degrade silently — the table itself uses pageLoad */
 		}
 	}
@@ -363,6 +373,7 @@
 		return () => {
 			ctrl.abort();
 			pageLoadCtrl?.abort();
+			globalLoadCtrl?.abort();
 			clearTimeout(searchTimer);
 		};
 	});

@@ -76,10 +76,11 @@ func forwardedQuery(t *testing.T, rawURL string) url.Values {
 }
 
 func TestSourcesForwardsOnlyWhitelistedQueryParams(t *testing.T) {
-	// kind/status/q/page/page_size are whitelisted; tag= and evil= must be dropped.
-	q := forwardedQuery(t, "/api/sources?kind=podcast&status=active&tag=x&q=lex&page=2&page_size=50&evil=1")
+	// kind/status/q/page/page_size/sort_by/sort_dir are whitelisted; tag= and evil= must be dropped.
+	q := forwardedQuery(t, "/api/sources?kind=podcast&status=active&q=lex&page=2&page_size=50&sort_by=lane&sort_dir=desc&tag=x&evil=1")
 	for k, want := range map[string]string{
 		"kind": "podcast", "status": "active", "q": "lex", "page": "2", "page_size": "50",
+		"sort_by": "lane", "sort_dir": "desc",
 	} {
 		if q.Get(k) != want {
 			t.Errorf("forwarded %s = %q, want %q (full query=%q)", k, q.Get(k), want, q.Encode())
