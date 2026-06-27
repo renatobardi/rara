@@ -336,6 +336,8 @@ export const t = {
 		billingSection: 'Custos',
 		billingNote: 'Custos exatos requerem o export do GCP Billing — não é possível calculá-los aqui.',
 		billingLink: 'Abrir GCP Billing',
+		// routing section (moved from workers)
+		routingSection: 'Roteamento',
 		loading: 'Carregando configurações…',
 		error: 'Não foi possível carregar as configurações.'
 	},

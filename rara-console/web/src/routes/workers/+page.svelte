@@ -4,8 +4,6 @@
 	import { timeAgo } from '$lib/timeAgo';
 	import WorkerForm from '$lib/WorkerForm.svelte';
 
-	const GLOBAL_SCOPE = 'global' as const;
-
 	type Constraints = {
 		requires?: string;
 		accepts?: string[];
@@ -33,11 +31,6 @@
 		name: string;
 		capability: string;
 		placements: Provider[];
-	};
-
-	type RoutingPolicy = {
-		scope: string;
-		fallback: string[];
 	};
 
 	type ByStatus = {
@@ -84,11 +77,8 @@
 	let workers = $state<Worker[]>([]);
 	// providers is a flat derived list used by health cards, routing editor, and route preview.
 	let providers = $derived(workers.flatMap((w) => w.placements));
-	let policies = $state<RoutingPolicy[]>([]);
 	let loading = $state(true);
 	let error = $state(false);
-	let policiesLoading = $state(true);
-	let policiesError = $state(false);
 	let saving = $state<string | null>(null);
 	let saveMsg = $state('');
 	let expandedWorkers = $state<Set<string>>(new Set());
@@ -116,13 +106,6 @@
 	let formLockedCapability = $state<string | null>(null);
 	let formLockedConstraints = $state<Constraints | null>(null);
 	let formLockedApp = $state<string | null>(null);
-
-	// --- routing editor state ---
-	let selectedScope = $state<string>(GLOBAL_SCOPE);
-	let editFallback = $state<string[]>([]);
-	let routingAddWorker = $state('');
-	let routingSaving = $state(false);
-	let routingMsg = $state('');
 
 	// ponytail: 5min stale threshold mirrors defaultHealthTTL in core router.go
 	const STALE_MS = 5 * 60 * 1000;
@@ -198,75 +181,6 @@
 
 	// unique capabilities for datalist
 	let knownCapabilities = $derived([...new Set(providers.map((p) => p.capability))].sort());
-
-	// routing editor derived
-	let routingScopes = $derived([
-		{ id: GLOBAL_SCOPE, label: t.workers.policyScopeGlobal },
-		...knownCapabilities.filter((c) => c !== GLOBAL_SCOPE).map((c) => ({ id: c, label: c }))
-	]);
-	let fallbackAvailable = $derived(
-		selectedScope === GLOBAL_SCOPE
-			? providers
-			: providers.filter((p) => p.capability === selectedScope)
-	);
-	let fallbackAddable = $derived(
-		fallbackAvailable.filter((p) => !editFallback.includes(p.name))
-	);
-
-	function selectScope(scope: string) {
-		selectedScope = scope;
-		const pol = policies.find((p) => p.scope === scope);
-		editFallback = pol ? (pol.fallback ?? []) : [];
-		routingMsg = '';
-		routingAddWorker = '';
-	}
-
-	function moveFallback(idx: number, dir: -1 | 1) {
-		const newIdx = idx + dir;
-		if (newIdx < 0 || newIdx >= editFallback.length) return;
-		const arr = [...editFallback];
-		[arr[idx], arr[newIdx]] = [arr[newIdx], arr[idx]];
-		editFallback = arr;
-	}
-
-	function removeFallback(idx: number) {
-		editFallback = editFallback.filter((_, i) => i !== idx);
-	}
-
-	function addFallback(name: string) {
-		if (!name || editFallback.includes(name)) return;
-		if (!fallbackAvailable.some((p) => p.name === name)) return;
-		editFallback = [...editFallback, name];
-	}
-
-	async function saveRoutingPolicy() {
-		routingSaving = true;
-		routingMsg = '';
-		const existing = policies.find((p) => p.scope === selectedScope);
-		const payload: RoutingPolicy = {
-			scope: selectedScope,
-			fallback: editFallback
-		};
-		try {
-			const res = await fetch('/api/routing-policies', {
-				method: 'PUT',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify(payload)
-			});
-			if (!res.ok) throw new Error();
-			const idx = policies.findIndex((p) => p.scope === selectedScope);
-			if (idx >= 0) {
-				policies = policies.map((p, i) => (i === idx ? payload : p));
-			} else {
-				policies = [...policies, payload];
-			}
-			routingMsg = t.workers.policySaveOk;
-		} catch {
-			routingMsg = t.workers.policySaveError;
-		} finally {
-			routingSaving = false;
-		}
-	}
 
 	function fetchWorkers() {
 		loading = true;
@@ -349,19 +263,6 @@
 		} catch { /* ignore */ }
 
 		fetchWorkers();
-
-		fetch('/api/routing-policies')
-			.then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
-			.then((d) => {
-				if (!Array.isArray(d)) throw new Error('unexpected payload');
-				policies = d;
-				policiesLoading = false;
-				selectScope(GLOBAL_SCOPE);
-			})
-			.catch(() => {
-				policiesError = true;
-				policiesLoading = false;
-			});
 
 		fetchMetricsAll();
 		fetchMetricsWindow(selectedDays);
@@ -799,104 +700,3 @@
 	{/if}
 </section>
 
-<!-- ── Routing policies editor ── -->
-<section>
-	<h2 class="mb-4 text-[15px] font-semibold">{t.workers.policiesSection}</h2>
-
-	{#if policiesLoading}
-		<p class="text-sm text-muted">{t.workers.policiesLoading}</p>
-	{:else if policiesError}
-		<p class="text-sm text-red-500">{t.workers.policiesError}</p>
-	{:else}
-		<div class="rounded-xl border border-border bg-surface-2 p-5">
-
-			<!-- Scope selector -->
-			<div class="mb-5">
-				<label class="mb-1.5 block text-[12px] font-medium text-muted" for="routing-scope">
-					{t.workers.colScope}
-				</label>
-				<select
-					id="routing-scope"
-					value={selectedScope}
-					onchange={(e) => selectScope((e.target as HTMLSelectElement).value)}
-					class="rounded-token border border-border bg-bg px-3 py-1.5 text-[13px] outline-none focus:border-text/40"
-				>
-					{#each routingScopes as scope}
-						<option value={scope.id}>{scope.label}</option>
-					{/each}
-				</select>
-			</div>
-
-			<!-- Fallback list -->
-			<div class="mb-5">
-				<p class="mb-2 text-[12px] font-medium text-muted">{t.workers.policyFallbackSection}</p>
-				{#if editFallback.length === 0}
-					<p class="mb-2 text-[12px] text-muted">{t.workers.policyFallbackEmpty}</p>
-				{:else}
-					<ol class="mb-3 space-y-1">
-						{#each editFallback as name, i}
-							<li class="flex items-center gap-1.5">
-								<span class="w-4 text-center text-[10px] text-muted">{i + 1}</span>
-								<span class="flex-1 font-mono text-[12px]">{name}</span>
-								<button
-									class="rounded px-1.5 py-0.5 text-[11px] text-muted hover:bg-hover disabled:opacity-30"
-									onclick={() => moveFallback(i, -1)}
-									disabled={i === 0}
-									aria-label={t.workers.fallbackMoveUp}
-								>{t.workers.hostsUp}</button>
-								<button
-									class="rounded px-1.5 py-0.5 text-[11px] text-muted hover:bg-hover disabled:opacity-30"
-									onclick={() => moveFallback(i, 1)}
-									disabled={i === editFallback.length - 1}
-									aria-label={t.workers.fallbackMoveDown}
-								>{t.workers.hostsDown}</button>
-								<button
-									class="rounded px-1.5 py-0.5 text-[11px] text-muted hover:bg-hover"
-									onclick={() => removeFallback(i)}
-									aria-label={t.workers.fallbackRemove}
-								>{t.workers.hostsRemove}</button>
-							</li>
-						{/each}
-					</ol>
-				{/if}
-
-				<!-- Add worker to fallback -->
-				{#if fallbackAddable.length > 0}
-					<div class="mb-2 flex gap-1.5">
-						<select
-							bind:value={routingAddWorker}
-							class="flex-1 rounded border border-border bg-bg px-2 py-1 text-[12px] outline-none focus:border-text/40"
-							aria-label={t.workers.hostsAddPlaceholder}
-						>
-							<option value="">{t.workers.hostsAddPlaceholder}</option>
-							{#each fallbackAddable as p}
-								<option value={p.name}>{p.name}</option>
-							{/each}
-						</select>
-						<button
-							type="button"
-							class="cursor-pointer rounded border border-border bg-bg px-2 py-1 text-[12px] hover:bg-hover disabled:opacity-40"
-							disabled={!routingAddWorker}
-							onclick={() => { addFallback(routingAddWorker); routingAddWorker = ''; }}
-							aria-label={t.workers.hostsAddPlaceholder}
-						>+</button>
-					</div>
-				{/if}
-			</div>
-
-			<!-- Save -->
-			<div class="flex items-center gap-3">
-				<button
-					class="cursor-pointer rounded-token border border-border bg-bg px-4 py-1.5 text-[13px] font-semibold hover:bg-hover disabled:opacity-40"
-					onclick={saveRoutingPolicy}
-					disabled={routingSaving}
-				>
-					{routingSaving ? t.workers.policySaving : t.workers.policySaveBtn}
-				</button>
-				{#if routingMsg}
-					<span class="text-[12px] text-muted" aria-live="polite" role="status">{routingMsg}</span>
-				{/if}
-			</div>
-		</div>
-	{/if}
-</section>
