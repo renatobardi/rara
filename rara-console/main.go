@@ -264,7 +264,7 @@ func (s *server) handleDistillationList(w http.ResponseWriter, r *http.Request) 
 
 // sourceListParams are the only query params forwarded to /v1/sources. Re-encoding through this
 // allowlist means a crafted query (e.g. ?evil=1) can never reach the upstream surface.
-var sourceListParams = [8]string{"kind", "status", "tag", "q", "page", "page_size", "sort_by", "sort_dir"}
+var sourceListParams = [7]string{"kind", "status", "q", "page", "page_size", "sort_by", "sort_dir"}
 
 // handleSources proxies GET /v1/sources (the unified sources_v read-model), forwarding only the
 // whitelisted filter/pagination params. The values are re-encoded via url.Values to prevent

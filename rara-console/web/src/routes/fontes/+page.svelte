@@ -62,8 +62,7 @@
 
 	let items = $state<SourceItem[]>([]); // current server page of rows matching the active filter
 	let kinds = $state<SourceKind[]>([]);
-	// ponytail: derived from current page instead of full-scan; good enough for autocomplete in the edit modal
-	let tagUniverse = $derived([...new Set(items.flatMap((s) => s.tags))].sort());
+	let tagUniverse = $state<string[]>([]); // GLOBAL tag list for the edit-modal autocomplete datalist
 	let counts = $state<Counts>({ by_status: {}, by_kind: {} }); // GLOBAL badge counts (unfiltered)
 	let total = $state(0); // total rows matching the active filter (across all pages)
 	let loading = $state(true);
@@ -277,14 +276,18 @@
 		}
 	}
 
-	// globalLoad keeps the dropdown badges (counts) GLOBAL — independent of the active filter.
-	// Counts are computed server-side over the whole set, so a single page_size=1 fetch suffices.
+	// globalLoad keeps badge counts and tagUniverse GLOBAL — independent of the active filter.
+	// One fetch of GLOBAL_CAP items is enough: counts are computed server-side over the full set,
+	// and tag suggestions cover up to GLOBAL_CAP sources (far past any realistic count).
 	async function globalLoad() {
 		try {
-			const res = await fetch('/api/sources?page=1&page_size=1');
+			const res = await fetch(`/api/sources?page=1&page_size=${GLOBAL_CAP}`);
 			if (!res.ok) return;
 			const data: SourcesResult = await res.json();
 			counts = normCounts(data?.counts);
+			const tags = new Set<string>();
+			for (const s of normItems(data?.items)) for (const tag of s.tags) tags.add(tag);
+			tagUniverse = [...tags].sort();
 		} catch {
 			/* badges degrade silently — the table itself uses pageLoad */
 		}
