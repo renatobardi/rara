@@ -29,7 +29,8 @@ CREATE INDEX IF NOT EXISTS email_sources_live_idx   ON email_sources   (id) WHER
 -- ---------------------------------------------------------------------------
 -- 2. sources_v — same shape as 024, now filtering out soft-deleted rows.
 -- ---------------------------------------------------------------------------
-CREATE OR REPLACE VIEW sources_v AS
+DROP VIEW IF EXISTS sources_v;
+CREATE VIEW sources_v AS
 
 -- YouTube channels — rara-harvest
 SELECT

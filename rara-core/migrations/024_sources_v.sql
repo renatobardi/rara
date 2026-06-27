@@ -53,7 +53,8 @@ CREATE TABLE IF NOT EXISTS email_sources (
 -- ---------------------------------------------------------------------------
 -- 3. sources_v — unified read-only view.
 -- ---------------------------------------------------------------------------
-CREATE OR REPLACE VIEW sources_v AS
+DROP VIEW IF EXISTS sources_v;
+CREATE VIEW sources_v AS
 
 -- YouTube channels — rara-harvest
 SELECT

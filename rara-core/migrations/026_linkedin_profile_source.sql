@@ -22,7 +22,8 @@ CREATE INDEX IF NOT EXISTS target_linkedin_profiles_live_idx
 -- ---------------------------------------------------------------------------
 -- 2. Rebuild sources_v — same shape as 025, now including linkedin_profile.
 -- ---------------------------------------------------------------------------
-CREATE OR REPLACE VIEW sources_v AS
+DROP VIEW IF EXISTS sources_v;
+CREATE VIEW sources_v AS
 
 -- YouTube channels — rara-harvest
 SELECT
