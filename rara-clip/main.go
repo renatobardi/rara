@@ -197,14 +197,13 @@ func firstNonEmpty(vals ...string) string {
 // Integration contract (config, not code):
 //   - BDATA_BIN                  the Bright Data CLI (default "bdata").
 //   - BRIGHTDATA_LINKEDIN_ARGS   the pipeline subcommand + flags, space-separated
-//                                (default "pipelines linkedin-posts --json"); the input URLs are
-//                                appended as trailing args.
-//   - BRIGHTDATA_LINKEDIN_URLS   the profile/post URLs to collect (comma- or newline-separated).
+//                                (default "pipelines linkedin_person_profile --json"); the input
+//                                profile URLs are appended as trailing args.
 //
-// The command must print a JSON array of post objects on stdout. Field names are matched flexibly
-// (Bright Data's LinkedIn dataset keys vary): url|post_url, author|account|user_id,
-// post_text|text|body|headline. The Bright Data API key is read by the CLI from its own env
-// (BRIGHTDATA_API_KEY), so rara-clip never handles the credential.
+// The command must print a JSON array of profile objects, each containing a "posts" array with
+// "title", "attribution" (excerpt), and "link" fields — the linkedin_person_profile dataset shape.
+// The Bright Data API key is read by the CLI from its own env (BRIGHTDATA_API_KEY), so rara-clip
+// never handles the credential.
 // ---------------------------------------------------------------------------
 
 type brightDataLinkedInSource struct {
@@ -223,7 +222,7 @@ func newBrightDataLinkedInSource(urls []string) *brightDataLinkedInSource {
 	}
 	args := os.Getenv(envBrightDataArgs)
 	if args == "" {
-		args = "pipelines linkedin-posts --json"
+		args = "pipelines linkedin_person_profile --json"
 	}
 	return &brightDataLinkedInSource{
 		bin:  bin,
@@ -247,41 +246,42 @@ func (s *brightDataLinkedInSource) FetchPosts(ctx context.Context) ([]LinkedInPo
 	return decodeBrightDataPosts(out)
 }
 
-// decodeBrightDataPosts parses the CLI's JSON array into normalized posts, matching the dataset's
-// varying key names flexibly. A row with neither a URL nor any text is dropped here (so the pure
-// run loop never has to); the remaining filtering/idempotency is the loop's.
+// decodeBrightDataPosts parses the linkedin_person_profile pipeline output — an array of profile
+// objects each carrying a "posts" sub-array — into a flat []LinkedInPost. Posts with neither a
+// link nor any text are dropped; the remaining filtering and idempotency are the run loop's job.
 func decodeBrightDataPosts(raw []byte) ([]LinkedInPost, error) {
-	var rows []brightDataPost
-	if err := json.Unmarshal(raw, &rows); err != nil {
+	var profiles []brightDataProfile
+	if err := json.Unmarshal(raw, &profiles); err != nil {
 		return nil, fmt.Errorf("brightdata linkedin: decode JSON: %w", err)
 	}
-	out := make([]LinkedInPost, 0, len(rows))
-	for _, r := range rows {
-		p := LinkedInPost{
-			URL:    firstNonEmpty(r.URL, r.PostURL),
-			Author: firstNonEmpty(r.Author, r.Account, r.UserID),
-			Text:   firstNonEmpty(r.PostText, r.Text, r.Body, r.Headline),
+	var out []LinkedInPost
+	for _, prof := range profiles {
+		for _, p := range prof.Posts {
+			text := firstNonEmpty(p.Title, p.Attribution)
+			if p.Title != "" && p.Attribution != "" {
+				text = p.Title + "\n\n" + p.Attribution
+			}
+			if p.Link == "" && text == "" {
+				continue
+			}
+			out = append(out, LinkedInPost{URL: p.Link, Author: prof.Name, Text: text})
 		}
-		if p.URL == "" && p.Text == "" {
-			continue
-		}
-		out = append(out, p)
 	}
 	return out, nil
 }
 
-// brightDataPost mirrors the candidate keys of Bright Data's LinkedIn-post dataset; the normalizer
-// above picks the first populated alias for each field.
-type brightDataPost struct {
-	URL      string `json:"url"`
-	PostURL  string `json:"post_url"`
-	Author   string `json:"author"`
-	Account  string `json:"account"`
-	UserID   string `json:"user_id"`
-	PostText string `json:"post_text"`
-	Text     string `json:"text"`
-	Body     string `json:"body"`
-	Headline string `json:"headline"`
+// brightDataProfile is the top-level object from the linkedin_person_profile pipeline:
+// one entry per requested profile URL, each containing the profile's name and its recent posts.
+type brightDataProfile struct {
+	Name  string                  `json:"name"`
+	Posts []brightDataProfilePost `json:"posts"`
+}
+
+// brightDataProfilePost is one post entry inside a brightDataProfile.
+type brightDataProfilePost struct {
+	Title       string `json:"title"`
+	Attribution string `json:"attribution"` // excerpt / first paragraph
+	Link        string `json:"link"`
 }
 
 // ---------------------------------------------------------------------------
