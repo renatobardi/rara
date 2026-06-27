@@ -79,6 +79,33 @@ func TestCoreAddLinkedInProfileAcceptsCompanyURL(t *testing.T) {
 	}
 }
 
+func TestCoreAddLinkedInProfileNormalizesBareDomain(t *testing.T) {
+	ctx := t.Context()
+	core, db, _ := newTestCore(t)
+	id, err := core.AddLinkedInProfile(ctx, "https://linkedin.com/in/handle", "Handle")
+	if err != nil {
+		t.Fatalf("bare linkedin.com URL should be accepted: %v", err)
+	}
+	// Normalized to www.linkedin.com before storage.
+	if db.linkedinProfiles[id].ProfileURL != "https://www.linkedin.com/in/handle" {
+		t.Errorf("URL not normalized to www form: %+v", db.linkedinProfiles[id])
+	}
+}
+
+func TestCoreAddLinkedInProfileRejectsInvalidPath(t *testing.T) {
+	ctx := t.Context()
+	core, _, _ := newTestCore(t)
+	for _, u := range []string{
+		"https://www.linkedin.com/feed/",
+		"https://www.linkedin.com/jobs/",
+		"https://www.linkedin.com/",
+	} {
+		if _, err := core.AddLinkedInProfile(ctx, u, ""); !isBadInput(err) {
+			t.Errorf("URL %q should be badInput, got %v", u, err)
+		}
+	}
+}
+
 // ---------------------------------------------------------------------------
 // HTTP surface tests
 // ---------------------------------------------------------------------------

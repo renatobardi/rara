@@ -479,9 +479,15 @@ func (c *Core) AddLinkedInProfile(ctx context.Context, profileURL, displayName s
 	if profileURL == "" {
 		return 0, badInput("profile_url cannot be empty")
 	}
-	if !strings.HasPrefix(profileURL, "https://www.linkedin.com/") &&
-		!strings.HasPrefix(profileURL, "https://linkedin.com/") {
+	// Normalize linkedin.com → www.linkedin.com so the same profile isn't stored twice.
+	profileURL = strings.Replace(profileURL, "https://linkedin.com/", "https://www.linkedin.com/", 1)
+	if !strings.HasPrefix(profileURL, "https://www.linkedin.com/") {
 		return 0, badInput("profile_url must be a LinkedIn URL (https://www.linkedin.com/… or https://linkedin.com/…)")
+	}
+	// Restrict to collectable path types; /feed/, /jobs/, etc. are not profile URLs.
+	path := strings.TrimPrefix(profileURL, "https://www.linkedin.com")
+	if !strings.HasPrefix(path, "/in/") && !strings.HasPrefix(path, "/company/") && !strings.HasPrefix(path, "/showcase/") {
+		return 0, badInput("profile_url must point to a person (/in/), company (/company/), or showcase (/showcase/) page")
 	}
 	return c.db.CreateLinkedInProfile(ctx, profileURL, displayName)
 }
@@ -672,8 +678,8 @@ var sourceKindsRegistry = []SourceKind{
 		SourceField{Name: "label", Label: "Gmail label", Type: "text"},
 		SourceField{Name: "from_filter", Label: "Sender filter", Type: "text"},
 	),
-	sourceKind("linkedin_profile", "LinkedIn Profile", "linkedin", "linkedin", "rara-clip",
-		SourceField{Name: "profile_url", Label: "Profile URL", Type: "url", Required: true, Placeholder: "https://www.linkedin.com/in/handle"},
+	sourceKind("linkedin_profile", "LinkedIn Profile / Company", "linkedin", "linkedin", "rara-clip",
+		SourceField{Name: "profile_url", Label: "Profile URL", Type: "url", Required: true, Placeholder: "https://www.linkedin.com/in/handle  or  /company/name"},
 	),
 }
 

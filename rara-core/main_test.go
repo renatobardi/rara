@@ -420,9 +420,13 @@ func (m *MockDatabase) CreateLinkedInProfile(_ context.Context, profileURL, disp
 	m.linkedinProfiles[id] = mockLinkedInProfile{
 		ID: id, ProfileURL: profileURL, DisplayName: displayName, Tags: []string{}, Active: true,
 	}
+	sourceDisplayName := profileURL
+	if displayName != "" {
+		sourceDisplayName = displayName
+	}
 	m.sources = append(m.sources, SourceItem{
 		ApiID: apiID, Kind: "linkedin_profile", Lane: "linkedin",
-		DisplayName: profileURL, Status: "active", Tags: []string{},
+		DisplayName: sourceDisplayName, Status: "active", Tags: []string{},
 	})
 	return id, nil
 }
