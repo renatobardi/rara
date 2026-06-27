@@ -121,6 +121,14 @@ type mockEmailSource struct {
 	Enabled     bool
 }
 
+type mockLinkedInProfile struct {
+	ID          int
+	ProfileURL  string
+	DisplayName string
+	Tags        []string
+	Active      bool
+}
+
 type MockDatabase struct {
 	capabilities map[string]Capability // UNIQUE(name)
 	providers    map[string]Provider   // UNIQUE(name)
@@ -150,13 +158,15 @@ type MockDatabase struct {
 	sources []SourceItem // backing store for sources_v mock (tests populate directly)
 
 	// --- source write backing stores (fatia #2) ---
-	ytChannels      map[int]mockYTChannel
-	ytChannelByKey  map[string]int // UNIQUE(youtube_channel_id) -> id
-	ytPlaylists     map[int]mockYTPlaylist
-	ytPlaylistByKey map[string]int // UNIQUE(youtube_playlist_id) -> id
-	feedSources     map[int]mockFeedSource
-	feedByNameEp    map[string]int // UNIQUE(name+"\x00"+endpoint) -> id
-	emailSources    map[int]mockEmailSource
+	ytChannels            map[int]mockYTChannel
+	ytChannelByKey        map[string]int // UNIQUE(youtube_channel_id) -> id
+	ytPlaylists           map[int]mockYTPlaylist
+	ytPlaylistByKey       map[string]int // UNIQUE(youtube_playlist_id) -> id
+	feedSources           map[int]mockFeedSource
+	feedByNameEp          map[string]int // UNIQUE(name+"\x00"+endpoint) -> id
+	emailSources          map[int]mockEmailSource
+	linkedinProfiles      map[int]mockLinkedInProfile
+	nextLinkedInProfileID int
 
 	nextFlowID     int
 	nextItemID     int
@@ -177,35 +187,37 @@ type gateRuleKey struct {
 
 func newMockDatabase() *MockDatabase {
 	return &MockDatabase{
-		capabilities:    make(map[string]Capability),
-		providers:       make(map[string]Provider),
-		flows:           make(map[string]Flow),
-		flowByID:        make(map[int]bool),
-		flowSteps:       make(map[flowStepKey]FlowStep),
-		policies:        make(map[string]RoutingPolicy),
-		items:           make(map[string]Item),
-		itemByID:        make(map[int]Item),
-		itemSteps:       make(map[itemStepKey]ItemStep),
-		stepOrder:       make(map[itemStepKey]int),
-		gateRules:       make(map[gateRuleKey]GateRule),
-		profiles:        make(map[int]InterestProfile),
-		podcastFeeds:    make(map[int]PodcastFeed),
-		feedByURL:       make(map[string]int),
-		ytChannels:      make(map[int]mockYTChannel),
-		ytChannelByKey:  make(map[string]int),
-		ytPlaylists:     make(map[int]mockYTPlaylist),
-		ytPlaylistByKey: make(map[string]int),
-		feedSources:     make(map[int]mockFeedSource),
-		feedByNameEp:    make(map[string]int),
-		emailSources:    make(map[int]mockEmailSource),
-		nextFlowID:      1,
-		nextItemID:      1,
-		nextFeedID:      1,
-		nextYTChanID:    1,
-		nextYTPlayID:    1,
-		nextFeedSrcID:   1,
-		nextEmailSrcID:  1,
-		nowFn:           time.Now,
+		capabilities:          make(map[string]Capability),
+		providers:             make(map[string]Provider),
+		flows:                 make(map[string]Flow),
+		flowByID:              make(map[int]bool),
+		flowSteps:             make(map[flowStepKey]FlowStep),
+		policies:              make(map[string]RoutingPolicy),
+		items:                 make(map[string]Item),
+		itemByID:              make(map[int]Item),
+		itemSteps:             make(map[itemStepKey]ItemStep),
+		stepOrder:             make(map[itemStepKey]int),
+		gateRules:             make(map[gateRuleKey]GateRule),
+		profiles:              make(map[int]InterestProfile),
+		podcastFeeds:          make(map[int]PodcastFeed),
+		feedByURL:             make(map[string]int),
+		ytChannels:            make(map[int]mockYTChannel),
+		ytChannelByKey:        make(map[string]int),
+		ytPlaylists:           make(map[int]mockYTPlaylist),
+		ytPlaylistByKey:       make(map[string]int),
+		feedSources:           make(map[int]mockFeedSource),
+		feedByNameEp:          make(map[string]int),
+		emailSources:          make(map[int]mockEmailSource),
+		linkedinProfiles:      make(map[int]mockLinkedInProfile),
+		nextLinkedInProfileID: 1,
+		nextFlowID:            1,
+		nextItemID:            1,
+		nextFeedID:            1,
+		nextYTChanID:          1,
+		nextYTPlayID:          1,
+		nextFeedSrcID:         1,
+		nextEmailSrcID:        1,
+		nowFn:                 time.Now,
 	}
 }
 
@@ -390,6 +402,35 @@ func (m *MockDatabase) CreateEmailSource(_ context.Context, gmailQuery, label, f
 	return id, nil
 }
 
+func (m *MockDatabase) CreateLinkedInProfile(_ context.Context, profileURL, displayName string) (int, error) {
+	// Idempotent on profile_url.
+	for id, p := range m.linkedinProfiles {
+		if p.ProfileURL == profileURL {
+			if displayName != "" {
+				p.DisplayName = displayName
+				m.linkedinProfiles[id] = p
+				m.setSourcesVDisplayName(fmt.Sprintf("linkedin_profile:%d", id), displayName)
+			}
+			return id, nil
+		}
+	}
+	id := m.nextLinkedInProfileID
+	m.nextLinkedInProfileID++
+	apiID := fmt.Sprintf("linkedin_profile:%d", id)
+	m.linkedinProfiles[id] = mockLinkedInProfile{
+		ID: id, ProfileURL: profileURL, DisplayName: displayName, Tags: []string{}, Active: true,
+	}
+	sourceDisplayName := profileURL
+	if displayName != "" {
+		sourceDisplayName = displayName
+	}
+	m.sources = append(m.sources, SourceItem{
+		ApiID: apiID, Kind: "linkedin_profile", Lane: "linkedin",
+		DisplayName: sourceDisplayName, Status: "active", Tags: []string{},
+	})
+	return id, nil
+}
+
 // setSourcesVStatus reflects an active/enabled change in the sources_v backing store.
 func (m *MockDatabase) setSourcesVStatus(apiID string, active bool) {
 	status := "active"
@@ -465,6 +506,13 @@ func (m *MockDatabase) SetSourceActive(_ context.Context, apiID string, active b
 		}
 		es.Enabled = active
 		m.emailSources[id] = es
+	case "linkedin_profile":
+		p, exists := m.linkedinProfiles[id]
+		if !exists {
+			return fmt.Errorf("source %q: %w", apiID, errNotFound)
+		}
+		p.Active = active
+		m.linkedinProfiles[id] = p
 	default:
 		return fmt.Errorf("mock: unknown kind %q in api_id %q", kind, apiID)
 	}
@@ -492,6 +540,8 @@ func (m *MockDatabase) SetSourceDeleted(_ context.Context, apiID string) error {
 		_, exists = m.feedSources[id]
 	case "email":
 		_, exists = m.emailSources[id]
+	case "linkedin_profile":
+		_, exists = m.linkedinProfiles[id]
 	default:
 		return fmt.Errorf("mock: unknown kind %q in api_id %q", kind, apiID)
 	}
@@ -571,6 +621,18 @@ func (m *MockDatabase) PatchSourceMeta(_ context.Context, apiID string, displayN
 			es.Tags = tags
 		}
 		m.emailSources[id] = es
+	case "linkedin_profile":
+		p, exists := m.linkedinProfiles[id]
+		if !exists {
+			return fmt.Errorf("source %q: %w", apiID, errNotFound)
+		}
+		if displayName != nil {
+			p.DisplayName = *displayName
+		}
+		if tags != nil {
+			p.Tags = tags
+		}
+		m.linkedinProfiles[id] = p
 	default:
 		return fmt.Errorf("mock: unknown kind %q", kind)
 	}

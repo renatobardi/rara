@@ -56,7 +56,8 @@
 		rss: '📡',
 		globe: '🌐',
 		hackernews: 'Y',
-		mail: '✉'
+		mail: '✉',
+		linkedin: 'in'
 	};
 
 	let items = $state<SourceItem[]>([]); // current server page of rows matching the active filter

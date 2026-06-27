@@ -471,6 +471,27 @@ func (c *Core) AddFeedSource(ctx context.Context, kind, name, endpoint, displayN
 	return c.db.UpsertFeedSource(ctx, name, kind, endpoint, cls, displayName)
 }
 
+// AddLinkedInProfile upserts a LinkedIn profile URL into target_linkedin_profiles.
+// profileURL must be a canonical LinkedIn profile or company URL (https://www.linkedin.com/…
+// or https://linkedin.com/…). Idempotent on profile_url.
+func (c *Core) AddLinkedInProfile(ctx context.Context, profileURL, displayName string) (int, error) {
+	profileURL = strings.TrimSpace(profileURL)
+	if profileURL == "" {
+		return 0, badInput("profile_url cannot be empty")
+	}
+	// Normalize linkedin.com → www.linkedin.com so the same profile isn't stored twice.
+	profileURL = strings.Replace(profileURL, "https://linkedin.com/", "https://www.linkedin.com/", 1)
+	if !strings.HasPrefix(profileURL, "https://www.linkedin.com/") {
+		return 0, badInput("profile_url must be a LinkedIn URL (https://www.linkedin.com/… or https://linkedin.com/…)")
+	}
+	// Restrict to collectable path types; /feed/, /jobs/, etc. are not profile URLs.
+	path := strings.TrimPrefix(profileURL, "https://www.linkedin.com")
+	if !strings.HasPrefix(path, "/in/") && !strings.HasPrefix(path, "/company/") && !strings.HasPrefix(path, "/showcase/") {
+		return 0, badInput("profile_url must point to a person (/in/), company (/company/), or showcase (/showcase/) page")
+	}
+	return c.db.CreateLinkedInProfile(ctx, profileURL, displayName)
+}
+
 // AddEmailSource adds an email reading rule to the courier's table.
 // At least one of gmailQuery, label, or fromFilter must be non-empty.
 func (c *Core) AddEmailSource(ctx context.Context, gmailQuery, label, fromFilter, displayName string) (int, error) {
@@ -503,6 +524,7 @@ func (c *Core) ResumeSource(ctx context.Context, apiID string) error {
 var validSourceKinds = map[string]bool{
 	"youtube_channel": true, "youtube_playlist": true, "podcast": true,
 	"rss": true, "html": true, "hn": true, "email": true,
+	"linkedin_profile": true,
 }
 
 // DeleteSource soft-deletes a source (sets deleted_at) so it DISAPPEARS from sources_v and
@@ -655,6 +677,9 @@ var sourceKindsRegistry = []SourceKind{
 		SourceField{Name: "gmail_query", Label: "Gmail query", Type: "text", Placeholder: "from:newsletter@example.com"},
 		SourceField{Name: "label", Label: "Gmail label", Type: "text"},
 		SourceField{Name: "from_filter", Label: "Sender filter", Type: "text"},
+	),
+	sourceKind("linkedin_profile", "LinkedIn Profile / Company", "linkedin", "linkedin", "rara-clip",
+		SourceField{Name: "profile_url", Label: "Profile URL", Type: "url", Required: true, Placeholder: "https://www.linkedin.com/in/handle  or  /company/name"},
 	),
 }
 
@@ -1223,6 +1248,21 @@ func (h *httpSurface) addSource(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		id, err := h.core.AddPodcastFeed(r.Context(), req.FeedURL, req.Title, req.DisplayName)
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]int{"id": id})
+
+	case "linkedin_profile":
+		var req struct {
+			ProfileURL  string `json:"profile_url"`
+			DisplayName string `json:"display_name"`
+		}
+		if !decodeJSON(w, r, &req) {
+			return
+		}
+		id, err := h.core.AddLinkedInProfile(r.Context(), req.ProfileURL, req.DisplayName)
 		if err != nil {
 			writeErr(w, err)
 			return

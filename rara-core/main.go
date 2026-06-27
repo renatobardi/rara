@@ -614,6 +614,9 @@ type Database interface {
 	// CreateEmailSource always inserts a new rule (email_sources has no natural dedup key —
 	// two identical queries are intentionally distinct rules an operator can manage separately).
 	CreateEmailSource(ctx context.Context, gmailQuery, label, fromFilter, displayName string) (int, error)
+	// CreateLinkedInProfile upserts a LinkedIn profile URL into target_linkedin_profiles.
+	// Idempotent on profile_url; display_name is preserved on empty re-add (COALESCE).
+	CreateLinkedInProfile(ctx context.Context, profileURL, displayName string) (int, error)
 	// SetSourceActive toggles the active/enabled flag; dispatches to the right table by api_id prefix.
 	SetSourceActive(ctx context.Context, apiID string, active bool) error
 	// SetSourceDeleted soft-deletes a source (sets deleted_at) so it drops out of sources_v;
@@ -1050,6 +1053,17 @@ func (d *pgxDatabase) CreateEmailSource(ctx context.Context, gmailQuery, label, 
 	return id, d.conn.QueryRow(ctx, q, nullStr(gmailQuery), nullStr(label), nullStr(fromFilter), displayName).Scan(&id)
 }
 
+func (d *pgxDatabase) CreateLinkedInProfile(ctx context.Context, profileURL, displayName string) (int, error) {
+	const q = `
+		INSERT INTO target_linkedin_profiles (profile_url, display_name)
+		VALUES ($1, $2)
+		ON CONFLICT (profile_url) DO UPDATE
+		SET display_name = COALESCE(NULLIF(EXCLUDED.display_name, ''), target_linkedin_profiles.display_name)
+		RETURNING id`
+	var id int
+	return id, d.conn.QueryRow(ctx, q, profileURL, nullStr(displayName)).Scan(&id)
+}
+
 // SetSourceActive dispatches to the right table based on the api_id prefix (e.g. "rss:3" → feed_sources).
 // active=false is the soft-delete / pause operation; active=true resumes.
 func (d *pgxDatabase) SetSourceActive(ctx context.Context, apiID string, active bool) error {
@@ -1069,6 +1083,8 @@ func (d *pgxDatabase) SetSourceActive(ctx context.Context, apiID string, active 
 		q = `UPDATE feed_sources SET enabled = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $1`
 	case "email":
 		q = `UPDATE email_sources SET enabled = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $1`
+	case "linkedin_profile":
+		q = `UPDATE target_linkedin_profiles SET active = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $1`
 	default:
 		return fmt.Errorf("SetSourceActive: unknown kind %q", kind)
 	}
@@ -1102,6 +1118,8 @@ func (d *pgxDatabase) SetSourceDeleted(ctx context.Context, apiID string) error 
 		q = `UPDATE feed_sources SET deleted_at = COALESCE(deleted_at, now()), updated_at = CURRENT_TIMESTAMP WHERE id = $1`
 	case "email":
 		q = `UPDATE email_sources SET deleted_at = COALESCE(deleted_at, now()), updated_at = CURRENT_TIMESTAMP WHERE id = $1`
+	case "linkedin_profile":
+		q = `UPDATE target_linkedin_profiles SET deleted_at = COALESCE(deleted_at, now()), updated_at = CURRENT_TIMESTAMP WHERE id = $1`
 	default:
 		return fmt.Errorf("SetSourceDeleted: unknown kind %q", kind)
 	}
@@ -1147,6 +1165,10 @@ func (d *pgxDatabase) PatchSourceMeta(ctx context.Context, apiID string, display
 	case "email":
 		tag, err = d.conn.Exec(ctx,
 			`UPDATE email_sources SET display_name=COALESCE($2,display_name), tags=COALESCE($3,tags), updated_at=CURRENT_TIMESTAMP WHERE id=$1`,
+			id, displayName, tags)
+	case "linkedin_profile":
+		tag, err = d.conn.Exec(ctx,
+			`UPDATE target_linkedin_profiles SET display_name=COALESCE($2,display_name), tags=COALESCE($3,tags), updated_at=CURRENT_TIMESTAMP WHERE id=$1`,
 			id, displayName, tags)
 	default:
 		return fmt.Errorf("PatchSourceMeta: unknown kind %q", kind)
