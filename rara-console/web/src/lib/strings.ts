@@ -338,6 +338,7 @@ export const t = {
 		billingLink: 'Abrir GCP Billing',
 		// routing section (moved from workers)
 		routingSection: 'Roteamento',
+		metricsWorkersSection: 'Métricas Workers',
 		loading: 'Carregando configurações…',
 		error: 'Não foi possível carregar as configurações.'
 	},
