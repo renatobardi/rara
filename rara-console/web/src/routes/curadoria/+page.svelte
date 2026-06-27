@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { t } from '$lib/strings';
+	import { labelDecidedBy, aggregatePulso, type Decision } from '$lib/curadoria';
 
 	type InterestProfile = {
 		version: number;
@@ -17,12 +18,26 @@
 		value: string;
 		enabled: boolean;
 	};
+	type RecentDecision = Decision & {
+		id: number;
+		item_id: number;
+		gate: string;
+		score?: number | null;
+		when: string;
+	};
 
 	// --- interest profile state ---
 	let activeProfile = $state<InterestProfile | null>(null);
 	let versions = $state<InterestProfile[]>([]);
 	let profileLoading = $state(true);
 	let profileError = $state(false);
+
+	// --- decisions state (Pulso + Trilha) ---
+	let decisions = $state<RecentDecision[]>([]);
+	let decisionsLoading = $state(true);
+	let decisionsError = $state(false);
+
+	let pulso = $derived(aggregatePulso(decisions, versions));
 
 	// propose form
 	let proposeVersion = $state('');
@@ -72,6 +87,12 @@
 			.then((d) => (rules = d ?? []))
 			.catch(() => (rulesError = true))
 			.finally(() => (rulesLoading = false));
+
+		fetch('/api/decisions?limit=200')
+			.then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
+			.then((d: RecentDecision[]) => (decisions = d ?? []))
+			.catch(() => (decisionsError = true))
+			.finally(() => (decisionsLoading = false));
 	});
 
 	function parseOptionalJSON(s: string): unknown | undefined {
@@ -213,12 +234,12 @@
 		return v == null ? '' : JSON.stringify(v, null, 2);
 	}
 
-	const pulsoCards = [
-		{ label: t.curadoria.pulsoEntrou, color: 'text-text' },
-		{ label: t.curadoria.pulsoManteve, color: 'text-green' },
-		{ label: t.curadoria.pulsoBarrou, color: 'text-red' },
-		{ label: t.curadoria.pulsoDuvida, color: 'text-primary' }
-	] as const;
+	const pulsoCards = $derived([
+		{ label: t.curadoria.pulsoEntrou, color: 'text-text', value: pulso.entrou },
+		{ label: t.curadoria.pulsoManteve, color: 'text-green', value: pulso.manteve },
+		{ label: t.curadoria.pulsoBarrou, color: 'text-red', value: pulso.barrou },
+		{ label: t.curadoria.pulsoDuvida, color: 'text-primary', value: pulso.duvida }
+	]);
 
 	const spineSteps = [
 		t.curadoria.spineStep1,
@@ -234,14 +255,25 @@
 		<h2 class="text-[15px] font-semibold">{t.curadoria.pulsoZone}</h2>
 		<span class="text-[12px] text-muted">{t.curadoria.pulsoLabel}</span>
 	</div>
-	<div class="grid grid-cols-2 gap-3 sm:grid-cols-4">
-		{#each pulsoCards as card}
-			<div class="rounded-card border border-border bg-surface px-4 py-3">
-				<div class="text-[11px] text-muted">{card.label}</div>
-				<div class="mt-1 text-[22px] font-semibold {card.color}">—</div>
-			</div>
-		{/each}
-	</div>
+	{#if decisionsLoading}
+		<p class="text-[13px] text-muted">{t.curadoria.pulsoLoading}</p>
+	{:else if decisionsError}
+		<p class="text-[13px] text-red">{t.curadoria.pulsoError}</p>
+	{:else}
+		{#if pulso.proposedPending}
+			<a href="#gosto" class="mb-3 flex items-center gap-1 text-[12px] text-primary hover:underline">
+				{t.curadoria.pulsoProposedPending}
+			</a>
+		{/if}
+		<div class="grid grid-cols-2 gap-3 sm:grid-cols-4">
+			{#each pulsoCards as card}
+				<div class="rounded-card border border-border bg-surface px-4 py-3">
+					<div class="text-[11px] text-muted">{card.label}</div>
+					<div class="mt-1 text-[22px] font-semibold {card.color}">{card.value}</div>
+				</div>
+			{/each}
+		</div>
+	{/if}
 </section>
 
 <!-- ── 2. SPINE ────────────────────────────────────────────────────── -->
@@ -282,7 +314,7 @@
 </section>
 
 <!-- ── 4. O GOSTO (funcional — Interest Profile) ──────────────────── -->
-<section class="mb-6">
+<section id="gosto" class="mb-6">
 	<h2 class="mb-3 text-[15px] font-semibold">{t.curadoria.gostoZone}</h2>
 
 	{#if profileLoading}
@@ -453,16 +485,37 @@
 	{/if}
 </section>
 
-<!-- ── 5. TRILHA DE DECISÕES (shell) ──────────────────────────────── -->
+<!-- ── 5. TRILHA DE DECISÕES ───────────────────────────────────────── -->
 <section class="mb-6">
 	<h2 class="mb-3 text-[15px] font-semibold">{t.curadoria.trilhaZone}</h2>
 	<div class="overflow-hidden rounded-card border border-border bg-surface">
-		<div class="flex h-24 items-center justify-center">
-			<div class="text-center">
-				<div class="text-[13px] text-muted">{t.curadoria.trilhaEmpty}</div>
-				<div class="mt-1 text-[11px] text-muted opacity-60">{t.curadoria.trilhaComingSoon}</div>
-			</div>
-		</div>
+		{#if decisionsLoading}
+			<p class="px-4 py-3 text-[13px] text-muted">{t.curadoria.trilhaLoading}</p>
+		{:else if decisionsError}
+			<p class="px-4 py-3 text-[13px] text-red">{t.curadoria.trilhaError}</p>
+		{:else if decisions.length === 0}
+			<p class="px-4 py-3 text-[13px] text-muted">{t.curadoria.trilhaEmpty}</p>
+		{:else}
+			<ul class="divide-y divide-border">
+				{#each decisions as d}
+					<li class="flex items-start gap-3 px-4 py-2.5 text-[13px]">
+						<span class="mt-0.5 shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium
+							{d.decision === 'keep' ? 'bg-green/15 text-green' :
+							 d.decision === 'drop' ? 'bg-border text-text' :
+							 'bg-primary/15 text-primary'}">{d.decision}</span>
+						<div class="min-w-0 flex-1">
+							<span class="text-muted">{t.curadoria.trilhaItemRef} {d.item_id}</span>
+							{#if d.decided_by}
+								<span class="ml-1 text-muted opacity-60">· {t.curadoria.trilhaDecidedByLabel} {labelDecidedBy(d.decided_by)}</span>
+							{/if}
+							{#if d.reason}
+								<p class="mt-0.5 text-[12px] text-muted">{d.reason}</p>
+							{/if}
+						</div>
+					</li>
+				{/each}
+			</ul>
+		{/if}
 	</div>
 </section>
 
