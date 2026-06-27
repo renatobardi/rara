@@ -335,4 +335,3 @@ func TestRunStampErrorIsNotFatal(t *testing.T) {
 		t.Fatalf("stamp error must not be fatal: run returned %v", err)
 	}
 }
-
