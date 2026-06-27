@@ -82,6 +82,7 @@
 	// approve state: version number being approved, or null
 	let approving = $state<number | null>(null);
 	let approveError = $state('');
+	let approveNotice = $state('');
 
 	// --- gate rules state ---
 	let rules = $state<GateRule[]>([]);
@@ -269,6 +270,7 @@
 	async function approve(version: number) {
 		approving = version;
 		approveError = '';
+		approveNotice = '';
 		try {
 			const r = await fetch('/api/interest-profile/approve', {
 				method: 'POST',
@@ -291,7 +293,7 @@
 					[activeProfile, versions] = refreshed as [InterestProfile | null, InterestProfile[]];
 				} else {
 					// Approve succeeded but refresh failed — user sees stale state
-					approveError = 'Aprovado! Recarregue a página para ver o histórico atualizado.';
+					approveNotice = t.curadoria.profileApproveRefreshNotice;
 				}
 			}
 		} catch {
@@ -513,6 +515,9 @@
 				{#if approveError}
 					<p class="px-4 py-2 text-[12px] text-red">{approveError}</p>
 				{/if}
+				{#if approveNotice}
+					<p class="px-4 py-2 text-[12px] text-muted">{approveNotice}</p>
+				{/if}
 				<div class="divide-y divide-border/50 px-4 py-3 text-[13px]">
 					{#if pv.narrative}
 						<div class="pb-3">
@@ -538,6 +543,11 @@
 										<span class="rounded-full bg-red/10 px-2 py-0.5 text-[11px] text-muted line-through opacity-60">− {item}</span>
 									{/each}
 								</div>
+							</div>
+						{:else}
+							<div class="py-2">
+								<div class="mb-1 text-[11px] font-medium text-muted">{label}</div>
+								<p class="text-[12px] text-muted">{t.curadoria.profileDiffNoChanges}</p>
 							</div>
 						{/if}
 					{/each}
@@ -595,6 +605,11 @@
 									{/each}
 								</div>
 							</div>
+						{:else if val != null && !Array.isArray(val)}
+							<div>
+								<div class="mb-1 text-[11px] font-medium text-muted">{label}</div>
+								<pre class="text-[11px] text-muted">{JSON.stringify(val)}</pre>
+							</div>
 						{/if}
 					{/each}
 					{#if activeProfile.weights && typeof activeProfile.weights === 'object' && !Array.isArray(activeProfile.weights)}
@@ -605,6 +620,11 @@
 									<div>{k}: {JSON.stringify(v)}</div>
 								{/each}
 							</div>
+						</div>
+					{:else if activeProfile.weights != null}
+						<div>
+							<div class="mb-1 text-[11px] font-medium text-muted">{t.curadoria.profileWeightsLabel}</div>
+							<pre class="text-[11px] text-muted">{JSON.stringify(activeProfile.weights)}</pre>
 						</div>
 					{/if}
 				</div>

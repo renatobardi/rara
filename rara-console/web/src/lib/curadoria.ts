@@ -33,16 +33,17 @@ function diffStringArray(a: unknown, b: unknown): StringDiff | StringDiffFallbac
 	const setA = new Set<string>(arrA);
 	const setB = new Set<string>(arrB);
 	return {
-		added: [...setB].filter((x) => !setA.has(x)).sort((a, b) => a.localeCompare(b)),
-		removed: [...setA].filter((x) => !setB.has(x)).sort((a, b) => a.localeCompare(b)),
+		added: [...setB].filter((x) => !setA.has(x)).sort((x, y) => x.localeCompare(y)),
+		removed: [...setA].filter((x) => !setB.has(x)).sort((x, y) => x.localeCompare(y)),
 		changed: [],
 	};
 }
 
 function stableStringify(v: unknown): string {
-	if (v === null || typeof v !== 'object' || Array.isArray(v)) return JSON.stringify(v);
+	if (v === null || typeof v !== 'object') return JSON.stringify(v);
+	if (Array.isArray(v)) return '[' + v.map(stableStringify).join(',') + ']';
 	const obj = v as Record<string, unknown>;
-	return '{' + Object.keys(obj).sort((a, b) => a.localeCompare(b)).map((k) => JSON.stringify(k) + ':' + stableStringify(obj[k])).join(',') + '}';
+	return '{' + Object.keys(obj).sort((x, y) => x.localeCompare(y)).map((k) => JSON.stringify(k) + ':' + stableStringify(obj[k])).join(',') + '}';
 }
 
 function diffWeights(a: unknown, b: unknown): WeightDiff | WeightDiffFallback {
@@ -55,10 +56,10 @@ function diffWeights(a: unknown, b: unknown): WeightDiff | WeightDiffFallback {
 	const keysA = new Set(Object.keys(objA));
 	const keysB = new Set(Object.keys(objB));
 	return {
-		added: [...keysB].filter((k) => !keysA.has(k)).sort((a, b) => a.localeCompare(b)).map((k) => ({ key: k, value: objB[k] })),
-		removed: [...keysA].filter((k) => !keysB.has(k)).sort((a, b) => a.localeCompare(b)).map((k) => ({ key: k, value: objA[k] })),
+		added: [...keysB].filter((k) => !keysA.has(k)).sort((x, y) => x.localeCompare(y)).map((k) => ({ key: k, value: objB[k] })),
+		removed: [...keysA].filter((k) => !keysB.has(k)).sort((x, y) => x.localeCompare(y)).map((k) => ({ key: k, value: objA[k] })),
 		changed: [...keysA].filter((k) => keysB.has(k) && stableStringify(objA[k]) !== stableStringify(objB[k]))
-			.sort((a, b) => a.localeCompare(b))
+			.sort((x, y) => x.localeCompare(y))
 			.map((k) => ({ key: k, from: objA[k], to: objB[k] })),
 	};
 }

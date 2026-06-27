@@ -7,7 +7,6 @@
 	const items: Item[] = [
 		{ label: t.nav.overview, href: '/' },
 		{ label: t.nav.pipeline, href: '/pipeline' },
-		{ label: t.nav.quarantine, href: '/quarentena' },
 		{ label: t.nav.distillations, href: '/distillations' },
 		{ label: t.nav.curation, href: '/curadoria' },
 		{ label: t.nav.workers, href: '/workers' },

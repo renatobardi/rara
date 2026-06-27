@@ -180,6 +180,16 @@ describe('diffProfile', () => {
 		expect(diff.anti_topics.added).toEqual(['spam']);
 	});
 
+	it('handles null fields (null → treat as empty, same as undefined)', () => {
+		const active   = { topics: null as unknown as string[], authors: ['alice'], anti_topics: [], weights: {} };
+		const proposed = { topics: ['go'], authors: null as unknown as string[], anti_topics: [], weights: {} };
+		const diff = diffProfile(active, proposed);
+		expect(diff.topics.added).toEqual(['go']);
+		expect(diff.topics.removed).toEqual([]);
+		expect(diff.authors.removed).toEqual(['alice']);
+		expect(diff.authors.added).toEqual([]);
+	});
+
 	it('falls back gracefully when a field has unexpected shape (not array / not object)', () => {
 		const active   = { topics: 'not-an-array' as unknown as string[], authors: [], anti_topics: [], weights: 42 as unknown as Record<string, unknown> };
 		const proposed = { topics: ['go'], authors: [], anti_topics: [], weights: {} };
