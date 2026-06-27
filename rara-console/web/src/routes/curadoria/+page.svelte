@@ -100,14 +100,21 @@
 
 	$effect(() => {
 		const item = focusedItem;
-		if (!item) { focusedDecisions = []; return; }
+		if (!item) {
+			focusedDecisions = [];
+			focusedDecisionsLoading = false;
+			return;
+		}
+		const controller = new AbortController();
+		const itemId = item.id;
 		focusedDecisionsLoading = true;
 		focusedDecisions = [];
-		fetch(`/api/items/${item.id}/decisions`)
+		fetch(`/api/items/${itemId}/decisions`, { signal: controller.signal })
 			.then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
 			.then((d: unknown) => { focusedDecisions = Array.isArray(d) ? (d as ItemDecision[]) : []; })
-			.catch(() => { focusedDecisions = []; })
+			.catch((e) => { if (e?.name !== 'AbortError') focusedDecisions = []; })
 			.finally(() => (focusedDecisionsLoading = false));
+		return () => controller.abort();
 	});
 
 	async function sendReview(signal: 'up' | 'down') {
@@ -117,7 +124,7 @@
 		const item = focusedItem;
 		// optimistic: remove from queue
 		quarantine = quarantine.filter((q) => q.id !== item.id);
-		focusedIndex = Math.min(focusedIndex, quarantine.length - 1);
+		focusedIndex = quarantine.length === 0 ? 0 : Math.min(focusedIndex, quarantine.length - 1);
 		try {
 			const r = await fetch('/api/quarantine/review', {
 				method: 'POST',
@@ -126,9 +133,15 @@
 			});
 			if (!r.ok) throw new Error('review failed');
 			// light refetch to stay honest
-			fetch('/api/quarantine')
-				.then((r2) => (r2.ok ? r2.json() : null))
-				.then((d) => { if (Array.isArray(d)) quarantine = d as QuarantineItem[]; });
+			void fetch('/api/quarantine')
+				.then((r2) => (r2.ok ? r2.json() : Promise.reject(r2.status)))
+				.then((d: unknown) => {
+					if (Array.isArray(d)) {
+						quarantine = d as QuarantineItem[];
+						focusedIndex = Math.min(focusedIndex, Math.max(0, quarantine.length - 1));
+					}
+				})
+				.catch(() => { reviewError = t.curadoria.filaReviewError; });
 		} catch {
 			// restore on error
 			quarantine = [item, ...quarantine];
@@ -140,6 +153,11 @@
 	}
 
 	function handleKeydown(e: KeyboardEvent) {
+		const target = e.target as HTMLElement | null;
+		if (
+			e.altKey || e.ctrlKey || e.metaKey ||
+			target?.closest('input, textarea, select, button, [contenteditable="true"]')
+		) return;
 		const signal = signalForKey(e.key);
 		if (signal && !reviewInFlight && focusedItem) {
 			e.preventDefault();

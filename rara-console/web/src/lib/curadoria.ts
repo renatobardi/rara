@@ -1,5 +1,5 @@
 export type Decision = { decision: string; decided_by?: string | null; reason?: string | null; when?: string };
-export type ItemDecision = { id?: number; decision: string; decided_by?: string | null; reason?: string | null; score?: number | null };
+export type ItemDecision = { id?: number; decision: 'keep' | 'drop' | 'defer'; decided_by?: string | null; reason?: string | null; score?: number | null };
 export type DeferReason = { score?: number | null; decided_by?: string | null; reason?: string | null };
 export type QuarantineItem = { id: number; lane: string; source_ref?: string; status: string; title?: string; channel?: string; summary?: string; published_at?: string };
 export type ProfileVersion = { status: string };

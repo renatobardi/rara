@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { labelDecidedBy, aggregatePulso, latestDeferReason, signalForKey } from './curadoria';
+import { labelDecidedBy, aggregatePulso, latestDeferReason, signalForKey, type ItemDecision } from './curadoria';
 
 describe('labelDecidedBy', () => {
 	it('maps known values to PT labels', () => {
@@ -68,13 +68,13 @@ describe('aggregatePulso', () => {
 
 describe('latestDeferReason', () => {
 	it('returns the defer decision when it is the only one', () => {
-		const decisions = [{ id: 1, decision: 'defer', decided_by: 'rules', reason: 'low score', score: 0.3 }];
+		const decisions: ItemDecision[] = [{ id: 1, decision: 'defer', decided_by: 'rules', reason: 'low score', score: 0.3 }];
 		const result = latestDeferReason(decisions);
 		expect(result).toEqual({ score: 0.3, decided_by: 'rules', reason: 'low score' });
 	});
 
 	it('picks the defer decision ignoring keep/drop', () => {
-		const decisions = [
+		const decisions: ItemDecision[] = [
 			{ id: 1, decision: 'keep', decided_by: 'rules', reason: null, score: null },
 			{ id: 2, decision: 'defer', decided_by: 'profile', reason: 'borderline', score: 0.5 },
 			{ id: 3, decision: 'drop', decided_by: 'llm-judge', reason: 'off-topic', score: 0.1 }
@@ -84,7 +84,7 @@ describe('latestDeferReason', () => {
 	});
 
 	it('picks the most recent defer when multiple exist (highest id)', () => {
-		const decisions = [
+		const decisions: ItemDecision[] = [
 			{ id: 1, decision: 'defer', decided_by: 'rules', reason: 'old', score: 0.4 },
 			{ id: 5, decision: 'defer', decided_by: 'profile', reason: 'latest', score: 0.6 }
 		];
@@ -93,7 +93,7 @@ describe('latestDeferReason', () => {
 	});
 
 	it('returns null when there is no defer decision', () => {
-		const decisions = [
+		const decisions: ItemDecision[] = [
 			{ id: 1, decision: 'keep', decided_by: 'rules', reason: null, score: null }
 		];
 		expect(latestDeferReason(decisions)).toBeNull();
@@ -104,9 +104,20 @@ describe('latestDeferReason', () => {
 	});
 
 	it('handles absent reason gracefully', () => {
-		const decisions = [{ id: 1, decision: 'defer', decided_by: 'rules', score: 0.3 }];
+		const decisions = [{ id: 1, decision: 'defer' as const, decided_by: 'rules', score: 0.3 }];
 		const result = latestDeferReason(decisions);
 		expect(result?.reason).toBeUndefined();
+	});
+
+	it('handles decisions without id — falls back to id=0 for all, returns one of them', () => {
+		const decisions = [
+			{ decision: 'defer' as const, decided_by: 'rules', reason: 'a', score: 0.3 },
+			{ decision: 'defer' as const, decided_by: 'profile', reason: 'b', score: 0.5 }
+		];
+		const result = latestDeferReason(decisions);
+		// Both have id=0 via ??, reduce keeps the initial (first), which is 'a'
+		expect(result).not.toBeNull();
+		expect(result?.reason).toBe('a');
 	});
 });
 
