@@ -45,6 +45,7 @@
 	let focusedDecisionsLoading = $state(false);
 	let reviewInFlight = $state(false);
 	let reviewError = $state('');
+	let refetchSeq = 0;
 
 	let focusedItem = $derived(quarantine[focusedIndex] ?? null);
 	let deferReason = $derived(latestDeferReason(focusedDecisions));
@@ -114,14 +115,15 @@
 		}
 		const controller = new AbortController();
 		const itemId = item.id;
+		let active = true;
 		focusedDecisionsLoading = true;
 		focusedDecisions = [];
 		fetch(`/api/items/${itemId}/decisions`, { signal: controller.signal })
 			.then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
-			.then((d: unknown) => { focusedDecisions = Array.isArray(d) ? (d as ItemDecision[]) : []; })
-			.catch((e) => { if (e?.name !== 'AbortError') focusedDecisions = []; })
-			.finally(() => (focusedDecisionsLoading = false));
-		return () => controller.abort();
+			.then((d: unknown) => { if (active) focusedDecisions = Array.isArray(d) ? (d as ItemDecision[]) : []; })
+			.catch((e) => { if (active && e?.name !== 'AbortError') focusedDecisions = []; })
+			.finally(() => { if (active) focusedDecisionsLoading = false; });
+		return () => { active = false; controller.abort(); };
 	});
 
 	async function sendReview(signal: 'up' | 'down') {
@@ -139,16 +141,18 @@
 				body: JSON.stringify({ item_id: item.id, signal })
 			});
 			if (!r.ok) throw new Error('review failed');
-			// light refetch to stay honest
+			// light refetch to stay honest — seq guard prevents stale responses from overwriting newer state
+			const seq = ++refetchSeq;
 			void fetch('/api/quarantine')
 				.then((r2) => (r2.ok ? r2.json() : Promise.reject(r2.status)))
 				.then((d: unknown) => {
+					if (seq !== refetchSeq) return;
 					if (Array.isArray(d)) {
 						quarantine = d as QuarantineItem[];
 						focusedIndex = Math.min(focusedIndex, Math.max(0, quarantine.length - 1));
 					}
 				})
-				.catch(() => { reviewError = t.curadoria.filaReviewError; });
+				.catch(() => { if (seq === refetchSeq) reviewError = t.curadoria.filaReviewError; });
 		} catch {
 			// restore on error
 			quarantine = [item, ...quarantine];

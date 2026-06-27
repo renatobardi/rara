@@ -188,6 +188,21 @@ describe('diffProfile', () => {
 		expect(diff.topics.fallback).toBe(true);
 		expect(diff.weights.fallback).toBe(true);
 	});
+
+	it('falls back when array contains non-string elements (heterogeneous array)', () => {
+		const active   = { topics: [42, 'go'] as unknown as string[], authors: [], anti_topics: [], weights: {} };
+		const proposed = { topics: ['go', 'rust'], authors: [], anti_topics: [], weights: {} };
+		const diff = diffProfile(active, proposed);
+		expect(diff.topics.fallback).toBe(true);
+	});
+
+	it('diffs weights changed correctly when objects have same keys in different order', () => {
+		const active   = { topics: [], authors: [], anti_topics: [], weights: { b: 2, a: 1 } };
+		const proposed = { topics: [], authors: [], anti_topics: [], weights: { a: 1, b: 2 } };
+		const diff = diffProfile(active, proposed);
+		// same content, different key order — must NOT appear as changed
+		expect(diff.weights.changed).toEqual([]);
+	});
 });
 
 describe('signalForKey', () => {

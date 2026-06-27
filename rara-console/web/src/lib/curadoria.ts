@@ -19,16 +19,28 @@ type ProfileLike = {
 	weights?: unknown;
 };
 
+const allStrings = (arr: unknown[]): arr is string[] => arr.every((x) => typeof x === 'string');
+
 function diffStringArray(a: unknown, b: unknown): StringDiff | StringDiffFallback {
-	if (!Array.isArray(a) && a != null) return { added: [], removed: [], changed: [], fallback: true };
-	if (!Array.isArray(b) && b != null) return { added: [], removed: [], changed: [], fallback: true };
-	const setA = new Set<string>(Array.isArray(a) ? a : []);
-	const setB = new Set<string>(Array.isArray(b) ? b : []);
+	const fb = { added: [] as [], removed: [] as [], changed: [] as never[], fallback: true as const };
+	if (!Array.isArray(a) && a != null) return fb;
+	if (!Array.isArray(b) && b != null) return fb;
+	const arrA = Array.isArray(a) ? a : [];
+	const arrB = Array.isArray(b) ? b : [];
+	if (!allStrings(arrA) || !allStrings(arrB)) return fb;
+	const setA = new Set<string>(arrA);
+	const setB = new Set<string>(arrB);
 	return {
 		added: [...setB].filter((x) => !setA.has(x)).sort((a, b) => a.localeCompare(b)),
 		removed: [...setA].filter((x) => !setB.has(x)).sort((a, b) => a.localeCompare(b)),
 		changed: [],
 	};
+}
+
+function stableStringify(v: unknown): string {
+	if (v === null || typeof v !== 'object' || Array.isArray(v)) return JSON.stringify(v);
+	const obj = v as Record<string, unknown>;
+	return '{' + Object.keys(obj).sort().map((k) => JSON.stringify(k) + ':' + stableStringify(obj[k])).join(',') + '}';
 }
 
 function diffWeights(a: unknown, b: unknown): WeightDiff | WeightDiffFallback {
@@ -43,7 +55,7 @@ function diffWeights(a: unknown, b: unknown): WeightDiff | WeightDiffFallback {
 	return {
 		added: [...keysB].filter((k) => !keysA.has(k)).sort((a, b) => a.localeCompare(b)).map((k) => ({ key: k, value: objB[k] })),
 		removed: [...keysA].filter((k) => !keysB.has(k)).sort((a, b) => a.localeCompare(b)).map((k) => ({ key: k, value: objA[k] })),
-		changed: [...keysA].filter((k) => keysB.has(k) && JSON.stringify(objA[k]) !== JSON.stringify(objB[k]))
+		changed: [...keysA].filter((k) => keysB.has(k) && stableStringify(objA[k]) !== stableStringify(objB[k]))
 			.sort((a, b) => a.localeCompare(b))
 			.map((k) => ({ key: k, from: objA[k], to: objB[k] })),
 	};
@@ -87,7 +99,7 @@ export function labelDecidedBy(decidedBy?: string | null): string {
 export function latestDeferReason(decisions: ItemDecision[]): DeferReason | null {
 	const defers = decisions.filter((d) => d.decision === 'defer');
 	if (!defers.length) return null;
-	const latest = defers.reduce((a, b) => ((b.id ?? 0) > (a.id ?? 0) ? b : a), defers[0]);
+	const latest = defers.reduce((a, b) => (b.id !== undefined && (a.id === undefined || b.id > a.id) ? b : a), defers[0]);
 	return { score: latest.score, decided_by: latest.decided_by, reason: latest.reason };
 }
 
