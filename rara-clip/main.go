@@ -37,11 +37,11 @@ import (
 // Environment variable names the collector reads — the single source of truth, shared with the
 // tests (which live in package main). The Bright Data API key itself is read by the bdata CLI from
 // its own env, so rara-clip never names or handles the credential.
+// Target profile URLs come from target_linkedin_profiles in the DB (not an env var).
 const (
 	envDatabaseURL    = "DATABASE_URL"
 	envBdataBin       = "BDATA_BIN"
 	envBrightDataArgs = "BRIGHTDATA_LINKEDIN_ARGS"
-	envBrightDataURLs = "BRIGHTDATA_LINKEDIN_URLS"
 )
 
 // LinkedInPost is one collected post: its canonical URL (the spine's natural key), the post text,
@@ -60,9 +60,13 @@ type LinkedInCollector interface {
 	FetchPosts(ctx context.Context) ([]LinkedInPost, error)
 }
 
-// Database is the persistence seam: the idempotent linkedin_posts upsert and the provider stamp.
-// The pgx implementation talks to Neon; tests use an in-memory mock.
+// Database is the persistence seam: the idempotent linkedin_posts upsert, the provider stamp,
+// and the operator-managed target profile list. The pgx implementation talks to Neon; tests use
+// an in-memory mock.
 type Database interface {
+	// FetchTargetProfiles returns the active, non-deleted LinkedIn profile URLs from
+	// target_linkedin_profiles — the operator-managed list configured via the Fontes UI.
+	FetchTargetProfiles(ctx context.Context) ([]string, error)
 	UpsertLinkedInPost(ctx context.Context, p LinkedInPost) error
 	// StampProviderCollected records the moment the named provider finished a collection run,
 	// keeping rara-core's providers table in sync for scheduling decisions.
@@ -84,11 +88,27 @@ func main() {
 		providerName = "clip-cloud"
 	}
 
-	n, err := run(ctx, &pgxDatabase{conn: conn}, newBrightDataLinkedInSource(), providerName)
+	db := &pgxDatabase{conn: conn}
+	n, err := collectLinkedIn(ctx, db, providerName)
 	if err != nil {
 		log.Fatalf("linkedin collector: %v", err)
 	}
 	log.Printf("LinkedIn job completed: %d posts catalogued", n)
+}
+
+// collectLinkedIn fetches active profiles from the DB and runs the collector. Returns early
+// with (0, nil) when no profiles are configured — not an error, just nothing to collect.
+// Extracted from main so the empty-list and fetch-error paths are unit-testable.
+func collectLinkedIn(ctx context.Context, db Database, providerName string) (int, error) {
+	urls, err := db.FetchTargetProfiles(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("fetch target profiles: %w", err)
+	}
+	if len(urls) == 0 {
+		log.Printf("clip: no active profiles in target_linkedin_profiles, skipping")
+		return 0, nil
+	}
+	return run(ctx, db, newBrightDataLinkedInSource(urls), providerName)
 }
 
 // mustConnect opens the Neon connection (bounded by a startup timeout) or exits — the only
@@ -157,17 +177,6 @@ func postHasContent(raw string) bool {
 	return strings.TrimSpace(html.UnescapeString(reTag.ReplaceAllString(raw, ""))) != ""
 }
 
-// splitList splits a comma- or newline-separated env value into trimmed, non-empty entries.
-func splitList(s string) []string {
-	var out []string
-	for _, part := range strings.FieldsFunc(s, func(r rune) bool { return r == ',' || r == '\n' || r == '\r' }) {
-		if t := strings.TrimSpace(part); t != "" {
-			out = append(out, t)
-		}
-	}
-	return out
-}
-
 // firstNonEmpty returns the first argument that is non-empty after trimming.
 func firstNonEmpty(vals ...string) string {
 	for _, v := range vals {
@@ -204,9 +213,10 @@ type brightDataLinkedInSource struct {
 	urls []string // BRIGHTDATA_LINKEDIN_URLS, split
 }
 
-// newBrightDataLinkedInSource builds the collector from the environment, applying the defaults for
-// the CLI binary and the pipeline args inline.
-func newBrightDataLinkedInSource() *brightDataLinkedInSource {
+// newBrightDataLinkedInSource builds the collector. urls come from the DB (target_linkedin_profiles)
+// and are passed by the caller; BDATA_BIN and BRIGHTDATA_LINKEDIN_ARGS still read from env for
+// tool configuration.
+func newBrightDataLinkedInSource(urls []string) *brightDataLinkedInSource {
 	bin := os.Getenv(envBdataBin)
 	if bin == "" {
 		bin = "bdata"
@@ -218,7 +228,7 @@ func newBrightDataLinkedInSource() *brightDataLinkedInSource {
 	return &brightDataLinkedInSource{
 		bin:  bin,
 		args: strings.Fields(args),
-		urls: splitList(os.Getenv(envBrightDataURLs)),
+		urls: urls,
 	}
 }
 
@@ -293,6 +303,29 @@ func (d *pgxDatabase) UpsertLinkedInPost(ctx context.Context, p LinkedInPost) er
 			body   = EXCLUDED.body`
 	_, err := d.conn.Exec(ctx, q, p.URL, p.Author, p.Text)
 	return err
+}
+
+// FetchTargetProfiles returns active, non-deleted LinkedIn profile URLs from
+// target_linkedin_profiles — the operator list managed via the Fontes UI.
+func (d *pgxDatabase) FetchTargetProfiles(ctx context.Context) ([]string, error) {
+	const q = `SELECT profile_url FROM target_linkedin_profiles WHERE active = true AND deleted_at IS NULL`
+	rows, err := d.conn.Query(ctx, q)
+	if err != nil {
+		return nil, fmt.Errorf("query target_linkedin_profiles: %w", err)
+	}
+	defer rows.Close()
+	var urls []string
+	for rows.Next() {
+		var u string
+		if err := rows.Scan(&u); err != nil {
+			return nil, fmt.Errorf("scan profile_url: %w", err)
+		}
+		urls = append(urls, u)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate target_linkedin_profiles: %w", err)
+	}
+	return urls, nil
 }
 
 // StampProviderCollected updates the last_collect_at timestamp for the named provider row so

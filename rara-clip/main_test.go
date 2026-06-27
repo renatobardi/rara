@@ -33,11 +33,14 @@ func (f *fakeCollector) FetchPosts(_ context.Context) ([]LinkedInPost, error) {
 // is idempotent exactly like the real ON CONFLICT (url). failOn forces a per-post upsert error.
 // stamped records which provider names were passed to StampProviderCollected. stampErr, if set,
 // is returned by StampProviderCollected to simulate a provider-not-found or DB error.
+// profiles is the list returned by FetchTargetProfiles.
 type mockDatabase struct {
-	posts    map[string]LinkedInPost
-	failOn   string
-	stamped  []string
-	stampErr error
+	posts      map[string]LinkedInPost
+	failOn     string
+	stamped    []string
+	stampErr   error
+	profiles   []string
+	profileErr error
 }
 
 func newMockDatabase() *mockDatabase { return &mockDatabase{posts: map[string]LinkedInPost{}} }
@@ -53,6 +56,10 @@ func (m *mockDatabase) UpsertLinkedInPost(_ context.Context, p LinkedInPost) err
 func (m *mockDatabase) StampProviderCollected(_ context.Context, name string) error {
 	m.stamped = append(m.stamped, name)
 	return m.stampErr
+}
+
+func (m *mockDatabase) FetchTargetProfiles(_ context.Context) ([]string, error) {
+	return m.profiles, m.profileErr
 }
 
 // ---------------------------------------------------------------------------
@@ -258,13 +265,12 @@ func TestPostHasContent(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // With the env unset, the constructor falls back to the `bdata` binary and the default
-// linkedin-posts pipeline args, and parses the URL list (comma/newline separated, trimmed).
+// linkedin-posts pipeline args. URLs come from the caller (DB-sourced), not from env.
 func TestNewBrightDataLinkedInSourceDefaults(t *testing.T) {
 	t.Setenv(envBdataBin, "")
 	t.Setenv(envBrightDataArgs, "")
-	t.Setenv(envBrightDataURLs, urlA+" , \n  "+urlB+"  ")
 
-	s := newBrightDataLinkedInSource()
+	s := newBrightDataLinkedInSource([]string{urlA, urlB})
 	if s.bin != "bdata" {
 		t.Errorf("default bin = %q, want bdata", s.bin)
 	}
@@ -272,17 +278,16 @@ func TestNewBrightDataLinkedInSourceDefaults(t *testing.T) {
 		t.Errorf("default args = %q, want the linkedin-posts pipeline", got)
 	}
 	if len(s.urls) != 2 || s.urls[0] != urlA || s.urls[1] != urlB {
-		t.Errorf("urls = %v, want the two trimmed entries", s.urls)
+		t.Errorf("urls = %v, want the two provided entries", s.urls)
 	}
 }
 
-// A populated env overrides every default (the binary path and the pipeline args).
+// A populated env overrides the binary path and pipeline args (not the URLs).
 func TestNewBrightDataLinkedInSourceOverrides(t *testing.T) {
 	t.Setenv(envBdataBin, "/opt/bin/bdata")
 	t.Setenv(envBrightDataArgs, "collect --raw")
-	t.Setenv(envBrightDataURLs, "https://lnkd.in/only")
 
-	s := newBrightDataLinkedInSource()
+	s := newBrightDataLinkedInSource([]string{urlA})
 	if s.bin != "/opt/bin/bdata" {
 		t.Errorf("override bin = %q", s.bin)
 	}
@@ -294,11 +299,44 @@ func TestNewBrightDataLinkedInSourceOverrides(t *testing.T) {
 	}
 }
 
-// FetchPosts refuses to shell out when no input URLs are configured (nothing to collect).
+// FetchPosts refuses to shell out when no URLs are provided (nothing to collect).
 func TestFetchPostsNoURLs(t *testing.T) {
-	t.Setenv(envBrightDataURLs, "")
-	if _, err := newBrightDataLinkedInSource().FetchPosts(context.Background()); err == nil {
+	if _, err := newBrightDataLinkedInSource(nil).FetchPosts(context.Background()); err == nil {
 		t.Error("FetchPosts with no URLs should error rather than run the CLI")
+	}
+}
+
+// collectLinkedIn skips with (0, nil) when no profiles are configured — nothing to collect.
+func TestCollectLinkedInSkipsWhenNoProfiles(t *testing.T) {
+	db := newMockDatabase() // profiles = nil
+	n, err := collectLinkedIn(context.Background(), db, "clip-vpc")
+	if err != nil || n != 0 {
+		t.Errorf("want (0, nil) for empty profiles, got (%d, %v)", n, err)
+	}
+}
+
+// collectLinkedIn propagates a FetchTargetProfiles error to the caller.
+func TestCollectLinkedInPropagatesProfileFetchError(t *testing.T) {
+	sentinel := errors.New("db down")
+	db := newMockDatabase()
+	db.profileErr = sentinel
+	_, err := collectLinkedIn(context.Background(), db, "clip-vpc")
+	if !errors.Is(err, sentinel) {
+		t.Errorf("want profile fetch error in chain, got %v", err)
+	}
+}
+
+// collectLinkedIn with profiles runs the full collector path (covered by run tests via fakeCollector).
+func TestCollectLinkedInWithProfilesRunsCollector(t *testing.T) {
+	db := newMockDatabase()
+	db.profiles = []string{urlA}
+	// fakeCollector is wired via newBrightDataLinkedInSource — we can't inject it here, so we
+	// only verify that collectLinkedIn returns an error when FetchPosts fails (no bdata CLI).
+	// The full collector path is covered by the run() tests.
+	_, err := collectLinkedIn(context.Background(), db, "clip-vpc")
+	// bdata is not installed in tests; FetchPosts returns an error — that's expected.
+	if err == nil {
+		t.Error("expected error from missing bdata CLI")
 	}
 }
 
@@ -315,16 +353,5 @@ func TestRunStampErrorIsNotFatal(t *testing.T) {
 	_, err := run(ctx, db, collector, "clip-vpc")
 	if err != nil {
 		t.Fatalf("stamp error must not be fatal: run returned %v", err)
-	}
-}
-
-// splitList drops empty/whitespace entries across both comma and newline separators.
-func TestSplitList(t *testing.T) {
-	got := splitList("a,, b \n\n c ,")
-	if len(got) != 3 || got[0] != "a" || got[1] != "b" || got[2] != "c" {
-		t.Errorf("splitList = %v, want [a b c]", got)
-	}
-	if len(splitList("  \n , ")) != 0 {
-		t.Error("splitList of only separators/whitespace should be empty")
 	}
 }
