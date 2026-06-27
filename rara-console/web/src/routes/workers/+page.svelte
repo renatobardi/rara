@@ -159,14 +159,15 @@
 				case 'runtime': return r.placement.runtime;
 				case 'activation': return r.placement.activation;
 				case 'status': return r.placement.enabled ? '1' : '0';
-				case 'lastrun': return lastRun(r.placement) ?? '';
+				case 'lastrun': return lastRun(r.placement) ?? '1970-01-01';
 			}
 		};
 		return [...rows].sort((a, b) => key(a).localeCompare(key(b)) * dir);
 	});
 
-	// capabilities únicas (para o WorkerForm e para o filtro de Tipo)
+	// capabilities e activations únicos (para o WorkerForm e filtros)
 	let knownCapabilities = $derived([...new Set(flatRows.map((r) => r.capability))].sort());
+	let knownActivations = $derived([...new Set(flatRows.map((r) => r.placement.activation))].sort());
 
 	function setSort(col: SortCol, dir: 'asc' | 'desc') {
 		sortBy = col;
@@ -301,7 +302,7 @@
 			/>
 		{/if}
 		{#if hasFilter}
-			<button class="text-[12px] text-muted hover:text-text" onclick={clearFilters}>{t.workers.filterClear} ✕</button>
+			<button class="text-[12px] text-muted hover:text-text" onclick={clearFilters}>{t.workers.filterClear}</button>
 		{/if}
 		{#if !loading && !error}
 			<button
@@ -413,7 +414,7 @@
 								<div role="menu" class="absolute left-0 top-full z-30 min-w-[180px] rounded-xl border border-border bg-bg p-3 shadow-xl" data-col-popover>
 									<div class="flex flex-col gap-0.5">
 										<button class="rounded-token px-2 py-1 text-left text-[12px] {!fActivation?'font-medium text-text':'text-muted'} hover:bg-hover" onclick={() => { fActivation=''; activePopover=null; }}>{t.workers.filterAllActivation}</button>
-										{#each ['resident','on_demand'] as act}
+										{#each knownActivations as act}
 											<button class="rounded-token px-2 py-1 text-left text-[12px] {fActivation===act?'font-medium text-text':'text-muted'} hover:bg-hover" onclick={() => { fActivation=act; activePopover=null; }}>{act}</button>
 										{/each}
 									</div>

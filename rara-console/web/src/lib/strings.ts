@@ -194,7 +194,7 @@ export const t = {
 		// ── Fontes-style redesign (Task 3 #244) ──
 		searchToggle: 'Buscar workers',
 		searchPlaceholder: 'Buscar por worker ou placement…',
-		filterClear: 'Limpar filtros',
+		filterClear: 'Limpar filtros ✕',
 		colType: 'Tipo',
 		colWorkerGroup: 'Worker',
 		sortAZ: 'A → Z',
