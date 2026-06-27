@@ -6,6 +6,7 @@
 		latestDeferReason,
 		signalForKey,
 		diffProfile,
+		isDiffEmpty,
 		sourceUrl,
 		filterQuarantine,
 		type FilterState,
@@ -90,6 +91,39 @@
 	let proposeWeights = $state('');
 	let proposing = $state(false);
 	let proposeError = $state('');
+
+	// nova versão form state
+	let showNovaVersaoForm = $state(false);
+	let novaVersaoNumber = $derived((activeProfile?.version ?? 0) + 1);
+
+	// Pre-fill the propose form from the active profile when the user opens it.
+	function openNovaVersao() {
+		if (!activeProfile) return;
+		proposeNarrative = activeProfile.narrative ?? '';
+		proposeTopics = activeProfile.topics != null ? JSON.stringify(activeProfile.topics, null, 2) : '';
+		proposeAuthors = activeProfile.authors != null ? JSON.stringify(activeProfile.authors, null, 2) : '';
+		proposeAntiTopics = activeProfile.anti_topics != null ? JSON.stringify(activeProfile.anti_topics, null, 2) : '';
+		proposeWeights = activeProfile.weights != null ? JSON.stringify(activeProfile.weights, null, 2) : '';
+		proposeVersion = String(novaVersaoNumber);
+		proposeError = '';
+		showNovaVersaoForm = true;
+	}
+
+	let novaVersaoDiff = $derived(() => {
+		if (!activeProfile || !showNovaVersaoForm) return null;
+		try {
+			const proposed = {
+				topics: proposeTopics.trim() ? JSON.parse(proposeTopics) : activeProfile.topics,
+				authors: proposeAuthors.trim() ? JSON.parse(proposeAuthors) : activeProfile.authors,
+				anti_topics: proposeAntiTopics.trim() ? JSON.parse(proposeAntiTopics) : activeProfile.anti_topics,
+				weights: proposeWeights.trim() ? JSON.parse(proposeWeights) : activeProfile.weights,
+			};
+			return diffProfile(activeProfile, proposed);
+		} catch {
+			return null; // JSON inválido → deixa salvar (o servidor vai rejeitar se inválido)
+		}
+	});
+	let novaVersaoHasDiff = $derived(novaVersaoDiff === null || !isDiffEmpty(novaVersaoDiff));
 
 	// approve state: version number being approved, or null
 	let approving = $state<number | null>(null);
@@ -805,69 +839,68 @@
 			</details>
 		{/if}
 
-		<!-- Propose new version form -->
-		<div class="overflow-hidden rounded-card border border-border bg-surface">
-			<div class="border-b border-border px-4 py-2 text-[12px] font-medium text-muted">
-				{t.curadoria.profileProposeSection}
-			</div>
-			<div class="space-y-3 px-4 py-3">
-				<div class="flex gap-3">
-					<div class="w-32">
-						<label class="mb-1 block text-[11px] text-muted" for="prop-version">{t.curadoria.profileVersionLabel}</label>
-						<input
-							id="prop-version"
-							type="number"
-							min="1"
-							bind:value={proposeVersion}
-							class="w-full rounded-token border border-border bg-surface-2 px-2 py-1 text-[13px] focus:outline-none focus:ring-1 focus:ring-primary/50"
-						/>
-					</div>
-					<div class="flex-1">
+		<!-- + Nova versão button / form -->
+		{#if !showNovaVersaoForm}
+			<button
+				onclick={openNovaVersao}
+				disabled={!activeProfile || !!proposedProfile}
+				class="cursor-pointer rounded-token border border-border bg-transparent px-4 py-1.5 text-[13px] font-medium hover:bg-hover disabled:cursor-default disabled:opacity-50"
+				title={proposedProfile ? 'Existe uma versão proposta aguardando aprovação' : ''}
+			>{t.curadoria.gostoNovaVersaoBtn}</button>
+		{:else}
+			<!-- Nova versão form (pre-filled from active profile) -->
+			<div class="overflow-hidden rounded-card border border-border bg-surface">
+				<div class="flex items-center justify-between border-b border-border px-4 py-2">
+					<span class="text-[12px] font-medium text-muted">v{novaVersaoNumber}</span>
+					<button onclick={() => (showNovaVersaoForm = false)} class="text-[12px] text-muted hover:text-text">Cancelar</button>
+				</div>
+				<div class="space-y-3 px-4 py-3">
+					<div>
 						<label class="mb-1 block text-[11px] text-muted" for="prop-narrative">{t.curadoria.profileNarrativeLabel}</label>
-						<textarea
-							id="prop-narrative"
-							rows="2"
-							bind:value={proposeNarrative}
+						<textarea id="prop-narrative" rows="2" bind:value={proposeNarrative}
 							class="w-full rounded-token border border-border bg-surface-2 px-2 py-1 text-[13px] focus:outline-none focus:ring-1 focus:ring-primary/50"
 						></textarea>
 					</div>
+					<div class="grid grid-cols-2 gap-3">
+						<div>
+							<label class="mb-1 block text-[11px] text-muted" for="prop-topics">{t.curadoria.profileTopicsLabel}</label>
+							<textarea id="prop-topics" rows="3" bind:value={proposeTopics}
+								class="w-full rounded-token border border-border bg-surface-2 px-2 py-1 font-mono text-[12px] focus:outline-none focus:ring-1 focus:ring-primary/50"
+							></textarea>
+						</div>
+						<div>
+							<label class="mb-1 block text-[11px] text-muted" for="prop-authors">{t.curadoria.profileAuthorsLabel}</label>
+							<textarea id="prop-authors" rows="3" bind:value={proposeAuthors}
+								class="w-full rounded-token border border-border bg-surface-2 px-2 py-1 font-mono text-[12px] focus:outline-none focus:ring-1 focus:ring-primary/50"
+							></textarea>
+						</div>
+						<div>
+							<label class="mb-1 block text-[11px] text-muted" for="prop-anti">{t.curadoria.profileAntiTopicsLabel}</label>
+							<textarea id="prop-anti" rows="3" bind:value={proposeAntiTopics}
+								class="w-full rounded-token border border-border bg-surface-2 px-2 py-1 font-mono text-[12px] focus:outline-none focus:ring-1 focus:ring-primary/50"
+							></textarea>
+						</div>
+						<div>
+							<label class="mb-1 block text-[11px] text-muted" for="prop-weights">{t.curadoria.profileWeightsLabel}</label>
+							<textarea id="prop-weights" rows="3" bind:value={proposeWeights}
+								class="w-full rounded-token border border-border bg-surface-2 px-2 py-1 font-mono text-[12px] focus:outline-none focus:ring-1 focus:ring-primary/50"
+							></textarea>
+						</div>
+					</div>
+					{#if !novaVersaoHasDiff}
+						<p class="text-[12px] text-muted">{t.curadoria.gostoNoDiff}</p>
+					{/if}
+					{#if proposeError}
+						<p class="text-[12px] text-red">{proposeError}</p>
+					{/if}
+					<button
+						disabled={proposing || !novaVersaoHasDiff}
+						onclick={propose}
+						class="cursor-pointer rounded-token border border-border bg-transparent px-4 py-1.5 text-[13px] font-medium hover:bg-hover disabled:cursor-default disabled:opacity-50"
+					>{proposing ? t.curadoria.profileProposing : t.curadoria.profileProposeBtn}</button>
 				</div>
-				<div class="grid grid-cols-2 gap-3">
-					<div>
-						<label class="mb-1 block text-[11px] text-muted" for="prop-topics">{t.curadoria.profileTopicsLabel}</label>
-						<textarea id="prop-topics" rows="2" placeholder={t.curadoria.profileJsonHint} bind:value={proposeTopics}
-							class="w-full rounded-token border border-border bg-surface-2 px-2 py-1 font-mono text-[12px] focus:outline-none focus:ring-1 focus:ring-primary/50"
-						></textarea>
-					</div>
-					<div>
-						<label class="mb-1 block text-[11px] text-muted" for="prop-authors">{t.curadoria.profileAuthorsLabel}</label>
-						<textarea id="prop-authors" rows="2" placeholder={t.curadoria.profileJsonHint} bind:value={proposeAuthors}
-							class="w-full rounded-token border border-border bg-surface-2 px-2 py-1 font-mono text-[12px] focus:outline-none focus:ring-1 focus:ring-primary/50"
-						></textarea>
-					</div>
-					<div>
-						<label class="mb-1 block text-[11px] text-muted" for="prop-anti">{t.curadoria.profileAntiTopicsLabel}</label>
-						<textarea id="prop-anti" rows="2" placeholder={t.curadoria.profileJsonHint} bind:value={proposeAntiTopics}
-							class="w-full rounded-token border border-border bg-surface-2 px-2 py-1 font-mono text-[12px] focus:outline-none focus:ring-1 focus:ring-primary/50"
-						></textarea>
-					</div>
-					<div>
-						<label class="mb-1 block text-[11px] text-muted" for="prop-weights">{t.curadoria.profileWeightsLabel}</label>
-						<textarea id="prop-weights" rows="2" placeholder={t.curadoria.profileJsonHint} bind:value={proposeWeights}
-							class="w-full rounded-token border border-border bg-surface-2 px-2 py-1 font-mono text-[12px] focus:outline-none focus:ring-1 focus:ring-primary/50"
-						></textarea>
-					</div>
-				</div>
-				{#if proposeError}
-					<p class="text-[12px] text-red">{proposeError}</p>
-				{/if}
-				<button
-					disabled={proposing}
-					onclick={propose}
-					class="cursor-pointer rounded-token border border-border bg-transparent px-4 py-1.5 text-[13px] font-medium hover:bg-hover disabled:cursor-default disabled:opacity-50"
-				>{proposing ? t.curadoria.profileProposing : t.curadoria.profileProposeBtn}</button>
 			</div>
-		</div>
+		{/if}
 	{/if}
 </section>
 
