@@ -521,7 +521,7 @@ func (d *pgxDatabase) ListRecentDecisions(ctx context.Context, limit int) ([]Rec
 		var when time.Time
 		var reason *string
 		if err := rows.Scan(&dec.ID, &dec.ItemID, &dec.Gate, &dec.Decision, &dec.Score, &when, &dec.DecidedBy, &reason); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("scan recent decisions: %w", err)
 		}
 		dec.When = when.UTC().Format(time.RFC3339)
 		dec.Reason = reason

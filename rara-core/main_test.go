@@ -2267,11 +2267,18 @@ func TestListRecentDecisionsExposesDecidedByAndReason(t *testing.T) {
 	ctx := context.Background()
 	db := newMockDatabase()
 	fid := seedFlow(t, db)
-	itemID, _ := db.UpsertItem(ctx, Item{Lane: "news", SourceRef: "u1", FlowID: fid, FlowVersion: 1, Status: itemDiscovered})
+	itemID, err := db.UpsertItem(ctx, Item{Lane: "news", SourceRef: "u1", FlowID: fid, FlowVersion: 1, Status: itemDiscovered})
+	if err != nil {
+		t.Fatalf("UpsertItem: %v", err)
+	}
 
 	reason := "top-ranked by llm"
-	_ = db.InsertGateDecision(ctx, GateDecision{ItemID: itemID, Gate: gateBarato, Decision: decisionKeep, DecidedBy: "llm-judge", Reason: reason})
-	_ = db.InsertGateDecision(ctx, GateDecision{ItemID: itemID, Gate: gateBarato, Decision: decisionDrop, DecidedBy: "quarantine_review"}) // open-set value, no reason
+	if err := db.InsertGateDecision(ctx, GateDecision{ItemID: itemID, Gate: gateBarato, Decision: decisionKeep, DecidedBy: "llm-judge", Reason: reason}); err != nil {
+		t.Fatalf("InsertGateDecision llm-judge: %v", err)
+	}
+	if err := db.InsertGateDecision(ctx, GateDecision{ItemID: itemID, Gate: gateBarato, Decision: decisionDrop, DecidedBy: "quarantine_review"}); err != nil {
+		t.Fatalf("InsertGateDecision quarantine_review: %v", err)
+	}
 
 	decs, err := db.ListRecentDecisions(ctx, 10)
 	if err != nil {
