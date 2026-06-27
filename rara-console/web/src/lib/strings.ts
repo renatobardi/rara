@@ -225,7 +225,6 @@ export const t = {
 		count: 'fonte',
 		countPlural: 'fontes',
 		// actions
-		colActions: 'Ações',
 		newSource: 'Nova fonte',
 		actionEdit: 'Editar',
 		actionDelete: 'Excluir',
