@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 // Repeated test fixtures, named once so no single literal recurs across the cases below.
@@ -243,6 +244,29 @@ func TestDecodeBrightDataPostsProfileFormat(t *testing.T) {
 	}
 }
 
+// Posts with created_at older than postLookbackDays are dropped; recent ones and undated ones pass.
+func TestDecodeBrightDataPostsFiltersOldPosts(t *testing.T) {
+	now := time.Date(2026, 6, 27, 12, 0, 0, 0, time.UTC)
+	raw := []byte(`[{"name":"Renato","posts":[
+		{"title":"recent","link":"https://lnkd.in/a","created_at":"2026-06-25T00:00:00.000Z"},
+		{"title":"too old","link":"https://lnkd.in/b","created_at":"2026-06-01T00:00:00.000Z"},
+		{"title":"no date","link":"https://lnkd.in/c"}
+	]}]`)
+	posts, err := decodeBrightDataPostsAt(raw, now)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(posts) != 2 {
+		t.Fatalf("want 2 (recent + undated), got %d: %v", len(posts), posts)
+	}
+	if posts[0].URL != urlA {
+		t.Errorf("expected recent post first, got %+v", posts[0])
+	}
+	if posts[1].URL != "https://lnkd.in/c" {
+		t.Errorf("expected undated post second, got %+v", posts[1])
+	}
+}
+
 func TestDecodeBrightDataPostsDropsEmpty(t *testing.T) {
 	raw := []byte(`[{"name":"Renato","posts":[
 		{"title":"keep","link":"https://lnkd.in/a"},
@@ -285,6 +309,40 @@ func TestDecodeCompanyProfiles(t *testing.T) {
 	}
 	if posts[1].Text != "title only" {
 		t.Errorf("post 1 (title fallback) = %+v", posts[1])
+	}
+}
+
+// Company updates have a "date" field (not "created_at"); old ones must be filtered out.
+func TestDecodeCompanyProfilesFiltersOldPosts(t *testing.T) {
+	now := time.Date(2026, 6, 27, 12, 0, 0, 0, time.UTC)
+	raw := []byte(`[{"name":"LangChain","updates":[
+		{"post_url":"https://lnkd.in/a","text":"recent","date":"2026-06-26T19:57:47.848Z"},
+		{"post_url":"https://lnkd.in/b","text":"too old","date":"2026-06-01T00:00:00.000Z"},
+		{"post_url":"https://lnkd.in/c","text":"no date"}
+	]}]`)
+	posts, err := decodeCompanyProfilesAt(raw, now)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(posts) != 2 {
+		t.Fatalf("want 2 (recent + undated), got %d: %v", len(posts), posts)
+	}
+	if posts[0].URL != urlA {
+		t.Errorf("expected recent post first, got %+v", posts[0])
+	}
+}
+
+func TestNormalizeLinkedInCompanyURL(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"https://www.linkedin.com/company/langchain/posts/", "https://www.linkedin.com/company/langchain/"},
+		{"https://www.linkedin.com/showcase/google-antigravity/posts/?feedView=all", "https://www.linkedin.com/showcase/google-antigravity/"},
+		{"https://www.linkedin.com/showcase/nvidiabrasil/", "https://www.linkedin.com/showcase/nvidiabrasil/"},
+		{"https://www.linkedin.com/company/apple/posts/", "https://www.linkedin.com/company/apple/"},
+	}
+	for _, c := range cases {
+		if got := normalizeLinkedInCompanyURL(c.in); got != c.want {
+			t.Errorf("normalize(%q) = %q, want %q", c.in, got, c.want)
+		}
 	}
 }
 

@@ -285,17 +285,32 @@ func (s *brightDataLinkedInSource) FetchPosts(ctx context.Context) ([]LinkedInPo
 	return decodeBrightDataPosts(out)
 }
 
+// postLookbackDays is the maximum age of a post to catalog. Posts older than this are dropped at
+// decode time — the pipeline returns whatever LinkedIn exposes; we only want recent signal.
+const postLookbackDays = 7
+
 // decodeBrightDataPosts parses the linkedin_person_profile pipeline output — an array of profile
 // objects each carrying a "posts" sub-array — into a flat []LinkedInPost. Posts with neither a
-// link nor any text are dropped; the remaining filtering and idempotency are the run loop's job.
+// link nor any text are dropped; posts older than postLookbackDays are skipped.
 func decodeBrightDataPosts(raw []byte) ([]LinkedInPost, error) {
+	return decodeBrightDataPostsAt(raw, time.Now().UTC())
+}
+
+func decodeBrightDataPostsAt(raw []byte, now time.Time) ([]LinkedInPost, error) {
 	var profiles []brightDataProfile
 	if err := json.Unmarshal(raw, &profiles); err != nil {
 		return nil, fmt.Errorf("brightdata linkedin: decode JSON: %w", err)
 	}
+	cutoff := now.AddDate(0, 0, -postLookbackDays)
 	var out []LinkedInPost
 	for _, prof := range profiles {
 		for _, p := range prof.Posts {
+			if p.CreatedAt != "" {
+				t, err := time.Parse(time.RFC3339, p.CreatedAt)
+				if err == nil && t.Before(cutoff) {
+					continue
+				}
+			}
 			text := firstNonEmpty(p.Title, p.Attribution)
 			if p.Title != "" && p.Attribution != "" {
 				text = p.Title + "\n\n" + p.Attribution
@@ -321,11 +336,30 @@ type brightDataProfilePost struct {
 	Title       string `json:"title"`
 	Attribution string `json:"attribution"` // excerpt / first paragraph
 	Link        string `json:"link"`
+	CreatedAt   string `json:"created_at"`
 }
 
 // ---------------------------------------------------------------------------
 // Bright Data company collector — linkedin_company_profile pipeline.
 // ---------------------------------------------------------------------------
+
+// normalizeLinkedInCompanyURL strips any path suffix beyond /company/<name>/ or /showcase/<name>/
+// and drops the query string. The linkedin_company_profile pipeline only accepts the base company
+// page URL — passing /posts/ or ?feedView=all returns an empty updates array.
+func normalizeLinkedInCompanyURL(rawURL string) string {
+	if i := strings.Index(rawURL, "?"); i >= 0 {
+		rawURL = rawURL[:i]
+	}
+	for _, prefix := range []string{"/company/", "/showcase/"} {
+		if i := strings.Index(rawURL, prefix); i >= 0 {
+			rest := rawURL[i+len(prefix):]
+			if j := strings.Index(rest, "/"); j >= 0 {
+				return rawURL[:i+len(prefix)+j+1]
+			}
+		}
+	}
+	return rawURL
+}
 
 type brightDataCompanySource struct {
 	bin  string
@@ -342,7 +376,11 @@ func newBrightDataCompanySource(urls []string) *brightDataCompanySource {
 	if args == "" {
 		args = "pipelines linkedin_company_profile --json"
 	}
-	return &brightDataCompanySource{bin: bin, args: strings.Fields(args), urls: urls}
+	normalized := make([]string, len(urls))
+	for i, u := range urls {
+		normalized[i] = normalizeLinkedInCompanyURL(u)
+	}
+	return &brightDataCompanySource{bin: bin, args: strings.Fields(args), urls: normalized}
 }
 
 func (s *brightDataCompanySource) FetchPosts(ctx context.Context) ([]LinkedInPost, error) {
@@ -360,15 +398,27 @@ func (s *brightDataCompanySource) FetchPosts(ctx context.Context) ([]LinkedInPos
 }
 
 // decodeCompanyProfiles parses linkedin_company_profile output — an array of company objects each
-// carrying an "updates" sub-array — into a flat []LinkedInPost.
+// carrying an "updates" sub-array — into a flat []LinkedInPost. Posts older than postLookbackDays
+// (by the "date" field) are dropped; undated posts pass through.
 func decodeCompanyProfiles(raw []byte) ([]LinkedInPost, error) {
+	return decodeCompanyProfilesAt(raw, time.Now().UTC())
+}
+
+func decodeCompanyProfilesAt(raw []byte, now time.Time) ([]LinkedInPost, error) {
 	var profiles []brightDataCompanyProfile
 	if err := json.Unmarshal(raw, &profiles); err != nil {
 		return nil, fmt.Errorf("brightdata company: decode JSON: %w", err)
 	}
+	cutoff := now.AddDate(0, 0, -postLookbackDays)
 	var out []LinkedInPost
 	for _, prof := range profiles {
 		for _, u := range prof.Updates {
+			if u.Date != "" {
+				t, err := time.Parse(time.RFC3339, u.Date)
+				if err == nil && t.Before(cutoff) {
+					continue
+				}
+			}
 			text := firstNonEmpty(u.Text, u.Title)
 			if u.PostURL == "" && text == "" {
 				continue
@@ -388,6 +438,7 @@ type brightDataCompanyUpdate struct {
 	PostURL string `json:"post_url"`
 	Text    string `json:"text"`
 	Title   string `json:"title"`
+	Date    string `json:"date"`
 }
 
 // ---------------------------------------------------------------------------
