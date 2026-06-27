@@ -232,12 +232,41 @@ func (m *MockDatabase) UpsertProvider(_ context.Context, p Provider) error {
 	if p.App == "" {
 		p.App = p.Name // mirror pgxDatabase guard
 	}
-	// Mirror the SQL ON CONFLICT: preserve runtime-owned columns that seed never sets.
+	// Mirror the SQL ON CONFLICT: preserve runtime-owned columns the operator surface never sets.
 	if existing, ok := m.providers[p.Name]; ok {
 		p.HeartbeatAt = existing.HeartbeatAt     // owned by TouchProviderHeartbeat
 		p.LastCollectAt = existing.LastCollectAt // owned by dispatcher (cadence clock)
 		p.LastAttemptAt = existing.LastAttemptAt // owned by dispatcher (retry throttle)
 		p.LastError = existing.LastError         // owned by runner on dispatch failure (P0d)
+	}
+	m.providers[p.Name] = p
+	return nil
+}
+
+// SeedProvider mirrors SeedProvider in pgxDatabase: same as UpsertProvider but preserves the
+// operator-owned enabled toggle so re-seeding never clobbers a pause/disable the operator set.
+func (m *MockDatabase) SeedProvider(_ context.Context, p Provider) error {
+	if !isValidRuntime(p.Runtime) || !isValidActivation(p.Activation) {
+		return errCheckViolation
+	}
+	if !isJSONObject(p.Env) {
+		return errCheckViolation
+	}
+	if _, ok := m.capabilities[p.Capability]; !ok {
+		return errFKViolation
+	}
+	if p.Worker == "" {
+		p.Worker = p.Name
+	}
+	if p.App == "" {
+		p.App = p.Name
+	}
+	if existing, ok := m.providers[p.Name]; ok {
+		p.Enabled = existing.Enabled             // operator-owned: seed must not overwrite
+		p.HeartbeatAt = existing.HeartbeatAt     // owned by TouchProviderHeartbeat
+		p.LastCollectAt = existing.LastCollectAt // owned by dispatcher (cadence clock)
+		p.LastAttemptAt = existing.LastAttemptAt // owned by dispatcher (retry throttle)
+		p.LastError = existing.LastError         // owned by runner on dispatch failure
 	}
 	m.providers[p.Name] = p
 	return nil
@@ -1318,7 +1347,8 @@ func TestProviderUpsertIdempotent(t *testing.T) {
 	if err := db.UpsertProvider(ctx, p); err != nil {
 		t.Fatalf("first UpsertProvider: %v", err)
 	}
-	p.Enabled = false // toggle
+	// Operator disables via UpsertProvider — the enabled toggle MUST be applied.
+	p.Enabled = false
 	if err := db.UpsertProvider(ctx, p); err != nil {
 		t.Fatalf("second UpsertProvider: %v", err)
 	}
@@ -1326,7 +1356,29 @@ func TestProviderUpsertIdempotent(t *testing.T) {
 		t.Fatalf("UNIQUE(name) not honored: %d rows", len(db.providers))
 	}
 	if db.providers["caption-mac"].Enabled {
-		t.Errorf("upsert should replace enabled flag")
+		t.Errorf("operator UpsertProvider must apply the enabled toggle")
+	}
+}
+
+// SeedProvider must not overwrite an operator's enabled toggle across re-seeds.
+func TestSeedProviderPreservesEnabled(t *testing.T) {
+	ctx := context.Background()
+	db := newMockDatabase()
+	if err := db.UpsertCapability(ctx, Capability{Name: capTranscrever}); err != nil {
+		t.Fatalf("UpsertCapability: %v", err)
+	}
+	p := Provider{Name: "caption-mac", Capability: capTranscrever, Runtime: runtimeLocal, Activation: activationResident, Enabled: true}
+	if err := db.SeedProvider(ctx, p); err != nil {
+		t.Fatalf("first SeedProvider: %v", err)
+	}
+	// Operator disables via the console; then core-job seed runs again with Enabled: true.
+	db.providers["caption-mac"] = func() Provider { pp := db.providers["caption-mac"]; pp.Enabled = false; return pp }()
+	p.Enabled = true
+	if err := db.SeedProvider(ctx, p); err != nil {
+		t.Fatalf("second SeedProvider: %v", err)
+	}
+	if db.providers["caption-mac"].Enabled {
+		t.Errorf("re-seed must not overwrite the operator's enabled=false toggle")
 	}
 }
 

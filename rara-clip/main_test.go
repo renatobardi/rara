@@ -189,15 +189,38 @@ func TestRunContinuesOnUpsertError(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// partitionURLs — routes profile URLs to the right pipeline.
+// ---------------------------------------------------------------------------
+
+func TestPartitionURLs(t *testing.T) {
+	persons, companies := partitionURLs([]string{
+		"https://www.linkedin.com/in/satyanadella/",
+		"https://www.linkedin.com/company/langchain/posts/",
+		"https://www.linkedin.com/showcase/google-antigravity/posts/",
+		"https://www.linkedin.com/in/fabiobragaoliveira/",
+	})
+	if len(persons) != 2 {
+		t.Errorf("persons = %v, want 2", persons)
+	}
+	if len(companies) != 2 {
+		t.Errorf("companies = %v, want 2", companies)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // decodeBrightDataPosts — pure normalizer over the CLI's varying JSON keys.
 // ---------------------------------------------------------------------------
 
-func TestDecodeBrightDataPostsFlexibleKeys(t *testing.T) {
+func TestDecodeBrightDataPostsProfileFormat(t *testing.T) {
 	raw := []byte(`[
-		{"url":"https://lnkd.in/a","author":"Renato","post_text":"hello"},
-		{"post_url":"https://lnkd.in/b","account":"Ana","text":"world"},
-		{"url":"https://lnkd.in/c","user_id":"bob","body":"body text"},
-		{"url":"https://lnkd.in/d","headline":"just a headline"}
+		{"name":"Renato","posts":[
+			{"title":"hello","attribution":"first para","link":"https://lnkd.in/a"},
+			{"title":"only title","link":"https://lnkd.in/b"},
+			{"attribution":"only attr","link":"https://lnkd.in/c"}
+		]},
+		{"name":"Ana","posts":[
+			{"title":"world","attribution":"second","link":"https://lnkd.in/d"}
+		]}
 	]`)
 	posts, err := decodeBrightDataPosts(raw)
 	if err != nil {
@@ -206,34 +229,62 @@ func TestDecodeBrightDataPostsFlexibleKeys(t *testing.T) {
 	if len(posts) != 4 {
 		t.Fatalf("decoded %d posts, want 4", len(posts))
 	}
-	if posts[0].URL != urlA || posts[0].Author != authorRenato || posts[0].Text != "hello" {
-		t.Errorf("row 0 = %+v", posts[0])
+	if posts[0].URL != urlA || posts[0].Author != authorRenato || posts[0].Text != "hello\n\nfirst para" {
+		t.Errorf("row 0 (title+attribution combined) = %+v", posts[0])
 	}
-	if posts[1].URL != urlB || posts[1].Author != "Ana" || posts[1].Text != "world" {
-		t.Errorf("row 1 (post_url/account/text aliases) = %+v", posts[1])
+	if posts[1].URL != urlB || posts[1].Text != "only title" {
+		t.Errorf("row 1 (title only) = %+v", posts[1])
 	}
-	if posts[2].Author != "bob" || posts[2].Text != "body text" {
-		t.Errorf("row 2 (user_id/body aliases) = %+v", posts[2])
+	if posts[2].URL != "https://lnkd.in/c" || posts[2].Text != "only attr" {
+		t.Errorf("row 2 (attribution only) = %+v", posts[2])
 	}
-	if posts[3].Text != "just a headline" {
-		t.Errorf("row 3 (headline fallback) = %+v", posts[3])
+	if posts[3].Author != "Ana" {
+		t.Errorf("row 3 author = %+v", posts[3])
 	}
 }
 
 func TestDecodeBrightDataPostsDropsEmpty(t *testing.T) {
-	raw := []byte(`[{"url":"https://lnkd.in/a","post_text":"keep"},{"author":"only author"}]`)
+	raw := []byte(`[{"name":"Renato","posts":[
+		{"title":"keep","link":"https://lnkd.in/a"},
+		{"title":"","attribution":"","link":""}
+	]}]`)
 	posts, err := decodeBrightDataPosts(raw)
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
 	if len(posts) != 1 {
-		t.Errorf("a row with neither url nor text should be dropped: %+v", posts)
+		t.Errorf("a post with no link and no text should be dropped: %+v", posts)
 	}
 }
 
 func TestDecodeBrightDataPostsInvalidJSON(t *testing.T) {
 	if _, err := decodeBrightDataPosts([]byte(`not json`)); err == nil {
 		t.Error("invalid JSON should error")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// decodeCompanyProfiles — company/showcase pipeline (updates[] format).
+// ---------------------------------------------------------------------------
+
+func TestDecodeCompanyProfiles(t *testing.T) {
+	raw := []byte(`[{"name":"LangChain","updates":[
+		{"post_url":"https://lnkd.in/a","text":"hello world","title":"ignored when text set"},
+		{"post_url":"https://lnkd.in/b","text":"","title":"title only"},
+		{"post_url":"","text":"","title":""}
+	]}]`)
+	posts, err := decodeCompanyProfiles(raw)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(posts) != 2 {
+		t.Fatalf("want 2 posts (empty dropped), got %d: %v", len(posts), posts)
+	}
+	if posts[0].URL != urlA || posts[0].Author != "LangChain" || posts[0].Text != "hello world" {
+		t.Errorf("post 0 = %+v", posts[0])
+	}
+	if posts[1].Text != "title only" {
+		t.Errorf("post 1 (title fallback) = %+v", posts[1])
 	}
 }
 
@@ -265,7 +316,7 @@ func TestPostHasContent(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // With the env unset, the constructor falls back to the `bdata` binary and the default
-// linkedin-posts pipeline args. URLs come from the caller (DB-sourced), not from env.
+// linkedin_person_profile pipeline args. URLs come from the caller (DB-sourced), not from env.
 func TestNewBrightDataLinkedInSourceDefaults(t *testing.T) {
 	t.Setenv(envBdataBin, "")
 	t.Setenv(envBrightDataArgs, "")
@@ -274,8 +325,8 @@ func TestNewBrightDataLinkedInSourceDefaults(t *testing.T) {
 	if s.bin != "bdata" {
 		t.Errorf("default bin = %q, want bdata", s.bin)
 	}
-	if got := strings.Join(s.args, " "); got != "pipelines linkedin-posts --json" {
-		t.Errorf("default args = %q, want the linkedin-posts pipeline", got)
+	if got := strings.Join(s.args, " "); got != "pipelines linkedin_person_profile --json" {
+		t.Errorf("default args = %q, want the linkedin_person_profile pipeline", got)
 	}
 	if len(s.urls) != 2 || s.urls[0] != urlA || s.urls[1] != urlB {
 		t.Errorf("urls = %v, want the two provided entries", s.urls)
