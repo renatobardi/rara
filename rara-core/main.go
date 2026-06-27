@@ -502,6 +502,8 @@ type RecentDecision struct {
 	When      string   `json:"when"` // RFC3339
 	DecidedBy string   `json:"decided_by"`
 	Reason    *string  `json:"reason,omitempty"`
+	Lane      string   `json:"lane,omitempty"`
+	SourceRef string   `json:"source_ref,omitempty"`
 }
 
 // Feedback is one append-only learning signal. CreatedAt is read-only (set by the DB default on
