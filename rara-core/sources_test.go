@@ -16,12 +16,13 @@ func TestCoreSourceKindsRegistryIntegrity(t *testing.T) {
 	core, _, _ := newTestCore(t)
 	kinds := core.SourceKinds()
 
-	if len(kinds) != 7 {
-		t.Fatalf("want 7 source kinds, got %d", len(kinds))
+	if len(kinds) != 8 {
+		t.Fatalf("want 8 source kinds, got %d", len(kinds))
 	}
 	knownKinds := map[string]bool{
 		"youtube_channel": false, "youtube_playlist": false, "podcast": false,
 		"rss": false, "html": false, "hn": false, "email": false,
+		"linkedin_profile": false,
 	}
 	for _, k := range kinds {
 		if k.Kind == "" || k.Label == "" || k.Lane == "" || k.TargetApp == "" {
@@ -230,8 +231,8 @@ func TestHTTPListSourceKindsReturnsAllKinds(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &kinds); err != nil {
 		t.Fatal(err)
 	}
-	if len(kinds) != 7 {
-		t.Errorf("want 7 kinds, got %d", len(kinds))
+	if len(kinds) != 8 {
+		t.Errorf("want 8 kinds, got %d", len(kinds))
 	}
 }
 
