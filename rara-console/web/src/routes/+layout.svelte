@@ -37,6 +37,7 @@
 		{ icon: '◐', label: t.nav.curation, href: '/curadoria' },
 		{ icon: '⛁', label: t.nav.fontes, href: '/fontes' },
 		{ icon: '⚡', label: t.nav.workers, href: '/workers' },
+		{ icon: '⊹', label: t.nav.inferencia, href: '/inferencia' },
 		{ icon: '◆', label: t.nav.agents, href: '/agents' },
 		{ section: t.nav.secSystem },
 		{ icon: '≣', label: t.nav.audit, href: '/auditoria' },
@@ -50,6 +51,7 @@
 		'/curadoria': t.nav.curation,
 		'/fontes': t.nav.fontes,
 		'/workers': t.nav.workers,
+		'/inferencia': t.nav.inferencia,
 		'/agents': t.nav.agents,
 		'/auditoria': t.nav.audit,
 		'/configuracoes': t.settings.title
