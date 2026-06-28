@@ -360,26 +360,28 @@ func TestExtractOGImage(t *testing.T) {
 	}
 }
 
+// callPreview calls handlePreview against targetURL and returns the decoded JSON, failing on non-200.
+func callPreview(t *testing.T, s *server, targetURL string) map[string]any {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	s.handlePreview(rec, httptest.NewRequest("GET", "/api/preview?url="+targetURL, nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("callPreview: status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	var result map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
+		t.Fatalf("callPreview: decode: %v", err)
+	}
+	return result
+}
+
 func TestHandlePreviewEmbeddable(t *testing.T) {
-	// Target site returns no X-Frame-Options → embeddable.
 	site := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/html")
 		_, _ = w.Write([]byte(`<html><body>ok</body></html>`))
 	}))
 	defer site.Close()
 
-	s := &server{previewClient: site.Client()}
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest("GET", "/api/preview?url="+site.URL, nil)
-	s.handlePreview(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d", rec.Code)
-	}
-	var result map[string]any
-	if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
-		t.Fatal(err)
-	}
+	result := callPreview(t, &server{previewClient: site.Client()}, site.URL)
 	if result["embeddable"] != true {
 		t.Errorf("embeddable = %v, want true", result["embeddable"])
 	}
@@ -389,28 +391,15 @@ func TestHandlePreviewEmbeddable(t *testing.T) {
 }
 
 func TestHandlePreviewNotEmbeddable(t *testing.T) {
-	// Target site returns X-Frame-Options: DENY + og:image in body.
 	site := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Frame-Options", "DENY")
-		if r.Method == http.MethodHead {
-			return
+		if r.Method != http.MethodHead {
+			_, _ = w.Write([]byte(`<html><head><meta property="og:image" content="https://cdn.example.com/img.jpg"></head></html>`))
 		}
-		_, _ = w.Write([]byte(`<html><head><meta property="og:image" content="https://cdn.example.com/img.jpg"></head></html>`))
 	}))
 	defer site.Close()
 
-	s := &server{previewClient: site.Client()}
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest("GET", "/api/preview?url="+site.URL, nil)
-	s.handlePreview(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d", rec.Code)
-	}
-	var result map[string]any
-	if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
-		t.Fatal(err)
-	}
+	result := callPreview(t, &server{previewClient: site.Client()}, site.URL)
 	if result["embeddable"] == true {
 		t.Error("embeddable = true, want false")
 	}
@@ -423,8 +412,7 @@ func TestHandlePreviewBadURL(t *testing.T) {
 	s := &server{previewClient: http.DefaultClient}
 	for _, bad := range []string{"not-a-url", "ftp://example.com", ""} {
 		rec := httptest.NewRecorder()
-		req := httptest.NewRequest("GET", "/api/preview?url="+bad, nil)
-		s.handlePreview(rec, req)
+		s.handlePreview(rec, httptest.NewRequest("GET", "/api/preview?url="+bad, nil))
 		if rec.Code != http.StatusBadRequest {
 			t.Errorf("url=%q: status = %d, want 400", bad, rec.Code)
 		}

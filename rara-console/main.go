@@ -201,15 +201,20 @@ func extractOGImage(html string) string {
 	return m[2]
 }
 
+// doPreviewRequest builds and executes an outbound HTTP request with the shared user-agent.
+func (s *server) doPreviewRequest(ctx context.Context, method, rawURL string) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, method, rawURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; rara-console/1.0)")
+	return s.previewClient.Do(req)
+}
+
 // checkEmbeddable does a HEAD request and returns true if the URL allows iframe embedding
 // (no X-Frame-Options and no frame-ancestors CSP directive).
 func (s *server) checkEmbeddable(ctx context.Context, rawURL string) bool {
-	req, err := http.NewRequestWithContext(ctx, http.MethodHead, rawURL, nil)
-	if err != nil {
-		return false
-	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; rara-console/1.0)")
-	resp, err := s.previewClient.Do(req)
+	resp, err := s.doPreviewRequest(ctx, http.MethodHead, rawURL)
 	if err != nil {
 		return false
 	}
@@ -218,20 +223,12 @@ func (s *server) checkEmbeddable(ctx context.Context, rawURL string) bool {
 	if xfo == "DENY" || xfo == "SAMEORIGIN" {
 		return false
 	}
-	if strings.Contains(strings.ToLower(resp.Header.Get("Content-Security-Policy")), "frame-ancestors") {
-		return false
-	}
-	return true
+	return !strings.Contains(strings.ToLower(resp.Header.Get("Content-Security-Policy")), "frame-ancestors")
 }
 
 // fetchOGImage GETs the URL and returns the og:image value, or "" if not found.
 func (s *server) fetchOGImage(ctx context.Context, rawURL string) string {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
-	if err != nil {
-		return ""
-	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; rara-console/1.0)")
-	resp, err := s.previewClient.Do(req)
+	resp, err := s.doPreviewRequest(ctx, http.MethodGet, rawURL)
 	if err != nil {
 		return ""
 	}
