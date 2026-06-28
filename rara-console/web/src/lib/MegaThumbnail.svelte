@@ -19,17 +19,17 @@
 			return;
 		}
 		loading = true;
-		const token = i.id;
+		const token = `${i.id}:${i.lane}:${i.source_ref ?? ''}`;
 		try {
 			if (i.lane === 'news' && i.source_ref) {
 				const result = await fetchPreview(i.source_ref);
-				if (item.id === token) preview = result;
+				if (`${item.id}:${item.lane}:${item.source_ref ?? ''}` === token) preview = result;
 			} else {
 				const result = await fetchItemContent(i.id);
-				if (item.id === token) content = result;
+				if (`${item.id}:${item.lane}:${item.source_ref ?? ''}` === token) content = result;
 			}
 		} finally {
-			if (item.id === token) loading = false;
+			if (`${item.id}:${item.lane}:${item.source_ref ?? ''}` === token) loading = false;
 		}
 	}
 
@@ -58,7 +58,7 @@
 	<iframe
 		src={preview.url}
 		title={item.title ?? 'Prévia'}
-		sandbox="allow-scripts allow-same-origin"
+		sandbox="allow-scripts"
 		loading="lazy"
 	></iframe>
 

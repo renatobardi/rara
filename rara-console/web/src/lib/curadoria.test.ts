@@ -412,4 +412,10 @@ describe('fetchPreview', () => {
 
 		expect(await fetchPreview('https://example.com')).toBeNull();
 	});
+
+	it('returns null when json() rejects', async () => {
+		vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => { throw new Error('parse error'); } }));
+
+		expect(await fetchPreview('https://example.com')).toBeNull();
+	});
 });

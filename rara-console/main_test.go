@@ -419,6 +419,36 @@ func TestHandlePreviewBadURL(t *testing.T) {
 	}
 }
 
+func TestHandlePreviewCSPFrameAncestors(t *testing.T) {
+	site := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; frame-ancestors 'none'")
+		if r.Method != http.MethodHead {
+			_, _ = w.Write([]byte(`<html><head><meta property="og:image" content="https://cdn.example.com/csp.jpg"></head></html>`))
+		}
+	}))
+	defer site.Close()
+
+	result := callPreview(t, &server{previewClient: site.Client()}, site.URL)
+	if result["embeddable"] == true {
+		t.Error("embeddable = true, want false (frame-ancestors in CSP should block)")
+	}
+	if result["image_url"] != "https://cdn.example.com/csp.jpg" {
+		t.Errorf("image_url = %v, want https://cdn.example.com/csp.jpg", result["image_url"])
+	}
+}
+
+func TestHandlePreviewSSRFBlocked(t *testing.T) {
+	s := &server{
+		previewClient: http.DefaultClient,
+		isPrivate:     func(string) bool { return true },
+	}
+	rec := httptest.NewRecorder()
+	s.handlePreview(rec, httptest.NewRequest("GET", "/api/preview?url=http://192.168.1.1/secret", nil))
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("SSRF: status = %d, want 400", rec.Code)
+	}
+}
+
 func contains(s, sub string) bool {
 	for i := 0; i+len(sub) <= len(s); i++ {
 		if s[i:i+len(sub)] == sub {

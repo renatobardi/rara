@@ -218,7 +218,7 @@ export async function fetchPreview(articleURL: string): Promise<PreviewResult | 
 	try {
 		const res = await fetch(`/api/preview?url=${encodeURIComponent(articleURL)}`);
 		if (!res.ok) return null;
-		return res.json() as Promise<PreviewResult>;
+		return (await res.json()) as PreviewResult;
 	} catch {
 		return null;
 	}

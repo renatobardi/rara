@@ -19,6 +19,7 @@ import (
 	"io"
 	"io/fs"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -42,7 +43,8 @@ type server struct {
 	coreURL       string
 	token         string
 	client        *http.Client
-	previewClient *http.Client // outbound fetches for iframe/OG preview; shorter timeout
+	previewClient *http.Client       // outbound fetches for iframe/OG preview; shorter timeout
+	isPrivate     func(string) bool  // SSRF guard; nil disables check (tests use httptest addresses)
 }
 
 // fetchCoreWithStatus does an authenticated GET and returns the raw status + body without a 2xx
@@ -201,6 +203,41 @@ func extractOGImage(html string) string {
 	return m[2]
 }
 
+// isPrivateIP reports whether ip is a private/loopback/link-local address that should not
+// be reachable from an outbound preview fetch (SSRF protection).
+func isPrivateIP(ip net.IP) bool {
+	if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+		return true
+	}
+	for _, cidr := range []string{
+		"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",
+		"fc00::/7", "100.64.0.0/10",
+	} {
+		_, block, _ := net.ParseCIDR(cidr)
+		if block.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+// isPrivateHost returns true if any resolved IP for host is a private address.
+func isPrivateHost(host string) bool {
+	if ip := net.ParseIP(host); ip != nil {
+		return isPrivateIP(ip)
+	}
+	addrs, err := net.LookupHost(host)
+	if err != nil {
+		return true // treat unresolvable as private/blocked
+	}
+	for _, a := range addrs {
+		if ip := net.ParseIP(a); ip != nil && isPrivateIP(ip) {
+			return true
+		}
+	}
+	return false
+}
+
 // doPreviewRequest builds and executes an outbound HTTP request with the shared user-agent.
 func (s *server) doPreviewRequest(ctx context.Context, method, rawURL string) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, method, rawURL, nil)
@@ -212,18 +249,22 @@ func (s *server) doPreviewRequest(ctx context.Context, method, rawURL string) (*
 }
 
 // checkEmbeddable does a HEAD request and returns true if the URL allows iframe embedding
-// (no X-Frame-Options and no frame-ancestors CSP directive).
+// (no X-Frame-Options and no frame-ancestors CSP directive). Non-2xx status → not embeddable.
 func (s *server) checkEmbeddable(ctx context.Context, rawURL string) bool {
 	resp, err := s.doPreviewRequest(ctx, http.MethodHead, rawURL)
 	if err != nil {
 		return false
 	}
 	resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return false
+	}
 	xfo := strings.ToUpper(strings.TrimSpace(resp.Header.Get("X-Frame-Options")))
 	if xfo == "DENY" || xfo == "SAMEORIGIN" {
 		return false
 	}
-	return !strings.Contains(strings.ToLower(resp.Header.Get("Content-Security-Policy")), "frame-ancestors")
+	csp := strings.ToLower(resp.Header.Get("Content-Security-Policy"))
+	return !strings.Contains(csp, "frame-ancestors")
 }
 
 // fetchOGImage GETs the URL and returns the og:image value, or "" if not found.
@@ -233,7 +274,11 @@ func (s *server) fetchOGImage(ctx context.Context, rawURL string) string {
 		return ""
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 256*1024)) // head section always fits
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 256*1024)) // head section always fits
+	if err != nil {
+		log.Printf("fetchOGImage: read body: %v", err)
+		return ""
+	}
 	return extractOGImage(string(body))
 }
 
@@ -244,6 +289,10 @@ func (s *server) handlePreview(w http.ResponseWriter, r *http.Request) {
 	rawURL := r.URL.Query().Get("url")
 	u, err := url.ParseRequestURI(rawURL)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid url"})
+		return
+	}
+	if s.isPrivate != nil && s.isPrivate(u.Hostname()) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid url"})
 		return
 	}
@@ -900,6 +949,7 @@ func main() {
 		token:         mustEnv("SURFACE_TOKEN"),
 		client:        &http.Client{Timeout: 15 * time.Second},
 		previewClient: &http.Client{Timeout: 8 * time.Second},
+		isPrivate:     isPrivateHost,
 	}
 	addr := mustEnv("CONSOLE_ADDR") // tailnet IP only, e.g. 100.x.x.x:8081 — never 0.0.0.0
 
