@@ -268,3 +268,34 @@ func (d *pgxDatabase) DeleteLLMModel(ctx context.Context, id int) error {
 	_, err := d.conn.Exec(ctx, q, id)
 	return err
 }
+
+// ListEnabledLLMModelsForSync feeds the LLM reconciler: enabled models whose provider is also
+// enabled and not soft-deleted, with the provider's encrypted key material for decryption.
+func (d *pgxDatabase) ListEnabledLLMModelsForSync(ctx context.Context) ([]llmModelSync, error) {
+	const q = `
+		SELECT m.alias, m.upstream, p.kind, COALESCE(p.base_url,''),
+		       p.key_ciphertext, p.key_nonce,
+		       m.input_cost_per_token::float8, m.output_cost_per_token::float8, m.params
+		FROM llm_models m
+		JOIN llm_providers p ON p.id = m.provider_id AND p.deleted_at IS NULL AND p.enabled
+		WHERE m.deleted_at IS NULL AND m.enabled
+		ORDER BY m.alias`
+	rows, err := d.conn.Query(ctx, q)
+	if err != nil {
+		return nil, fmt.Errorf("list enabled llm models for sync: query: %w", err)
+	}
+	defer rows.Close()
+	var out []llmModelSync
+	for rows.Next() {
+		var s llmModelSync
+		if err := rows.Scan(&s.Alias, &s.Upstream, &s.ProviderKind, &s.BaseURL,
+			&s.KeyCiphertext, &s.KeyNonce, &s.InputCost, &s.OutputCost, &s.Params); err != nil {
+			return nil, fmt.Errorf("list enabled llm models for sync: scan: %w", err)
+		}
+		out = append(out, s)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list enabled llm models for sync: rows: %w", err)
+	}
+	return out, nil
+}
