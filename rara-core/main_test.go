@@ -1334,6 +1334,7 @@ func (m *MockDatabase) ListRecentDecisions(_ context.Context, limit int) ([]Rece
 			Reason:    reason,
 			Lane:      item.Lane,
 			SourceRef: item.SourceRef,
+			Title:     item.Title,
 		})
 	}
 	return out, nil

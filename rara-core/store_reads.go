@@ -508,7 +508,7 @@ func (d *pgxDatabase) ListRecentDecisions(ctx context.Context, limit int) ([]Rec
 	const q = `
 		SELECT gd.id, gd.item_id, gd.gate, gd.decision, gd.score, gd.created_at,
 		       gd.decided_by, gd.reason,
-		       COALESCE(i.lane, ''), COALESCE(i.source_ref, '')
+		       COALESCE(i.lane, ''), COALESCE(i.source_ref, ''), COALESCE(i.title, '')
 		FROM gate_decisions gd
 		LEFT JOIN items i ON i.id = gd.item_id
 		ORDER BY gd.id DESC
@@ -523,7 +523,7 @@ func (d *pgxDatabase) ListRecentDecisions(ctx context.Context, limit int) ([]Rec
 		var dec RecentDecision
 		var when time.Time
 		var reason *string
-		if err := rows.Scan(&dec.ID, &dec.ItemID, &dec.Gate, &dec.Decision, &dec.Score, &when, &dec.DecidedBy, &reason, &dec.Lane, &dec.SourceRef); err != nil {
+		if err := rows.Scan(&dec.ID, &dec.ItemID, &dec.Gate, &dec.Decision, &dec.Score, &when, &dec.DecidedBy, &reason, &dec.Lane, &dec.SourceRef, &dec.Title); err != nil {
 			return nil, fmt.Errorf("scan recent decisions: %w", err)
 		}
 		dec.When = when.UTC().Format(time.RFC3339)
