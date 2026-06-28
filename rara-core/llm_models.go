@@ -282,7 +282,7 @@ func (d *pgxDatabase) ListEnabledLLMModelsForSync(ctx context.Context) ([]llmMod
 		ORDER BY m.alias`
 	rows, err := d.conn.Query(ctx, q)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("list enabled llm models for sync: query: %w", err)
 	}
 	defer rows.Close()
 	var out []llmModelSync
@@ -290,9 +290,12 @@ func (d *pgxDatabase) ListEnabledLLMModelsForSync(ctx context.Context) ([]llmMod
 		var s llmModelSync
 		if err := rows.Scan(&s.Alias, &s.Upstream, &s.ProviderKind, &s.BaseURL,
 			&s.KeyCiphertext, &s.KeyNonce, &s.InputCost, &s.OutputCost, &s.Params); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("list enabled llm models for sync: scan: %w", err)
 		}
 		out = append(out, s)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list enabled llm models for sync: rows: %w", err)
+	}
+	return out, nil
 }

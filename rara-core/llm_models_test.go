@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -122,6 +123,8 @@ func (m *MockDatabase) ListEnabledLLMModelsForSync(_ context.Context) ([]llmMode
 			break
 		}
 	}
+	// Mirror the real query's ORDER BY m.alias so the mock can't hide ordering bugs.
+	sort.Slice(out, func(i, j int) bool { return out[i].Alias < out[j].Alias })
 	return out, nil
 }
 

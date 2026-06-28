@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -25,6 +26,13 @@ import (
 // the desired model. The gateway echoes model_info verbatim, so reading it back on the
 // next pass lets the reconciler detect drift without comparing masked/normalized fields.
 const fingerprintKey = "rara_fp"
+
+// reservedParams are litellm_params keys the reconciler sets authoritatively; a model's
+// freeform Params may not override them (it comes from operator-editable llm_models.params).
+var reservedParams = map[string]struct{}{
+	"model": {}, "api_key": {}, "api_base": {},
+	"input_cost_per_token": {}, "output_cost_per_token": {},
+}
 
 // Model is the gateway's view of one registered model — both the write payload for
 // AddModel and the parsed read shape from ListModels. Only fields the reconciler uses
@@ -56,6 +64,11 @@ type Client struct {
 func New(baseURL, masterKey string) (*Client, error) {
 	if baseURL == "" {
 		return nil, fmt.Errorf("litellm: base URL is required")
+	}
+	// Validate at construction so a malformed LITELLM_BASE_URL disables sync at startup
+	// instead of failing every reconcile pass.
+	if u, err := url.Parse(baseURL); err != nil || u.Scheme == "" || u.Host == "" {
+		return nil, fmt.Errorf("litellm: invalid base URL %q", baseURL)
 	}
 	if masterKey == "" {
 		return nil, fmt.Errorf("litellm: master key is required")
@@ -141,7 +154,19 @@ func (c *Client) ListModels(ctx context.Context) ([]Model, error) {
 // AddModel registers a model via POST /model/new. The api_key travels in the body and is
 // never logged. Costs and the fingerprint are written so a later ListModels can detect drift.
 func (c *Client) AddModel(ctx context.Context, m Model) error {
-	params := map[string]any{"model": m.Upstream}
+	// Build the freeform params FIRST, then let the canonical fields win. A reserved key in
+	// m.Params (which originates from operator-supplied llm_models.params) must never override
+	// the upstream, credential, base URL, or cost — that would let a DB row redirect the
+	// gateway or swap the key. Reject it so the misconfiguration surfaces instead of silently
+	// taking effect.
+	params := make(map[string]any, len(m.Params)+5)
+	for k, v := range m.Params {
+		if _, reserved := reservedParams[k]; reserved {
+			return fmt.Errorf("litellm: /model/new (%s): reserved param %q not allowed", m.ModelName, k)
+		}
+		params[k] = v
+	}
+	params["model"] = m.Upstream
 	if m.APIKey != "" {
 		params["api_key"] = m.APIKey
 	}
@@ -153,9 +178,6 @@ func (c *Client) AddModel(ctx context.Context, m Model) error {
 	}
 	if m.OutputCost != 0 {
 		params["output_cost_per_token"] = m.OutputCost
-	}
-	for k, v := range m.Params {
-		params[k] = v
 	}
 	body := map[string]any{
 		"model_name":     m.ModelName,

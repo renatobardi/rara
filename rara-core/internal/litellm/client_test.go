@@ -20,6 +20,31 @@ func TestNewRequiresBaseURLAndKey(t *testing.T) {
 	if _, err := New("http://x", "k"); err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
+	if _, err := New("not-a-url", "k"); err == nil {
+		t.Error("want error for malformed base URL (no scheme/host)")
+	}
+}
+
+func TestAddModelRejectsReservedParam(t *testing.T) {
+	called := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	c, _ := New(srv.URL, "master")
+	// A params row trying to override the upstream must be rejected, not sent.
+	err := c.AddModel(context.Background(), Model{
+		ModelName: "m", Upstream: "groq/good", APIKey: "sk",
+		Params: map[string]any{"model": "evil/redirect"},
+	})
+	if err == nil {
+		t.Fatal("want error for reserved param 'model' in Params")
+	}
+	if called {
+		t.Error("gateway must not be called when a reserved param is present")
+	}
 }
 
 func TestListModelsParsesConfigAndDBModels(t *testing.T) {
