@@ -236,6 +236,7 @@ export const t = {
 		errBaseUrlRequired: 'Base URL é obrigatória para o tipo openai_compatible.',
 		errBaseUrlInvalid: 'Base URL inválida.',
 		errBaseUrlScheme: 'Base URL deve usar http ou https.',
+		errBaseUrlPrivate: 'Base URL deve apontar para um host público.',
 		// ── Models section ──
 		modelsSection: 'Models',
 		modelsSubtitle: 'Aliases → upstream e custo por token.',

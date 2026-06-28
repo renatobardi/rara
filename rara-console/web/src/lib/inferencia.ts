@@ -46,7 +46,8 @@ export function isProvider(v: unknown): v is LLMProvider {
 	if (typeof v !== 'object' || v === null) return false;
 	const p = v as Record<string, unknown>;
 	return typeof p.id === 'number' && typeof p.name === 'string' &&
-		typeof p.kind === 'string' && typeof p.enabled === 'boolean';
+		typeof p.kind === 'string' && PROVIDER_KINDS.includes(p.kind as ProviderKind) &&
+		typeof p.enabled === 'boolean';
 }
 
 export function isModel(v: unknown): v is LLMModel {
@@ -54,17 +55,36 @@ export function isModel(v: unknown): v is LLMModel {
 	const m = v as Record<string, unknown>;
 	return typeof m.id === 'number' && typeof m.provider_id === 'number' &&
 		typeof m.alias === 'string' && typeof m.upstream === 'string' &&
+		typeof m.input_cost_per_token === 'number' && typeof m.output_cost_per_token === 'number' &&
 		typeof m.enabled === 'boolean';
 }
 
-// Masked display of a provider key — the SPA only ever holds last4, never the secret.
+// Masked display of a provider key. The read DTO only ever carries key_last4, but slice
+// defensively so a full key would never render in clear even if the backend regressed.
 export function maskKey(last4?: string): string {
-	return last4 ? `•••• ${last4}` : '—';
+	const suffix = last4?.trim().slice(-4);
+	return suffix ? `•••• ${suffix}` : '—';
 }
 
-// base_url rules mirror the core: required for openai_compatible, and any non-empty value
-// must be a valid http(s) URL. Returns an error code (mapped to a string in the component) or null.
-export type BaseUrlError = 'required' | 'invalid' | 'scheme';
+// Mirrors the core's validateEndpointURL (surface.go): block loopback / private / link-local /
+// metadata hosts so the SPA rejects an SSRF-shaped base_url before it reaches the core.
+function isBlockedHost(hostname: string): boolean {
+	const h = hostname.toLowerCase().replace(/\.+$/, '').replace(/^\[|\]$/g, '');
+	if (h === 'localhost' || h === '0.0.0.0' || h === '::1') return true;
+	if (h.endsWith('.local') || h.endsWith('.localhost')) return true;
+	if (h === 'metadata.google.internal') return true;
+	if (h.startsWith('169.254.')) return true; // link-local / cloud metadata
+	if (/^127\./.test(h)) return true; // loopback
+	if (/^10\./.test(h)) return true; // private
+	if (/^192\.168\./.test(h)) return true; // private
+	if (/^172\.(1[6-9]|2\d|3[01])\./.test(h)) return true; // private 172.16–31
+	return false;
+}
+
+// base_url rules mirror the core: required for openai_compatible, and any non-empty value must be a
+// valid http(s) URL with no embedded credentials, pointing at a public host. Returns an error code
+// (mapped to a string in the component) or null.
+export type BaseUrlError = 'required' | 'invalid' | 'scheme' | 'private';
 export function validateBaseUrl(kind: string, baseURL: string): BaseUrlError | null {
 	const v = baseURL.trim();
 	if (kind === 'openai_compatible' && v === '') return 'required';
@@ -76,6 +96,8 @@ export function validateBaseUrl(kind: string, baseURL: string): BaseUrlError | n
 		return 'invalid';
 	}
 	if (u.protocol !== 'http:' && u.protocol !== 'https:') return 'scheme';
+	if (u.username || u.password) return 'invalid'; // no secrets embedded in the URL
+	if (isBlockedHost(u.hostname)) return 'private';
 	return null;
 }
 

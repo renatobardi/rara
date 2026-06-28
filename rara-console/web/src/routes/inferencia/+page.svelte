@@ -161,6 +161,7 @@
 	}
 	function closeForm() {
 		formOpen = null; formErrors = {}; formServerError = ''; submitting = false;
+		pApiKey = ''; // never leave key material in memory after the form closes
 	}
 
 	async function submitProvider() {
@@ -170,6 +171,7 @@
 		if (baseErr === 'required') e.baseUrl = t.inferencia.errBaseUrlRequired;
 		else if (baseErr === 'invalid') e.baseUrl = t.inferencia.errBaseUrlInvalid;
 		else if (baseErr === 'scheme') e.baseUrl = t.inferencia.errBaseUrlScheme;
+		else if (baseErr === 'private') e.baseUrl = t.inferencia.errBaseUrlPrivate;
 		// api_key is required only when creating; empty on edit = preserve existing.
 		if (formOpen?.mode === 'add' && !pApiKey.trim()) e.apiKey = t.inferencia.errApiKeyRequired;
 		formErrors = e;
@@ -206,8 +208,9 @@
 		if (!mUpstream.trim()) e.upstream = t.inferencia.errUpstreamRequired;
 		const ci = Number(mCostIn);
 		const co = Number(mCostOut);
-		if (!(ci >= 0)) e.costIn = t.inferencia.errCostNegative;
-		if (!(co >= 0)) e.costOut = t.inferencia.errCostNegative;
+		// Number.isFinite rejects NaN and Infinity (e.g. "1e309" overflows to Infinity).
+		if (!Number.isFinite(ci) || ci < 0) e.costIn = t.inferencia.errCostNegative;
+		if (!Number.isFinite(co) || co < 0) e.costOut = t.inferencia.errCostNegative;
 		let params: unknown = {};
 		if (mParamsRaw.trim()) {
 			try {
@@ -304,7 +307,8 @@
 			if (!res.ok) throw new Error();
 			toast('ok', t.inferencia.deleteOk);
 			confirmDelete = null;
-			if (entity === 'provider') await fetchProviders();
+			// Deleting a provider can orphan its models' provider_name join — refresh both.
+			if (entity === 'provider') await Promise.all([fetchProviders(), fetchModels()]);
 			else await fetchModels();
 		} catch {
 			toast('err', t.inferencia.deleteError);
@@ -512,7 +516,7 @@
 		{#if activeKebab === id}
 			<div role="menu" class="absolute right-0 top-full z-30 min-w-[160px] rounded-xl border border-border bg-bg py-1 shadow-xl" data-kebab>
 				{#each actions as a}
-					<button class="w-full px-3 py-1.5 text-left text-[13px] hover:bg-hover {a.danger ? 'text-red-500' : 'text-muted'}" onclick={a.run}>{a.label}</button>
+					<button role="menuitem" class="w-full px-3 py-1.5 text-left text-[13px] hover:bg-hover {a.danger ? 'text-red-500' : 'text-muted'}" onclick={a.run}>{a.label}</button>
 				{/each}
 			</div>
 		{/if}
@@ -622,7 +626,8 @@
 {#if confirmDelete}
 	<!-- svelte-ignore a11y_click_events_have_key_events -->
 	<div role="presentation" class="fixed inset-0 z-50 flex items-center justify-center p-4" style="background:rgba(0,0,0,0.35)" onclick={(e) => { if (e.target === e.currentTarget) confirmDelete = null; }}>
-		<div class="w-full max-w-md rounded-xl border border-border bg-bg p-5 shadow-2xl" role="dialog" aria-modal="true">
+		<div class="w-full max-w-md rounded-xl border border-border bg-bg p-5 shadow-2xl" role="dialog" aria-modal="true" aria-labelledby="delete-confirm-title">
+			<h3 id="delete-confirm-title" class="sr-only">{t.inferencia.deleteConfirmBtn}</h3>
 			<p class="mb-4 text-[13px] text-text">
 				{(confirmDelete.entity === 'provider' ? t.inferencia.deleteProviderConfirm.replace('{name}', confirmDelete.label) : t.inferencia.deleteModelConfirm.replace('{alias}', confirmDelete.label))}
 			</p>
