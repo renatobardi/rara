@@ -15,6 +15,9 @@
 		type ItemDecision,
 		type ProfileDiff
 	} from '$lib/curadoria';
+	import MegaThumbnail from '$lib/MegaThumbnail.svelte';
+
+	const lanesWithThumbnail = new Set(['youtube', 'news', 'email']);
 
 	type InterestProfile = {
 		version: number;
@@ -538,7 +541,8 @@
 		<div class="overflow-hidden rounded-card border border-border bg-surface">
 			{#if focusedItem}
 				{@const itemUrl = sourceUrl(focusedItem.lane, focusedItem.source_ref ?? '')}
-				<div class="p-5">
+				<div class="decidir-grid" class:has-thumb={lanesWithThumbnail.has(focusedItem.lane)}>
+				<div class="decidir-card p-5">
 					<!-- item header -->
 					<div class="mb-1 flex items-center gap-2">
 						<span class="rounded-full border border-border px-2 py-0.5 text-[11px] text-muted">{focusedItem.lane}</span>
@@ -605,7 +609,13 @@
 					</div>
 					<!-- progress -->
 					<p class="mt-3 text-[11px] text-muted">{focusedIndex + 1} / {filteredQueue.length}</p>
-				</div>
+				</div><!-- /decidir-card -->
+				{#if lanesWithThumbnail.has(focusedItem.lane)}
+					<div class="decidir-thumb">
+						<MegaThumbnail item={focusedItem} />
+					</div>
+				{/if}
+				</div><!-- /decidir-grid -->
 			{/if}
 		</div>
 	{/if}
@@ -1031,3 +1041,26 @@
 	</div>
 </details>
 {/if}
+
+<style>
+	.decidir-grid {
+		display: grid;
+		grid-template-columns: 1fr;
+	}
+
+	@media (min-width: 768px) {
+		.decidir-grid.has-thumb {
+			grid-template-columns: 1fr 1fr;
+		}
+	}
+
+	.decidir-card {
+		min-width: 0;
+	}
+
+	.decidir-thumb {
+		min-width: 0;
+		padding: 1.25rem;
+		padding-left: 0;
+	}
+</style>

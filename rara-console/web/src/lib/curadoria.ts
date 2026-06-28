@@ -191,3 +191,19 @@ export function aggregatePulso(
 		proposedPending: versions.some((v) => v.status === 'proposed'),
 	};
 }
+
+export type ItemContent = {
+	lane: string;
+	body?: string;
+	sender?: string; // email only
+};
+
+export async function fetchItemContent(id: number): Promise<ItemContent | null> {
+	try {
+		const res = await fetch(`/api/items/${id}/content`);
+		if (!res.ok) return null;
+		return res.json() as Promise<ItemContent>;
+	} catch {
+		return null;
+	}
+}

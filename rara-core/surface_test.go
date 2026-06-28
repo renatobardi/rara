@@ -714,6 +714,62 @@ func TestHTTPGetDistillationNotFoundIs400(t *testing.T) {
 	}
 }
 
+func TestCoreItemContentEmail(t *testing.T) {
+	ctx := context.Background()
+	core, db, _ := newTestCore(t)
+	fid := seedFlow(t, db)
+	id, _ := db.UpsertItem(ctx, Item{Lane: "email", SourceRef: "msg@mail", FlowID: fid, FlowVersion: 1, Status: "discovered"})
+	db.itemContents[id] = ItemContentResult{Lane: "email", Body: "hello", Sender: "a@b.com"}
+
+	got, err := core.ItemContent(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Body != "hello" || got.Sender != "a@b.com" {
+		t.Errorf("got %+v", got)
+	}
+}
+
+func TestCoreItemContentInvalidIDIsBadInput(t *testing.T) {
+	ctx := context.Background()
+	core, _, _ := newTestCore(t)
+	_, err := core.ItemContent(ctx, 0)
+	var bad badInputError
+	if !errors.As(err, &bad) {
+		t.Errorf("want badInputError for id=0, got %T: %v", err, err)
+	}
+}
+
+func TestHTTPItemContentReturnsJSON(t *testing.T) {
+	ctx := context.Background()
+	core, db, _ := newTestCore(t)
+	fid := seedFlow(t, db)
+	id, _ := db.UpsertItem(ctx, Item{Lane: "news", SourceRef: "https://ex.com/a", FlowID: fid, FlowVersion: 1, Status: "discovered"})
+	db.itemContents[id] = ItemContentResult{Lane: "news", Body: "article body"}
+
+	h := NewSurfaceMux(core, testToken)
+	rec := do(t, h, http.MethodGet, fmt.Sprintf("/v1/items/%d/content", id), "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body)
+	}
+	var got ItemContentResult
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Lane != "news" || got.Body != "article body" {
+		t.Errorf("got %+v", got)
+	}
+}
+
+func TestHTTPItemContentInvalidIDIs400(t *testing.T) {
+	core, _, _ := newTestCore(t)
+	h := NewSurfaceMux(core, testToken)
+	rec := do(t, h, http.MethodGet, "/v1/items/abc/content", "")
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("want 400, got %d", rec.Code)
+	}
+}
+
 // TestCoreListItemsPassesThroughDisplayFields: Title/Channel/Summary/PublishedAt stored on an
 // item are returned by ListItems. Also verifies that lanes without a date (linkedin) return nil.
 func TestCoreListItemsPassesThroughDisplayFields(t *testing.T) {

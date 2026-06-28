@@ -169,6 +169,22 @@ func (s *server) handleItemSteps(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, json.RawMessage(body))
 }
 
+// handleItemContent proxies GET /v1/items/{id}/content — the mega-thumbnail content
+// endpoint. Rejects non-numeric ids before forwarding to core.
+func (s *server) handleItemContent(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !isNumericID(id) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid item id"})
+		return
+	}
+	body, err := s.fetchCore(r.Context(), "/v1/items/"+id+"/content")
+	if err != nil {
+		badGateway(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, json.RawMessage(body))
+}
+
 func isNumericID(s string) bool {
 	if s == "" || len(s) > 19 {
 		return false
@@ -823,6 +839,7 @@ func main() {
 	mux.HandleFunc("GET /api/overview", s.handleOverview)
 	mux.HandleFunc("GET /api/pipeline", s.handlePipeline)
 	mux.HandleFunc("GET /api/items/{id}/steps", s.handleItemSteps)
+	mux.HandleFunc("GET /api/items/{id}/content", s.handleItemContent)
 	mux.HandleFunc("GET /api/quarantine", s.handleQuarantine)
 	mux.HandleFunc("GET /api/distillations", s.handleDistillationList)
 	mux.HandleFunc("GET /api/distillations/{id}", s.handleDistillationDetail)
