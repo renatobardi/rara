@@ -9,6 +9,7 @@ on:
     branches: [main]
     paths:
       - 'rara-distill/litellm/**'
+      - '.github/workflows/deploy-litellm.yml'
   workflow_dispatch:
 
 permissions:
@@ -57,5 +58,6 @@ jobs:
             --region "$REGION" \
             --project "$PROJECT" \
             --port 8080 \
+            --memory 4096Mi \
             --args="--config,/app/config.yaml,--port,8080" \
             --set-secrets="GEMINI_API_KEY=gemini-api-key:latest,GROQ_API_KEY=groq-api-key:latest,LITELLM_MASTER_KEY=litellm-api-key:latest,DEEPSEEK_API_KEY=deepseek-api-key:latest,DATABASE_URL=litellm-database-url:latest,LITELLM_SALT_KEY=litellm-salt-key:1"
