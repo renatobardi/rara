@@ -1770,10 +1770,14 @@ func serveSurfacePool(ctx context.Context, dbURL, addr, token string) error {
 	if key := os.Getenv("YOUTUBE_API_KEY"); key != "" {
 		core.resolveChannel = newYTResolver(key).resolve
 	}
-	// Wire the LLM-key encryption box. A missing or malformed RARA_SECRETS_KEY only
-	// disables LLM-provider key writes (it's logged inside loadSecretbox); it must never
-	// crash this always-on serve path, so the error is intentionally not propagated.
-	core.box, _ = loadSecretbox()
+	// Wire the LLM-key encryption box. A missing key just disables LLM-provider key
+	// writes; a malformed key is logged here but must never crash this always-on serve
+	// path, so the error is surfaced in the log, not propagated.
+	box, err := loadSecretbox()
+	if err != nil {
+		log.Printf("ERROR: surface: %v — LLM provider key writes disabled", err)
+	}
+	core.box = box
 	return ServeSurface(ctx, core, addr, token)
 }
 
@@ -1781,10 +1785,9 @@ func serveSurfacePool(ctx context.Context, dbURL, addr, token string) error {
 // RARA_SECRETS_KEY (base64-encoded 32-byte key). It never crashes the process — the
 // service path is the always-on reconciler, and a sub-feature env must not take it down:
 //   - absent/empty key  → (nil, nil) + WARN; LLM-provider key writes stay disabled.
-//   - malformed key     → (nil, err) + ERROR; loud in logs, still no crash.
+//   - malformed key      → (nil, err); the caller logs it and leaves the box nil.
 //
-// Deliberately not secretbox.MustLoad (that log.Fatalf's). The returned error is for
-// tests/visibility; callers leave core.box nil rather than abort.
+// Deliberately not secretbox.MustLoad (that log.Fatalf's) — callers degrade rather than abort.
 func loadSecretbox() (*secretbox.Box, error) {
 	raw := os.Getenv("RARA_SECRETS_KEY")
 	if raw == "" {
@@ -1793,13 +1796,11 @@ func loadSecretbox() (*secretbox.Box, error) {
 	}
 	key, err := base64.StdEncoding.DecodeString(raw)
 	if err != nil {
-		log.Printf("ERROR: RARA_SECRETS_KEY is not valid base64 — LLM provider key writes disabled")
 		return nil, fmt.Errorf("RARA_SECRETS_KEY: invalid base64: %w", err)
 	}
 	box, err := secretbox.New(key)
 	if err != nil {
-		log.Printf("ERROR: RARA_SECRETS_KEY invalid (%v) — LLM provider key writes disabled", err)
-		return nil, err
+		return nil, fmt.Errorf("RARA_SECRETS_KEY: invalid key: %w", err)
 	}
 	return box, nil
 }
