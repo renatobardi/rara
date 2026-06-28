@@ -860,6 +860,10 @@ type Database interface {
 	// ListLLMModels returns non-deleted models with a light provider name join.
 	// providerID=0 returns all.
 	ListLLMModels(ctx context.Context, providerID int) ([]LLMModelRow, error)
+	// ListEnabledLLMModelsForSync returns enabled models joined to their enabled, non-deleted
+	// providers, including the encrypted key material — the server-side read the LLM reconciler
+	// decrypts. Never exposed over HTTP.
+	ListEnabledLLMModelsForSync(ctx context.Context) ([]llmModelSync, error)
 	// DeleteLLMModel soft-deletes the model with the given id (sets deleted_at).
 	DeleteLLMModel(ctx context.Context, id int) error
 }
@@ -1524,7 +1528,10 @@ Commands:
   seed                       Seed the YouTube lane config (capabilities, providers, flow)
   ingest                     Populate the items spine from channel_videos ∪ playlist_videos
   reconcile [--loop]         Run the reconciler: one pass, or always-on with --loop
-                             (--loop also mounts the surface if SURFACE_ADDR is set)
+                             (--loop also mounts the surface if SURFACE_ADDR is set, and
+                             reconciles the LLM registry into the gateway when LITELLM_BASE_URL is set)
+  reconcile-llm              Sync the LLM registry (llm_providers + llm_models) into the
+                             LiteLLM gateway once (LITELLM_BASE_URL + LITELLM_MASTER_KEY + RARA_SECRETS_KEY)
   surface [--addr :8080]     Serve the control surface (HTTP núcleo + MCP adapter) standalone
                              (SURFACE_TOKEN required; --addr defaults to SURFACE_ADDR/:8080)
   feedback --distillation <id> --signal <up|down>
@@ -1616,6 +1623,9 @@ func main() {
 
 	case "reconcile":
 		runReconcile(ctx, db, conn, dbURL, os.Args[2:])
+
+	case "reconcile-llm":
+		runReconcileLLM(ctx, db)
 
 	case "surface":
 		runSurface(ctx, dbURL, os.Args[2:])
@@ -1732,12 +1742,28 @@ func runReconcile(ctx context.Context, db Database, conn *pgx.Conn, dbURL string
 			interval = time.Duration(n) * time.Second
 		}
 	}
+	// Optional: also reconcile the LLM registry into the gateway each pass (level-triggered).
+	// Only when LITELLM_BASE_URL is configured — otherwise the always-on item reconciler runs
+	// alone. A misconfigured gateway disables LLM sync without taking the loop down.
+	var llmRec *LLMReconciler
+	if os.Getenv("LITELLM_BASE_URL") != "" {
+		if lr, err := newLLMReconcilerFromEnv(db); err != nil {
+			log.Printf("llm reconcile disabled: %v", err)
+		} else {
+			llmRec = lr
+		}
+	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	log.Printf("rara-core reconciler: always-on, interval=%s", interval)
 	for {
 		if err := r.ReconcileOnce(ctx); err != nil {
 			log.Printf("reconcile pass: %v", err)
+		}
+		if llmRec != nil {
+			if err := llmRec.Reconcile(ctx); err != nil {
+				log.Printf("llm reconcile pass: %v", err)
+			}
 		}
 		StampReconcile()
 		select {

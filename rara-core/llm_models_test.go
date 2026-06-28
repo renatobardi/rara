@@ -98,6 +98,33 @@ func (m *MockDatabase) ListLLMModels(_ context.Context, providerID int) ([]LLMMo
 	return out, nil
 }
 
+func (m *MockDatabase) ListEnabledLLMModelsForSync(_ context.Context) ([]llmModelSync, error) {
+	var out []llmModelSync
+	for _, mdl := range m.llmModels {
+		if mdl.DeletedAt != nil || !mdl.Enabled {
+			continue
+		}
+		for _, p := range m.llmProviders {
+			if p.ID != mdl.ProviderID || p.DeletedAt != nil || !p.Enabled {
+				continue
+			}
+			out = append(out, llmModelSync{
+				Alias:         mdl.Alias,
+				Upstream:      mdl.Upstream,
+				ProviderKind:  p.Kind,
+				BaseURL:       p.BaseURL,
+				KeyCiphertext: p.KeyCiphertext,
+				KeyNonce:      p.KeyNonce,
+				InputCost:     mdl.InputCost,
+				OutputCost:    mdl.OutputCost,
+				Params:        mdl.Params,
+			})
+			break
+		}
+	}
+	return out, nil
+}
+
 // providerSoftDeleted reports whether the provider with id is soft-deleted (or absent).
 func (m *MockDatabase) providerSoftDeleted(id int) bool {
 	for _, p := range m.llmProviders {
