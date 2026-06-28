@@ -43,8 +43,8 @@ type server struct {
 	coreURL       string
 	token         string
 	client        *http.Client
-	previewClient *http.Client       // outbound fetches for iframe/OG preview; shorter timeout
-	isPrivate     func(string) bool  // SSRF guard; nil disables check (tests use httptest addresses)
+	previewClient *http.Client      // outbound fetches for iframe/OG preview; shorter timeout
+	isPrivate     func(string) bool // SSRF guard; nil disables check (tests use httptest addresses)
 }
 
 // fetchCoreWithStatus does an authenticated GET and returns the raw status + body without a 2xx
