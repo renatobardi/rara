@@ -1,12 +1,21 @@
-FROM --platform=linux/amd64 ghcr.io/berriai/litellm:v1.90.0
+# Builder: installs npm (not in Wolfi runtime) and pre-caches the Prisma CLI.
+# Only the cache is copied to the final image — npm never ships to production.
+FROM --platform=linux/amd64 ghcr.io/berriai/litellm:v1.90.0 AS prisma-builder
 
 USER root
-# Prisma Python downloads a glibc Node.js binary at runtime (store_model_in_db),
-# which fails on Wolfi musl. Pre-create the nodeenv pointing at the system
-# musl-compatible Node.js so no download happens at container start.
-RUN /app/.venv/bin/python -m nodeenv --node=system \
-      /home/nonroot/.cache/prisma-python/nodeenv 2>/dev/null || true && \
-    chown -R nonroot:nonroot /home/nonroot/.cache 2>/dev/null || true
+RUN apk add --no-cache npm=11.17.0
+
+USER nonroot
+RUN set -e && \
+    /app/.venv/bin/python -c \
+      "from prisma.cli.prisma import ensure_cached; ensure_cached()"
+
+# ---- runtime image ----
+FROM --platform=linux/amd64 ghcr.io/berriai/litellm:v1.90.0
+
+# Copy only the pre-built Prisma CLI cache; no npm in the final image.
+COPY --from=prisma-builder /home/nonroot/.cache/prisma-python/ \
+                            /home/nonroot/.cache/prisma-python/
 
 USER nonroot
 
