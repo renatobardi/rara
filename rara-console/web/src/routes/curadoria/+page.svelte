@@ -537,6 +537,7 @@
 
 		<div class="overflow-hidden rounded-card border border-border bg-surface">
 			{#if focusedItem}
+				{@const itemUrl = sourceUrl(focusedItem.lane, focusedItem.source_ref ?? '')}
 				<div class="p-5">
 					<!-- item header -->
 					<div class="mb-1 flex items-center gap-2">
@@ -545,7 +546,6 @@
 							<span class="text-[12px] text-muted">{focusedItem.channel}</span>
 						{/if}
 					</div>
-					{@const itemUrl = sourceUrl(focusedItem.lane, focusedItem.source_ref ?? '')}
 					{#if itemUrl}
 						<a href={itemUrl} target="_blank" rel="noopener noreferrer"
 							class="mb-2 block text-[14px] font-medium hover:underline text-primary">
