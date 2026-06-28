@@ -49,15 +49,15 @@ func MustLoad() *Box {
 func (b *Box) Encrypt(plaintext []byte) (ciphertext, nonce []byte, err error) {
 	block, err := aes.NewCipher(b.key[:])
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("secretbox: encrypt: %w", err)
 	}
 	gcm, err := cipher.NewGCM(block)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("secretbox: encrypt: %w", err)
 	}
 	nonce = make([]byte, gcm.NonceSize())
 	if _, err = io.ReadFull(rand.Reader, nonce); err != nil {
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("secretbox: encrypt: %w", err)
 	}
 	ciphertext = gcm.Seal(nil, nonce, plaintext, nil)
 	return ciphertext, nonce, nil
@@ -68,20 +68,24 @@ func (b *Box) Encrypt(plaintext []byte) (ciphertext, nonce []byte, err error) {
 func (b *Box) Decrypt(ciphertext, nonce []byte) ([]byte, error) {
 	block, err := aes.NewCipher(b.key[:])
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("secretbox: decrypt: %w", err)
 	}
 	gcm, err := cipher.NewGCM(block)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("secretbox: decrypt: %w", err)
+	}
+	if len(nonce) != gcm.NonceSize() {
+		return nil, fmt.Errorf("secretbox: decrypt: nonce must be %d bytes, got %d", gcm.NonceSize(), len(nonce))
 	}
 	return gcm.Open(nil, nonce, ciphertext, nil)
 }
 
 // Last4 returns the last 4 characters of s for masked display ("•••• xxxx").
+// Returns "" for strings of 4 or fewer characters to avoid revealing short secrets.
 // Never use this to derive the key.
 func Last4(s string) string {
 	if len(s) <= 4 {
-		return s
+		return ""
 	}
 	return s[len(s)-4:]
 }

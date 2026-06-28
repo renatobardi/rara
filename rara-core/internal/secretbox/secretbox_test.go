@@ -18,6 +18,15 @@ func mustBox(t *testing.T) *secretbox.Box {
 	return b
 }
 
+func mustEncrypt(t *testing.T, b *secretbox.Box, plain []byte) (ct, nonce []byte) {
+	t.Helper()
+	ct, nonce, err := b.Encrypt(plain)
+	if err != nil {
+		t.Fatalf("Encrypt: %v", err)
+	}
+	return ct, nonce
+}
+
 func TestRoundTrip(t *testing.T) {
 	b := mustBox(t)
 	plain := []byte("sk-test-api-key-1234567890")
@@ -41,8 +50,8 @@ func TestNonceUniquePerEncrypt(t *testing.T) {
 	b := mustBox(t)
 	plain := []byte("same plaintext")
 
-	_, n1, _ := b.Encrypt(plain)
-	_, n2, _ := b.Encrypt(plain)
+	_, n1 := mustEncrypt(t, b, plain)
+	_, n2 := mustEncrypt(t, b, plain)
 
 	if bytes.Equal(n1, n2) {
 		t.Fatal("Encrypt produced identical nonces on two calls")
@@ -65,7 +74,7 @@ func TestCiphertextDoesNotContainPlaintext(t *testing.T) {
 
 func TestDecryptTamperedCiphertextFails(t *testing.T) {
 	b := mustBox(t)
-	ct, nonce, _ := b.Encrypt([]byte("sensitive"))
+	ct, nonce := mustEncrypt(t, b, []byte("sensitive"))
 
 	ct[0] ^= 0xff // flip first byte
 
@@ -76,12 +85,23 @@ func TestDecryptTamperedCiphertextFails(t *testing.T) {
 
 func TestDecryptWrongNonceFails(t *testing.T) {
 	b := mustBox(t)
-	ct, nonce, _ := b.Encrypt([]byte("sensitive"))
+	ct, nonce := mustEncrypt(t, b, []byte("sensitive"))
 
 	nonce[0] ^= 0xff
 
 	if _, err := b.Decrypt(ct, nonce); err == nil {
 		t.Fatal("expected error with wrong nonce, got nil")
+	}
+}
+
+func TestDecryptBadNonceSizeReturnsError(t *testing.T) {
+	b := mustBox(t)
+	ct, _, err := b.Encrypt([]byte("sensitive"))
+	if err != nil {
+		t.Fatalf("Encrypt: %v", err)
+	}
+	if _, err := b.Decrypt(ct, make([]byte, 1)); err == nil {
+		t.Fatal("expected error for nonce of wrong size, got nil")
 	}
 }
 
@@ -99,10 +119,11 @@ func TestLast4(t *testing.T) {
 		want string
 	}{
 		{"sk-test-1234abcd", "abcd"},
-		{"abcd", "abcd"},
-		{"ab", "ab"},
+		{"12345", "2345"},
+		{"abcd", ""},
+		{"ab", ""},
 		{"", ""},
-		{"x", "x"},
+		{"x", ""},
 	}
 	for _, c := range cases {
 		got := secretbox.Last4(c.in)
