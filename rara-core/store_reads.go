@@ -661,6 +661,56 @@ func (d *pgxDatabase) GetDistillation(ctx context.Context, id int) (Distillation
 	return dist, true, nil
 }
 
+// ItemContent returns rich content for the mega-thumbnail panel.
+// Resolves lane+source_ref from items, then queries the lane-owned table.
+// Body is capped at 10 000 chars. found=false for unimplemented lanes or missing item.
+func (d *pgxDatabase) ItemContent(ctx context.Context, itemID int) (ItemContentResult, bool, error) {
+	var lane, sourceRef string
+	err := d.conn.QueryRow(ctx,
+		`SELECT lane, source_ref FROM items WHERE id = $1`, itemID,
+	).Scan(&lane, &sourceRef)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ItemContentResult{}, false, nil
+	}
+	if err != nil {
+		return ItemContentResult{}, false, err
+	}
+
+	switch lane {
+	case "email":
+		var sender, body string
+		err = d.conn.QueryRow(ctx,
+			`SELECT COALESCE(sender,''), SUBSTR(COALESCE(body,''), 1, 10000)
+			 FROM emails WHERE message_id = $1`, sourceRef,
+		).Scan(&sender, &body)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ItemContentResult{Lane: lane}, true, nil
+		}
+		if err != nil {
+			return ItemContentResult{}, false, err
+		}
+		return ItemContentResult{Lane: lane, Body: body, Sender: sender}, true, nil
+
+	case "news":
+		var body string
+		err = d.conn.QueryRow(ctx,
+			`SELECT SUBSTR(COALESCE(body, excerpt, ''), 1, 10000)
+			 FROM news_items WHERE url = $1`, sourceRef,
+		).Scan(&body)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ItemContentResult{Lane: lane}, true, nil
+		}
+		if err != nil {
+			return ItemContentResult{}, false, err
+		}
+		return ItemContentResult{Lane: lane, Body: body}, true, nil
+
+	default:
+		// youtube: frontend uses source_ref directly; linkedin/podcast: not implemented yet.
+		return ItemContentResult{Lane: lane}, true, nil
+	}
+}
+
 // HealthPing verifies database connectivity with a lightweight SELECT 1.
 func (d *pgxDatabase) HealthPing(ctx context.Context) error {
 	var n int

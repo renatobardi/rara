@@ -151,6 +151,7 @@ type MockDatabase struct {
 	feedback      []Feedback              // append-only
 	profiles      map[int]InterestProfile // UNIQUE(version)
 	distillations []Distillation          // cross-agent read-only seam (rara-distill owns the table)
+	itemContents  map[int]ItemContentResult // cross-agent read-only seam for mega-thumbnail
 
 	podcastFeeds map[int]PodcastFeed // rara-dial's table, written by the core surface (config)
 	feedByURL    map[string]int      // UNIQUE(feed_url) -> id
@@ -217,6 +218,7 @@ func newMockDatabase() *MockDatabase {
 		nextYTPlayID:          1,
 		nextFeedSrcID:         1,
 		nextEmailSrcID:        1,
+		itemContents:          make(map[int]ItemContentResult),
 		nowFn:                 time.Now,
 	}
 }
@@ -1452,6 +1454,11 @@ func (m *MockDatabase) GetDistillation(_ context.Context, id int) (Distillation,
 	return Distillation{}, false, nil
 }
 
+func (m *MockDatabase) ItemContent(_ context.Context, itemID int) (ItemContentResult, bool, error) {
+	c, ok := m.itemContents[itemID]
+	return c, ok, nil
+}
+
 func (m *MockDatabase) RequeueSteps(_ context.Context, capability, fromStatus string, limit int, itemStatus string) (int, error) {
 	if !isValidStepStatus(fromStatus) {
 		return 0, errCheckViolation
@@ -1610,6 +1617,22 @@ func seedFlow(t *testing.T, db *MockDatabase) int {
 		t.Fatalf("seed flow: %v", err)
 	}
 	return fid
+}
+
+func TestMockItemContentEmail(t *testing.T) {
+	ctx := context.Background()
+	db := newMockDatabase()
+	fid, _ := db.UpsertFlow(ctx, Flow{Name: "f", SourceType: "email", Enabled: true, Version: 1})
+	id, _ := db.UpsertItem(ctx, Item{Lane: "email", SourceRef: "msg-1@mail", FlowID: fid, FlowVersion: 1, Status: "discovered"})
+	db.itemContents[id] = ItemContentResult{Lane: "email", Body: "hello world", Sender: "alice@example.com"}
+
+	got, found, err := db.ItemContent(ctx, id)
+	if err != nil || !found {
+		t.Fatalf("ItemContent(%d): found=%v err=%v", id, found, err)
+	}
+	if got.Body != "hello world" || got.Sender != "alice@example.com" {
+		t.Errorf("got %+v, want body=hello world sender=alice@example.com", got)
+	}
 }
 
 // ---------------------------------------------------------------------------

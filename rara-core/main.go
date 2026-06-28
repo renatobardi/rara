@@ -563,6 +563,15 @@ type Distillation struct {
 	UpdatedAt        time.Time       `json:"updated_at"`
 }
 
+// ItemContentResult holds the rich content for an item's original source,
+// returned by GET /v1/items/{id}/content for the mega-thumbnail panel.
+// Cross-agent read: lane-owned tables (emails, news_items) are read-only here.
+type ItemContentResult struct {
+	Lane   string `json:"lane"`
+	Body   string `json:"body,omitempty"`
+	Sender string `json:"sender,omitempty"` // email only
+}
+
 // GateRule is one deterministic allow/deny rule — the cheapest layer of the gate cascade.
 // A deny match drops the item (deny precedence); an allow match keeps it; no match
 // escalates to the profile/LLM layers.
@@ -770,6 +779,10 @@ type Database interface {
 	// GetDistillation returns the full distillation (with content + structured) for the given id,
 	// found=false if absent.
 	GetDistillation(ctx context.Context, id int) (Distillation, bool, error)
+	// ItemContent returns rich source content for the mega-thumbnail panel.
+	// found=false when the item does not exist or the lane has no content record.
+	// Body is capped at 10 000 chars in the pgxDatabase implementation.
+	ItemContent(ctx context.Context, itemID int) (ItemContentResult, bool, error)
 
 	// --- Health + usage (surface observability) ------------------------------
 	// HealthPing verifies that the database connection is alive (SELECT 1). Used by GET /v1/health
