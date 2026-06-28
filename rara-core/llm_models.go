@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -46,8 +47,25 @@ type LLMModelRow struct {
 // Core operations
 // ---------------------------------------------------------------------------
 
+// llmModelUpsert is the resolved, validated payload handed to the storage layer.
+// Using a struct (not a positional arg list) keeps same-typed fields — alias/upstream
+// and inputCost/outputCost — from being silently swapped at the call site.
+type llmModelUpsert struct {
+	ProviderID int
+	Alias      string
+	Upstream   string
+	InputCost  float64
+	OutputCost float64
+	Params     json.RawMessage
+	Enabled    bool
+}
+
 // UpsertLLMModel validates the input and upserts by (owner_id=NULL, alias).
 func (c *Core) UpsertLLMModel(ctx context.Context, in LLMModelInput) error {
+	// Normalize before validating so blank-but-not-empty input ("   ") is rejected
+	// and the trimmed values are what gets persisted.
+	in.Alias = strings.TrimSpace(in.Alias)
+	in.Upstream = strings.TrimSpace(in.Upstream)
 	if in.Alias == "" {
 		return badInput("alias cannot be empty")
 	}
@@ -87,11 +105,18 @@ func (c *Core) UpsertLLMModel(ctx context.Context, in LLMModelInput) error {
 		params = json.RawMessage("{}")
 	}
 
-	// ponytail: TOCTOU — GetLLMProvider + UpsertLLMModel are two separate queries.
-	// Acceptable: UpsertLLMModel is an operator action (never concurrent); the FK constraint
-	// in llm_models.provider_id is the real guard at persist time.
-	if _, err := c.db.UpsertLLMModel(ctx, in.ProviderID, in.Alias, in.Upstream,
-		in.InputCostPerToken, in.OutputCostPerToken, params, enabled); err != nil {
+	// The GetLLMProvider check above is advisory only; the provider could be deleted or
+	// disabled in the window before persist. The real guard is the storage layer, which
+	// re-checks the provider is active in the same INSERT (see pgxDatabase.UpsertLLMModel).
+	if _, err := c.db.UpsertLLMModel(ctx, llmModelUpsert{
+		ProviderID: in.ProviderID,
+		Alias:      in.Alias,
+		Upstream:   in.Upstream,
+		InputCost:  in.InputCostPerToken,
+		OutputCost: in.OutputCostPerToken,
+		Params:     params,
+		Enabled:    enabled,
+	}); err != nil {
 		return fmt.Errorf("upsert llm model %q: %w", in.Alias, err)
 	}
 	return nil
@@ -175,11 +200,16 @@ func (d *pgxDatabase) GetLLMProvider(ctx context.Context, id int) (LLMProviderRo
 	return p, true, nil
 }
 
-func (d *pgxDatabase) UpsertLLMModel(ctx context.Context, providerID int, alias, upstream string,
-	inputCost, outputCost float64, params json.RawMessage, enabled bool) (int, error) {
+func (d *pgxDatabase) UpsertLLMModel(ctx context.Context, m llmModelUpsert) (int, error) {
+	// INSERT ... SELECT conditions the write on the provider being active at persist
+	// time, closing the TOCTOU gap left by a prior GetLLMProvider check: if the provider
+	// was soft-deleted or disabled in the meantime, the SELECT yields no row, nothing is
+	// written, and QueryRow returns pgx.ErrNoRows (mapped to errNotFound below).
 	const q = `
 		INSERT INTO llm_models (provider_id, alias, upstream, input_cost_per_token, output_cost_per_token, params, enabled)
-		VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7)
+		SELECT p.id, $2, $3, $4, $5, $6::jsonb, $7
+		FROM llm_providers p
+		WHERE p.id = $1 AND p.deleted_at IS NULL AND p.enabled
 		ON CONFLICT (owner_id, alias) WHERE deleted_at IS NULL DO UPDATE SET
 			provider_id           = EXCLUDED.provider_id,
 			upstream              = EXCLUDED.upstream,
@@ -189,7 +219,11 @@ func (d *pgxDatabase) UpsertLLMModel(ctx context.Context, providerID int, alias,
 			enabled               = EXCLUDED.enabled
 		RETURNING id`
 	var id int
-	err := d.conn.QueryRow(ctx, q, providerID, alias, upstream, inputCost, outputCost, string(params), enabled).Scan(&id)
+	err := d.conn.QueryRow(ctx, q, m.ProviderID, m.Alias, m.Upstream,
+		m.InputCost, m.OutputCost, string(m.Params), m.Enabled).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, errNotFound
+	}
 	return id, err
 }
 
@@ -199,7 +233,7 @@ func (d *pgxDatabase) ListLLMModels(ctx context.Context, providerID int) ([]LLMM
 		       m.input_cost_per_token::float8, m.output_cost_per_token::float8,
 		       m.params, m.enabled, m.created_at, m.updated_at
 		FROM llm_models m
-		JOIN llm_providers p ON p.id = m.provider_id
+		JOIN llm_providers p ON p.id = m.provider_id AND p.deleted_at IS NULL
 		WHERE m.deleted_at IS NULL`
 
 	var (

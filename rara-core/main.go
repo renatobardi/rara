@@ -853,9 +853,10 @@ type Database interface {
 	// GetLLMProvider returns one provider by id (found=false if absent or deleted).
 	// Used by the model layer to validate provider_id on upsert.
 	GetLLMProvider(ctx context.Context, id int) (LLMProviderRow, bool, error)
-	// UpsertLLMModel writes a model row keyed by (owner_id=NULL, alias).
-	UpsertLLMModel(ctx context.Context, providerID int, alias, upstream string,
-		inputCost, outputCost float64, params json.RawMessage, enabled bool) (int, error)
+	// UpsertLLMModel writes a model row keyed by (owner_id=NULL, alias). The write is
+	// conditioned on the provider being active, so it returns errNotFound if the provider
+	// was deleted or disabled since validation.
+	UpsertLLMModel(ctx context.Context, m llmModelUpsert) (int, error)
 	// ListLLMModels returns non-deleted models with a light provider name join.
 	// providerID=0 returns all.
 	ListLLMModels(ctx context.Context, providerID int) ([]LLMModelRow, error)

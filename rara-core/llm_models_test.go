@@ -30,41 +30,41 @@ func (m *MockDatabase) GetLLMProvider(_ context.Context, id int) (LLMProviderRow
 	return LLMProviderRow{}, false, nil
 }
 
-func (m *MockDatabase) UpsertLLMModel(_ context.Context, providerID int, alias, upstream string,
-	inputCost, outputCost float64, params json.RawMessage, enabled bool) (int, error) {
-	// Mirror the SQL FK: provider must exist and not be soft-deleted.
+func (m *MockDatabase) UpsertLLMModel(_ context.Context, in llmModelUpsert) (int, error) {
+	// Mirror the SQL INSERT ... SELECT guard: provider must be active (not soft-deleted
+	// AND enabled) at persist time, else the write is rejected as errNotFound.
 	providerName := ""
 	found := false
 	for _, p := range m.llmProviders {
-		if p.ID == providerID && p.DeletedAt == nil {
+		if p.ID == in.ProviderID && p.DeletedAt == nil && p.Enabled {
 			providerName = p.Name
 			found = true
 			break
 		}
 	}
 	if !found {
-		return 0, errors.New("llm_models: provider_id not found or deleted")
+		return 0, errNotFound
 	}
 	// Upsert by (owner_id=NULL, alias): update existing active row if found.
 	for i, mdl := range m.llmModels {
-		if mdl.Alias == alias && mdl.DeletedAt == nil {
-			m.llmModels[i].ProviderID = providerID
+		if mdl.Alias == in.Alias && mdl.DeletedAt == nil {
+			m.llmModels[i].ProviderID = in.ProviderID
 			m.llmModels[i].ProviderName = providerName
-			m.llmModels[i].Upstream = upstream
-			m.llmModels[i].InputCost = inputCost
-			m.llmModels[i].OutputCost = outputCost
-			m.llmModels[i].Params = params
-			m.llmModels[i].Enabled = enabled
+			m.llmModels[i].Upstream = in.Upstream
+			m.llmModels[i].InputCost = in.InputCost
+			m.llmModels[i].OutputCost = in.OutputCost
+			m.llmModels[i].Params = in.Params
+			m.llmModels[i].Enabled = in.Enabled
 			return mdl.ID, nil
 		}
 	}
 	id := m.nextLLMModelID
 	m.nextLLMModelID++
 	m.llmModels = append(m.llmModels, mockLLMModel{
-		ID: id, ProviderID: providerID, ProviderName: providerName,
-		Alias: alias, Upstream: upstream,
-		InputCost: inputCost, OutputCost: outputCost,
-		Params: params, Enabled: enabled,
+		ID: id, ProviderID: in.ProviderID, ProviderName: providerName,
+		Alias: in.Alias, Upstream: in.Upstream,
+		InputCost: in.InputCost, OutputCost: in.OutputCost,
+		Params: in.Params, Enabled: in.Enabled,
 	})
 	return id, nil
 }
@@ -76,6 +76,11 @@ func (m *MockDatabase) ListLLMModels(_ context.Context, providerID int) ([]LLMMo
 			continue
 		}
 		if providerID > 0 && mdl.ProviderID != providerID {
+			continue
+		}
+		// Mirror the SQL JOIN ... AND p.deleted_at IS NULL: a model whose provider was
+		// soft-deleted is orphaned config and must not appear.
+		if m.providerSoftDeleted(mdl.ProviderID) {
 			continue
 		}
 		out = append(out, LLMModelRow{
@@ -93,6 +98,16 @@ func (m *MockDatabase) ListLLMModels(_ context.Context, providerID int) ([]LLMMo
 	return out, nil
 }
 
+// providerSoftDeleted reports whether the provider with id is soft-deleted (or absent).
+func (m *MockDatabase) providerSoftDeleted(id int) bool {
+	for _, p := range m.llmProviders {
+		if p.ID == id {
+			return p.DeletedAt != nil
+		}
+	}
+	return true // unknown provider == orphaned
+}
+
 func (m *MockDatabase) DeleteLLMModel(_ context.Context, id int) error {
 	t := true
 	for i, mdl := range m.llmModels {
@@ -107,6 +122,25 @@ func (m *MockDatabase) DeleteLLMModel(_ context.Context, id int) error {
 // ---------------------------------------------------------------------------
 // Test helpers
 // ---------------------------------------------------------------------------
+
+// listModels fetches models through the mock and fails the test on error — keeps the
+// call sites from swallowing a real regression behind a discarded error.
+func listModels(t *testing.T, db *MockDatabase, providerID int) []LLMModelRow {
+	t.Helper()
+	out, err := db.ListLLMModels(context.Background(), providerID)
+	if err != nil {
+		t.Fatalf("ListLLMModels(%d): %v", providerID, err)
+	}
+	return out
+}
+
+// mustUpsertModel upserts a model and fails the test on error.
+func mustUpsertModel(t *testing.T, core *Core, in LLMModelInput) {
+	t.Helper()
+	if err := core.UpsertLLMModel(context.Background(), in); err != nil {
+		t.Fatalf("UpsertLLMModel(%q): %v", in.Alias, err)
+	}
+}
 
 // seedProvider creates a groq provider in the mock and returns its id (always 1 on fresh db).
 func seedProvider(t *testing.T, core *Core, db *MockDatabase) int {
@@ -176,7 +210,7 @@ func TestUpsertLLMModelSameAliasUpdates(t *testing.T) {
 	upsert("groq/llama-3.3-70b-versatile")
 	upsert("groq/llama-3.1-8b-instant") // re-upsert with same alias
 
-	all, _ := db.ListLLMModels(ctx, 0)
+	all := listModels(t, db, 0)
 	if len(all) != 1 {
 		t.Fatalf("want 1 model after re-upsert, got %d", len(all))
 	}
@@ -206,7 +240,7 @@ func TestUpsertLLMModelAliasFreeAfterSoftDelete(t *testing.T) {
 		t.Fatalf("re-create after soft-delete: %v", err)
 	}
 
-	all, _ := db.ListLLMModels(ctx, 0)
+	all := listModels(t, db, 0)
 	if len(all) != 1 || all[0].Upstream != "groq/v2" {
 		t.Errorf("want one active model groq/v2, got %+v", all)
 	}
@@ -226,7 +260,7 @@ func TestUpsertLLMModelSoftDelete(t *testing.T) {
 		t.Fatalf("DeleteLLMModel: %v", err)
 	}
 
-	all, _ := db.ListLLMModels(ctx, 0)
+	all := listModels(t, db, 0)
 	if len(all) != 0 {
 		t.Error("soft-deleted model should not appear in list")
 	}
@@ -368,20 +402,95 @@ func TestListLLMModelsFilterByProvider(t *testing.T) {
 		t.Fatalf("seed gemini: %v", err)
 	}
 
-	providers, _ := db.ListLLMProviders(ctx)
+	providers, err := db.ListLLMProviders(ctx)
+	if err != nil {
+		t.Fatalf("ListLLMProviders: %v", err)
+	}
 	pid1, pid2 := providers[0].ID, providers[1].ID
 
-	_ = core.UpsertLLMModel(ctx, LLMModelInput{ProviderID: pid1, Alias: "fast", Upstream: "groq/fast"})
-	_ = core.UpsertLLMModel(ctx, LLMModelInput{ProviderID: pid2, Alias: "flash", Upstream: "gemini/flash"})
+	mustUpsertModel(t, core, LLMModelInput{ProviderID: pid1, Alias: "fast", Upstream: "groq/fast"})
+	mustUpsertModel(t, core, LLMModelInput{ProviderID: pid2, Alias: "flash", Upstream: "gemini/flash"})
 
-	all, _ := db.ListLLMModels(ctx, 0)
+	all := listModels(t, db, 0)
 	if len(all) != 2 {
 		t.Fatalf("want 2 total models, got %d", len(all))
 	}
 
-	filtered, _ := db.ListLLMModels(ctx, pid1)
+	filtered := listModels(t, db, pid1)
 	if len(filtered) != 1 || filtered[0].Alias != "fast" {
 		t.Errorf("filtered by provider 1: got %+v", filtered)
+	}
+}
+
+func TestUpsertLLMModelTrimsWhitespace(t *testing.T) {
+	ctx := context.Background()
+	core, db, _ := newTestCoreWithBox(t)
+	pid := seedProvider(t, core, db)
+
+	if err := core.UpsertLLMModel(ctx, LLMModelInput{
+		ProviderID: pid, Alias: "  fast  ", Upstream: "  groq/fast  ",
+	}); err != nil {
+		t.Fatalf("UpsertLLMModel: %v", err)
+	}
+	all := listModels(t, db, 0)
+	if len(all) != 1 || all[0].Alias != "fast" || all[0].Upstream != "groq/fast" {
+		t.Errorf("want trimmed alias/upstream persisted, got %+v", all)
+	}
+}
+
+func TestUpsertLLMModelBlankAliasRejected(t *testing.T) {
+	ctx := context.Background()
+	core, db, _ := newTestCoreWithBox(t)
+	pid := seedProvider(t, core, db)
+
+	err := core.UpsertLLMModel(ctx, LLMModelInput{ProviderID: pid, Alias: "   ", Upstream: "groq/x"})
+	var bad badInputError
+	if !errors.As(err, &bad) {
+		t.Fatalf("want badInputError for blank alias, got %T: %v", err, err)
+	}
+	if all := listModels(t, db, 0); len(all) != 0 {
+		t.Errorf("blank-alias model must not persist, got %+v", all)
+	}
+}
+
+// TestUpsertLLMModelRejectsInactiveProviderAtPersist locks the TOCTOU guard: even if a
+// caller reaches the storage layer with a provider that is no longer active (deleted or
+// disabled after validation), the write is rejected as errNotFound.
+func TestUpsertLLMModelRejectsInactiveProviderAtPersist(t *testing.T) {
+	ctx := context.Background()
+	core, db, _ := newTestCoreWithBox(t)
+	pid := seedProvider(t, core, db)
+
+	disabled := false
+	if err := core.UpsertLLMProvider(ctx, LLMProviderInput{
+		Name: "groq-test", Kind: "groq", Enabled: &disabled,
+	}); err != nil {
+		t.Fatalf("disable provider: %v", err)
+	}
+
+	_, err := db.UpsertLLMModel(ctx, llmModelUpsert{
+		ProviderID: pid, Alias: "fast", Upstream: "groq/fast", Params: json.RawMessage("{}"),
+	})
+	if !errors.Is(err, errNotFound) {
+		t.Fatalf("want errNotFound persisting against disabled provider, got %v", err)
+	}
+}
+
+func TestListLLMModelsExcludesSoftDeletedProvider(t *testing.T) {
+	ctx := context.Background()
+	core, db, _ := newTestCoreWithBox(t)
+	pid := seedProvider(t, core, db)
+	if err := core.UpsertLLMModel(ctx, LLMModelInput{
+		ProviderID: pid, Alias: "fast", Upstream: "groq/fast",
+	}); err != nil {
+		t.Fatalf("seed model: %v", err)
+	}
+
+	if err := core.DeleteLLMProvider(ctx, pid); err != nil {
+		t.Fatalf("soft-delete provider: %v", err)
+	}
+	if all := listModels(t, db, 0); len(all) != 0 {
+		t.Errorf("models of a soft-deleted provider must not list, got %+v", all)
 	}
 }
 
@@ -430,8 +539,8 @@ func TestHTTPListLLMModelsFilterByProvider(t *testing.T) {
 	}
 	pid1, pid2 := providers[0].ID, providers[1].ID
 
-	_ = core.UpsertLLMModel(ctx, LLMModelInput{ProviderID: pid1, Alias: "llama", Upstream: "groq/llama"})
-	_ = core.UpsertLLMModel(ctx, LLMModelInput{ProviderID: pid2, Alias: "flash", Upstream: "gemini/flash"})
+	mustUpsertModel(t, core, LLMModelInput{ProviderID: pid1, Alias: "llama", Upstream: "groq/llama"})
+	mustUpsertModel(t, core, LLMModelInput{ProviderID: pid2, Alias: "flash", Upstream: "gemini/flash"})
 
 	mux := NewSurfaceMux(core, testToken)
 	url := fmt.Sprintf("/v1/llm-models?provider_id=%d", pid1)
@@ -454,7 +563,6 @@ func TestHTTPListLLMModelsFilterByProvider(t *testing.T) {
 
 func TestHTTPUpsertLLMModel(t *testing.T) {
 	core, db, _ := newTestCoreWithBox(t)
-	ctx := context.Background()
 	pid := seedProvider(t, core, db)
 
 	mux := NewSurfaceMux(core, testToken)
@@ -469,7 +577,7 @@ func TestHTTPUpsertLLMModel(t *testing.T) {
 		t.Fatalf("want 200, got %d: %s", w.Code, w.Body)
 	}
 
-	all, _ := db.ListLLMModels(ctx, 0)
+	all := listModels(t, db, 0)
 	if len(all) != 1 || all[0].Alias != "llama" {
 		t.Errorf("model not persisted: %+v", all)
 	}
@@ -484,7 +592,7 @@ func TestHTTPDeleteLLMModel(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("setup: %v", err)
 	}
-	before, _ := db.ListLLMModels(ctx, 0)
+	before := listModels(t, db, 0)
 	if len(before) == 0 {
 		t.Fatal("setup: model not persisted")
 	}
@@ -500,7 +608,7 @@ func TestHTTPDeleteLLMModel(t *testing.T) {
 		t.Fatalf("want 200, got %d: %s", w.Code, w.Body)
 	}
 
-	after, _ := db.ListLLMModels(ctx, 0)
+	after := listModels(t, db, 0)
 	if len(after) != 0 {
 		t.Errorf("want empty list after delete, got %d", len(after))
 	}
