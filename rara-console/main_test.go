@@ -299,6 +299,53 @@ func TestItemStepsRejectsBadID(t *testing.T) {
 	}
 }
 
+func TestItemContentProxiesCorrectly(t *testing.T) {
+	core := fakeItemContentCore(t, "secret")
+	s := &server{coreURL: core.URL, token: "secret", client: core.Client()}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/api/items/42/content", nil)
+	req.SetPathValue("id", "42")
+	s.handleItemContent(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if !contains(rec.Body.String(), "article body") {
+		t.Errorf("body missing 'article body': %s", rec.Body.String())
+	}
+}
+
+func TestItemContentRejectsBadID(t *testing.T) {
+	s := &server{coreURL: "http://127.0.0.1:1", token: "secret", client: http.DefaultClient}
+
+	for _, bad := range []string{"abc", "", "12x", "../etc", "9999999999999999999999"} {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("GET", "/api/items/"+bad+"/content", nil)
+		req.SetPathValue("id", bad)
+		s.handleItemContent(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("id=%q: status = %d, want 400", bad, rec.Code)
+		}
+	}
+}
+
+func fakeItemContentCore(t *testing.T, token string) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /v1/items/{id}/content", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer "+token {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"lane":"news","body":"article body"}`))
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv
+}
+
 func contains(s, sub string) bool {
 	for i := 0; i+len(sub) <= len(s); i++ {
 		if s[i:i+len(sub)] == sub {
