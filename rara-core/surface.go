@@ -163,6 +163,22 @@ func (c *Core) RecentDecisions(ctx context.Context, limit int) ([]RecentDecision
 	return c.db.ListRecentDecisions(ctx, limit)
 }
 
+// ItemContent returns rich source content for the mega-thumbnail panel.
+// Returns badInputError for id <= 0 or item not found.
+func (c *Core) ItemContent(ctx context.Context, itemID int) (ItemContentResult, error) {
+	if itemID <= 0 {
+		return ItemContentResult{}, badInput("item id must be positive, got %d", itemID)
+	}
+	result, found, err := c.db.ItemContent(ctx, itemID)
+	if err != nil {
+		return ItemContentResult{}, err
+	}
+	if !found {
+		return ItemContentResult{}, badInput("item %d not found", itemID)
+	}
+	return result, nil
+}
+
 // Quarantine lists the deferred (quarantine) items — the cold-start review sample.
 func (c *Core) Quarantine(ctx context.Context) ([]Item, error) {
 	return c.db.ListQuarantinedItems(ctx)
@@ -1088,6 +1104,7 @@ func NewSurfaceMux(core *Core, token string) http.Handler {
 	mux.HandleFunc("GET /v1/items", h.listItems)
 	mux.HandleFunc("GET /v1/items/{id}/steps", h.itemSteps)
 	mux.HandleFunc("GET /v1/items/{id}/decisions", h.itemDecisions)
+	mux.HandleFunc("GET /v1/items/{id}/content", h.itemContent)
 	mux.HandleFunc("GET /v1/decisions", h.listDecisions)
 	mux.HandleFunc("GET /v1/quarantine", h.quarantine)
 	mux.HandleFunc("GET /v1/distillations", h.listDistillations)
@@ -1221,6 +1238,15 @@ func (h *httpSurface) itemDecisions(w http.ResponseWriter, r *http.Request) {
 	}
 	decs, err := h.core.ItemDecisions(r.Context(), id)
 	writeResult(w, decs, err)
+}
+
+func (h *httpSurface) itemContent(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	content, err := h.core.ItemContent(r.Context(), id)
+	writeResult(w, content, err)
 }
 
 func (h *httpSurface) listDecisions(w http.ResponseWriter, r *http.Request) {
