@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { labelDecidedBy, aggregatePulso, latestDeferReason, signalForKey, diffProfile, type ItemDecision } from './curadoria';
+import { labelDecidedBy, aggregatePulso, latestDeferReason, signalForKey, diffProfile, sourceUrl, filterQuarantine, isDiffEmpty, type ItemDecision, type FilterState } from './curadoria';
 
 describe('labelDecidedBy', () => {
 	it('maps known values to PT labels', () => {
@@ -222,6 +222,131 @@ describe('diffProfile', () => {
 		// same content, different key order — must NOT appear as changed
 		expect(diff.weights.changed).toEqual([]);
 	});
+});
+
+describe('sourceUrl', () => {
+  it('youtube: constrói URL de watch a partir do video id', () => {
+    expect(sourceUrl('youtube', 'dQw4w9WgXcQ')).toBe('https://www.youtube.com/watch?v=dQw4w9WgXcQ');
+  });
+  it('linkedin: source_ref já é a URL, retorna direto', () => {
+    expect(sourceUrl('linkedin', 'https://linkedin.com/posts/foo-123')).toBe('https://linkedin.com/posts/foo-123');
+  });
+  it('news: source_ref já é a URL, retorna direto', () => {
+    expect(sourceUrl('news', 'https://example.com/article')).toBe('https://example.com/article');
+  });
+  it('podcast: guid não é URL navegável, retorna null', () => {
+    expect(sourceUrl('podcast', 'urn:uuid:abc-123')).toBeNull();
+  });
+  it('email: message-id não é URL, retorna null', () => {
+    expect(sourceUrl('email', '<msg-id@mail>')).toBeNull();
+  });
+  it('lane desconhecido: retorna null', () => {
+    expect(sourceUrl('unknown-lane', 'ref')).toBeNull();
+  });
+  it('linkedin: rejeita scheme javascript:', () => {
+    expect(sourceUrl('linkedin', 'javascript:alert(1)')).toBeNull();
+  });
+  it('news: rejeita scheme data:', () => {
+    expect(sourceUrl('news', 'data:text/html,<script>alert(1)</script>')).toBeNull();
+  });
+  it('youtube: encoda video id com caracteres especiais', () => {
+    expect(sourceUrl('youtube', 'abc+def')).toBe('https://www.youtube.com/watch?v=abc%2Bdef');
+  });
+});
+
+const baseItem = (id: number, overrides: Partial<{ lane: string; channel: string; published_at: string }>): import('./curadoria').QuarantineItem => ({
+  id,
+  lane: overrides.lane ?? 'youtube',
+  source_ref: `ref${id}`,
+  status: 'quarantine',
+  channel: overrides.channel ?? 'ChannelA',
+  published_at: overrides.published_at ?? '2026-06-01T00:00:00Z',
+});
+
+const defaultFilter = (): FilterState => ({ dateFrom: '', dateTo: '', tipo: '', canal: '', sortDir: 'newest' });
+
+describe('filterQuarantine', () => {
+  const items = [
+    baseItem(1, { lane: 'youtube', channel: 'ChannelA', published_at: '2026-06-01T00:00:00Z' }),
+    baseItem(2, { lane: 'podcast', channel: 'FeedB',    published_at: '2026-06-10T00:00:00Z' }),
+    baseItem(3, { lane: 'youtube', channel: 'ChannelC', published_at: '2026-06-20T00:00:00Z' }),
+  ];
+
+  it('sem filtros: retorna todos em ordem mais recente (padrão newest)', () => {
+    const result = filterQuarantine(items, defaultFilter());
+    expect(result.map(i => i.id)).toEqual([3, 2, 1]);
+  });
+  it('sortDir oldest: retorna em ordem mais antigo primeiro', () => {
+    const result = filterQuarantine(items, { ...defaultFilter(), sortDir: 'oldest' });
+    expect(result.map(i => i.id)).toEqual([1, 2, 3]);
+  });
+  it('filtro tipo (lane): retorna só youtube', () => {
+    const result = filterQuarantine(items, { ...defaultFilter(), tipo: 'youtube' });
+    expect(result.map(i => i.id)).toEqual([3, 1]);
+  });
+  it('filtro canal: case-insensitive substring match', () => {
+    const result = filterQuarantine(items, { ...defaultFilter(), canal: 'channela' });
+    expect(result.map(i => i.id)).toEqual([1]);
+  });
+  it('filtro dateFrom: exclui itens anteriores', () => {
+    const result = filterQuarantine(items, { ...defaultFilter(), dateFrom: '2026-06-10' });
+    expect(result.map(i => i.id)).toEqual([3, 2]);
+  });
+  it('filtro dateTo: exclui itens posteriores', () => {
+    const result = filterQuarantine(items, { ...defaultFilter(), dateTo: '2026-06-10' });
+    expect(result.map(i => i.id)).toEqual([2, 1]);
+  });
+  it('item sem published_at: mantido quando sem filtro de data', () => {
+    const noDate = { ...baseItem(4, {}), published_at: undefined };
+    const result = filterQuarantine([noDate], defaultFilter());
+    expect(result).toHaveLength(1);
+  });
+  it('item sem published_at: excluído quando há filtro de data', () => {
+    const noDate = { ...baseItem(4, {}), published_at: undefined };
+    const result = filterQuarantine([noDate], { ...defaultFilter(), dateFrom: '2026-06-01' });
+    expect(result).toHaveLength(0);
+  });
+});
+
+describe('isDiffEmpty', () => {
+  it('retorna true quando nenhum campo tem diferença', () => {
+    const diff = diffProfile(
+      { topics: ['go'], authors: [], anti_topics: [], weights: {} },
+      { topics: ['go'], authors: [], anti_topics: [], weights: {} }
+    );
+    expect(isDiffEmpty(diff)).toBe(true);
+  });
+  it('retorna false quando há item adicionado', () => {
+    const diff = diffProfile(
+      { topics: ['go'], authors: [], anti_topics: [], weights: {} },
+      { topics: ['go', 'rust'], authors: [], anti_topics: [], weights: {} }
+    );
+    expect(isDiffEmpty(diff)).toBe(false);
+  });
+  it('retorna false quando há item removido', () => {
+    const diff = diffProfile(
+      { topics: ['go', 'rust'], authors: [], anti_topics: [], weights: {} },
+      { topics: ['go'], authors: [], anti_topics: [], weights: {} }
+    );
+    expect(isDiffEmpty(diff)).toBe(false);
+  });
+  it('retorna false quando peso foi alterado', () => {
+    const diff = diffProfile(
+      { topics: [], authors: [], anti_topics: [], weights: { keep_threshold: 0.6 } },
+      { topics: [], authors: [], anti_topics: [], weights: { keep_threshold: 0.8 } }
+    );
+    expect(isDiffEmpty(diff)).toBe(false);
+  });
+  it('retorna true para diff com fallback em todos os campos (não tem como confirmar)', () => {
+    // fallback significa formato inesperado — não há diff computável, tratamos como "vazio"
+    const diff = diffProfile(
+      { topics: 'not-array' as unknown as string[], authors: [], anti_topics: [], weights: {} },
+      { topics: ['go'], authors: [], anti_topics: [], weights: {} }
+    );
+    // topics.fallback=true, outros campos sem diff → isDiffEmpty deve retornar true
+    // (conservador: não bloquear save quando diff não puder ser computado)
+    expect(isDiffEmpty(diff)).toBe(true);
+  });
 });
 
 describe('signalForKey', () => {

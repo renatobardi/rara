@@ -1322,6 +1322,7 @@ func (m *MockDatabase) ListRecentDecisions(_ context.Context, limit int) ([]Rece
 			r := d.Reason
 			reason = &r
 		}
+		item := m.itemByID[d.ItemID] // zero value Item{} if not found — Lane/SourceRef stay ""
 		out = append(out, RecentDecision{
 			ID:        i + 1,
 			ItemID:    d.ItemID,
@@ -1331,6 +1332,8 @@ func (m *MockDatabase) ListRecentDecisions(_ context.Context, limit int) ([]Rece
 			When:      "2026-01-01T00:00:00Z",
 			DecidedBy: d.DecidedBy,
 			Reason:    reason,
+			Lane:      item.Lane,
+			SourceRef: item.SourceRef,
 		})
 	}
 	return out, nil
@@ -2295,5 +2298,32 @@ func TestListRecentDecisionsExposesDecidedByAndReason(t *testing.T) {
 	}
 	if llm.Reason == nil || *llm.Reason != reason {
 		t.Errorf("decs[1].Reason = %v, want %q", llm.Reason, reason)
+	}
+}
+
+// ListRecentDecisions — must expose lane and source_ref from the joined item
+func TestListRecentDecisionsExposesLaneAndSourceRef(t *testing.T) {
+	ctx := context.Background()
+	db := newMockDatabase()
+	fid := seedFlow(t, db)
+	itemID, err := db.UpsertItem(ctx, Item{Lane: "youtube", SourceRef: "dQw4w9WgXcQ", FlowID: fid, FlowVersion: 1, Status: itemDiscovered})
+	if err != nil {
+		t.Fatalf("UpsertItem: %v", err)
+	}
+	if err := db.InsertGateDecision(ctx, GateDecision{ItemID: itemID, Gate: gateBarato, Decision: decisionKeep, DecidedBy: "rules"}); err != nil {
+		t.Fatalf("InsertGateDecision: %v", err)
+	}
+	decs, err := db.ListRecentDecisions(ctx, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(decs) != 1 {
+		t.Fatalf("want 1 decision, got %d", len(decs))
+	}
+	if decs[0].Lane != "youtube" {
+		t.Errorf("Lane = %q, want %q", decs[0].Lane, "youtube")
+	}
+	if decs[0].SourceRef != "dQw4w9WgXcQ" {
+		t.Errorf("SourceRef = %q, want %q", decs[0].SourceRef, "dQw4w9WgXcQ")
 	}
 }

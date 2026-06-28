@@ -6,6 +6,10 @@
 		latestDeferReason,
 		signalForKey,
 		diffProfile,
+		isDiffEmpty,
+		sourceUrl,
+		filterQuarantine,
+		type FilterState,
 		type Decision,
 		type QuarantineItem,
 		type ItemDecision,
@@ -34,7 +38,12 @@
 		gate: string;
 		score?: number | null;
 		when: string;
+		lane?: string;
+		source_ref?: string;
 	};
+
+	// --- tab state ---
+	let activeTab = $state<'decidir' | 'historico' | 'ajustes'>('decidir');
 
 	// --- quarantine queue state ---
 	let quarantine = $state<QuarantineItem[]>([]);
@@ -47,7 +56,11 @@
 	let reviewError = $state('');
 	let refetchSeq = 0;
 
-	let focusedItem = $derived(quarantine[focusedIndex] ?? null);
+	// --- filter state (aba Decidir) ---
+	let filterState = $state<FilterState>({ dateFrom: '', dateTo: '', tipo: '', canal: '', sortDir: 'newest' });
+
+	let filteredQueue = $derived(filterQuarantine(quarantine, filterState));
+	let focusedItem = $derived(filteredQueue[Math.min(focusedIndex, Math.max(0, filteredQueue.length - 1))] ?? null);
 	let deferReason = $derived(latestDeferReason(focusedDecisions));
 
 	// --- interest profile state ---
@@ -78,6 +91,43 @@
 	let proposeWeights = $state('');
 	let proposing = $state(false);
 	let proposeError = $state('');
+
+	// nova versão form state
+	let showNovaVersaoForm = $state(false);
+	let novaVersaoNumber = $derived((activeProfile?.version ?? 0) + 1);
+
+	// Pre-fill the propose form from the active profile when the user opens it.
+	function openNovaVersao() {
+		if (!activeProfile) return;
+		proposeNarrative = activeProfile.narrative ?? '';
+		proposeTopics = activeProfile.topics != null ? JSON.stringify(activeProfile.topics, null, 2) : '';
+		proposeAuthors = activeProfile.authors != null ? JSON.stringify(activeProfile.authors, null, 2) : '';
+		proposeAntiTopics = activeProfile.anti_topics != null ? JSON.stringify(activeProfile.anti_topics, null, 2) : '';
+		proposeWeights = activeProfile.weights != null ? JSON.stringify(activeProfile.weights, null, 2) : '';
+		proposeVersion = String(novaVersaoNumber);
+		proposeError = '';
+		showNovaVersaoForm = true;
+	}
+
+	let novaVersaoDiff = $derived.by(() => {
+		if (!activeProfile || !showNovaVersaoForm) return null;
+		try {
+			const proposed = {
+				topics: proposeTopics.trim() ? JSON.parse(proposeTopics) : activeProfile.topics,
+				authors: proposeAuthors.trim() ? JSON.parse(proposeAuthors) : activeProfile.authors,
+				anti_topics: proposeAntiTopics.trim() ? JSON.parse(proposeAntiTopics) : activeProfile.anti_topics,
+				weights: proposeWeights.trim() ? JSON.parse(proposeWeights) : activeProfile.weights,
+			};
+			return diffProfile(activeProfile, proposed);
+		} catch {
+			return null; // JSON inválido → deixa salvar (o servidor vai rejeitar se inválido)
+		}
+	});
+	let novaVersaoHasDiff = $derived(
+		novaVersaoDiff === null ||
+		!isDiffEmpty(novaVersaoDiff) ||
+		proposeNarrative !== (activeProfile?.narrative ?? '')
+	);
 
 	// approve state: version number being approved, or null
 	let approving = $state<number | null>(null);
@@ -167,6 +217,7 @@
 	}
 
 	function handleKeydown(e: KeyboardEvent) {
+		if (activeTab !== 'decidir') return;
 		const target = e.target as HTMLElement | null;
 		if (
 			e.altKey || e.ctrlKey || e.metaKey ||
@@ -400,12 +451,28 @@
 	{/each}
 </div>
 
+<!-- ── TAB NAV ───────────────────────────────────────────────────────── -->
+<div class="mb-6 flex gap-1 border-b border-border" role="tablist">
+	{#each ([['decidir', t.curadoria.tabDecidir], ['historico', t.curadoria.tabHistorico], ['ajustes', t.curadoria.tabAjustes]] as const) as [tab, label]}
+		<button
+			role="tab"
+			aria-selected={activeTab === tab}
+			onclick={() => (activeTab = tab)}
+			class="px-4 py-2 text-[13px] font-medium transition-colors
+				{activeTab === tab
+					? 'border-b-2 border-primary text-primary'
+					: 'text-muted hover:text-text'}"
+		>{label}</button>
+	{/each}
+</div>
+
+{#if activeTab === 'decidir'}
 <!-- ── 3. FILA DE REVISÃO (herói) ─────────────────────────────────── -->
 <section class="mb-6">
 	<div class="mb-3 flex items-baseline gap-2">
 		<h2 class="text-[15px] font-semibold">{t.curadoria.filaZone}</h2>
-		{#if !quarantineLoading && !quarantineError && quarantine.length > 0}
-			<span class="text-[12px] text-muted">{quarantine.length} {t.curadoria.filaSubtitle}</span>
+		{#if !quarantineLoading && !quarantineError && filteredQueue.length > 0}
+			<span class="text-[12px] text-muted">{filteredQueue.length} {t.curadoria.filaSubtitle}</span>
 		{:else}
 			<span class="text-[12px] text-muted">{t.curadoria.filaSubtitle}</span>
 		{/if}
@@ -422,6 +489,52 @@
 			</div>
 		</div>
 	{:else}
+		<!-- filters -->
+		<details class="mb-4 text-[13px]">
+			<summary class="cursor-pointer text-muted hover:text-text mb-2">{t.curadoria.filterSortBy}</summary>
+			<div class="rounded-card border border-border bg-surface p-3 space-y-2">
+				<div class="flex flex-wrap gap-3 items-end">
+					<div>
+						<label class="mb-1 block text-[11px] text-muted" for="f-from">{t.curadoria.filterDateFrom}</label>
+						<input id="f-from" type="date" bind:value={filterState.dateFrom}
+							class="rounded-token border border-border bg-surface-2 px-2 py-1 text-[12px] focus:outline-none focus:ring-1 focus:ring-primary/50" />
+					</div>
+					<div>
+						<label class="mb-1 block text-[11px] text-muted" for="f-to">{t.curadoria.filterDateTo}</label>
+						<input id="f-to" type="date" bind:value={filterState.dateTo}
+							class="rounded-token border border-border bg-surface-2 px-2 py-1 text-[12px] focus:outline-none focus:ring-1 focus:ring-primary/50" />
+					</div>
+					<div>
+						<label class="mb-1 block text-[11px] text-muted" for="f-tipo">{t.curadoria.filterTipo}</label>
+						<select id="f-tipo" bind:value={filterState.tipo}
+							class="rounded-token border border-border bg-surface-2 px-2 py-1 text-[12px] focus:outline-none focus:ring-1 focus:ring-primary/50">
+							<option value="">{t.curadoria.filterTipoTodos}</option>
+							{#each [...new Set(quarantine.map(q => q.lane))].sort() as lane}
+								<option value={lane}>{lane}</option>
+							{/each}
+						</select>
+					</div>
+					<div class="flex-1 min-w-[120px]">
+						<label class="mb-1 block text-[11px] text-muted" for="f-canal">{t.curadoria.filterCanal}</label>
+						<input id="f-canal" type="text" bind:value={filterState.canal} placeholder={t.curadoria.filterCanalPlaceholder}
+							class="w-full rounded-token border border-border bg-surface-2 px-2 py-1 text-[12px] focus:outline-none focus:ring-1 focus:ring-primary/50" />
+					</div>
+					<div>
+						<label class="mb-1 block text-[11px] text-muted" for="f-sort">{t.curadoria.filterSortBy}</label>
+						<select id="f-sort" bind:value={filterState.sortDir}
+							class="rounded-token border border-border bg-surface-2 px-2 py-1 text-[12px] focus:outline-none focus:ring-1 focus:ring-primary/50">
+							<option value="newest">{t.curadoria.filterSortNewest}</option>
+							<option value="oldest">{t.curadoria.filterSortOldest}</option>
+						</select>
+					</div>
+					<button onclick={() => (filterState = { dateFrom: '', dateTo: '', tipo: '', canal: '', sortDir: 'newest' })}
+						class="rounded-token border border-border px-3 py-1 text-[12px] text-muted hover:bg-hover">
+						{t.curadoria.filterClear}
+					</button>
+				</div>
+			</div>
+		</details>
+
 		<div class="overflow-hidden rounded-card border border-border bg-surface">
 			{#if focusedItem}
 				<div class="p-5">
@@ -432,20 +545,34 @@
 							<span class="text-[12px] text-muted">{focusedItem.channel}</span>
 						{/if}
 					</div>
-					<h3 class="mb-2 text-[14px] font-medium">{focusedItem.title ?? focusedItem.source_ref ?? String(focusedItem.id)}</h3>
+					{@const itemUrl = sourceUrl(focusedItem.lane, focusedItem.source_ref ?? '')}
+					{#if itemUrl}
+						<a href={itemUrl} target="_blank" rel="noopener noreferrer"
+							class="mb-2 block text-[14px] font-medium hover:underline text-primary">
+							{focusedItem.title ?? focusedItem.source_ref ?? String(focusedItem.id)}
+						</a>
+					{:else}
+						<h3 class="mb-2 text-[14px] font-medium">{focusedItem.title ?? focusedItem.source_ref ?? String(focusedItem.id)}</h3>
+					{/if}
+					<div class="mb-3 flex flex-wrap gap-x-3 gap-y-1 text-[12px] text-muted">
+						<span><span class="font-medium">{t.curadoria.filterTipo}:</span> {focusedItem.lane}</span>
+						{#if focusedItem.published_at}
+							<span>{new Date(focusedItem.published_at).toLocaleString('pt-BR')}</span>
+						{/if}
+					</div>
 					{#if focusedItem.summary}
 						<p class="mb-4 text-[13px] text-muted">{focusedItem.summary}</p>
 					{/if}
 
 					<!-- why fence panel -->
-					<details class="mb-4 text-[12px]">
-						<summary class="cursor-pointer text-muted hover:text-text">{t.curadoria.filaWhyFence}</summary>
+					<div class="mb-4 text-[12px]">
+						<p class="mb-2 font-medium text-muted">{t.curadoria.filaWhyFence}</p>
 						{#if focusedDecisionsLoading}
-							<p class="mt-2 text-muted">{t.curadoria.pulsoLoading}</p>
+							<p class="text-muted">{t.curadoria.pulsoLoading}</p>
 						{:else if deferReason}
-							<dl class="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
+							<dl class="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
 								{#if deferReason.score != null}
-									<dt class="text-muted">score</dt>
+									<dt class="text-muted">{t.curadoria.filaScore}</dt>
 									<dd>{deferReason.score}</dd>
 								{/if}
 								<dt class="text-muted">{t.curadoria.filaDecidedBy}</dt>
@@ -456,9 +583,9 @@
 								{/if}
 							</dl>
 						{:else}
-							<p class="mt-2 text-muted">—</p>
+							<p class="text-muted">—</p>
 						{/if}
-					</details>
+					</div>
 
 					<!-- actions -->
 					{#if reviewError}
@@ -477,15 +604,66 @@
 						>← {t.curadoria.filaDrop}</button>
 					</div>
 					<!-- progress -->
-					<p class="mt-3 text-[11px] text-muted">{focusedIndex + 1} / {quarantine.length}</p>
+					<p class="mt-3 text-[11px] text-muted">{focusedIndex + 1} / {filteredQueue.length}</p>
 				</div>
 			{/if}
 		</div>
 	{/if}
 </section>
+{/if}
 
 <svelte:window onkeydown={handleKeydown} />
 
+{#if activeTab === 'historico'}
+<!-- ── 5. TRILHA DE DECISÕES ───────────────────────────────────────── -->
+<section class="mb-6">
+	<h2 class="mb-3 text-[15px] font-semibold">{t.curadoria.trilhaZone}</h2>
+	<div class="overflow-hidden rounded-card border border-border bg-surface">
+		{#if decisionsLoading}
+			<p class="px-4 py-3 text-[13px] text-muted">{t.curadoria.trilhaLoading}</p>
+		{:else if decisionsError}
+			<p class="px-4 py-3 text-[13px] text-red">{t.curadoria.trilhaError}</p>
+		{:else if decisions.length === 0}
+			<p class="px-4 py-3 text-[13px] text-muted">{t.curadoria.trilhaEmpty}</p>
+		{:else}
+			<ul class="divide-y divide-border">
+				{#each decisions as d}
+					<li class="flex items-start gap-3 px-4 py-2.5 text-[13px]">
+						<span class="mt-0.5 shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium
+							{d.decision === 'keep' ? 'bg-green/15 text-green' :
+							 d.decision === 'drop' ? 'bg-border text-text' :
+							 'bg-primary/15 text-primary'}">{d.decision}</span>
+						<div class="min-w-0 flex-1">
+							<div class="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+								{#if d.lane && d.source_ref && sourceUrl(d.lane, d.source_ref)}
+									<a href={sourceUrl(d.lane, d.source_ref)} target="_blank" rel="noopener noreferrer"
+									   class="text-primary hover:underline">{t.curadoria.trilhaSourceLink} #{d.item_id}</a>
+								{:else}
+									<span class="text-muted">{t.curadoria.trilhaItemRef} {d.item_id}</span>
+								{/if}
+								{#if d.lane}
+									<span class="rounded-full border border-border px-1.5 py-0.5 text-[11px] text-muted">{d.lane}</span>
+								{/if}
+								{#if d.decided_by}
+									<span class="text-muted opacity-60">· {labelDecidedBy(d.decided_by)}</span>
+								{/if}
+								<span class="ml-auto shrink-0 text-[11px] text-muted">
+									{new Date(d.when).toLocaleString('pt-BR')}
+								</span>
+							</div>
+							{#if d.reason}
+								<p class="mt-0.5 text-[12px] text-muted">{d.reason}</p>
+							{/if}
+						</div>
+					</li>
+				{/each}
+			</ul>
+		{/if}
+	</div>
+</section>
+{/if}
+
+{#if activeTab === 'ajustes'}
 <!-- ── 4. O GOSTO (Interest Profile) ─────────────────────────────── -->
 <section id="gosto" class="mb-6">
 	<h2 class="mb-3 text-[15px] font-semibold">{t.curadoria.gostoZone}</h2>
@@ -668,104 +846,69 @@
 			</details>
 		{/if}
 
-		<!-- Propose new version form -->
-		<div class="overflow-hidden rounded-card border border-border bg-surface">
-			<div class="border-b border-border px-4 py-2 text-[12px] font-medium text-muted">
-				{t.curadoria.profileProposeSection}
-			</div>
-			<div class="space-y-3 px-4 py-3">
-				<div class="flex gap-3">
-					<div class="w-32">
-						<label class="mb-1 block text-[11px] text-muted" for="prop-version">{t.curadoria.profileVersionLabel}</label>
-						<input
-							id="prop-version"
-							type="number"
-							min="1"
-							bind:value={proposeVersion}
-							class="w-full rounded-token border border-border bg-surface-2 px-2 py-1 text-[13px] focus:outline-none focus:ring-1 focus:ring-primary/50"
-						/>
-					</div>
-					<div class="flex-1">
-						<label class="mb-1 block text-[11px] text-muted" for="prop-narrative">{t.curadoria.profileNarrativeLabel}</label>
-						<textarea
-							id="prop-narrative"
-							rows="2"
-							bind:value={proposeNarrative}
-							class="w-full rounded-token border border-border bg-surface-2 px-2 py-1 text-[13px] focus:outline-none focus:ring-1 focus:ring-primary/50"
-						></textarea>
-					</div>
-				</div>
-				<div class="grid grid-cols-2 gap-3">
-					<div>
-						<label class="mb-1 block text-[11px] text-muted" for="prop-topics">{t.curadoria.profileTopicsLabel}</label>
-						<textarea id="prop-topics" rows="2" placeholder={t.curadoria.profileJsonHint} bind:value={proposeTopics}
-							class="w-full rounded-token border border-border bg-surface-2 px-2 py-1 font-mono text-[12px] focus:outline-none focus:ring-1 focus:ring-primary/50"
-						></textarea>
-					</div>
-					<div>
-						<label class="mb-1 block text-[11px] text-muted" for="prop-authors">{t.curadoria.profileAuthorsLabel}</label>
-						<textarea id="prop-authors" rows="2" placeholder={t.curadoria.profileJsonHint} bind:value={proposeAuthors}
-							class="w-full rounded-token border border-border bg-surface-2 px-2 py-1 font-mono text-[12px] focus:outline-none focus:ring-1 focus:ring-primary/50"
-						></textarea>
-					</div>
-					<div>
-						<label class="mb-1 block text-[11px] text-muted" for="prop-anti">{t.curadoria.profileAntiTopicsLabel}</label>
-						<textarea id="prop-anti" rows="2" placeholder={t.curadoria.profileJsonHint} bind:value={proposeAntiTopics}
-							class="w-full rounded-token border border-border bg-surface-2 px-2 py-1 font-mono text-[12px] focus:outline-none focus:ring-1 focus:ring-primary/50"
-						></textarea>
-					</div>
-					<div>
-						<label class="mb-1 block text-[11px] text-muted" for="prop-weights">{t.curadoria.profileWeightsLabel}</label>
-						<textarea id="prop-weights" rows="2" placeholder={t.curadoria.profileJsonHint} bind:value={proposeWeights}
-							class="w-full rounded-token border border-border bg-surface-2 px-2 py-1 font-mono text-[12px] focus:outline-none focus:ring-1 focus:ring-primary/50"
-						></textarea>
-					</div>
-				</div>
-				{#if proposeError}
-					<p class="text-[12px] text-red">{proposeError}</p>
-				{/if}
-				<button
-					disabled={proposing}
-					onclick={propose}
-					class="cursor-pointer rounded-token border border-border bg-transparent px-4 py-1.5 text-[13px] font-medium hover:bg-hover disabled:cursor-default disabled:opacity-50"
-				>{proposing ? t.curadoria.profileProposing : t.curadoria.profileProposeBtn}</button>
-			</div>
-		</div>
-	{/if}
-</section>
-
-<!-- ── 5. TRILHA DE DECISÕES ───────────────────────────────────────── -->
-<section class="mb-6">
-	<h2 class="mb-3 text-[15px] font-semibold">{t.curadoria.trilhaZone}</h2>
-	<div class="overflow-hidden rounded-card border border-border bg-surface">
-		{#if decisionsLoading}
-			<p class="px-4 py-3 text-[13px] text-muted">{t.curadoria.trilhaLoading}</p>
-		{:else if decisionsError}
-			<p class="px-4 py-3 text-[13px] text-red">{t.curadoria.trilhaError}</p>
-		{:else if decisions.length === 0}
-			<p class="px-4 py-3 text-[13px] text-muted">{t.curadoria.trilhaEmpty}</p>
+		<!-- + Nova versão button / form -->
+		{#if !showNovaVersaoForm}
+			<button
+				onclick={openNovaVersao}
+				disabled={!activeProfile || !!proposedProfile}
+				class="cursor-pointer rounded-token border border-border bg-transparent px-4 py-1.5 text-[13px] font-medium hover:bg-hover disabled:cursor-default disabled:opacity-50"
+				title={proposedProfile ? 'Existe uma versão proposta aguardando aprovação' : ''}
+			>{t.curadoria.gostoNovaVersaoBtn}</button>
 		{:else}
-			<ul class="divide-y divide-border">
-				{#each decisions as d}
-					<li class="flex items-start gap-3 px-4 py-2.5 text-[13px]">
-						<span class="mt-0.5 shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium
-							{d.decision === 'keep' ? 'bg-green/15 text-green' :
-							 d.decision === 'drop' ? 'bg-border text-text' :
-							 'bg-primary/15 text-primary'}">{d.decision}</span>
-						<div class="min-w-0 flex-1">
-							<span class="text-muted">{t.curadoria.trilhaItemRef} {d.item_id}</span>
-							{#if d.decided_by}
-								<span class="ml-1 text-muted opacity-60">· {t.curadoria.trilhaDecidedByLabel} {labelDecidedBy(d.decided_by)}</span>
-							{/if}
-							{#if d.reason}
-								<p class="mt-0.5 text-[12px] text-muted">{d.reason}</p>
-							{/if}
+			<!-- Nova versão form (pre-filled from active profile) -->
+			<div class="overflow-hidden rounded-card border border-border bg-surface">
+				<div class="flex items-center justify-between border-b border-border px-4 py-2">
+					<span class="text-[12px] font-medium text-muted">v{novaVersaoNumber}</span>
+					<button onclick={() => (showNovaVersaoForm = false)} class="text-[12px] text-muted hover:text-text">{t.curadoria.gostoNovaVersaoCancelar}</button>
+				</div>
+				<div class="space-y-3 px-4 py-3">
+					<div>
+						<label class="mb-1 block text-[11px] text-muted" for="prop-narrative">{t.curadoria.profileNarrativeLabel}</label>
+						<textarea id="prop-narrative" rows="2" bind:value={proposeNarrative}
+							class="w-full rounded-token border border-border bg-surface-2 px-2 py-1 text-[13px] focus:outline-none focus:ring-1 focus:ring-primary/50"
+						></textarea>
+					</div>
+					<div class="grid grid-cols-2 gap-3">
+						<div>
+							<label class="mb-1 block text-[11px] text-muted" for="prop-topics">{t.curadoria.profileTopicsLabel}</label>
+							<textarea id="prop-topics" rows="3" bind:value={proposeTopics}
+								class="w-full rounded-token border border-border bg-surface-2 px-2 py-1 font-mono text-[12px] focus:outline-none focus:ring-1 focus:ring-primary/50"
+							></textarea>
 						</div>
-					</li>
-				{/each}
-			</ul>
+						<div>
+							<label class="mb-1 block text-[11px] text-muted" for="prop-authors">{t.curadoria.profileAuthorsLabel}</label>
+							<textarea id="prop-authors" rows="3" bind:value={proposeAuthors}
+								class="w-full rounded-token border border-border bg-surface-2 px-2 py-1 font-mono text-[12px] focus:outline-none focus:ring-1 focus:ring-primary/50"
+							></textarea>
+						</div>
+						<div>
+							<label class="mb-1 block text-[11px] text-muted" for="prop-anti">{t.curadoria.profileAntiTopicsLabel}</label>
+							<textarea id="prop-anti" rows="3" bind:value={proposeAntiTopics}
+								class="w-full rounded-token border border-border bg-surface-2 px-2 py-1 font-mono text-[12px] focus:outline-none focus:ring-1 focus:ring-primary/50"
+							></textarea>
+						</div>
+						<div>
+							<label class="mb-1 block text-[11px] text-muted" for="prop-weights">{t.curadoria.profileWeightsLabel}</label>
+							<textarea id="prop-weights" rows="3" bind:value={proposeWeights}
+								class="w-full rounded-token border border-border bg-surface-2 px-2 py-1 font-mono text-[12px] focus:outline-none focus:ring-1 focus:ring-primary/50"
+							></textarea>
+						</div>
+					</div>
+					{#if !novaVersaoHasDiff}
+						<p class="text-[12px] text-muted">{t.curadoria.gostoNoDiff}</p>
+					{/if}
+					{#if proposeError}
+						<p class="text-[12px] text-red">{proposeError}</p>
+					{/if}
+					<button
+						disabled={proposing || !novaVersaoHasDiff}
+						onclick={propose}
+						class="cursor-pointer rounded-token border border-border bg-transparent px-4 py-1.5 text-[13px] font-medium hover:bg-hover disabled:cursor-default disabled:opacity-50"
+					>{proposing ? t.curadoria.profileProposing : t.curadoria.profileProposeBtn}</button>
+				</div>
+			</div>
 		{/if}
-	</div>
+	{/if}
 </section>
 
 <!-- ── 6. REGRAS DE GATE (secundária, colapsável) ─────────────────── -->
@@ -887,3 +1030,4 @@
 		{/if}
 	</div>
 </details>
+{/if}
