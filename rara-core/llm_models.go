@@ -18,28 +18,28 @@ import (
 
 // LLMModelInput is the write-side payload for PUT /v1/llm-models.
 type LLMModelInput struct {
-	ProviderID          int             `json:"provider_id"`
-	Alias               string          `json:"alias"`
-	Upstream            string          `json:"upstream"`
-	InputCostPerToken   float64         `json:"input_cost_per_token"`
-	OutputCostPerToken  float64         `json:"output_cost_per_token"`
-	Params              json.RawMessage `json:"params,omitempty"`
-	Enabled             *bool           `json:"enabled"`
+	ProviderID         int             `json:"provider_id"`
+	Alias              string          `json:"alias"`
+	Upstream           string          `json:"upstream"`
+	InputCostPerToken  float64         `json:"input_cost_per_token"`
+	OutputCostPerToken float64         `json:"output_cost_per_token"`
+	Params             json.RawMessage `json:"params,omitempty"`
+	Enabled            *bool           `json:"enabled"`
 }
 
 // LLMModelRow is the read-side DTO; ProviderName is a light join for display.
 type LLMModelRow struct {
-	ID                  int             `json:"id"`
-	ProviderID          int             `json:"provider_id"`
-	ProviderName        string          `json:"provider_name"`
-	Alias               string          `json:"alias"`
-	Upstream            string          `json:"upstream"`
-	InputCostPerToken   float64         `json:"input_cost_per_token"`
-	OutputCostPerToken  float64         `json:"output_cost_per_token"`
-	Params              json.RawMessage `json:"params"`
-	Enabled             bool            `json:"enabled"`
-	CreatedAt           time.Time       `json:"created_at"`
-	UpdatedAt           time.Time       `json:"updated_at"`
+	ID                 int             `json:"id"`
+	ProviderID         int             `json:"provider_id"`
+	ProviderName       string          `json:"provider_name"`
+	Alias              string          `json:"alias"`
+	Upstream           string          `json:"upstream"`
+	InputCostPerToken  float64         `json:"input_cost_per_token"`
+	OutputCostPerToken float64         `json:"output_cost_per_token"`
+	Params             json.RawMessage `json:"params"`
+	Enabled            bool            `json:"enabled"`
+	CreatedAt          time.Time       `json:"created_at"`
+	UpdatedAt          time.Time       `json:"updated_at"`
 }
 
 // ---------------------------------------------------------------------------
