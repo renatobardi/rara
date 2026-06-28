@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest';
-import { labelDecidedBy, aggregatePulso, latestDeferReason, signalForKey, diffProfile, sourceUrl, filterQuarantine, isDiffEmpty, type ItemDecision, type FilterState } from './curadoria';
+import { describe, it, expect, vi, afterEach } from 'vitest';
+import { labelDecidedBy, aggregatePulso, latestDeferReason, signalForKey, diffProfile, sourceUrl, filterQuarantine, isDiffEmpty, fetchItemContent, type ItemDecision, type FilterState, type ItemContent } from './curadoria';
 
 describe('labelDecidedBy', () => {
 	it('maps known values to PT labels', () => {
@@ -362,5 +362,29 @@ describe('signalForKey', () => {
 		expect(signalForKey('ArrowUp')).toBeNull();
 		expect(signalForKey('Enter')).toBeNull();
 		expect(signalForKey('')).toBeNull();
+	});
+});
+
+describe('fetchItemContent', () => {
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	it('returns parsed content on 200', async () => {
+		const mock: ItemContent = { lane: 'news', body: 'hello' };
+		vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+			ok: true,
+			json: async () => mock,
+		}));
+
+		const result = await fetchItemContent(42);
+		expect(result).toEqual(mock);
+		expect(fetch).toHaveBeenCalledWith('/api/items/42/content');
+	});
+
+	it('returns null on non-200', async () => {
+		vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false }));
+
+		expect(await fetchItemContent(99)).toBeNull();
 	});
 });
