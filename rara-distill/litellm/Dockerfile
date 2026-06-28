@@ -1,4 +1,4 @@
-FROM --platform=linux/amd64 ghcr.io/berriai/litellm:main-v1.89.3
+FROM --platform=linux/amd64 ghcr.io/berriai/litellm:v1.90.0
 
 COPY config.yaml /app/config.yaml
 
