@@ -243,6 +243,15 @@ describe('sourceUrl', () => {
   it('lane desconhecido: retorna null', () => {
     expect(sourceUrl('unknown-lane', 'ref')).toBeNull();
   });
+  it('linkedin: rejeita scheme javascript:', () => {
+    expect(sourceUrl('linkedin', 'javascript:alert(1)')).toBeNull();
+  });
+  it('news: rejeita scheme data:', () => {
+    expect(sourceUrl('news', 'data:text/html,<script>alert(1)</script>')).toBeNull();
+  });
+  it('youtube: encoda video id com caracteres especiais', () => {
+    expect(sourceUrl('youtube', 'abc+def')).toBe('https://www.youtube.com/watch?v=abc%2Bdef');
+  });
 });
 
 const baseItem = (id: number, overrides: Partial<{ lane: string; channel: string; published_at: string }>): import('./curadoria').QuarantineItem => ({

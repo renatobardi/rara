@@ -60,7 +60,7 @@
 	let filterState = $state<FilterState>({ dateFrom: '', dateTo: '', tipo: '', canal: '', sortDir: 'newest' });
 
 	let filteredQueue = $derived(filterQuarantine(quarantine, filterState));
-	let focusedItem = $derived(filteredQueue[focusedIndex] ?? null);
+	let focusedItem = $derived(filteredQueue[Math.min(focusedIndex, Math.max(0, filteredQueue.length - 1))] ?? null);
 	let deferReason = $derived(latestDeferReason(focusedDecisions));
 
 	// --- interest profile state ---
@@ -123,7 +123,11 @@
 			return null; // JSON inválido → deixa salvar (o servidor vai rejeitar se inválido)
 		}
 	});
-	let novaVersaoHasDiff = $derived(novaVersaoDiff === null || !isDiffEmpty(novaVersaoDiff));
+	let novaVersaoHasDiff = $derived(
+		novaVersaoDiff === null ||
+		!isDiffEmpty(novaVersaoDiff) ||
+		proposeNarrative !== (activeProfile?.narrative ?? '')
+	);
 
 	// approve state: version number being approved, or null
 	let approving = $state<number | null>(null);
@@ -213,6 +217,7 @@
 	}
 
 	function handleKeydown(e: KeyboardEvent) {
+		if (activeTab !== 'decidir') return;
 		const target = e.target as HTMLElement | null;
 		if (
 			e.altKey || e.ctrlKey || e.metaKey ||
@@ -447,9 +452,11 @@
 </div>
 
 <!-- ── TAB NAV ───────────────────────────────────────────────────────── -->
-<div class="mb-6 flex gap-1 border-b border-border">
+<div class="mb-6 flex gap-1 border-b border-border" role="tablist">
 	{#each ([['decidir', t.curadoria.tabDecidir], ['historico', t.curadoria.tabHistorico], ['ajustes', t.curadoria.tabAjustes]] as const) as [tab, label]}
 		<button
+			role="tab"
+			aria-selected={activeTab === tab}
 			onclick={() => (activeTab = tab)}
 			class="px-4 py-2 text-[13px] font-medium transition-colors
 				{activeTab === tab
@@ -501,7 +508,7 @@
 						<label class="mb-1 block text-[11px] text-muted" for="f-tipo">{t.curadoria.filterTipo}</label>
 						<select id="f-tipo" bind:value={filterState.tipo}
 							class="rounded-token border border-border bg-surface-2 px-2 py-1 text-[12px] focus:outline-none focus:ring-1 focus:ring-primary/50">
-							<option value="">Todos</option>
+							<option value="">{t.curadoria.filterTipoTodos}</option>
 							{#each [...new Set(quarantine.map(q => q.lane))].sort() as lane}
 								<option value={lane}>{lane}</option>
 							{/each}
@@ -509,7 +516,7 @@
 					</div>
 					<div class="flex-1 min-w-[120px]">
 						<label class="mb-1 block text-[11px] text-muted" for="f-canal">{t.curadoria.filterCanal}</label>
-						<input id="f-canal" type="text" bind:value={filterState.canal} placeholder="ex: Lex Fridman"
+						<input id="f-canal" type="text" bind:value={filterState.canal} placeholder={t.curadoria.filterCanalPlaceholder}
 							class="w-full rounded-token border border-border bg-surface-2 px-2 py-1 text-[12px] focus:outline-none focus:ring-1 focus:ring-primary/50" />
 					</div>
 					<div>
@@ -852,7 +859,7 @@
 			<div class="overflow-hidden rounded-card border border-border bg-surface">
 				<div class="flex items-center justify-between border-b border-border px-4 py-2">
 					<span class="text-[12px] font-medium text-muted">v{novaVersaoNumber}</span>
-					<button onclick={() => (showNovaVersaoForm = false)} class="text-[12px] text-muted hover:text-text">Cancelar</button>
+					<button onclick={() => (showNovaVersaoForm = false)} class="text-[12px] text-muted hover:text-text">{t.curadoria.gostoNovaVersaoCancelar}</button>
 				</div>
 				<div class="space-y-3 px-4 py-3">
 					<div>

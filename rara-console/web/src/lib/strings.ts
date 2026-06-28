@@ -384,9 +384,12 @@ export const t = {
 		filterSortNewest: 'Mais recente',
 		filterSortOldest: 'Mais antigo',
 		filterClear: 'Limpar filtros',
+		filterTipoTodos: 'Todos',
+		filterCanalPlaceholder: 'ex: Lex Fridman',
 		// ── zona gosto → ajustes ─────────────────────────────────────────────
 		gostoZone: 'Ajustes',
 		gostoNovaVersaoBtn: '+ Nova versão',
+		gostoNovaVersaoCancelar: 'Cancelar',
 		gostoNoDiff: 'Sem diferença em relação à versão ativa. Altere ao menos um campo para salvar.',
 		// ── zona trilha → histórico ───────────────────────────────────────────
 		trilhaZone: 'Histórico',

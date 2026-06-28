@@ -116,9 +116,20 @@ export function signalForKey(key: string): 'up' | 'down' | null {
 // Maps (lane, source_ref) to a navigable URL, or null when no URL can be derived.
 // YouTube: source_ref is the video ID. LinkedIn/news: source_ref is the URL itself.
 // Podcast (GUID) and email (message-id) have no public URL.
+// Only https: URLs are returned — javascript:/data: schemes are rejected.
 export function sourceUrl(lane: string, sourceRef: string): string | null {
-	if (lane === 'youtube') return `https://www.youtube.com/watch?v=${sourceRef}`;
-	if (lane === 'linkedin' || lane === 'news') return sourceRef;
+	if (lane === 'youtube') {
+		return `https://www.youtube.com/watch?v=${encodeURIComponent(sourceRef)}`;
+	}
+	if (lane === 'linkedin' || lane === 'news') {
+		try {
+			const u = new URL(sourceRef);
+			if (u.protocol !== 'https:' && u.protocol !== 'http:') return null;
+			return u.toString();
+		} catch {
+			return null;
+		}
+	}
 	return null;
 }
 
@@ -157,7 +168,7 @@ export function filterQuarantine(items: QuarantineItem[], f: FilterState): Quara
 // Fallback fields (unexpected format) are treated as empty — we don't block save when
 // diff can't be computed.
 export function isDiffEmpty(diff: ProfileDiff): boolean {
-	const stringEmpty = (d: ProfileDiff['topics']) => d.fallback || (d.added.length === 0 && d.removed.length === 0);
+	const stringEmpty = (d: ProfileDiff['topics']) => d.fallback || (d.added.length === 0 && d.removed.length === 0 && d.changed.length === 0);
 	const weightsEmpty = (d: ProfileDiff['weights']) => d.fallback || (d.added.length === 0 && d.removed.length === 0 && d.changed.length === 0);
 	return stringEmpty(diff.topics) && stringEmpty(diff.authors) && stringEmpty(diff.anti_topics) && weightsEmpty(diff.weights);
 }
