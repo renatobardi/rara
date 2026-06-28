@@ -10,6 +10,7 @@
 		{ label: t.nav.distillations, href: '/distillations' },
 		{ label: t.nav.curation, href: '/curadoria' },
 		{ label: t.nav.workers, href: '/workers' },
+		{ label: t.nav.inferencia, href: '/inferencia' },
 		{ label: t.nav.agents, href: '/agents' },
 		{ label: t.nav.audit, href: '/auditoria' }
 	];
