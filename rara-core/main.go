@@ -848,6 +848,19 @@ type Database interface {
 	ListLLMProviders(ctx context.Context) ([]LLMProviderRow, error)
 	// DeleteLLMProvider soft-deletes the provider with the given id (sets deleted_at).
 	DeleteLLMProvider(ctx context.Context, id int) error
+
+	// --- LLM model registry (CONSOLE-INFER #3) ---------------------------
+	// GetLLMProvider returns one provider by id (found=false if absent or deleted).
+	// Used by the model layer to validate provider_id on upsert.
+	GetLLMProvider(ctx context.Context, id int) (LLMProviderRow, bool, error)
+	// UpsertLLMModel writes a model row keyed by (owner_id=NULL, alias).
+	UpsertLLMModel(ctx context.Context, providerID int, alias, upstream string,
+		inputCost, outputCost float64, params json.RawMessage, enabled bool) (int, error)
+	// ListLLMModels returns non-deleted models with a light provider name join.
+	// providerID=0 returns all.
+	ListLLMModels(ctx context.Context, providerID int) ([]LLMModelRow, error)
+	// DeleteLLMModel soft-deletes the model with the given id (sets deleted_at).
+	DeleteLLMModel(ctx context.Context, id int) error
 }
 
 // ---------------------------------------------------------------------------
