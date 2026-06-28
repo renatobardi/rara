@@ -129,6 +129,18 @@ type mockLinkedInProfile struct {
 	Active      bool
 }
 
+type mockLLMProvider struct {
+	ID            int
+	Name          string
+	Kind          string
+	BaseURL       string
+	KeyCiphertext []byte
+	KeyNonce      []byte
+	KeyLast4      string
+	Enabled       bool
+	DeletedAt     *bool // non-nil = soft-deleted
+}
+
 type MockDatabase struct {
 	capabilities map[string]Capability // UNIQUE(name)
 	providers    map[string]Provider   // UNIQUE(name)
@@ -168,6 +180,9 @@ type MockDatabase struct {
 	emailSources          map[int]mockEmailSource
 	linkedinProfiles      map[int]mockLinkedInProfile
 	nextLinkedInProfileID int
+
+	llmProviders      []mockLLMProvider
+	nextLLMProviderID int
 
 	nextFlowID     int
 	nextItemID     int
@@ -218,6 +233,7 @@ func newMockDatabase() *MockDatabase {
 		nextYTPlayID:          1,
 		nextFeedSrcID:         1,
 		nextEmailSrcID:        1,
+		nextLLMProviderID:     1,
 		itemContents:          make(map[int]ItemContentResult),
 		nowFn:                 time.Now,
 	}

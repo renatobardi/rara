@@ -831,6 +831,20 @@ type Database interface {
 	// assigned_provider are included. When since is non-nil, only steps updated at or
 	// after that time are counted. Results are ordered by provider name.
 	WorkerMetrics(ctx context.Context, since *time.Time) ([]WorkerMetric, error)
+
+	// --- LLM provider registry (CONSOLE-INFER #2) ---------------------------
+	// UpsertLLMProvider writes a provider row keyed by (owner_id=NULL, name)
+	// with a new encrypted key. Use UpdateLLMProviderFields when api_key is absent.
+	UpsertLLMProvider(ctx context.Context, name, kind, baseURL string,
+		keyCiphertext, keyNonce []byte, keyLast4 string, enabled bool) (int, error)
+	// UpdateLLMProviderFields updates kind/base_url/enabled on an existing active
+	// provider without touching the stored key. Returns errNotFound when not found.
+	UpdateLLMProviderFields(ctx context.Context, name, kind, baseURL string, enabled bool) error
+	// ListLLMProviders returns non-deleted providers. KeyCiphertext and KeyNonce
+	// in the returned rows are always nil — never exposed to callers.
+	ListLLMProviders(ctx context.Context) ([]LLMProviderRow, error)
+	// DeleteLLMProvider soft-deletes the provider with the given id (sets deleted_at).
+	DeleteLLMProvider(ctx context.Context, id int) error
 }
 
 // ---------------------------------------------------------------------------

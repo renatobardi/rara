@@ -34,6 +34,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"rara-core/internal/secretbox"
 )
 
 // lastReconcileNano is the Unix nanosecond timestamp of the most recent reconcile pass.
@@ -115,6 +117,9 @@ type Core struct {
 	// canonical youtube_channel_id. Set from YOUTUBE_API_KEY at startup; when nil the
 	// input is used verbatim (e.g. unit tests that pass raw ids).
 	resolveChannel func(ctx context.Context, input string) (string, error)
+	// box is the AES-256-GCM secretbox for encrypting LLM provider API keys.
+	// Set from RARA_SECRETS_KEY at startup; nil disables key writes.
+	box *secretbox.Box
 }
 
 // NewCore wires the operations layer over the seam and the LinkedIn store.
@@ -1155,6 +1160,11 @@ func NewSurfaceMux(core *Core, token string) http.Handler {
 
 	// Worker metrics rollup (CONSOLE-WORKERS.pt-BR.md §8, slice 2/9).
 	mux.HandleFunc("GET /v1/workers/metrics", h.workerMetrics)
+
+	// LLM provider registry (CONSOLE-INFER #2).
+	mux.HandleFunc("GET /v1/llm-providers", h.listLLMProviders)
+	mux.HandleFunc("PUT /v1/llm-providers", h.upsertLLMProvider)
+	mux.HandleFunc("DELETE /v1/llm-providers/{id}", h.deleteLLMProvider)
 
 	// LinkedIn manual inbox.
 	mux.HandleFunc("POST /v1/linkedin/inbox", h.linkedinInbox)
