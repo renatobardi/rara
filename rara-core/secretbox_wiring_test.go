@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/base64"
-	"os"
 	"testing"
 )
 
@@ -10,52 +9,34 @@ import (
 // never crash the always-on reconciler: a missing key disables LLM-key writes (nil box,
 // no error); a malformed key also disables them but surfaces an error for visibility.
 func TestLoadSecretbox(t *testing.T) {
-	validKey := base64.StdEncoding.EncodeToString(make([]byte, 32))
+	key32 := base64.StdEncoding.EncodeToString(make([]byte, 32))
+	key16 := base64.StdEncoding.EncodeToString(make([]byte, 16))
 
-	t.Run("valid key returns a box", func(t *testing.T) {
-		t.Setenv("RARA_SECRETS_KEY", validKey)
-		box, err := loadSecretbox()
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if box == nil {
-			t.Fatal("expected non-nil box for a valid key")
-		}
-	})
+	// loadSecretbox reads the key via os.Getenv, which returns "" for both an empty and an
+	// unset var — so an empty value faithfully exercises the absent-key branch (and t.Setenv
+	// restores the prior value automatically, so no manual cleanup is needed).
+	cases := []struct {
+		name    string
+		env     string
+		wantBox bool
+		wantErr bool
+	}{
+		{"valid key returns a box", key32, true, false},
+		{"absent key returns nil box and no error", "", false, false},
+		{"invalid base64 returns an error", "!!!not base64!!!", false, true},
+		{"wrong key length returns an error", key16, false, true},
+	}
 
-	t.Run("absent key returns nil box and no error", func(t *testing.T) {
-		// Truly unset (not just empty) to exercise the absent-key branch faithfully.
-		if err := os.Unsetenv("RARA_SECRETS_KEY"); err != nil {
-			t.Fatalf("unset RARA_SECRETS_KEY: %v", err)
-		}
-		box, err := loadSecretbox()
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if box != nil {
-			t.Fatal("expected nil box when key is absent")
-		}
-	})
-
-	t.Run("invalid base64 returns nil box and an error", func(t *testing.T) {
-		t.Setenv("RARA_SECRETS_KEY", "!!!not base64!!!")
-		box, err := loadSecretbox()
-		if err == nil {
-			t.Fatal("expected an error for invalid base64")
-		}
-		if box != nil {
-			t.Fatal("expected nil box on error")
-		}
-	})
-
-	t.Run("wrong key length returns nil box and an error", func(t *testing.T) {
-		t.Setenv("RARA_SECRETS_KEY", base64.StdEncoding.EncodeToString(make([]byte, 16)))
-		box, err := loadSecretbox()
-		if err == nil {
-			t.Fatal("expected an error for a 16-byte key")
-		}
-		if box != nil {
-			t.Fatal("expected nil box on error")
-		}
-	})
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("RARA_SECRETS_KEY", tc.env)
+			box, err := loadSecretbox()
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("err = %v, want error = %v", err, tc.wantErr)
+			}
+			if (box != nil) != tc.wantBox {
+				t.Fatalf("box != nil = %v, want box = %v", box != nil, tc.wantBox)
+			}
+		})
+	}
 }
