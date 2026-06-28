@@ -3,7 +3,7 @@
 FROM --platform=linux/amd64 ghcr.io/berriai/litellm:v1.90.0 AS prisma-builder
 
 USER root
-RUN apk add --no-cache npm=11.17.0
+RUN apk add --no-cache npm=11.17.0-r2
 
 USER nonroot
 RUN set -e && \
