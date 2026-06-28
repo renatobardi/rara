@@ -19,9 +19,11 @@ import (
 	"io"
 	"io/fs"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -38,9 +40,11 @@ var maxCoreBytes int64 = 4 << 20
 // server is the BFF: it talks to the rara-core surface at coreURL, authenticating with the
 // server-side token. client is injected so handlers are unit-testable against an httptest core.
 type server struct {
-	coreURL string
-	token   string
-	client  *http.Client
+	coreURL       string
+	token         string
+	client        *http.Client
+	previewClient *http.Client      // outbound fetches for iframe/OG preview; shorter timeout
+	isPrivate     func(string) bool // SSRF guard; nil disables check (tests use httptest addresses)
 }
 
 // fetchCoreWithStatus does an authenticated GET and returns the raw status + body without a 2xx
@@ -183,6 +187,126 @@ func (s *server) handleItemContent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, json.RawMessage(body))
+}
+
+// ogImageRe extracts the og:image content from HTML, handling both attribute orders.
+var ogImageRe = regexp.MustCompile(`(?i)<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']|<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image["']`)
+
+func extractOGImage(html string) string {
+	m := ogImageRe.FindStringSubmatch(html)
+	if m == nil {
+		return ""
+	}
+	if m[1] != "" {
+		return m[1]
+	}
+	return m[2]
+}
+
+// isPrivateIP reports whether ip is a private/loopback/link-local address that should not
+// be reachable from an outbound preview fetch (SSRF protection).
+func isPrivateIP(ip net.IP) bool {
+	if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+		return true
+	}
+	for _, cidr := range []string{
+		"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",
+		"fc00::/7", "100.64.0.0/10",
+	} {
+		_, block, _ := net.ParseCIDR(cidr)
+		if block.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+// isPrivateHost returns true if any resolved IP for host is a private address.
+func isPrivateHost(host string) bool {
+	if ip := net.ParseIP(host); ip != nil {
+		return isPrivateIP(ip)
+	}
+	addrs, err := net.LookupHost(host)
+	if err != nil {
+		return true // treat unresolvable as private/blocked
+	}
+	for _, a := range addrs {
+		if ip := net.ParseIP(a); ip != nil && isPrivateIP(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+// doPreviewRequest builds and executes an outbound HTTP request with the shared user-agent.
+func (s *server) doPreviewRequest(ctx context.Context, method, rawURL string) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, method, rawURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; rara-console/1.0)")
+	return s.previewClient.Do(req)
+}
+
+// checkEmbeddable does a HEAD request and returns true if the URL allows iframe embedding
+// (no X-Frame-Options and no frame-ancestors CSP directive). Non-2xx status → not embeddable.
+func (s *server) checkEmbeddable(ctx context.Context, rawURL string) bool {
+	resp, err := s.doPreviewRequest(ctx, http.MethodHead, rawURL)
+	if err != nil {
+		return false
+	}
+	resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return false
+	}
+	xfo := strings.ToUpper(strings.TrimSpace(resp.Header.Get("X-Frame-Options")))
+	if xfo == "DENY" || xfo == "SAMEORIGIN" {
+		return false
+	}
+	csp := strings.ToLower(resp.Header.Get("Content-Security-Policy"))
+	return !strings.Contains(csp, "frame-ancestors")
+}
+
+// fetchOGImage GETs the URL and returns the og:image value, or "" if not found.
+func (s *server) fetchOGImage(ctx context.Context, rawURL string) string {
+	resp, err := s.doPreviewRequest(ctx, http.MethodGet, rawURL)
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 256*1024)) // head section always fits
+	if err != nil {
+		log.Printf("fetchOGImage: read body: %v", err)
+		return ""
+	}
+	return extractOGImage(string(body))
+}
+
+// handlePreview checks if a URL is safe to embed in an iframe. If the target blocks embedding
+// (X-Frame-Options or frame-ancestors CSP), it falls back to the og:image.
+// GET /api/preview?url=<encoded-url>
+func (s *server) handlePreview(w http.ResponseWriter, r *http.Request) {
+	rawURL := r.URL.Query().Get("url")
+	u, err := url.ParseRequestURI(rawURL)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid url"})
+		return
+	}
+	if s.isPrivate != nil && s.isPrivate(u.Hostname()) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid url"})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
+	defer cancel()
+
+	if s.checkEmbeddable(ctx, rawURL) {
+		writeJSON(w, http.StatusOK, map[string]any{"embeddable": true, "url": rawURL})
+		return
+	}
+
+	imageURL := s.fetchOGImage(ctx, rawURL)
+	writeJSON(w, http.StatusOK, map[string]any{"embeddable": false, "image_url": imageURL})
 }
 
 func isNumericID(s string) bool {
@@ -821,9 +945,11 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 func main() {
 	s := &server{
-		coreURL: mustEnv("CORE_SURFACE_URL"), // e.g. http://100.x.x.x:8080
-		token:   mustEnv("SURFACE_TOKEN"),
-		client:  &http.Client{Timeout: 15 * time.Second},
+		coreURL:       mustEnv("CORE_SURFACE_URL"), // e.g. http://100.x.x.x:8080
+		token:         mustEnv("SURFACE_TOKEN"),
+		client:        &http.Client{Timeout: 15 * time.Second},
+		previewClient: &http.Client{Timeout: 8 * time.Second},
+		isPrivate:     isPrivateHost,
 	}
 	addr := mustEnv("CONSOLE_ADDR") // tailnet IP only, e.g. 100.x.x.x:8081 — never 0.0.0.0
 
@@ -840,6 +966,7 @@ func main() {
 	mux.HandleFunc("GET /api/pipeline", s.handlePipeline)
 	mux.HandleFunc("GET /api/items/{id}/steps", s.handleItemSteps)
 	mux.HandleFunc("GET /api/items/{id}/content", s.handleItemContent)
+	mux.HandleFunc("GET /api/preview", s.handlePreview)
 	mux.HandleFunc("GET /api/quarantine", s.handleQuarantine)
 	mux.HandleFunc("GET /api/distillations", s.handleDistillationList)
 	mux.HandleFunc("GET /api/distillations/{id}", s.handleDistillationDetail)

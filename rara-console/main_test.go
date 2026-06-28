@@ -346,6 +346,109 @@ func fakeItemContentCore(t *testing.T, token string) *httptest.Server {
 	return srv
 }
 
+func TestExtractOGImage(t *testing.T) {
+	cases := []struct{ html, want string }{
+		{`<meta property="og:image" content="https://a.com/img.jpg">`, "https://a.com/img.jpg"},
+		{`<meta content="https://b.com/img.jpg" property="og:image">`, "https://b.com/img.jpg"},
+		{`<meta property='og:image' content='https://c.com/img.jpg'>`, "https://c.com/img.jpg"},
+		{`<html><head><title>no og</title></head></html>`, ""},
+	}
+	for _, tt := range cases {
+		if got := extractOGImage(tt.html); got != tt.want {
+			t.Errorf("extractOGImage(%q) = %q, want %q", tt.html, got, tt.want)
+		}
+	}
+}
+
+// callPreview calls handlePreview against targetURL and returns the decoded JSON, failing on non-200.
+func callPreview(t *testing.T, s *server, targetURL string) map[string]any {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	s.handlePreview(rec, httptest.NewRequest("GET", "/api/preview?url="+targetURL, nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("callPreview: status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	var result map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
+		t.Fatalf("callPreview: decode: %v", err)
+	}
+	return result
+}
+
+func TestHandlePreviewEmbeddable(t *testing.T) {
+	site := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`<html><body>ok</body></html>`))
+	}))
+	defer site.Close()
+
+	result := callPreview(t, &server{previewClient: site.Client()}, site.URL)
+	if result["embeddable"] != true {
+		t.Errorf("embeddable = %v, want true", result["embeddable"])
+	}
+	if result["url"] != site.URL {
+		t.Errorf("url = %v, want %s", result["url"], site.URL)
+	}
+}
+
+func TestHandlePreviewNotEmbeddable(t *testing.T) {
+	site := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Frame-Options", "DENY")
+		if r.Method != http.MethodHead {
+			_, _ = w.Write([]byte(`<html><head><meta property="og:image" content="https://cdn.example.com/img.jpg"></head></html>`))
+		}
+	}))
+	defer site.Close()
+
+	result := callPreview(t, &server{previewClient: site.Client()}, site.URL)
+	if result["embeddable"] == true {
+		t.Error("embeddable = true, want false")
+	}
+	if result["image_url"] != "https://cdn.example.com/img.jpg" {
+		t.Errorf("image_url = %v, want https://cdn.example.com/img.jpg", result["image_url"])
+	}
+}
+
+func TestHandlePreviewBadURL(t *testing.T) {
+	s := &server{previewClient: http.DefaultClient}
+	for _, bad := range []string{"not-a-url", "ftp://example.com", ""} {
+		rec := httptest.NewRecorder()
+		s.handlePreview(rec, httptest.NewRequest("GET", "/api/preview?url="+bad, nil))
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("url=%q: status = %d, want 400", bad, rec.Code)
+		}
+	}
+}
+
+func TestHandlePreviewCSPFrameAncestors(t *testing.T) {
+	site := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; frame-ancestors 'none'")
+		if r.Method != http.MethodHead {
+			_, _ = w.Write([]byte(`<html><head><meta property="og:image" content="https://cdn.example.com/csp.jpg"></head></html>`))
+		}
+	}))
+	defer site.Close()
+
+	result := callPreview(t, &server{previewClient: site.Client()}, site.URL)
+	if result["embeddable"] == true {
+		t.Error("embeddable = true, want false (frame-ancestors in CSP should block)")
+	}
+	if result["image_url"] != "https://cdn.example.com/csp.jpg" {
+		t.Errorf("image_url = %v, want https://cdn.example.com/csp.jpg", result["image_url"])
+	}
+}
+
+func TestHandlePreviewSSRFBlocked(t *testing.T) {
+	s := &server{
+		previewClient: http.DefaultClient,
+		isPrivate:     func(string) bool { return true },
+	}
+	rec := httptest.NewRecorder()
+	s.handlePreview(rec, httptest.NewRequest("GET", "/api/preview?url=http://192.168.1.1/secret", nil))
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("SSRF: status = %d, want 400", rec.Code)
+	}
+}
+
 func contains(s, sub string) bool {
 	for i := 0; i+len(sub) <= len(s); i++ {
 		if s[i:i+len(sub)] == sub {

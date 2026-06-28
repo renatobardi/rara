@@ -207,3 +207,19 @@ export async function fetchItemContent(id: number): Promise<ItemContent | null> 
 		return null;
 	}
 }
+
+export type PreviewResult = {
+	embeddable: boolean;
+	url?: string;       // set when embeddable=true
+	image_url?: string; // set when embeddable=false
+};
+
+export async function fetchPreview(articleURL: string): Promise<PreviewResult | null> {
+	try {
+		const res = await fetch(`/api/preview?url=${encodeURIComponent(articleURL)}`);
+		if (!res.ok) return null;
+		return (await res.json()) as PreviewResult;
+	} catch {
+		return null;
+	}
+}
