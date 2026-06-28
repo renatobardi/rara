@@ -87,6 +87,9 @@ func (c *Core) UpsertLLMModel(ctx context.Context, in LLMModelInput) error {
 		params = json.RawMessage("{}")
 	}
 
+	// ponytail: TOCTOU — GetLLMProvider + UpsertLLMModel are two separate queries.
+	// Acceptable: UpsertLLMModel is an operator action (never concurrent); the FK constraint
+	// in llm_models.provider_id is the real guard at persist time.
 	if _, err := c.db.UpsertLLMModel(ctx, in.ProviderID, in.Alias, in.Upstream,
 		in.InputCostPerToken, in.OutputCostPerToken, params, enabled); err != nil {
 		return fmt.Errorf("upsert llm model %q: %w", in.Alias, err)
@@ -96,7 +99,11 @@ func (c *Core) UpsertLLMModel(ctx context.Context, in LLMModelInput) error {
 
 // ListLLMModels returns non-deleted models; providerID=0 returns all.
 func (c *Core) ListLLMModels(ctx context.Context, providerID int) ([]LLMModelRow, error) {
-	return c.db.ListLLMModels(ctx, providerID)
+	models, err := c.db.ListLLMModels(ctx, providerID)
+	if err != nil {
+		return nil, fmt.Errorf("list llm models: %w", err)
+	}
+	return models, nil
 }
 
 // DeleteLLMModel soft-deletes a model by id.
@@ -104,7 +111,10 @@ func (c *Core) DeleteLLMModel(ctx context.Context, id int) error {
 	if id <= 0 {
 		return badInput("id must be positive, got %d", id)
 	}
-	return c.db.DeleteLLMModel(ctx, id)
+	if err := c.db.DeleteLLMModel(ctx, id); err != nil {
+		return fmt.Errorf("delete llm model %d: %w", id, err)
+	}
+	return nil
 }
 
 // ---------------------------------------------------------------------------
@@ -115,8 +125,8 @@ func (h *httpSurface) listLLMModels(w http.ResponseWriter, r *http.Request) {
 	var providerID int
 	if raw := r.URL.Query().Get("provider_id"); raw != "" {
 		n, err := strconv.Atoi(raw)
-		if err != nil || n <= 0 {
-			writeResult(w, nil, badInput("provider_id must be a positive integer"))
+		if err != nil || n < 0 {
+			writeResult(w, nil, badInput("provider_id must be a non-negative integer"))
 			return
 		}
 		providerID = n

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -31,13 +32,18 @@ func (m *MockDatabase) GetLLMProvider(_ context.Context, id int) (LLMProviderRow
 
 func (m *MockDatabase) UpsertLLMModel(_ context.Context, providerID int, alias, upstream string,
 	inputCost, outputCost float64, params json.RawMessage, enabled bool) (int, error) {
-	// Resolve provider name for the list join.
+	// Mirror the SQL FK: provider must exist and not be soft-deleted.
 	providerName := ""
+	found := false
 	for _, p := range m.llmProviders {
 		if p.ID == providerID && p.DeletedAt == nil {
 			providerName = p.Name
+			found = true
 			break
 		}
+	}
+	if !found {
+		return 0, errors.New("llm_models: provider_id not found or deleted")
 	}
 	// Upsert by (owner_id=NULL, alias): update existing active row if found.
 	for i, mdl := range m.llmModels {
@@ -113,7 +119,13 @@ func seedProvider(t *testing.T, core *Core, db *MockDatabase) int {
 	}); err != nil {
 		t.Fatalf("seedProvider: %v", err)
 	}
-	providers, _ := db.ListLLMProviders(ctx)
+	providers, err := db.ListLLMProviders(ctx)
+	if err != nil {
+		t.Fatalf("seedProvider list: %v", err)
+	}
+	if len(providers) == 0 {
+		t.Fatal("seedProvider: provider not persisted")
+	}
 	return providers[0].ID
 }
 
@@ -404,17 +416,39 @@ func TestHTTPListLLMModels(t *testing.T) {
 func TestHTTPListLLMModelsFilterByProvider(t *testing.T) {
 	core, db, _ := newTestCoreWithBox(t)
 	ctx := context.Background()
-	pid := seedProvider(t, core, db)
-	_ = core.UpsertLLMModel(ctx, LLMModelInput{ProviderID: pid, Alias: "llama", Upstream: "g/l"})
+
+	// Two providers, two models — filter must return only the model for pid1.
+	if err := core.UpsertLLMProvider(ctx, LLMProviderInput{Name: "groq", Kind: "groq", APIKey: "k1"}); err != nil { // gitleaks:allow
+		t.Fatalf("seed groq: %v", err)
+	}
+	if err := core.UpsertLLMProvider(ctx, LLMProviderInput{Name: "gemini", Kind: "gemini", APIKey: "k2"}); err != nil { // gitleaks:allow
+		t.Fatalf("seed gemini: %v", err)
+	}
+	providers, err := db.ListLLMProviders(ctx)
+	if err != nil || len(providers) < 2 {
+		t.Fatalf("setup providers: %v / %d", err, len(providers))
+	}
+	pid1, pid2 := providers[0].ID, providers[1].ID
+
+	_ = core.UpsertLLMModel(ctx, LLMModelInput{ProviderID: pid1, Alias: "llama", Upstream: "groq/llama"})
+	_ = core.UpsertLLMModel(ctx, LLMModelInput{ProviderID: pid2, Alias: "flash", Upstream: "gemini/flash"})
 
 	mux := NewSurfaceMux(core, testToken)
-	req := httptest.NewRequest(http.MethodGet, "/v1/llm-models?provider_id=1", nil)
+	url := fmt.Sprintf("/v1/llm-models?provider_id=%d", pid1)
+	req := httptest.NewRequest(http.MethodGet, url, nil)
 	req.Header.Set("Authorization", "Bearer "+testToken)
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("want 200, got %d: %s", w.Code, w.Body)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "llama") {
+		t.Errorf("response should contain llama (provider 1 model), got: %s", body)
+	}
+	if strings.Contains(body, "flash") {
+		t.Errorf("response must not contain flash (provider 2 model), got: %s", body)
 	}
 }
 
@@ -424,8 +458,7 @@ func TestHTTPUpsertLLMModel(t *testing.T) {
 	pid := seedProvider(t, core, db)
 
 	mux := NewSurfaceMux(core, testToken)
-	body := `{"provider_id":1,"alias":"llama","upstream":"groq/llama-3.3-70b-versatile"}`
-	_ = pid
+	body := fmt.Sprintf(`{"provider_id":%d,"alias":"llama","upstream":"groq/llama-3.3-70b-versatile"}`, pid)
 	req := httptest.NewRequest(http.MethodPut, "/v1/llm-models", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer "+testToken)
 	req.Header.Set("Content-Type", "application/json")
@@ -451,9 +484,14 @@ func TestHTTPDeleteLLMModel(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("setup: %v", err)
 	}
+	before, _ := db.ListLLMModels(ctx, 0)
+	if len(before) == 0 {
+		t.Fatal("setup: model not persisted")
+	}
+	modelID := before[0].ID
 
 	mux := NewSurfaceMux(core, testToken)
-	req := httptest.NewRequest(http.MethodDelete, "/v1/llm-models/1", nil)
+	req := httptest.NewRequest(http.MethodDelete, fmt.Sprintf("/v1/llm-models/%d", modelID), nil)
 	req.Header.Set("Authorization", "Bearer "+testToken)
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
@@ -462,9 +500,9 @@ func TestHTTPDeleteLLMModel(t *testing.T) {
 		t.Fatalf("want 200, got %d: %s", w.Code, w.Body)
 	}
 
-	all, _ := db.ListLLMModels(ctx, 0)
-	if len(all) != 0 {
-		t.Errorf("want empty list after delete, got %d", len(all))
+	after, _ := db.ListLLMModels(ctx, 0)
+	if len(after) != 0 {
+		t.Errorf("want empty list after delete, got %d", len(after))
 	}
 }
 
@@ -487,10 +525,9 @@ func TestHTTPUpsertLLMModelInvalidProvider(t *testing.T) {
 func TestHTTPUpsertLLMModelNegativeCost(t *testing.T) {
 	core, db, _ := newTestCoreWithBox(t)
 	pid := seedProvider(t, core, db)
-	_ = pid
 
 	mux := NewSurfaceMux(core, testToken)
-	body := `{"provider_id":1,"alias":"x","upstream":"u","input_cost_per_token":-0.001}`
+	body := fmt.Sprintf(`{"provider_id":%d,"alias":"x","upstream":"u","input_cost_per_token":-0.001}`, pid)
 	req := httptest.NewRequest(http.MethodPut, "/v1/llm-models", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer "+testToken)
 	req.Header.Set("Content-Type", "application/json")
