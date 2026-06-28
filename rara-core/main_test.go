@@ -147,10 +147,10 @@ type MockDatabase struct {
 
 	gateRules map[gateRuleKey]GateRule // UNIQUE(action, match_type, value)
 
-	gateDecisions []GateDecision          // append-only
-	feedback      []Feedback              // append-only
-	profiles      map[int]InterestProfile // UNIQUE(version)
-	distillations []Distillation          // cross-agent read-only seam (rara-distill owns the table)
+	gateDecisions []GateDecision            // append-only
+	feedback      []Feedback                // append-only
+	profiles      map[int]InterestProfile   // UNIQUE(version)
+	distillations []Distillation            // cross-agent read-only seam (rara-distill owns the table)
 	itemContents  map[int]ItemContentResult // cross-agent read-only seam for mega-thumbnail
 
 	podcastFeeds map[int]PodcastFeed // rara-dial's table, written by the core surface (config)
