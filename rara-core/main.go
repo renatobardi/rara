@@ -11,6 +11,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -26,6 +27,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"rara-core/internal/secretbox"
 )
 
 // ---------------------------------------------------------------------------
@@ -1767,7 +1770,39 @@ func serveSurfacePool(ctx context.Context, dbURL, addr, token string) error {
 	if key := os.Getenv("YOUTUBE_API_KEY"); key != "" {
 		core.resolveChannel = newYTResolver(key).resolve
 	}
+	// Wire the LLM-key encryption box. A missing key just disables LLM-provider key
+	// writes; a malformed key is logged here but must never crash this always-on serve
+	// path, so the error is surfaced in the log, not propagated.
+	box, err := loadSecretbox()
+	if err != nil {
+		log.Printf("ERROR: surface: %v — LLM provider key writes disabled", err)
+	}
+	core.box = box
 	return ServeSurface(ctx, core, addr, token)
+}
+
+// loadSecretbox builds the AES-256-GCM box for encrypting LLM provider API keys from
+// RARA_SECRETS_KEY (base64-encoded 32-byte key). It never crashes the process — the
+// service path is the always-on reconciler, and a sub-feature env must not take it down:
+//   - absent/empty key  → (nil, nil) + WARN; LLM-provider key writes stay disabled.
+//   - malformed key      → (nil, err); the caller logs it and leaves the box nil.
+//
+// Deliberately not secretbox.MustLoad (that log.Fatalf's) — callers degrade rather than abort.
+func loadSecretbox() (*secretbox.Box, error) {
+	raw := os.Getenv("RARA_SECRETS_KEY")
+	if raw == "" {
+		log.Printf("WARN: RARA_SECRETS_KEY not set — LLM provider key writes disabled")
+		return nil, nil
+	}
+	key, err := base64.StdEncoding.DecodeString(raw)
+	if err != nil {
+		return nil, fmt.Errorf("RARA_SECRETS_KEY: invalid base64: %w", err)
+	}
+	box, err := secretbox.New(key)
+	if err != nil {
+		return nil, fmt.Errorf("RARA_SECRETS_KEY: invalid key: %w", err)
+	}
+	return box, nil
 }
 
 // runFeedback records explicit thumbs on a distillation (deliverable #4).
