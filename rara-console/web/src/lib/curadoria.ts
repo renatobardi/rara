@@ -199,7 +199,11 @@ export type ItemContent = {
 };
 
 export async function fetchItemContent(id: number): Promise<ItemContent | null> {
-	const res = await fetch(`/api/items/${id}/content`);
-	if (!res.ok) return null;
-	return res.json() as Promise<ItemContent>;
+	try {
+		const res = await fetch(`/api/items/${id}/content`);
+		if (!res.ok) return null;
+		return res.json() as Promise<ItemContent>;
+	} catch {
+		return null;
+	}
 }

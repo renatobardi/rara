@@ -1622,8 +1622,14 @@ func seedFlow(t *testing.T, db *MockDatabase) int {
 func TestMockItemContentEmail(t *testing.T) {
 	ctx := context.Background()
 	db := newMockDatabase()
-	fid, _ := db.UpsertFlow(ctx, Flow{Name: "f", SourceType: "email", Enabled: true, Version: 1})
-	id, _ := db.UpsertItem(ctx, Item{Lane: "email", SourceRef: "msg-1@mail", FlowID: fid, FlowVersion: 1, Status: "discovered"})
+	fid, err := db.UpsertFlow(ctx, Flow{Name: "f", SourceType: "email", Enabled: true, Version: 1})
+	if err != nil {
+		t.Fatalf("UpsertFlow: %v", err)
+	}
+	id, err := db.UpsertItem(ctx, Item{Lane: "email", SourceRef: "msg-1@mail", FlowID: fid, FlowVersion: 1, Status: "discovered"})
+	if err != nil {
+		t.Fatalf("UpsertItem: %v", err)
+	}
 	db.itemContents[id] = ItemContentResult{Lane: "email", Body: "hello world", Sender: "alice@example.com"}
 
 	got, found, err := db.ItemContent(ctx, id)

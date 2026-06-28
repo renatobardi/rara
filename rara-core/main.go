@@ -780,7 +780,8 @@ type Database interface {
 	// found=false if absent.
 	GetDistillation(ctx context.Context, id int) (Distillation, bool, error)
 	// ItemContent returns rich source content for the mega-thumbnail panel.
-	// found=false when the item does not exist or the lane has no content record.
+	// found=false when the item does not exist. For lanes with no content record
+	// (youtube, linkedin, podcast) found=true with an empty Body is returned.
 	// Body is capped at 10 000 chars in the pgxDatabase implementation.
 	ItemContent(ctx context.Context, itemID int) (ItemContentResult, bool, error)
 

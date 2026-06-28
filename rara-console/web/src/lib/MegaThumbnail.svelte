@@ -12,12 +12,18 @@
 	async function onItemChange(i: QuarantineItem) {
 		content = null;
 		if (i.lane === 'youtube') {
+			loading = false;
 			content = { lane: 'youtube' };
 			return;
 		}
 		loading = true;
-		content = await fetchItemContent(i.id);
-		loading = false;
+		const token = i.id;
+		try {
+			const result = await fetchItemContent(i.id);
+			if (item.id === token) content = result;
+		} finally {
+			if (item.id === token) loading = false;
+		}
 	}
 
 	function truncate(text: string, max = 800): string {
@@ -34,7 +40,7 @@
 
 {:else if content?.lane === 'youtube' && item.source_ref}
 	<iframe
-		src="https://www.youtube.com/embed/{item.source_ref}"
+		src="https://www.youtube-nocookie.com/embed/{item.source_ref}"
 		title={item.title ?? 'YouTube'}
 		allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
 		allowfullscreen

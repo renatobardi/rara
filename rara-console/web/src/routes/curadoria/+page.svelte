@@ -1048,8 +1048,10 @@
 		grid-template-columns: 1fr;
 	}
 
-	.decidir-grid.has-thumb {
-		grid-template-columns: 1fr 1fr;
+	@media (min-width: 768px) {
+		.decidir-grid.has-thumb {
+			grid-template-columns: 1fr 1fr;
+		}
 	}
 
 	.decidir-card {
