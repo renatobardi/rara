@@ -40,7 +40,6 @@
 		when: string;
 		lane?: string;
 		source_ref?: string;
-		title?: string;
 	};
 
 	// --- tab state ---
@@ -638,9 +637,9 @@
 							<div class="flex flex-wrap items-center gap-x-2 gap-y-0.5">
 								{#if d.lane && d.source_ref && sourceUrl(d.lane, d.source_ref)}
 									<a href={sourceUrl(d.lane, d.source_ref)} target="_blank" rel="noopener noreferrer"
-									   class="truncate text-primary hover:underline">{d.title || `#${d.item_id}`}</a>
+									   class="truncate text-primary hover:underline">{d.source_ref}</a>
 								{:else}
-									<span class="truncate text-muted">{d.title || `#${d.item_id}`}</span>
+									<span class="truncate text-muted">{d.source_ref || `#${d.item_id}`}</span>
 								{/if}
 								{#if d.lane}
 									<span class="rounded-full border border-border px-1.5 py-0.5 text-[11px] text-muted">{d.lane}</span>
