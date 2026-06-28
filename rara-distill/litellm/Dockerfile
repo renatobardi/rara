@@ -3,6 +3,9 @@
 # query engine binary just runs. prod_entrypoint.sh handles prisma setup;
 # DISABLE_SCHEMA_UPDATE=True (set on the Cloud Run deploy) skips migrate deploy
 # since migrations are already applied to the Neon `litellm` schema.
+# Runs as root by upstream design: the Prisma query engine cache lives in
+# /root/.cache (mode 700), so the proxy must read it as root. (SonarCloud
+# docker:S6471 flags this; it is the intended, supported config for this image.)
 FROM --platform=linux/amd64 ghcr.io/berriai/litellm-database:v1.90.0
 
 COPY config.yaml /app/config.yaml
