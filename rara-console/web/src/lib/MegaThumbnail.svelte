@@ -1,16 +1,18 @@
 <script lang="ts">
-	import type { QuarantineItem, ItemContent } from './curadoria.js';
-	import { fetchItemContent } from './curadoria.js';
+	import type { QuarantineItem, ItemContent, PreviewResult } from './curadoria.js';
+	import { fetchItemContent, fetchPreview } from './curadoria.js';
 
 	export let item: QuarantineItem;
 
 	let loading = false;
-	let content: ItemContent | null = null;
+	let content: ItemContent | null = null;  // email lane
+	let preview: PreviewResult | null = null; // news lane
 
 	$: onItemChange(item);
 
 	async function onItemChange(i: QuarantineItem) {
 		content = null;
+		preview = null;
 		if (i.lane === 'youtube') {
 			loading = false;
 			content = { lane: 'youtube' };
@@ -19,8 +21,13 @@
 		loading = true;
 		const token = i.id;
 		try {
-			const result = await fetchItemContent(i.id);
-			if (item.id === token) content = result;
+			if (i.lane === 'news' && i.source_ref) {
+				const result = await fetchPreview(i.source_ref);
+				if (item.id === token) preview = result;
+			} else {
+				const result = await fetchItemContent(i.id);
+				if (item.id === token) content = result;
+			}
 		} finally {
 			if (item.id === token) loading = false;
 		}
@@ -47,6 +54,19 @@
 		loading="lazy"
 	></iframe>
 
+{:else if preview?.embeddable && preview.url}
+	<iframe
+		src={preview.url}
+		title={item.title ?? 'Prévia'}
+		sandbox="allow-scripts allow-same-origin"
+		loading="lazy"
+	></iframe>
+
+{:else if preview && preview.image_url}
+	<div class="og-wrap">
+		<img src={preview.image_url} alt={item.title ?? ''} loading="lazy" />
+	</div>
+
 {:else if content?.lane === 'email' && (content.body || content.sender)}
 	<div class="content-wrap">
 		{#if content.sender}
@@ -55,11 +75,6 @@
 		{#if content.body}
 			<p class="body">{truncate(content.body)}</p>
 		{/if}
-	</div>
-
-{:else if content?.lane === 'news' && content.body}
-	<div class="content-wrap">
-		<p class="body">{truncate(content.body)}</p>
 	</div>
 {/if}
 <!-- else: colapsa silenciosamente -->
@@ -71,6 +86,19 @@
 		aspect-ratio: 16 / 9;
 		border: none;
 		border-radius: 0.5rem;
+	}
+
+	.og-wrap {
+		width: 100%;
+		border-radius: 0.5rem;
+		overflow: hidden;
+	}
+
+	.og-wrap img {
+		display: block;
+		width: 100%;
+		height: auto;
+		object-fit: cover;
 	}
 
 	.content-wrap {

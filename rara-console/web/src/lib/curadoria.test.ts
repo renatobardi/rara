@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { labelDecidedBy, aggregatePulso, latestDeferReason, signalForKey, diffProfile, sourceUrl, filterQuarantine, isDiffEmpty, fetchItemContent, type ItemDecision, type FilterState, type ItemContent } from './curadoria';
+import { labelDecidedBy, aggregatePulso, latestDeferReason, signalForKey, diffProfile, sourceUrl, filterQuarantine, isDiffEmpty, fetchItemContent, fetchPreview, type ItemDecision, type FilterState, type ItemContent } from './curadoria';
 
 describe('labelDecidedBy', () => {
 	it('maps known values to PT labels', () => {
@@ -386,5 +386,30 @@ describe('fetchItemContent', () => {
 		vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false }));
 
 		expect(await fetchItemContent(99)).toBeNull();
+	});
+});
+
+describe('fetchPreview', () => {
+	afterEach(() => vi.unstubAllGlobals());
+
+	it('returns embeddable result on 200', async () => {
+		const mock = { embeddable: true, url: 'https://example.com' };
+		vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => mock }));
+
+		const result = await fetchPreview('https://example.com');
+		expect(result).toEqual(mock);
+		expect(fetch).toHaveBeenCalledWith('/api/preview?url=https%3A%2F%2Fexample.com');
+	});
+
+	it('returns null on network error', async () => {
+		vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('network')));
+
+		expect(await fetchPreview('https://example.com')).toBeNull();
+	});
+
+	it('returns null on non-200', async () => {
+		vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false }));
+
+		expect(await fetchPreview('https://example.com')).toBeNull();
 	});
 });

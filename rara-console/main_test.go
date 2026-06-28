@@ -346,6 +346,91 @@ func fakeItemContentCore(t *testing.T, token string) *httptest.Server {
 	return srv
 }
 
+func TestExtractOGImage(t *testing.T) {
+	cases := []struct{ html, want string }{
+		{`<meta property="og:image" content="https://a.com/img.jpg">`, "https://a.com/img.jpg"},
+		{`<meta content="https://b.com/img.jpg" property="og:image">`, "https://b.com/img.jpg"},
+		{`<meta property='og:image' content='https://c.com/img.jpg'>`, "https://c.com/img.jpg"},
+		{`<html><head><title>no og</title></head></html>`, ""},
+	}
+	for _, tt := range cases {
+		if got := extractOGImage(tt.html); got != tt.want {
+			t.Errorf("extractOGImage(%q) = %q, want %q", tt.html, got, tt.want)
+		}
+	}
+}
+
+func TestHandlePreviewEmbeddable(t *testing.T) {
+	// Target site returns no X-Frame-Options → embeddable.
+	site := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte(`<html><body>ok</body></html>`))
+	}))
+	defer site.Close()
+
+	s := &server{previewClient: site.Client()}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/api/preview?url="+site.URL, nil)
+	s.handlePreview(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	var result map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result["embeddable"] != true {
+		t.Errorf("embeddable = %v, want true", result["embeddable"])
+	}
+	if result["url"] != site.URL {
+		t.Errorf("url = %v, want %s", result["url"], site.URL)
+	}
+}
+
+func TestHandlePreviewNotEmbeddable(t *testing.T) {
+	// Target site returns X-Frame-Options: DENY + og:image in body.
+	site := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Frame-Options", "DENY")
+		if r.Method == http.MethodHead {
+			return
+		}
+		_, _ = w.Write([]byte(`<html><head><meta property="og:image" content="https://cdn.example.com/img.jpg"></head></html>`))
+	}))
+	defer site.Close()
+
+	s := &server{previewClient: site.Client()}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/api/preview?url="+site.URL, nil)
+	s.handlePreview(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	var result map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result["embeddable"] == true {
+		t.Error("embeddable = true, want false")
+	}
+	if result["image_url"] != "https://cdn.example.com/img.jpg" {
+		t.Errorf("image_url = %v, want https://cdn.example.com/img.jpg", result["image_url"])
+	}
+}
+
+func TestHandlePreviewBadURL(t *testing.T) {
+	s := &server{previewClient: http.DefaultClient}
+	for _, bad := range []string{"not-a-url", "ftp://example.com", ""} {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("GET", "/api/preview?url="+bad, nil)
+		s.handlePreview(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("url=%q: status = %d, want 400", bad, rec.Code)
+		}
+	}
+}
+
 func contains(s, sub string) bool {
 	for i := 0; i+len(sub) <= len(s); i++ {
 		if s[i:i+len(sub)] == sub {
