@@ -1,47 +1,16 @@
-# LiteLLM gateway config (rara 2.0) — the self-hosted, OpenAI-compatible proxy in front of
-# distill's curation models. distill calls ONE dialect (OpenAI chat completions) at this
-# gateway; the real model behind each alias is configured here, so swapping models is a
-# gateway edit, not a distill change (ARCHITECTURE-2.0.md, "Lock-in posture" #2).
+# LiteLLM gateway config (rara 2.0) — OpenAI-compatible proxy.
+# API keys come from Cloud Run secrets at runtime — never from this file.
 #
-# This file is baked into the Docker image at build time (deploy-litellm.yml). API keys come
-# from Cloud Run secrets at runtime — never from this file and never from the image.
-#
-# model_name values are the ALIASES distill sends as `model` (set via LITELLM_MODEL env var).
-# litellm_params.model is the real upstream. Keys come from the gateway's environment only.
-#
-# CUTOVER (CONSOLE-INFER-#7): this model_list is now a LEGACY bootstrap / safety-net.
-# The authoritative LLM catalog lives in Neon (llm_providers / llm_models) and is
-# reconciled into this gateway at runtime (store_model_in_db). Once the registry serves
-# all four aliases, empty this model_list in a follow-up deploy. During the transition
-# the duplicate aliases are harmless — registry and config map each alias to the same
-# upstream + key. Full runbook: docs/INFERENCIA-CUTOVER.md.
+# CUTOVER DONE (CONSOLE-INFER-#7): the authoritative LLM catalog now lives in Neon
+# (llm_providers / llm_models) and is reconciled into this gateway at runtime
+# (store_model_in_db). model_list is intentionally empty — models are managed in the
+# Console (/inferencia), not here. Runbook: docs/INFERENCIA-CUTOVER.md.
 
-model_list:
-  - model_name: groq-llama
-    litellm_params:
-      model: groq/llama-3.3-70b-versatile
-      api_key: os.environ/GROQ_API_KEY
-
-  - model_name: groq-fast
-    litellm_params:
-      model: groq/llama-3.1-8b-instant
-      api_key: os.environ/GROQ_API_KEY
-
-  - model_name: gemini-flash
-    litellm_params:
-      model: gemini/gemini-2.5-flash-lite
-      api_key: os.environ/GEMINI_API_KEY
-
-  # Pino direto no deepseek-v4-flash: o alias upstream "deepseek-chat" é aposentado em 24/07/2026.
-  - model_name: deepseek-chat
-    litellm_params:
-      model: deepseek/deepseek-v4-flash
-      api_key: os.environ/DEEPSEEK_API_KEY
+model_list: []
 
 general_settings:
-  # Master key: clients (distill) send this as bearer token via LITELLM_API_KEY.
+  # Master key: clients send this as bearer token via LITELLM_API_KEY.
   master_key: os.environ/LITELLM_MASTER_KEY
-  # DB-mode: enables Admin API (POST /model/new etc.) so the reconciler can manage models
-  # without a config redeploy. LITELLM_SALT_KEY encrypts stored credentials — set once, never rotate.
+  # DB-mode: Admin API + reconciler-managed models. LITELLM_SALT_KEY encrypts stored creds — set once, never rotate.
   store_model_in_db: true
   database_url: os.environ/DATABASE_URL
