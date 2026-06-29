@@ -110,7 +110,9 @@ func (m *MockDatabase) ListBoundUpstreams(_ context.Context) ([]string, error) {
 		}
 		var env map[string]any
 		if err := json.Unmarshal(p.Env, &env); err != nil {
-			continue
+			// Real env is constrained to a JSON object (CHECK jsonb_typeof = 'object');
+			// surface a corrupt fixture instead of masking it.
+			return nil, fmt.Errorf("list bound upstreams: decode provider env: %w", err)
 		}
 		up, _ := env["LITELLM_MODEL"].(string)
 		// Mirror the SQL regex '^[^/]+/.+$': non-empty kind and model around the first '/'.

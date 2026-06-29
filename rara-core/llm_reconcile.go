@@ -178,34 +178,49 @@ func (r *LLMReconciler) desiredModels(ctx context.Context) (desired []litellm.Mo
 			continue // malformed upstream — not a valid "{kind}/{model}" (defensive; the query filters too)
 		}
 		bound[up] = true // a valid binding exists → never delete its gateway model as an "orphan"
-		p, ok := byKind[kind]
-		if !ok {
-			log.Printf("llm reconcile: skip upstream %q — no enabled provider for kind %q", up, kind)
-			continue
-		}
-		if len(p.KeyCiphertext) == 0 {
-			log.Printf("llm reconcile: skip upstream %q — provider kind %q has no key", up, kind)
-			continue
-		}
-		if r.box == nil {
-			return nil, nil, fmt.Errorf("upstream %q has an encrypted provider key but RARA_SECRETS_KEY is not configured", up)
-		}
-		key, err := r.box.Decrypt(p.KeyCiphertext, p.KeyNonce)
+		m, ok, err := r.resolveUpstream(up, kind, byKind)
 		if err != nil {
-			return nil, nil, fmt.Errorf("decrypt key for kind %q: %w", kind, err)
+			return nil, nil, err
 		}
-		m := litellm.Model{
-			ModelName: up,
-			Upstream:  up,
-			APIBase:   p.BaseURL, // set whenever a provider declares one (BYO/openai_compatible)
-			APIKey:    string(key),
+		if ok {
+			desired = append(desired, m)
 		}
-		// Concrete models carry no per-model params/costs — litellm prices them from its own
-		// cost-map. The fingerprint hashes empty params so drift detection stays consistent.
-		m.Fingerprint = fingerprintModel(m, "{}")
-		desired = append(desired, m)
 	}
 	return desired, bound, nil
+}
+
+// resolveUpstream builds the concrete gateway model for one bound upstream by finding its provider
+// (by kind) and decrypting the key. It returns ok=false (with a skip log) when the provider is
+// absent/disabled/keyless — a soft skip that keeps the upstream bound (retained) without aborting
+// the pass. A non-nil err is a hard failure (missing secretbox or a decrypt error). The decrypted
+// key is placed on the returned Model and never logged.
+func (r *LLMReconciler) resolveUpstream(up, kind string, byKind map[string]llmProviderSync) (litellm.Model, bool, error) {
+	p, ok := byKind[kind]
+	if !ok {
+		log.Printf("llm reconcile: skip upstream %q — no enabled provider for kind %q", up, kind)
+		return litellm.Model{}, false, nil
+	}
+	if len(p.KeyCiphertext) == 0 {
+		log.Printf("llm reconcile: skip upstream %q — provider kind %q has no key", up, kind)
+		return litellm.Model{}, false, nil
+	}
+	if r.box == nil {
+		return litellm.Model{}, false, fmt.Errorf("upstream %q has an encrypted provider key but RARA_SECRETS_KEY is not configured", up)
+	}
+	key, err := r.box.Decrypt(p.KeyCiphertext, p.KeyNonce)
+	if err != nil {
+		return litellm.Model{}, false, fmt.Errorf("decrypt key for kind %q: %w", kind, err)
+	}
+	m := litellm.Model{
+		ModelName: up,
+		Upstream:  up,
+		APIBase:   p.BaseURL, // set whenever a provider declares one (BYO/openai_compatible)
+		APIKey:    string(key),
+	}
+	// Concrete models carry no per-model params/costs — litellm prices them from its own
+	// cost-map. The fingerprint hashes empty params so drift detection stays consistent.
+	m.Fingerprint = fingerprintModel(m, "{}")
+	return m, true, nil
 }
 
 // diffLLMModels is the pure full-sync diff. It returns the models to create and the gateway

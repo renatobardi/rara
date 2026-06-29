@@ -73,7 +73,8 @@ func TestLLMReconcileCreatesConcreteModelForBoundUpstream(t *testing.T) {
 		t.Fatalf("Reconcile: %v", err)
 	}
 	if len(gw.added) != 1 {
-		t.Fatalf("want 1 create, got %+v", gw.added)
+		// Don't print gw.added — its Models carry the decrypted APIKey.
+		t.Fatalf("want 1 create, got %d", len(gw.added))
 	}
 	got := gw.added[0]
 	// model_name == litellm_params.model == the full upstream string (no alias indirection).
@@ -107,7 +108,7 @@ func TestLLMReconcileIgnoresLegacyAliasesEnd2End(t *testing.T) {
 		t.Fatalf("Reconcile: %v", err)
 	}
 	if len(gw.added) != 1 || gw.added[0].ModelName != "groq/llama-3.3-70b-versatile" {
-		t.Errorf("want only the concrete model created, got %+v", gw.added)
+		t.Errorf("want only the concrete model created, got %d adds", len(gw.added))
 	}
 	if len(gw.deleted) != 0 {
 		t.Errorf("legacy alias / config model must be left untouched, got deletes %v", gw.deleted)
@@ -151,7 +152,7 @@ func TestLLMReconcileSkipsProviderWithoutKey(t *testing.T) {
 		t.Fatalf("Reconcile must not fail when a provider has no key: %v", err)
 	}
 	if len(gw.added) != 0 {
-		t.Errorf("a keyless provider cannot be registered, got %+v", gw.added)
+		t.Errorf("a keyless provider cannot be registered, got %d adds", len(gw.added))
 	}
 }
 
@@ -171,7 +172,7 @@ func TestLLMReconcileDeletesManagedConcreteWithoutBinding(t *testing.T) {
 		t.Errorf("want delete of orphan managed concrete db-old, got %v", gw.deleted)
 	}
 	if len(gw.added) != 0 {
-		t.Errorf("unexpected creates: %+v", gw.added)
+		t.Errorf("unexpected creates: %d adds", len(gw.added))
 	}
 }
 
@@ -193,7 +194,7 @@ func TestLLMReconcileRetainsModelWhenProviderTemporarilyMissing(t *testing.T) {
 		t.Errorf("must retain a still-bound model when its provider is temporarily missing, got deletes %v", gw.deleted)
 	}
 	if len(gw.added) != 0 {
-		t.Errorf("cannot recreate without a key; expected no creates, got %+v", gw.added)
+		t.Errorf("cannot recreate without a key; expected no creates, got %d adds", len(gw.added))
 	}
 }
 
