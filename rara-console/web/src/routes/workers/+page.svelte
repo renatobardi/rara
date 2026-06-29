@@ -61,12 +61,15 @@
 	// 'ready', so a worker never saves modelless while the list is still unknown — and shows a
 	// "loading" hint vs a "failed, reload" error so the in-flight window isn't a false alarm.
 	let modelsStatus = $state<'loading' | 'ready' | 'failed'>('loading');
+	let modelsSeq = 0; // guards against out-of-order responses (onMount + reopen-retry can overlap)
 
 	function loadModels() {
+		const seq = ++modelsSeq;
 		modelsStatus = 'loading';
 		fetch('/api/llm-models')
 			.then((r) => (r.ok ? r.json() : Promise.reject()))
 			.then((d) => {
+				if (seq !== modelsSeq) return; // a newer load started; drop stale data
 				// A malformed body is a load failure, not "no models" — else WorkerForm wouldn't
 				// block (modelOptions empty + status ready = silent save of an LLM worker).
 				if (!Array.isArray(d) || !d.every(isModel)) throw new Error('unexpected payload');
@@ -74,7 +77,10 @@
 				// An empty registry is still "no model to pick" — the bug covers "ou volta vazio".
 				modelsStatus = d.length > 0 ? 'ready' : 'failed';
 			})
-			.catch(() => { models = []; modelsStatus = 'failed'; /* WorkerForm bloqueia salvar worker LLM sem Model */ });
+			.catch(() => {
+				if (seq !== modelsSeq) return; // a newer load started; don't clobber it
+				models = []; modelsStatus = 'failed'; /* WorkerForm bloqueia salvar worker LLM sem Model */
+			});
 	}
 	let loading = $state(true);
 	let error = $state(false);

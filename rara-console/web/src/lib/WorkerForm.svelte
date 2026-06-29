@@ -176,7 +176,9 @@
 				e.env = t.workers.formEnvInvalid;
 			}
 		}
-		if (modelBlocked) e.model = t.workers.formModelLoadFailed;
+		if (modelBlocked) {
+			e.model = modelsStatus === 'loading' ? t.workers.formModelLoading : t.workers.formModelLoadFailed;
+		}
 		errors = e;
 		return Object.keys(e).length === 0;
 	}
