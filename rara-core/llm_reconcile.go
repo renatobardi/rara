@@ -1,16 +1,22 @@
-// llm_reconcile.go — materializes the rara LLM registry (llm_providers + llm_models) into
-// the LiteLLM gateway, level-triggered and idempotent.
+// llm_reconcile.go — materializes the rara LLM registry into the LiteLLM gateway as
+// CONCRETE provider/model entries, level-triggered and idempotent.
 //
-// INVARIANT: this reconciler is the ONLY writer of the gateway's DB-backed model registry.
-// Sync is a full-sync over the enabled models in Neon:
-//   - enabled alias in Neon, absent in the gateway        → create (/model/new)
-//   - present in the gateway as a db_model, but the alias  → delete the orphan (/model/delete)
-//     is disabled/soft-deleted/absent in Neon
-//   - content changed (upstream/cost/params/key)           → delete + recreate
+// The desired set is the set of CONCRETE upstreams ("{kind}/{model}", e.g.
+// "groq/llama-3.3-70b-versatile") referenced by enabled worker bindings
+// (providers.env->>'LITELLM_MODEL' values that contain a '/'). Each is registered with
+// model_name == litellm_params.model == the full upstream string and the matching provider's
+// decrypted key — the model is its own name (no alias indirection). The spike (CORR-INFER #0,
+// docs/SPIKE-CORR-INFER.md) confirmed a concrete entry persists, lists and deletes by id,
+// whereas a wildcard does not.
 //
-// Models that came from config.yaml (model_info.db_model == false) are READ-ONLY and never
-// touched — only db_model == true entries are managed here. The source of truth is the rara
-// tables; anything created out-of-band via the Admin UI is removed on the next pass.
+// Sync is a full-sync over ONLY the concrete entries this reconciler manages (db_model == true
+// AND model_name contains '/'):
+//   - bound upstream absent in the gateway   → create (/model/new)
+//   - managed concrete entry with no binding  → delete the orphan (/model/delete)
+//   - content changed (upstream/key)          → delete + recreate
+//
+// Legacy bare aliases (groq-llama, …) and config.yaml models (db_model == false) are left
+// untouched — they coexist and keep routing until CORR-INFER #5 migrates the workers off them.
 //
 // It is the only place that decrypts a provider API key (via internal/secretbox); the
 // plaintext key is handed to the gateway client and never logged.
@@ -20,29 +26,25 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
 	"os"
 	"strconv"
+	"strings"
 
 	"rara-core/internal/litellm"
 	"rara-core/internal/secretbox"
 )
 
-// llmModelSync is one enabled model joined to its enabled provider, including the encrypted
-// key material — the server-side read the reconciler decrypts. Never exposed over HTTP.
-type llmModelSync struct {
-	Alias         string
-	Upstream      string
-	ProviderKind  string
+// llmProviderSync is an enabled, non-deleted provider with its encrypted key material — the
+// server-side read the reconciler decrypts to register that provider's concrete models.
+// Never exposed over HTTP.
+type llmProviderSync struct {
+	Kind          string
 	BaseURL       string
 	KeyCiphertext []byte
 	KeyNonce      []byte
-	InputCost     float64
-	OutputCost    float64
-	Params        json.RawMessage
 }
 
 // litellmGateway is the slice of the LiteLLM admin client the reconciler needs. A fake
@@ -102,7 +104,7 @@ func (r *LLMReconciler) Reconcile(ctx context.Context) error {
 	if err := r.gw.Health(ctx); err != nil {
 		return fmt.Errorf("llm reconcile: gateway unavailable: %w", err)
 	}
-	desired, err := r.desiredModels(ctx)
+	desired, bound, err := r.desiredModels(ctx)
 	if err != nil {
 		return fmt.Errorf("llm reconcile: build desired: %w", err)
 	}
@@ -111,7 +113,7 @@ func (r *LLMReconciler) Reconcile(ctx context.Context) error {
 		return fmt.Errorf("llm reconcile: list gateway models: %w", err)
 	}
 
-	create, deleteIDs := diffLLMModels(desired, actual)
+	create, deleteIDs := diffLLMModels(desired, actual, bound)
 
 	var errs []error
 	// Deletes first: an update is delete+create, and removing the stale row before adding
@@ -136,50 +138,92 @@ func (r *LLMReconciler) Reconcile(ctx context.Context) error {
 	return nil
 }
 
-// desiredModels reads the enabled registry and decrypts each key into a gateway model spec.
-func (r *LLMReconciler) desiredModels(ctx context.Context) ([]litellm.Model, error) {
-	rows, err := r.db.ListEnabledLLMModelsForSync(ctx)
+// desiredModels builds the concrete gateway entries from the bound upstreams: for each enabled
+// worker binding's "{kind}/{model}" it finds the matching enabled provider (by the prefix before
+// the first '/' == llm_providers.kind), decrypts its key, and registers model_name == upstream.
+//
+// It returns the desired entries plus `bound`, the set of every valid-shaped bound upstream
+// (resolvable or not). A bound upstream whose provider is absent/disabled/keyless is skipped from
+// the desired set with a log — but it stays in `bound`, so the full-sync RETAINS its existing
+// gateway model instead of deleting it. That keeps a transient provider misconfig from tearing down
+// a model that an active binding still routes through (it does not abort the pass either).
+func (r *LLMReconciler) desiredModels(ctx context.Context) (desired []litellm.Model, bound map[string]bool, err error) {
+	upstreams, err := r.db.ListBoundUpstreams(ctx)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	out := make([]litellm.Model, 0, len(rows))
-	for _, row := range rows {
-		m := litellm.Model{
-			ModelName:  row.Alias,
-			Upstream:   row.Upstream,
-			InputCost:  row.InputCost,
-			OutputCost: row.OutputCost,
-			APIBase:    row.BaseURL, // set whenever a provider declares one (BYO/openai_compatible)
+	if len(upstreams) == 0 {
+		return nil, nil, nil
+	}
+	provs, err := r.db.ListLLMProvidersForSync(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	// One provider per kind. If an operator created two of the same kind, the first by id wins
+	// (ListLLMProvidersForSync is ordered by id) — deterministic, and the duplicate is theirs to fix.
+	byKind := make(map[string]llmProviderSync, len(provs))
+	for _, p := range provs {
+		if _, ok := byKind[p.Kind]; !ok {
+			byKind[p.Kind] = p
 		}
-		if len(row.KeyCiphertext) > 0 {
-			if r.box == nil {
-				return nil, fmt.Errorf("model %q has an encrypted key but RARA_SECRETS_KEY is not configured", row.Alias)
-			}
-			key, err := r.box.Decrypt(row.KeyCiphertext, row.KeyNonce)
-			if err != nil {
-				return nil, fmt.Errorf("decrypt key for model %q: %w", row.Alias, err)
-			}
-			m.APIKey = string(key)
+	}
+
+	bound = make(map[string]bool, len(upstreams))
+	desired = make([]litellm.Model, 0, len(upstreams))
+	for _, up := range upstreams {
+		// Split on the FIRST '/': kind is the prefix; model may itself contain '/'
+		// (e.g. "groq/openai/gpt-oss-120b"). Both halves must be non-empty.
+		kind, model, ok := strings.Cut(up, "/")
+		if !ok || kind == "" || model == "" {
+			continue // malformed upstream — not a valid "{kind}/{model}" (defensive; the query filters too)
 		}
-		params, canonical, err := canonicalParams(row.Params)
+		bound[up] = true // a valid binding exists → never delete its gateway model as an "orphan"
+		p, ok := byKind[kind]
+		if !ok {
+			log.Printf("llm reconcile: skip upstream %q — no enabled provider for kind %q", up, kind)
+			continue
+		}
+		if len(p.KeyCiphertext) == 0 {
+			log.Printf("llm reconcile: skip upstream %q — provider kind %q has no key", up, kind)
+			continue
+		}
+		if r.box == nil {
+			return nil, nil, fmt.Errorf("upstream %q has an encrypted provider key but RARA_SECRETS_KEY is not configured", up)
+		}
+		key, err := r.box.Decrypt(p.KeyCiphertext, p.KeyNonce)
 		if err != nil {
-			return nil, fmt.Errorf("model %q params: %w", row.Alias, err)
+			return nil, nil, fmt.Errorf("decrypt key for kind %q: %w", kind, err)
 		}
-		m.Params = params
-		m.Fingerprint = fingerprintModel(m, canonical)
-		out = append(out, m)
+		m := litellm.Model{
+			ModelName: up,
+			Upstream:  up,
+			APIBase:   p.BaseURL, // set whenever a provider declares one (BYO/openai_compatible)
+			APIKey:    string(key),
+		}
+		// Concrete models carry no per-model params/costs — litellm prices them from its own
+		// cost-map. The fingerprint hashes empty params so drift detection stays consistent.
+		m.Fingerprint = fingerprintModel(m, "{}")
+		desired = append(desired, m)
 	}
-	return out, nil
+	return desired, bound, nil
 }
 
 // diffLLMModels is the pure full-sync diff. It returns the models to create and the gateway
-// ids to delete so the gateway's db_model set equals desired exactly. config.yaml models
-// (DBModel==false) are ignored entirely.
-func diffLLMModels(desired, actual []litellm.Model) (create []litellm.Model, deleteIDs []string) {
+// ids to delete so the gateway's MANAGED concrete set converges to desired. Only db_model entries
+// whose model_name is a concrete "{kind}/{model}" (contains '/') are managed; config.yaml models
+// (DBModel==false) and legacy bare aliases (no '/') are ignored entirely.
+//
+// A managed model is deleted only when its name is NOT in `bound` — i.e. no active worker binding
+// references it. A name that is bound but missing from desired (its provider is transiently
+// unresolvable) is RETAINED: not recreated, not deleted, so a misconfig never tears down a live model.
+func diffLLMModels(desired, actual []litellm.Model, bound map[string]bool) (create []litellm.Model, deleteIDs []string) {
 	actualByName := make(map[string]litellm.Model, len(actual))
 	for _, a := range actual {
 		if !a.DBModel {
 			continue // config.yaml model — read-only, never managed here
+		}
+		if !strings.Contains(a.ModelName, "/") {
+			continue // legacy bare alias — coexists, never managed here (CORR-INFER #1)
 		}
 		if prev, ok := actualByName[a.ModelName]; ok {
 			// Duplicate db_model alias (out-of-band create): keep one, delete the extra.
@@ -203,28 +247,11 @@ func diffLLMModels(desired, actual []litellm.Model) (create []litellm.Model, del
 		}
 	}
 	for name, a := range actualByName {
-		if !desiredNames[name] {
-			deleteIDs = append(deleteIDs, a.ID)
+		if !desiredNames[name] && !bound[name] {
+			deleteIDs = append(deleteIDs, a.ID) // managed model with no active binding → orphan
 		}
 	}
 	return create, deleteIDs
-}
-
-// canonicalParams parses the model's params jsonb into a map (for the gateway client) and a
-// canonical, key-sorted JSON encoding (for the fingerprint). Empty/null params → empty map.
-func canonicalParams(raw json.RawMessage) (map[string]any, string, error) {
-	if len(raw) == 0 || string(raw) == "null" {
-		return map[string]any{}, "{}", nil
-	}
-	var m map[string]any
-	if err := json.Unmarshal(raw, &m); err != nil {
-		return nil, "", err
-	}
-	canonical, err := json.Marshal(m) // json.Marshal sorts map keys → stable encoding
-	if err != nil {
-		return nil, "", err
-	}
-	return m, string(canonical), nil
 }
 
 // fingerprintModel hashes the full desired content of a model, including the decrypted key,

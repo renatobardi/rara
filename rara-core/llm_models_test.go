@@ -99,32 +99,49 @@ func (m *MockDatabase) ListLLMModels(_ context.Context, providerID int) ([]LLMMo
 	return out, nil
 }
 
-func (m *MockDatabase) ListEnabledLLMModelsForSync(_ context.Context) ([]llmModelSync, error) {
-	var out []llmModelSync
-	for _, mdl := range m.llmModels {
-		if mdl.DeletedAt != nil || !mdl.Enabled {
+// ListBoundUpstreams mirrors the SQL: DISTINCT enabled-worker env->>'LITELLM_MODEL' values that
+// contain '/', ordered. Legacy bare aliases (no '/') and missing keys are excluded.
+func (m *MockDatabase) ListBoundUpstreams(_ context.Context) ([]string, error) {
+	seen := map[string]bool{}
+	var out []string
+	for _, p := range m.providers {
+		if !p.Enabled || len(p.Env) == 0 {
 			continue
 		}
-		for _, p := range m.llmProviders {
-			if p.ID != mdl.ProviderID || p.DeletedAt != nil || !p.Enabled {
-				continue
-			}
-			out = append(out, llmModelSync{
-				Alias:         mdl.Alias,
-				Upstream:      mdl.Upstream,
-				ProviderKind:  p.Kind,
-				BaseURL:       p.BaseURL,
-				KeyCiphertext: p.KeyCiphertext,
-				KeyNonce:      p.KeyNonce,
-				InputCost:     mdl.InputCost,
-				OutputCost:    mdl.OutputCost,
-				Params:        mdl.Params,
-			})
-			break
+		var env map[string]any
+		if err := json.Unmarshal(p.Env, &env); err != nil {
+			continue
 		}
+		up, _ := env["LITELLM_MODEL"].(string)
+		// Mirror the SQL regex '^[^/]+/.+$': non-empty kind and model around the first '/'.
+		kind, model, ok := strings.Cut(up, "/")
+		if !ok || kind == "" || model == "" || seen[up] {
+			continue
+		}
+		seen[up] = true
+		out = append(out, up)
 	}
-	// Mirror the real query's ORDER BY m.alias so the mock can't hide ordering bugs.
-	sort.Slice(out, func(i, j int) bool { return out[i].Alias < out[j].Alias })
+	sort.Strings(out) // mirror ORDER BY upstream
+	return out, nil
+}
+
+// ListLLMProvidersForSync mirrors the SQL: enabled, non-deleted providers with key material,
+// ordered by id (so the reconciler's first-id-wins kind resolution is deterministic).
+func (m *MockDatabase) ListLLMProvidersForSync(_ context.Context) ([]llmProviderSync, error) {
+	sorted := append([]mockLLMProvider(nil), m.llmProviders...)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].ID < sorted[j].ID })
+	var out []llmProviderSync
+	for _, p := range sorted {
+		if p.DeletedAt != nil || !p.Enabled {
+			continue
+		}
+		out = append(out, llmProviderSync{
+			Kind:          p.Kind,
+			BaseURL:       p.BaseURL,
+			KeyCiphertext: p.KeyCiphertext,
+			KeyNonce:      p.KeyNonce,
+		})
+	}
 	return out, nil
 }
 

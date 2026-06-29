@@ -865,12 +865,19 @@ type Database interface {
 	// ListLLMModels returns non-deleted models with a light provider name join.
 	// providerID=0 returns all.
 	ListLLMModels(ctx context.Context, providerID int) ([]LLMModelRow, error)
-	// ListEnabledLLMModelsForSync returns enabled models joined to their enabled, non-deleted
-	// providers, including the encrypted key material — the server-side read the LLM reconciler
-	// decrypts. Never exposed over HTTP.
-	ListEnabledLLMModelsForSync(ctx context.Context) ([]llmModelSync, error)
 	// DeleteLLMModel soft-deletes the model with the given id (sets deleted_at).
 	DeleteLLMModel(ctx context.Context, id int) error
+
+	// --- LLM reconciler: concrete provider/model entries (CORR-INFER #1) --
+	// ListBoundUpstreams returns the DISTINCT concrete upstreams ("{kind}/{model}", with a
+	// non-empty kind before the first '/' and a non-empty model after it) that enabled worker
+	// bindings reference via env->>'LITELLM_MODEL'. Legacy bare aliases (no '/') and malformed
+	// values ("groq/", "/m") are excluded. This is the reconciler's desired set.
+	ListBoundUpstreams(ctx context.Context) ([]string, error)
+	// ListLLMProvidersForSync returns enabled, non-deleted providers with their encrypted key
+	// material (ordered by id), so the reconciler can resolve an upstream's kind prefix to a
+	// provider and decrypt its key. Never exposed over HTTP.
+	ListLLMProvidersForSync(ctx context.Context) ([]llmProviderSync, error)
 }
 
 // ---------------------------------------------------------------------------

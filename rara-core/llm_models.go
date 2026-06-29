@@ -269,33 +269,60 @@ func (d *pgxDatabase) DeleteLLMModel(ctx context.Context, id int) error {
 	return err
 }
 
-// ListEnabledLLMModelsForSync feeds the LLM reconciler: enabled models whose provider is also
-// enabled and not soft-deleted, with the provider's encrypted key material for decryption.
-func (d *pgxDatabase) ListEnabledLLMModelsForSync(ctx context.Context) ([]llmModelSync, error) {
+// ListBoundUpstreams feeds the LLM reconciler's desired set: the DISTINCT concrete upstreams
+// ("{kind}/{model}") that enabled worker bindings pin via env->>'LITELLM_MODEL'. The regex requires
+// a non-empty kind and a non-empty model around the first '/', so malformed values ("groq/", "/m")
+// and legacy bare aliases (no '/') are excluded; a multi-slash model ("groq/openai/gpt-oss-120b")
+// is kept (kind is the prefix before the first '/'). A NULL env value is excluded too.
+func (d *pgxDatabase) ListBoundUpstreams(ctx context.Context) ([]string, error) {
 	const q = `
-		SELECT m.alias, m.upstream, p.kind, COALESCE(p.base_url,''),
-		       p.key_ciphertext, p.key_nonce,
-		       m.input_cost_per_token::float8, m.output_cost_per_token::float8, m.params
-		FROM llm_models m
-		JOIN llm_providers p ON p.id = m.provider_id AND p.deleted_at IS NULL AND p.enabled
-		WHERE m.deleted_at IS NULL AND m.enabled
-		ORDER BY m.alias`
+		SELECT DISTINCT env->>'LITELLM_MODEL' AS upstream
+		FROM providers
+		WHERE enabled = true AND env->>'LITELLM_MODEL' ~ '^[^/]+/.+$'
+		ORDER BY upstream`
 	rows, err := d.conn.Query(ctx, q)
 	if err != nil {
-		return nil, fmt.Errorf("list enabled llm models for sync: query: %w", err)
+		return nil, fmt.Errorf("list bound upstreams: query: %w", err)
 	}
 	defer rows.Close()
-	var out []llmModelSync
+	var out []string
 	for rows.Next() {
-		var s llmModelSync
-		if err := rows.Scan(&s.Alias, &s.Upstream, &s.ProviderKind, &s.BaseURL,
-			&s.KeyCiphertext, &s.KeyNonce, &s.InputCost, &s.OutputCost, &s.Params); err != nil {
-			return nil, fmt.Errorf("list enabled llm models for sync: scan: %w", err)
+		var up string
+		if err := rows.Scan(&up); err != nil {
+			return nil, fmt.Errorf("list bound upstreams: scan: %w", err)
+		}
+		out = append(out, up)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list bound upstreams: rows: %w", err)
+	}
+	return out, nil
+}
+
+// ListLLMProvidersForSync feeds the LLM reconciler: enabled, non-deleted providers with their
+// encrypted key material, so an upstream's kind prefix can be resolved to a provider and its key
+// decrypted. Ordered by id so a duplicate kind resolves deterministically (first id wins).
+func (d *pgxDatabase) ListLLMProvidersForSync(ctx context.Context) ([]llmProviderSync, error) {
+	const q = `
+		SELECT kind, COALESCE(base_url,''), key_ciphertext, key_nonce
+		FROM llm_providers
+		WHERE deleted_at IS NULL AND enabled
+		ORDER BY id`
+	rows, err := d.conn.Query(ctx, q)
+	if err != nil {
+		return nil, fmt.Errorf("list llm providers for sync: query: %w", err)
+	}
+	defer rows.Close()
+	var out []llmProviderSync
+	for rows.Next() {
+		var s llmProviderSync
+		if err := rows.Scan(&s.Kind, &s.BaseURL, &s.KeyCiphertext, &s.KeyNonce); err != nil {
+			return nil, fmt.Errorf("list llm providers for sync: scan: %w", err)
 		}
 		out = append(out, s)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("list enabled llm models for sync: rows: %w", err)
+		return nil, fmt.Errorf("list llm providers for sync: rows: %w", err)
 	}
 	return out, nil
 }
