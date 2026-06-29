@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -16,10 +17,15 @@ import (
 // Types
 // ---------------------------------------------------------------------------
 
-// validLLMKinds mirrors the CHECK constraint in 030_llm_providers.sql.
-var validLLMKinds = map[string]bool{
-	"groq": true, "gemini": true, "anthropic": true,
-	"openai": true, "deepseek": true, "openai_compatible": true,
+// maxKindLen bounds kind to the llm_providers.kind column width (VARCHAR(24)), giving a clean
+// badInput instead of a DB-level error.
+const maxKindLen = 24
+
+// validLLMKind reports whether kind is acceptable. kind is no longer a fixed enum of 6 (migration
+// 033 dropped the CHECK): it may be any litellm provider, and the SPA constrains the picker to the
+// litellm catalog. The core only rejects empty / over-long values.
+func validLLMKind(kind string) bool {
+	return kind != "" && len(kind) <= maxKindLen
 }
 
 // LLMProviderInput is the write-side payload (api_key is write-only).
@@ -61,10 +67,13 @@ type llmProviderRaw struct {
 // When api_key is empty, it updates only the non-secret fields of an existing provider;
 // if no matching provider exists, it returns badInput (api_key is required for new providers).
 func (c *Core) UpsertLLMProvider(ctx context.Context, in LLMProviderInput) error {
-	if !validLLMKinds[in.Kind] {
-		return badInput("invalid kind %q (want groq|gemini|anthropic|openai|deepseek|openai_compatible)", in.Kind)
+	// Normalize before validating/persisting so a whitespace-only or trailing-space kind can't slip
+	// past the checks (or land in the gateway's model_name prefix) — the core is the trust boundary.
+	kind := strings.TrimSpace(in.Kind)
+	if !validLLMKind(kind) {
+		return badInput("invalid kind %q (must be a non-empty litellm provider, max %d chars)", in.Kind, maxKindLen)
 	}
-	if in.Kind == "openai_compatible" && in.BaseURL == "" {
+	if kind == "openai_compatible" && in.BaseURL == "" {
 		return badInput("base_url is required for kind openai_compatible")
 	}
 	if in.Name == "" {
@@ -83,7 +92,7 @@ func (c *Core) UpsertLLMProvider(ctx context.Context, in LLMProviderInput) error
 
 	if in.APIKey == "" {
 		// Key-absent path: update existing fields only; preserves stored ciphertext.
-		err := c.db.UpdateLLMProviderFields(ctx, in.Name, in.Kind, in.BaseURL, enabled)
+		err := c.db.UpdateLLMProviderFields(ctx, in.Name, kind, in.BaseURL, enabled)
 		if errors.Is(err, errNotFound) {
 			return badInput("provider %q not found; api_key is required for new providers", in.Name)
 		}
@@ -101,7 +110,7 @@ func (c *Core) UpsertLLMProvider(ctx context.Context, in LLMProviderInput) error
 		return fmt.Errorf("encrypt api_key for %q: %w", in.Name, err)
 	}
 	last4 := secretbox.Last4(in.APIKey)
-	if _, err := c.db.UpsertLLMProvider(ctx, in.Name, in.Kind, in.BaseURL, ct, nonce, last4, enabled); err != nil {
+	if _, err := c.db.UpsertLLMProvider(ctx, in.Name, kind, in.BaseURL, ct, nonce, last4, enabled); err != nil {
 		return fmt.Errorf("upsert llm provider %q: %w", in.Name, err)
 	}
 	return nil

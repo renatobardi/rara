@@ -4,61 +4,23 @@
 	import {
 		asList,
 		isProvider,
-		isModel,
 		maskKey,
 		validateBaseUrl,
-		costPerMillion,
-		isSpend,
-		indexSpendByModel,
-		formatUSD,
-		formatTokens,
-		SPEND_PERIODS,
-		PROVIDER_KINDS,
 		isCatalogEntry,
-		filterCatalog,
-		applyCatalogPick,
+		catalogKinds,
 		type LLMProvider,
-		type LLMModel,
-		type LLMSpend,
 		type CatalogEntry
 	} from '$lib/inferencia';
 
 	// ── data ──
 	let providers = $state<LLMProvider[]>([]);
-	let models = $state<LLMModel[]>([]);
 	let provLoading = $state(true);
 	let provError = $state(false);
-	let modelLoading = $state(true);
-	let modelError = $state(false);
 
-	// ── real cost/tokens (CONSOLE-INFER-#9) ──
-	let spend = $state<LLMSpend[]>([]);
-	let spendPeriod = $state(2); // index into SPEND_PERIODS; default 30d
-	let spendError = $state(false); // a failed fetch ≠ genuine "no spend"
-	let spendByModel = $derived(indexSpendByModel(spend));
-	let spendSeq = 0; // guards against out-of-order responses on rapid period switches
-
-	function fetchSpend() {
-		const seq = ++spendSeq;
-		const days = SPEND_PERIODS[spendPeriod].days;
-		const url = days === null ? '/api/llm-spend' : `/api/llm-spend?days=${days}`;
-		return fetch(url)
-			.then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
-			.then((d) => {
-				if (seq !== spendSeq) return; // a newer period was selected; drop stale data
-				spend = asList<LLMSpend>(d).filter(isSpend);
-				spendError = false;
-			})
-			.catch(() => {
-				if (seq !== spendSeq) return;
-				spend = [];
-				spendError = true; // surface the failure instead of faking $0 — never blocks the table
-			});
-	}
-
-	// ── litellm catalog autocomplete (CONSOLE-INFER-#CATALOG) ──
-	// Best-effort: a failed fetch just leaves the combobox empty; manual upstream entry still works.
+	// ── litellm catalog: feeds the provider "kind" combobox (distinct litellm providers) ──
+	// Best-effort: a failed fetch leaves the list as just ['openai_compatible'] (BYO still works).
 	let catalog = $state<CatalogEntry[]>([]);
+	let kindOptions = $derived(catalogKinds(catalog));
 	function fetchCatalog() {
 		return fetch('/api/llm-catalog')
 			.then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
@@ -68,20 +30,6 @@
 			.catch(() => {
 				catalog = [];
 			});
-	}
-	// True once the operator picks a provider by hand — after that we never override their choice.
-	let providerTouched = $state(false);
-	// On each keystroke in the upstream field, auto-fill costs (and the provider when unambiguous) if
-	// the value exactly matches a catalog model. Non-matches leave the fields as typed (BYO stays valid).
-	function onUpstreamInput() {
-		const hit = applyCatalogPick(mUpstream, catalog, providers);
-		if (!hit) return;
-		mCostIn = String(hit.input_cost_per_token);
-		mCostOut = String(hit.output_cost_per_token);
-		// While the operator hasn't chosen a provider manually, derive it from the picked model:
-		// set it on a unique match, and clear it when the catalog resolves no unique provider — so a
-		// provider auto-filled for a previous model can't linger out of sync after switching models.
-		if (!providerTouched) mProviderId = hit.provider_id ?? '';
 	}
 
 	function fetchProviders() {
@@ -99,32 +47,10 @@
 			});
 	}
 
-	function fetchModels() {
-		modelLoading = true;
-		modelError = false;
-		return fetch('/api/llm-models')
-			.then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
-			.then((d) => {
-				models = asList<LLMModel>(d).filter(isModel);
-				modelLoading = false;
-			})
-			.catch(() => {
-				modelError = true;
-				modelLoading = false;
-			});
-	}
-
 	onMount(() => {
 		fetchProviders();
-		fetchModels();
-		fetchSpend();
 		fetchCatalog();
 	});
-
-	function pickSpendPeriod(i: number) {
-		spendPeriod = i;
-		fetchSpend();
-	}
 
 	// ── toasts (mirrors workers/+page.svelte) ──
 	type Toast = { id: number; kind: 'ok' | 'err'; msg: string };
@@ -143,23 +69,12 @@
 	let provSearch = $state('');
 	let provSearchOpen = $state(false);
 	let provSortDir = $state<'asc' | 'desc'>('asc');
-	let modelSearch = $state('');
-	let modelSearchOpen = $state(false);
-	let modelSortDir = $state<'asc' | 'desc'>('asc');
 
 	let filteredProviders = $derived.by(() => {
 		const q = provSearch.trim().toLowerCase();
 		const rows = providers.filter((p) => !q || p.name.toLowerCase().includes(q) || p.kind.includes(q));
 		const dir = provSortDir === 'asc' ? 1 : -1;
 		return [...rows].sort((a, b) => a.name.localeCompare(b.name) * dir);
-	});
-	let filteredModels = $derived.by(() => {
-		const q = modelSearch.trim().toLowerCase();
-		const rows = models.filter(
-			(m) => !q || m.alias.toLowerCase().includes(q) || m.upstream.toLowerCase().includes(q)
-		);
-		const dir = modelSortDir === 'asc' ? 1 : -1;
-		return [...rows].sort((a, b) => a.alias.localeCompare(b.alias) * dir);
 	});
 
 	// ── kebab (one open at a time) ──
@@ -172,62 +87,36 @@
 		if (e.key !== 'Escape') return;
 		if (activeKebab) { activeKebab = null; return; }
 		if (provSearchOpen) { provSearchOpen = false; provSearch = ''; }
-		if (modelSearchOpen) { modelSearchOpen = false; modelSearch = ''; }
 		if (formOpen) closeForm();
 		if (confirmDelete) confirmDelete = null;
 	}
 
-	// ── forms ──
-	type FormTarget = { entity: 'provider' | 'model'; mode: 'add' | 'edit' };
-	let formOpen = $state<FormTarget | null>(null);
+	// ── form ──
+	type FormMode = 'add' | 'edit';
+	let formOpen = $state<FormMode | null>(null);
 	let formErrors = $state<Record<string, string>>({});
 	let formServerError = $state('');
 	let submitting = $state(false);
 
 	// provider form fields
 	let pName = $state('');
-	let pKind = $state<string>('groq');
+	let pKind = $state('');
 	let pBaseUrl = $state('');
 	let pApiKey = $state('');
 	let pEnabled = $state(true);
 	let pEditId = $state<number | null>(null);
 
-	// model form fields
-	let mAlias = $state('');
-	let mProviderId = $state<number | ''>('');
-	let mUpstream = $state('');
-	let mCostIn = $state('0');
-	let mCostOut = $state('0');
-	let mParamsRaw = $state('');
-	let mEnabled = $state(true);
-	let mEditId = $state<number | null>(null);
-
 	function openAddProvider() {
-		formOpen = { entity: 'provider', mode: 'add' };
+		formOpen = 'add';
 		formErrors = {}; formServerError = '';
-		pName = ''; pKind = 'groq'; pBaseUrl = ''; pApiKey = ''; pEnabled = true; pEditId = null;
+		pName = ''; pKind = ''; pBaseUrl = ''; pApiKey = ''; pEnabled = true; pEditId = null;
 		activeKebab = null;
 	}
 	function openEditProvider(p: LLMProvider) {
-		formOpen = { entity: 'provider', mode: 'edit' };
+		formOpen = 'edit';
 		formErrors = {}; formServerError = '';
 		pName = p.name; pKind = p.kind; pBaseUrl = p.base_url ?? ''; pApiKey = ''; pEnabled = p.enabled;
 		pEditId = p.id; activeKebab = null;
-	}
-	function openAddModel() {
-		formOpen = { entity: 'model', mode: 'add' };
-		formErrors = {}; formServerError = '';
-		mAlias = ''; mProviderId = providers[0]?.id ?? ''; mUpstream = '';
-		mCostIn = '0'; mCostOut = '0'; mParamsRaw = ''; mEnabled = true; mEditId = null;
-		providerTouched = false; activeKebab = null;
-	}
-	function openEditModel(m: LLMModel) {
-		formOpen = { entity: 'model', mode: 'edit' };
-		formErrors = {}; formServerError = '';
-		mAlias = m.alias; mProviderId = m.provider_id; mUpstream = m.upstream;
-		mCostIn = String(m.input_cost_per_token); mCostOut = String(m.output_cost_per_token);
-		mParamsRaw = m.params && Object.keys(m.params as object).length ? JSON.stringify(m.params, null, 2) : '';
-		mEnabled = m.enabled; mEditId = m.id; providerTouched = true; activeKebab = null;
 	}
 	function closeForm() {
 		formOpen = null; formErrors = {}; formServerError = ''; submitting = false;
@@ -237,20 +126,21 @@
 	async function submitProvider() {
 		const e: Record<string, string> = {};
 		if (!pName.trim()) e.name = t.inferencia.errNameRequired;
+		if (!pKind.trim()) e.kind = t.inferencia.errKindRequired;
 		const baseErr = validateBaseUrl(pKind, pBaseUrl);
 		if (baseErr === 'required') e.baseUrl = t.inferencia.errBaseUrlRequired;
 		else if (baseErr === 'invalid') e.baseUrl = t.inferencia.errBaseUrlInvalid;
 		else if (baseErr === 'scheme') e.baseUrl = t.inferencia.errBaseUrlScheme;
 		else if (baseErr === 'private') e.baseUrl = t.inferencia.errBaseUrlPrivate;
 		// api_key is required only when creating; empty on edit = preserve existing.
-		if (formOpen?.mode === 'add' && !pApiKey.trim()) e.apiKey = t.inferencia.errApiKeyRequired;
+		if (formOpen === 'add' && !pApiKey.trim()) e.apiKey = t.inferencia.errApiKeyRequired;
 		formErrors = e;
 		if (Object.keys(e).length) return;
 
 		submitting = true; formServerError = '';
 		const body = {
 			name: pName.trim(),
-			kind: pKind,
+			kind: pKind.trim(),
 			base_url: pBaseUrl.trim(),
 			api_key: pApiKey, // write-only; empty preserves on edit
 			enabled: pEnabled
@@ -265,54 +155,6 @@
 			toast('ok', t.inferencia.saveOk);
 			closeForm();
 			await fetchProviders();
-		} catch (err) {
-			formServerError = err instanceof Error ? err.message : t.inferencia.saveError;
-			submitting = false;
-		}
-	}
-
-	async function submitModel() {
-		const e: Record<string, string> = {};
-		if (!mAlias.trim()) e.alias = t.inferencia.errAliasRequired;
-		if (mProviderId === '' || mProviderId <= 0) e.provider = t.inferencia.errProviderRequired;
-		if (!mUpstream.trim()) e.upstream = t.inferencia.errUpstreamRequired;
-		const ci = Number(mCostIn);
-		const co = Number(mCostOut);
-		// Number.isFinite rejects NaN and Infinity (e.g. "1e309" overflows to Infinity).
-		if (!Number.isFinite(ci) || ci < 0) e.costIn = t.inferencia.errCostNegative;
-		if (!Number.isFinite(co) || co < 0) e.costOut = t.inferencia.errCostNegative;
-		let params: unknown = {};
-		if (mParamsRaw.trim()) {
-			try {
-				params = JSON.parse(mParamsRaw.trim());
-				if (typeof params !== 'object' || params === null || Array.isArray(params)) throw new Error();
-			} catch {
-				e.params = t.inferencia.errParamsInvalid;
-			}
-		}
-		formErrors = e;
-		if (Object.keys(e).length) return;
-
-		submitting = true; formServerError = '';
-		const body = {
-			provider_id: Number(mProviderId),
-			alias: mAlias.trim(),
-			upstream: mUpstream.trim(),
-			input_cost_per_token: ci,
-			output_cost_per_token: co,
-			params,
-			enabled: mEnabled
-		};
-		try {
-			const res = await fetch('/api/llm-models', {
-				method: 'PUT',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify(body)
-			});
-			if (!res.ok) throw new Error(await errorMessage(res));
-			toast('ok', t.inferencia.saveOk);
-			closeForm();
-			await fetchModels();
 		} catch (err) {
 			formServerError = err instanceof Error ? err.message : t.inferencia.saveError;
 			submitting = false;
@@ -343,43 +185,20 @@
 			toast('err', t.inferencia.saveError);
 		}
 	}
-	async function toggleModel(m: LLMModel) {
-		activeKebab = null;
-		try {
-			const res = await fetch('/api/llm-models', {
-				method: 'PUT',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({
-					provider_id: m.provider_id, alias: m.alias, upstream: m.upstream,
-					input_cost_per_token: m.input_cost_per_token, output_cost_per_token: m.output_cost_per_token,
-					params: m.params ?? {}, enabled: !m.enabled
-				})
-			});
-			if (!res.ok) throw new Error();
-			toast('ok', t.inferencia.saveOk);
-			await fetchModels();
-		} catch {
-			toast('err', t.inferencia.saveError);
-		}
-	}
 
 	// ── delete (soft) ──
-	type DeleteTarget = { entity: 'provider' | 'model'; id: number; label: string };
+	type DeleteTarget = { id: number; label: string };
 	let confirmDelete = $state<DeleteTarget | null>(null);
 	let deleting = $state(false);
 	async function doDelete() {
 		if (!confirmDelete) return;
 		deleting = true;
-		const { entity, id } = confirmDelete;
-		const url = entity === 'provider' ? `/api/llm-providers/${id}` : `/api/llm-models/${id}`;
 		try {
-			const res = await fetch(url, { method: 'DELETE' });
+			const res = await fetch(`/api/llm-providers/${confirmDelete.id}`, { method: 'DELETE' });
 			if (!res.ok) throw new Error();
 			toast('ok', t.inferencia.deleteOk);
 			confirmDelete = null;
-			// Deleting a provider can orphan its models' provider_name join — refresh both.
-			if (entity === 'provider') await Promise.all([fetchProviders(), fetchModels()]);
-			else await fetchModels();
+			await fetchProviders();
 		} catch {
 			toast('err', t.inferencia.deleteError);
 		} finally {
@@ -397,7 +216,7 @@
 <svelte:window onkeydown={closeOnEsc} onclick={onWindowClick} />
 
 <!-- ══ Providers ══ -->
-<section class="mb-10">
+<section>
 	<div class="mb-1 flex items-center gap-2">
 		<h2 class="text-[15px] font-semibold">{t.inferencia.providersSection}</h2>
 	</div>
@@ -423,7 +242,7 @@
 		{/if}
 	</div>
 
-	{#if formOpen?.entity === 'provider' && formOpen.mode === 'add'}
+	{#if formOpen === 'add'}
 		<div class="mb-4">{@render providerForm()}</div>
 	{/if}
 
@@ -469,122 +288,12 @@
 								{@render kebab(`prov-${p.id}`, [
 									{ label: p.enabled ? t.inferencia.disable : t.inferencia.enable, run: () => toggleProvider(p) },
 									{ label: t.inferencia.edit, run: () => openEditProvider(p) },
-									{ label: t.inferencia.delete, run: () => { activeKebab = null; confirmDelete = { entity: 'provider', id: p.id, label: p.name }; }, danger: true }
+									{ label: t.inferencia.delete, run: () => { activeKebab = null; confirmDelete = { id: p.id, label: p.name }; }, danger: true }
 								])}
 							</td>
 						</tr>
-						{#if formOpen?.entity === 'provider' && formOpen.mode === 'edit' && pEditId === p.id}
+						{#if formOpen === 'edit' && pEditId === p.id}
 							<tr><td colspan="6" class="px-4 py-3">{@render providerForm()}</td></tr>
-						{/if}
-					{/each}
-				</tbody>
-			</table>
-		</div>
-	{/if}
-</section>
-
-<!-- ══ Models ══ -->
-<section>
-	<div class="mb-1 flex items-center gap-2">
-		<h2 class="text-[15px] font-semibold">{t.inferencia.modelsSection}</h2>
-	</div>
-	<p class="mb-4 text-[12px] text-muted">{t.inferencia.modelsSubtitle}</p>
-
-	<div class="mb-4 flex items-center gap-2">
-		<button
-			class="flex h-[34px] w-[34px] flex-none items-center justify-center rounded-token border border-border text-muted hover:bg-hover {modelSearchOpen ? 'bg-hover' : ''}"
-			aria-label={t.inferencia.searchToggle}
-			onclick={() => { modelSearchOpen = !modelSearchOpen; if (!modelSearchOpen) modelSearch = ''; }}
-		>
-			<svg viewBox="0 0 20 20" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5.5"/><path d="M13.5 13.5 18 18" stroke-linecap="round"/></svg>
-		</button>
-		{#if modelSearchOpen}
-			<!-- svelte-ignore a11y_autofocus -->
-			<input autofocus bind:value={modelSearch} placeholder={t.inferencia.searchPlaceholder} class="h-[34px] flex-1 rounded-token border border-border bg-bg px-3 text-[13px] outline-none focus:border-text/40" />
-		{/if}
-		{#if modelSearch.trim()}
-			<button class="text-[12px] text-muted hover:text-text" onclick={() => { modelSearch = ''; modelSearchOpen = false; }}>{t.inferencia.filterClear}</button>
-		{/if}
-		{#if !modelLoading && !modelError && providers.length > 0}
-			<button class="ml-auto flex-none rounded-token bg-text px-3.5 py-1.5 text-[13px] font-medium text-bg hover:opacity-90" onclick={openAddModel}>+ {t.inferencia.addModel}</button>
-		{/if}
-	</div>
-
-	<!-- real cost/tokens period selector (CONSOLE-INFER-#9) -->
-	<div class="mb-4 flex items-center gap-2 text-[12px]">
-		<span class="text-muted">{t.inferencia.spendPeriodLabel}</span>
-		<div class="inline-flex overflow-hidden rounded-token border border-border" role="group" aria-label={t.inferencia.spendPeriodLabel}>
-			{#each SPEND_PERIODS as p, i (p.key)}
-				<button
-					class="px-2.5 py-1 {spendPeriod === i ? 'bg-text text-bg' : 'text-muted hover:bg-hover'}"
-					aria-pressed={spendPeriod === i}
-					onclick={() => pickSpendPeriod(i)}
-				>{t.inferencia[p.key as 'spend24h' | 'spend7d' | 'spend30d' | 'spendAll']}</button>
-			{/each}
-		</div>
-		{#if spendError}
-			<span class="text-amber-500">{t.inferencia.spendError}</span>
-		{/if}
-	</div>
-
-	{#if formOpen?.entity === 'model' && formOpen.mode === 'add'}
-		<div class="mb-4">{@render modelForm()}</div>
-	{/if}
-
-	{#if modelLoading}
-		<p class="text-[13px] text-muted">{t.inferencia.modelsLoading}</p>
-	{:else if modelError}
-		<p class="text-[13px] text-red-500">{t.inferencia.modelsError}</p>
-	{:else if models.length === 0}
-		<p class="text-[13px] text-muted">{providers.length === 0 ? t.inferencia.noProviders : t.inferencia.modelsEmpty}</p>
-	{:else if filteredModels.length === 0}
-		<p class="text-[13px] text-muted">{t.inferencia.modelsEmptyFiltered}</p>
-	{:else}
-		<div class="overflow-x-auto rounded-xl border border-border">
-			<table class="w-full border-collapse text-[13px]">
-				<thead>
-					<tr class="border-b border-border bg-surface-2 text-left text-muted">
-						<th class="px-4 py-2.5 font-medium">
-							<button class="flex items-center gap-1 hover:text-text" onclick={() => (modelSortDir = modelSortDir === 'asc' ? 'desc' : 'asc')}>
-								{t.inferencia.colAlias}<span class="opacity-40">{modelSortDir === 'asc' ? '▲' : '▼'}</span>
-							</button>
-						</th>
-						<th class="px-4 py-2.5 font-medium">{t.inferencia.colProvider}</th>
-						<th class="px-4 py-2.5 font-medium">{t.inferencia.colUpstream}</th>
-						<th class="px-4 py-2.5 font-medium">{t.inferencia.colCostIn}</th>
-						<th class="px-4 py-2.5 font-medium">{t.inferencia.colCostOut}</th>
-						<th class="px-4 py-2.5 font-medium">{t.inferencia.colSpend}</th>
-						<th class="px-4 py-2.5 font-medium">{t.inferencia.colTokens}</th>
-						<th class="px-4 py-2.5 font-medium">{t.inferencia.colEnabled}</th>
-						<th class="w-10 px-2 py-2.5"><span class="sr-only">{t.inferencia.actionsLabel}</span></th>
-					</tr>
-				</thead>
-				<tbody>
-					{#each filteredModels as m (m.id)}
-						<tr class="border-b border-border last:border-0 hover:bg-hover">
-							<td class="px-4 py-2.5 font-mono text-[12px] font-semibold">{m.alias}</td>
-							<td class="px-4 py-2.5 text-muted">{m.provider_name || m.provider_id}</td>
-							<td class="px-4 py-2.5 font-mono text-[12px] text-muted">{m.upstream}</td>
-							<td class="whitespace-nowrap px-4 py-2.5 tabular-nums text-muted">{costPerMillion(m.input_cost_per_token)}</td>
-							<td class="whitespace-nowrap px-4 py-2.5 tabular-nums text-muted">{costPerMillion(m.output_cost_per_token)}</td>
-							<td class="whitespace-nowrap px-4 py-2.5 tabular-nums">{formatUSD(spendByModel.get(m.alias)?.spend ?? 0)}</td>
-							<td class="whitespace-nowrap px-4 py-2.5 tabular-nums text-muted">{formatTokens(spendByModel.get(m.alias)?.total_tokens ?? 0)}</td>
-							<td class="px-4 py-2.5">
-								<span class="inline-flex items-center gap-1.5 text-muted">
-									<span class="h-[7px] w-[7px] flex-none rounded-full {m.enabled ? 'bg-green' : 'bg-surface-2 border border-border'}"></span>
-									{m.enabled ? t.inferencia.enabledStatus : t.inferencia.disabledStatus}
-								</span>
-							</td>
-							<td class="w-10 px-2 py-2.5 text-right">
-								{@render kebab(`model-${m.id}`, [
-									{ label: m.enabled ? t.inferencia.disable : t.inferencia.enable, run: () => toggleModel(m) },
-									{ label: t.inferencia.edit, run: () => openEditModel(m) },
-									{ label: t.inferencia.delete, run: () => { activeKebab = null; confirmDelete = { entity: 'model', id: m.id, label: m.alias }; }, danger: true }
-								])}
-							</td>
-						</tr>
-						{#if formOpen?.entity === 'model' && formOpen.mode === 'edit' && mEditId === m.id}
-							<tr><td colspan="9" class="px-4 py-3">{@render modelForm()}</td></tr>
 						{/if}
 					{/each}
 				</tbody>
@@ -616,12 +325,12 @@
 
 {#snippet providerForm()}
 	<div class="rounded-xl border border-border bg-surface-2 p-5">
-		<h3 class="mb-4 text-[14px] font-semibold">{formOpen?.mode === 'edit' ? t.inferencia.editProvider : t.inferencia.addProvider}</h3>
+		<h3 class="mb-4 text-[14px] font-semibold">{formOpen === 'edit' ? t.inferencia.editProvider : t.inferencia.addProvider}</h3>
 		<form onsubmit={(e) => { e.preventDefault(); submitProvider(); }} novalidate>
 			<div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
 				<div>
-					<label class={labelClass} for="p-name">{formOpen?.mode === 'edit' ? t.inferencia.formNameReadonly : t.inferencia.formName}</label>
-					{#if formOpen?.mode === 'edit'}
+					<label class={labelClass} for="p-name">{formOpen === 'edit' ? t.inferencia.formNameReadonly : t.inferencia.formName}</label>
+					{#if formOpen === 'edit'}
 						<input id="p-name" class={readonlyFieldClass} value={pName} readonly />
 					{:else}
 						<input id="p-name" class={fieldClass} placeholder={t.inferencia.formNamePlaceholder} bind:value={pName} autocomplete="off" />
@@ -630,9 +339,12 @@
 				</div>
 				<div>
 					<label class={labelClass} for="p-kind">{t.inferencia.formKind}</label>
-					<select id="p-kind" class={fieldClass} bind:value={pKind}>
-						{#each PROVIDER_KINDS as k}<option value={k}>{k}</option>{/each}
-					</select>
+					<input id="p-kind" class={fieldClass} list="p-kinds" maxlength="24" placeholder={t.inferencia.formKindPlaceholder} bind:value={pKind} autocomplete="off" aria-describedby="p-kind-hint{formErrors.kind ? ' p-kind-err' : ''}" aria-invalid={formErrors.kind ? 'true' : undefined} />
+					<datalist id="p-kinds">
+						{#each kindOptions as k (k)}<option value={k}></option>{/each}
+					</datalist>
+					<p id="p-kind-hint" class="mt-0.5 text-[11px] text-muted">{t.inferencia.formKindHint}</p>
+					{#if formErrors.kind}<p id="p-kind-err" class={errorClass}>{formErrors.kind}</p>{/if}
 				</div>
 				<div class="sm:col-span-2">
 					<label class={labelClass} for="p-baseurl">{t.inferencia.formBaseUrl}</label>
@@ -641,71 +353,12 @@
 				</div>
 				<div class="sm:col-span-2">
 					<label class={labelClass} for="p-key">{t.inferencia.formApiKey}</label>
-					<input id="p-key" type="password" class={fieldClass} placeholder={formOpen?.mode === 'edit' ? t.inferencia.formApiKeyPlaceholderEdit : t.inferencia.formApiKeyPlaceholderNew} bind:value={pApiKey} autocomplete="off" />
+					<input id="p-key" type="password" class={fieldClass} placeholder={formOpen === 'edit' ? t.inferencia.formApiKeyPlaceholderEdit : t.inferencia.formApiKeyPlaceholderNew} bind:value={pApiKey} autocomplete="off" />
 					<p class="mt-0.5 text-[11px] text-muted">{t.inferencia.formApiKeyHint}</p>
 					{#if formErrors.apiKey}<p class={errorClass}>{formErrors.apiKey}</p>{/if}
 				</div>
 				<label class="flex items-center gap-2 text-[13px]">
 					<input type="checkbox" bind:checked={pEnabled} />{t.inferencia.formEnabled}
-				</label>
-			</div>
-			{#if formServerError}<p class="{errorClass} mt-3">{formServerError}</p>{/if}
-			<div class="mt-4 flex gap-2">
-				<button type="submit" class="rounded-token bg-text px-3.5 py-1.5 text-[13px] font-medium text-bg hover:opacity-90 disabled:opacity-50" disabled={submitting}>{t.inferencia.formSave}</button>
-				<button type="button" class="rounded-token border border-border px-3.5 py-1.5 text-[13px] text-muted hover:bg-hover" onclick={closeForm}>{t.inferencia.formCancel}</button>
-			</div>
-		</form>
-	</div>
-{/snippet}
-
-{#snippet modelForm()}
-	<div class="rounded-xl border border-border bg-surface-2 p-5">
-		<h3 class="mb-4 text-[14px] font-semibold">{formOpen?.mode === 'edit' ? t.inferencia.editModel : t.inferencia.addModel}</h3>
-		<form onsubmit={(e) => { e.preventDefault(); submitModel(); }} novalidate>
-			<div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
-				<div>
-					<label class={labelClass} for="m-alias">{formOpen?.mode === 'edit' ? t.inferencia.formAliasReadonly : t.inferencia.formAlias}</label>
-					{#if formOpen?.mode === 'edit'}
-						<input id="m-alias" class={readonlyFieldClass} value={mAlias} readonly />
-					{:else}
-						<input id="m-alias" class={fieldClass} placeholder={t.inferencia.formAliasPlaceholder} bind:value={mAlias} autocomplete="off" />
-						{#if formErrors.alias}<p class={errorClass}>{formErrors.alias}</p>{/if}
-					{/if}
-				</div>
-				<div>
-					<label class={labelClass} for="m-provider">{t.inferencia.formProvider}</label>
-					<select id="m-provider" class={fieldClass} bind:value={mProviderId} onchange={() => (providerTouched = true)}>
-						<option value="" disabled>{t.inferencia.formProviderPlaceholder}</option>
-						{#each providers as p}<option value={p.id}>{p.name}</option>{/each}
-					</select>
-					{#if formErrors.provider}<p class={errorClass}>{formErrors.provider}</p>{/if}
-				</div>
-				<div class="sm:col-span-2">
-					<label class={labelClass} for="m-upstream">{t.inferencia.formUpstream}</label>
-					<input id="m-upstream" class={fieldClass} list="m-catalog" placeholder={t.inferencia.formUpstreamPlaceholder} bind:value={mUpstream} oninput={onUpstreamInput} autocomplete="off" />
-					<datalist id="m-catalog">
-						{#each filterCatalog(catalog, mUpstream, 50) as e (e.upstream)}<option value={e.upstream}>{e.provider}</option>{/each}
-					</datalist>
-					{#if catalog.length}<p class="mt-1 text-[11px] text-muted">{t.inferencia.catalogHint}</p>{/if}
-					{#if formErrors.upstream}<p class={errorClass}>{formErrors.upstream}</p>{/if}
-				</div>
-				<div>
-					<label class={labelClass} for="m-costin">{t.inferencia.formCostIn}</label>
-					<input id="m-costin" type="number" step="any" min="0" class={fieldClass} bind:value={mCostIn} />
-					{#if formErrors.costIn}<p class={errorClass}>{formErrors.costIn}</p>{/if}
-				</div>
-				<div>
-					<label class={labelClass} for="m-costout">{t.inferencia.formCostOut}</label>
-					<input id="m-costout" type="number" step="any" min="0" class={fieldClass} bind:value={mCostOut} />
-					{#if formErrors.costOut}<p class={errorClass}>{formErrors.costOut}</p>{/if}
-				</div>
-				<div class="sm:col-span-2">
-					<label class={labelClass} for="m-params">{t.inferencia.formParams}</label>
-					<textarea id="m-params" rows="3" class="{fieldClass} font-mono" placeholder={t.inferencia.formParamsPlaceholder} bind:value={mParamsRaw}></textarea>
-					{#if formErrors.params}<p class={errorClass}>{formErrors.params}</p>{/if}
-				</div>
-				<label class="flex items-center gap-2 text-[13px]">
-					<input type="checkbox" bind:checked={mEnabled} />{t.inferencia.formEnabled}
 				</label>
 			</div>
 			{#if formServerError}<p class="{errorClass} mt-3">{formServerError}</p>{/if}
@@ -724,7 +377,7 @@
 		<div class="w-full max-w-md rounded-xl border border-border bg-bg p-5 shadow-2xl" role="dialog" aria-modal="true" aria-labelledby="delete-confirm-title">
 			<h3 id="delete-confirm-title" class="sr-only">{t.inferencia.deleteConfirmBtn}</h3>
 			<p class="mb-4 text-[13px] text-text">
-				{(confirmDelete.entity === 'provider' ? t.inferencia.deleteProviderConfirm.replace('{name}', confirmDelete.label) : t.inferencia.deleteModelConfirm.replace('{alias}', confirmDelete.label))}
+				{t.inferencia.deleteProviderConfirm.replace('{name}', confirmDelete.label)}
 			</p>
 			<div class="flex justify-end gap-2">
 				<button class="rounded-token border border-border px-3.5 py-1.5 text-[13px] text-muted hover:bg-hover" onclick={() => (confirmDelete = null)}>{t.inferencia.formCancel}</button>

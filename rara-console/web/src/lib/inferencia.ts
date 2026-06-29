@@ -45,8 +45,10 @@ export function asList<T>(d: unknown): T[] {
 export function isProvider(v: unknown): v is LLMProvider {
 	if (typeof v !== 'object' || v === null) return false;
 	const p = v as Record<string, unknown>;
+	// kind is no longer a fixed enum — any litellm provider is valid (the picker is fed by the
+	// catalog), so only require a non-empty string here, not membership in PROVIDER_KINDS.
 	return typeof p.id === 'number' && typeof p.name === 'string' &&
-		typeof p.kind === 'string' && PROVIDER_KINDS.includes(p.kind as ProviderKind) &&
+		typeof p.kind === 'string' && p.kind.trim().length > 0 &&
 		typeof p.enabled === 'boolean';
 }
 
@@ -187,6 +189,17 @@ export function filterCatalog(rows: CatalogEntry[], query: string, limit = 50): 
 		}
 	}
 	return out;
+}
+
+// catalogKinds returns the distinct litellm provider names from the catalog, sorted, with
+// 'openai_compatible' always appended (the BYO case the catalog can't carry). This feeds the
+// provider form's kind combobox so the operator picks any vendor litellm supports — not the old
+// fixed six. A failed/empty catalog still yields ['openai_compatible'] so BYO stays reachable.
+export function catalogKinds(catalog: CatalogEntry[]): string[] {
+	const kinds = new Set<string>();
+	for (const e of catalog) kinds.add(e.provider);
+	kinds.delete('openai_compatible'); // re-appended last so it never duplicates
+	return [...kinds].sort((a, b) => a.localeCompare(b)).concat('openai_compatible');
 }
 
 // catalogKindFor maps litellm's provider name onto our PROVIDER_KINDS enum, or null when there's no
