@@ -42,14 +42,14 @@ var maxCoreBytes int64 = 4 << 20
 // server is the BFF: it talks to the rara-core surface at coreURL, authenticating with the
 // server-side token. client is injected so handlers are unit-testable against an httptest core.
 type server struct {
-	coreURL       string
-	token         string
-	client        *http.Client
-	previewClient *http.Client      // outbound fetches for iframe/OG preview + llm catalog; shorter timeout
-	isPrivate     func(string) bool // SSRF guard; nil disables check (tests use httptest addresses)
-	catalogURL        string        // litellm model_prices file, pinned to the gateway tag
-	catalogTTL        time.Duration // catalog changes slowly; refetch at most this often
-	catalogRetryAfter time.Duration // after a failed refetch, wait this long before retrying
+	coreURL           string
+	token             string
+	client            *http.Client
+	previewClient     *http.Client      // outbound fetches for iframe/OG preview + llm catalog; shorter timeout
+	isPrivate         func(string) bool // SSRF guard; nil disables check (tests use httptest addresses)
+	catalogURL        string            // litellm model_prices file, pinned to the gateway tag
+	catalogTTL        time.Duration     // catalog changes slowly; refetch at most this often
+	catalogRetryAfter time.Duration     // after a failed refetch, wait this long before retrying
 	catalog           *catalogCache
 }
 
@@ -1189,11 +1189,11 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 func main() {
 	s := &server{
-		coreURL:       mustEnv("CORE_SURFACE_URL"), // e.g. http://100.x.x.x:8080
-		token:         mustEnv("SURFACE_TOKEN"),
-		client:        &http.Client{Timeout: 15 * time.Second},
-		previewClient: &http.Client{Timeout: 8 * time.Second},
-		isPrivate:     isPrivateHost,
+		coreURL:           mustEnv("CORE_SURFACE_URL"), // e.g. http://100.x.x.x:8080
+		token:             mustEnv("SURFACE_TOKEN"),
+		client:            &http.Client{Timeout: 15 * time.Second},
+		previewClient:     &http.Client{Timeout: 8 * time.Second},
+		isPrivate:         isPrivateHost,
 		catalogURL:        defaultCatalogURL,
 		catalogTTL:        12 * time.Hour,
 		catalogRetryAfter: time.Minute,
