@@ -5,7 +5,8 @@ import {
 	currentAlias,
 	envWithoutModel,
 	withModelAlias,
-	usesModel
+	usesModel,
+	blocksOnModelLoadFailure
 } from './workerModel';
 import type { LLMModel } from './inferencia';
 
@@ -49,6 +50,23 @@ describe('usesModel', () => {
 	});
 	it('is true for a deterministic capability that already carries a binding', () => {
 		expect(usesModel('coletar', { LITELLM_MODEL: 'groq-llama' })).toBe(true);
+	});
+});
+
+describe('blocksOnModelLoadFailure', () => {
+	it('blocks an LLM-capable worker with no binding when the models fetch failed', () => {
+		expect(blocksOnModelLoadFailure('destilar', undefined, true)).toBe(true);
+		expect(blocksOnModelLoadFailure('reason', {}, true)).toBe(true);
+	});
+	it('does not block when an existing binding can be preserved', () => {
+		expect(blocksOnModelLoadFailure('destilar', { LITELLM_MODEL: 'groq-llama' }, true)).toBe(false);
+	});
+	it('does not block when the models loaded fine (field stays optional)', () => {
+		expect(blocksOnModelLoadFailure('destilar', undefined, false)).toBe(false);
+	});
+	it('never blocks a non-LLM worker, even on fetch failure', () => {
+		expect(blocksOnModelLoadFailure('coletar', undefined, true)).toBe(false);
+		expect(blocksOnModelLoadFailure('', undefined, true)).toBe(false);
 	});
 });
 

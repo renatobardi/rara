@@ -3,7 +3,7 @@
 	import { t } from '$lib/strings';
 	import { timeAgo } from '$lib/timeAgo';
 	import WorkerForm from '$lib/WorkerForm.svelte';
-	import { asList, isModel, type LLMModel } from '$lib/inferencia';
+	import { isModel, type LLMModel } from '$lib/inferencia';
 
 	type Constraints = {
 		requires?: string;
@@ -56,6 +56,43 @@
 	// --- core state ---
 	let workers = $state<Worker[]>([]);
 	let models = $state<LLMModel[]>([]);
+	// 'loading' until the first /api/llm-models resolves, then 'ready' (≥1 model) or 'failed'
+	// (fetch error, malformed body, or empty registry). WorkerForm blocks an LLM save unless
+	// 'ready', so a worker never saves modelless while the list is still unknown — and shows a
+	// "loading" hint vs a "failed, reload" error so the in-flight window isn't a false alarm.
+	let modelsStatus = $state<'loading' | 'ready' | 'failed'>('loading');
+	let modelsSeq = 0; // guards against out-of-order responses (onMount + reopen-retry can overlap)
+	let modelsAbort: AbortController | null = null;
+
+	function loadModels() {
+		const seq = ++modelsSeq;
+		modelsAbort?.abort(); // cancel any prior in-flight load
+		const abort = new AbortController();
+		modelsAbort = abort;
+		// A hung fetch would leave status='loading' forever (form blocks LLM saves indefinitely);
+		// time out so it lands on 'failed' and the reopen-retry path can recover.
+		const timer = setTimeout(() => abort.abort(), 10000);
+		modelsStatus = 'loading';
+		fetch('/api/llm-models', { signal: abort.signal })
+			.then((r) => (r.ok ? r.json() : Promise.reject()))
+			.then((d) => {
+				if (seq !== modelsSeq) return; // a newer load started; drop stale data
+				// A malformed body is a load failure, not "no models" — else WorkerForm wouldn't
+				// block (modelOptions empty + status ready = silent save of an LLM worker).
+				if (!Array.isArray(d) || !d.every(isModel)) throw new Error('unexpected payload');
+				models = d;
+				// An empty registry is still "no model to pick" — the bug covers "ou volta vazio".
+				modelsStatus = d.length > 0 ? 'ready' : 'failed';
+			})
+			.catch(() => {
+				if (seq !== modelsSeq) return; // a newer load started (incl. our own abort); don't clobber it
+				models = []; modelsStatus = 'failed'; /* WorkerForm bloqueia salvar worker LLM sem Model */
+			})
+			.finally(() => {
+				clearTimeout(timer);
+				if (modelsAbort === abort) modelsAbort = null;
+			});
+	}
 	let loading = $state(true);
 	let error = $state(false);
 	let saving = $state<string | null>(null);
@@ -99,10 +136,7 @@
 			.then((r) => (r.ok ? r.json() : Promise.reject()))
 			.then((d) => { metricsLite = Array.isArray(d) ? d : []; })
 			.catch(() => { /* coluna "última execução" degrada para — */ });
-		fetch('/api/llm-models')
-			.then((r) => (r.ok ? r.json() : Promise.reject()))
-			.then((d) => { models = asList<LLMModel>(d).filter(isModel); })
-			.catch(() => { /* dropdown de Model degrada para oculto */ });
+		loadModels();
 	});
 
 	// ── filtros + busca (client-side, lista pequena) ──
@@ -239,6 +273,7 @@
 	}
 
 	function openAdd() {
+		if (modelsStatus === 'failed') loadModels(); // recover a terminal model-fetch failure on reopen (don't disrupt an in-flight load)
 		formInitial = null;
 		formMode = 'add';
 		formLockedWorker = null;
@@ -247,6 +282,7 @@
 	}
 
 	function openEdit(p: Provider, workerName: string) {
+		if (modelsStatus === 'failed') loadModels(); // recover a terminal model-fetch failure on reopen (don't disrupt an in-flight load)
 		formInitial = { ...p, worker: workerName };
 		formMode = 'edit';
 		formLockedWorker = null;
@@ -320,7 +356,7 @@
 
 	{#if formMode === 'add' && !formLockedWorker}
 		<div class="mb-4">
-			<WorkerForm initial={null} lockedApp={null} capabilities={knownCapabilities} {models} onSave={saveWorker} onCancel={closeForm} />
+			<WorkerForm initial={null} lockedApp={null} capabilities={knownCapabilities} {models} {modelsStatus} onSave={saveWorker} onCancel={closeForm} />
 		</div>
 	{/if}
 
@@ -516,7 +552,7 @@
 						{#if formMode === 'edit' && formInitial?.name === p.name}
 							<tr>
 								<td colspan="8" class="px-4 py-3">
-									<WorkerForm initial={formInitial} lockedApp={null} capabilities={knownCapabilities} {models} onSave={saveWorker} onCancel={closeForm} />
+									<WorkerForm initial={formInitial} lockedApp={null} capabilities={knownCapabilities} {models} {modelsStatus} onSave={saveWorker} onCancel={closeForm} />
 								</td>
 							</tr>
 						{/if}

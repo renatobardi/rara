@@ -2,7 +2,7 @@
 	import { untrack } from 'svelte';
 	import { t } from '$lib/strings';
 	import type { LLMModel } from '$lib/inferencia';
-	import { enabledAliases, currentAlias, envWithoutModel, withModelAlias, usesModel } from '$lib/workerModel';
+	import { enabledAliases, currentAlias, envWithoutModel, withModelAlias, usesModel, blocksOnModelLoadFailure } from '$lib/workerModel';
 
 	type Constraints = {
 		requires?: string;
@@ -31,6 +31,12 @@
 		capabilities: string[];
 		/** Enabled LLM models for the Model dropdown (from /api/llm-models). */
 		models?: LLMModel[];
+		/** Whether the model registry is usable: 'loading' (fetch in flight), 'ready' (≥1 model),
+		 * or 'failed' (fetch error, malformed body, or empty registry). Required (no default): an
+		 * LLM worker must not save modelless unless this is 'ready', and the form distinguishes a
+		 * still-loading hint from a "failed — reload" error so the in-flight window isn't a false
+		 * alarm. */
+		modelsStatus: 'loading' | 'ready' | 'failed';
 		/** Pre-fill worker and make it read-only (add-placement mode). */
 		lockedWorker?: string;
 		/** Pre-fill capability and make it read-only (add-placement mode). */
@@ -47,6 +53,7 @@
 		initial = null,
 		capabilities,
 		models = [],
+		modelsStatus,
 		lockedWorker,
 		lockedCapability,
 		lockedConstraints = null,
@@ -94,6 +101,9 @@
 	// modelOptions is empty and the field degrades to hidden. Reactive on capability
 	// (editable in add mode). Optional — never required.
 	const showModel = $derived(usesModel(capability, initial?.env) && modelOptions.length > 0);
+	// If the worker needs a Model but the registry isn't ready (loading, failed, or empty) and
+	// there's no binding to keep, block the save instead of silently writing no model.
+	const modelBlocked = $derived(blocksOnModelLoadFailure(capability, initial?.env, modelsStatus !== 'ready'));
 
 	// Clear a stale selection if capability switches away from LLM, so submit never
 	// writes LITELLM_MODEL onto a non-LLM worker.
@@ -165,6 +175,9 @@
 			} catch {
 				e.env = t.workers.formEnvInvalid;
 			}
+		}
+		if (modelBlocked) {
+			e.model = modelsStatus === 'loading' ? t.workers.formModelLoading : t.workers.formModelLoadFailed;
 		}
 		errors = e;
 		return Object.keys(e).length === 0;
@@ -334,7 +347,18 @@
 			</div>
 
 			<!-- Model (LLM) — writes LITELLM_MODEL into env; optional, hidden when no models -->
-			{#if showModel}
+			<!-- Blocked state wins over the select: a not-ready registry shows the loading/error
+			     feedback instead of a stale dropdown the operator could pick from while save is blocked. -->
+			{#if modelBlocked}
+				<div>
+					<span class={labelClass}>{t.workers.formModel}</span>
+					{#if modelsStatus === 'loading'}
+						<p class="mt-0.5 text-[11px] text-muted" role="status">{t.workers.formModelLoading}</p>
+					{:else}
+						<p class={errorClass} role="alert">{t.workers.formModelLoadFailed}</p>
+					{/if}
+				</div>
+			{:else if showModel}
 				<div>
 					<label class={labelClass} for="wf-model">{t.workers.formModel}</label>
 					<select

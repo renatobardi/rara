@@ -91,6 +91,27 @@ func TestLLMSpendForwardsModel(t *testing.T) {
 	assertForwarded(t, *captured, url.Values{"model": {"groq-llama"}})
 }
 
+// TestLLMSpendForwardsModelPercentEncoded: a model alias with characters that need
+// percent-encoding (e.g. "gemini/2.5 flash") is decoded once on the way in and re-encoded
+// cleanly to core — never doubly-encoded or injected raw into the query string.
+func TestLLMSpendForwardsModelPercentEncoded(t *testing.T) {
+	core, captured := fakeSpendCore(t, "tok")
+	s := &server{coreURL: core.URL, token: "tok", client: core.Client()}
+
+	rec := doLLMSpend(s, "model="+url.QueryEscape("gemini/2.5 flash"))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	// Assert the raw forwarded query too — proves it's re-escaped once (gemini%2F2.5+flash),
+	// not passed through raw or double-encoded, which a decoded-values check would miss.
+	wantRaw := "model=" + url.QueryEscape("gemini/2.5 flash")
+	if *captured != wantRaw {
+		t.Fatalf("forwarded raw query = %q, want %q", *captured, wantRaw)
+	}
+	assertForwarded(t, *captured, url.Values{"model": {"gemini/2.5 flash"}})
+}
+
 func TestLLMSpendForwardsModelAndDays(t *testing.T) {
 	core, captured := fakeSpendCore(t, "tok")
 	s := &server{coreURL: core.URL, token: "tok", client: core.Client()}
