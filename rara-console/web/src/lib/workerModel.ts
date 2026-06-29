@@ -6,16 +6,19 @@ import type { LLMModel } from './inferencia';
 
 export const MODEL_ENV_KEY = 'LITELLM_MODEL';
 
-// Capabilities whose workers actually call an LLM (carry LITELLM_MODEL).
-// Mirrors the LITELLM_MODEL placements in rara-core/seed.go. Collectors
-// (coletar), transcribe and extract do deterministic work — no LLM.
-export const LLM_CAPABILITIES = new Set(['destilar', 'gate_barato', 'gate_rico']);
+// Capabilities that do deterministic work and never call an LLM. Mirrors
+// rara-core/seed.go (collectors, transcribe, extract carry no LITELLM_MODEL).
+// A denylist, not an LLM allowlist: any new LLM worker (reason/hone/…) gets the
+// Model field automatically, while pure collectors stay clean. An existing
+// binding always wins regardless of capability.
+export const NON_LLM_CAPABILITIES = new Set(['coletar', 'transcrever', 'extrair']);
 
-// Whether the Model field is relevant for a worker: an LLM capability, or an
-// existing binding (covers a manually-added LLM worker like reason/hone). Keeps
-// the field hidden for pure collectors so they never get a stray LITELLM_MODEL.
+// Whether the Model field is relevant for a worker: it already has a binding, or
+// its capability isn't a known deterministic (non-LLM) one. Empty capability =
+// nothing chosen yet, so hidden.
 export function usesModel(capability: string, env?: Record<string, string>): boolean {
-	return LLM_CAPABILITIES.has(capability) || currentAlias(env) !== '';
+	if (currentAlias(env) !== '') return true;
+	return capability !== '' && !NON_LLM_CAPABILITIES.has(capability);
 }
 
 // Aliases of enabled models — the dropdown options.
