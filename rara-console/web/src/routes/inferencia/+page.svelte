@@ -32,6 +32,7 @@
 			});
 	}
 
+	// Load the provider registry from the BFF into `providers`, toggling loading/error flags.
 	function fetchProviders() {
 		provLoading = true;
 		provError = false;
@@ -57,6 +58,7 @@
 	let toasts = $state<Toast[]>([]);
 	let toastSeq = 0;
 	const toastTimers: ReturnType<typeof setTimeout>[] = [];
+	// Push a transient toast that auto-dismisses after 4s.
 	function toast(kind: 'ok' | 'err', msg: string) {
 		const id = ++toastSeq;
 		toasts = [...toasts, { id, kind, msg }];
@@ -79,10 +81,12 @@
 
 	// ── kebab (one open at a time) ──
 	let activeKebab = $state<string | null>(null);
+	// Close the open kebab menu when clicking anywhere outside it.
 	function onWindowClick(e: MouseEvent) {
 		if (!(e.target instanceof Element)) return;
 		if (activeKebab && !e.target.closest('[data-kebab]')) activeKebab = null;
 	}
+	// Escape unwinds the topmost open layer: kebab → search → form → delete confirm.
 	function closeOnEsc(e: KeyboardEvent) {
 		if (e.key !== 'Escape') return;
 		if (activeKebab) { activeKebab = null; return; }
@@ -106,23 +110,27 @@
 	let pEnabled = $state(true);
 	let pEditId = $state<number | null>(null);
 
+	// Open the form to create a new provider, clearing any prior state.
 	function openAddProvider() {
 		formOpen = 'add';
 		formErrors = {}; formServerError = '';
 		pName = ''; pKind = ''; pBaseUrl = ''; pApiKey = ''; pEnabled = true; pEditId = null;
 		activeKebab = null;
 	}
+	// Open the form to edit an existing provider, seeding fields from the row (key stays blank).
 	function openEditProvider(p: LLMProvider) {
 		formOpen = 'edit';
 		formErrors = {}; formServerError = '';
 		pName = p.name; pKind = p.kind; pBaseUrl = p.base_url ?? ''; pApiKey = ''; pEnabled = p.enabled;
 		pEditId = p.id; activeKebab = null;
 	}
+	// Close the form and wipe transient state, including any key material in memory.
 	function closeForm() {
 		formOpen = null; formErrors = {}; formServerError = ''; submitting = false;
 		pApiKey = ''; // never leave key material in memory after the form closes
 	}
 
+	// Validate the provider form and PUT it to the BFF; toasts + refreshes the list on success.
 	async function submitProvider() {
 		const e: Record<string, string> = {};
 		if (!pName.trim()) e.name = t.inferencia.errNameRequired;
@@ -161,6 +169,7 @@
 		}
 	}
 
+	// Extract a human error message from a failed response, falling back to a generic save error.
 	async function errorMessage(res: Response): Promise<string> {
 		try {
 			const b = await res.json();
@@ -190,6 +199,7 @@
 	type DeleteTarget = { id: number; label: string };
 	let confirmDelete = $state<DeleteTarget | null>(null);
 	let deleting = $state(false);
+	// Soft-delete the confirmed provider via the BFF, then refresh the list.
 	async function doDelete() {
 		if (!confirmDelete) return;
 		deleting = true;
