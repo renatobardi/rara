@@ -3,7 +3,7 @@
 	import { t } from '$lib/strings';
 	import { timeAgo } from '$lib/timeAgo';
 	import WorkerForm from '$lib/WorkerForm.svelte';
-	import { asList, isModel, type LLMModel } from '$lib/inferencia';
+	import { isModel, type LLMModel } from '$lib/inferencia';
 
 	type Constraints = {
 		requires?: string;
@@ -102,8 +102,14 @@
 			.catch(() => { /* coluna "última execução" degrada para — */ });
 		fetch('/api/llm-models')
 			.then((r) => (r.ok ? r.json() : Promise.reject()))
-			.then((d) => { models = asList<LLMModel>(d).filter(isModel); modelsLoadFailed = false; })
-			.catch(() => { modelsLoadFailed = true; /* WorkerForm bloqueia salvar worker LLM sem Model */ });
+			.then((d) => {
+				// A malformed body is a load failure, not "no models" — else WorkerForm wouldn't
+				// block (modelOptions empty + modelsLoadFailed false = silent save of an LLM worker).
+				if (!Array.isArray(d) || !d.every(isModel)) throw new Error('unexpected payload');
+				models = d;
+				modelsLoadFailed = false;
+			})
+			.catch(() => { models = []; modelsLoadFailed = true; /* WorkerForm bloqueia salvar worker LLM sem Model */ });
 	});
 
 	// ── filtros + busca (client-side, lista pequena) ──
