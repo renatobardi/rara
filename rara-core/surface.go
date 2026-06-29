@@ -152,6 +152,9 @@ type Core struct {
 	// box is the AES-256-GCM secretbox for encrypting LLM provider API keys.
 	// Set from RARA_SECRETS_KEY at startup; nil disables key writes.
 	box *secretbox.Box
+	// fetchURL fetches a remote SKILL.md for ImportSkill. Set to httpGetURL at startup;
+	// nil disables import (tests inject a fake for zero-I/O).
+	fetchURL func(ctx context.Context, rawURL string) ([]byte, error)
 }
 
 // NewCore wires the operations layer over the seam and the LinkedIn store.
@@ -1231,6 +1234,15 @@ func NewSurfaceMux(core *Core, token string) http.Handler {
 	mux.HandleFunc("GET /v1/llm-providers", h.listLLMProviders)
 	mux.HandleFunc("PUT /v1/llm-providers", h.upsertLLMProvider)
 	mux.HandleFunc("DELETE /v1/llm-providers/{id}", h.deleteLLMProvider)
+
+	// Skill registry (CONSOLE-#10a).
+	mux.HandleFunc("GET /v1/skills", h.listSkills)
+	mux.HandleFunc("PUT /v1/skills", h.upsertSkill)
+	mux.HandleFunc("POST /v1/skills/import", h.importSkill)
+	mux.HandleFunc("DELETE /v1/skills/{id}", h.deleteSkill)
+	mux.HandleFunc("GET /v1/skills/{id}/files", h.listSkillFiles)
+	mux.HandleFunc("PUT /v1/skills/{id}/files", h.upsertSkillFile)
+	mux.HandleFunc("DELETE /v1/skills/{id}/files", h.deleteSkillFile)
 
 	// LinkedIn manual inbox.
 	mux.HandleFunc("POST /v1/linkedin/inbox", h.linkedinInbox)
