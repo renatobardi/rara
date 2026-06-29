@@ -124,9 +124,10 @@ export type LLMSpend = {
 export function isSpend(v: unknown): v is LLMSpend {
 	if (typeof v !== 'object' || v === null) return false;
 	const s = v as Record<string, unknown>;
-	return typeof s.model === 'string' && typeof s.spend === 'number' &&
-		typeof s.total_tokens === 'number' && typeof s.prompt_tokens === 'number' &&
-		typeof s.completion_tokens === 'number' && typeof s.requests === 'number';
+	const finite = (n: unknown): n is number => typeof n === 'number' && Number.isFinite(n);
+	return typeof s.model === 'string' && s.model.trim().length > 0 &&
+		finite(s.spend) && finite(s.total_tokens) && finite(s.prompt_tokens) &&
+		finite(s.completion_tokens) && finite(s.requests);
 }
 
 // indexSpendByModel turns the spend rows into an alias → row lookup for the table.

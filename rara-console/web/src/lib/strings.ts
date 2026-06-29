@@ -261,6 +261,7 @@ export const t = {
 		spend7d: '7d',
 		spend30d: '30d',
 		spendAll: 'Tudo',
+		spendError: 'não foi possível carregar o custo real',
 		addModel: 'Novo model',
 		editModel: 'Editar model',
 		formAlias: 'Alias',

@@ -3,9 +3,24 @@ package main
 import (
 	"net/http"
 	"net/http/httptest"
-	"strings"
+	"net/url"
+	"reflect"
 	"testing"
 )
+
+// assertForwarded parses the query string core received and asserts it matches
+// want exactly — catching extra, duplicated, or double-encoded params that a
+// substring check would miss.
+func assertForwarded(t *testing.T, raw string, want url.Values) {
+	t.Helper()
+	got, err := url.ParseQuery(raw)
+	if err != nil {
+		t.Fatalf("parse forwarded query %q: %v", raw, err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("forwarded query = %v, want %v (raw=%q)", got, want, raw)
+	}
+}
 
 // fakeSpendCore serves /v1/llm-spend and records the forwarded query string.
 func fakeSpendCore(t *testing.T, token string) (*httptest.Server, *string) {
@@ -61,9 +76,7 @@ func TestLLMSpendForwardsDays(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
 	}
-	if !strings.Contains(*captured, "days=30") {
-		t.Errorf("days=30 not forwarded; core received %q", *captured)
-	}
+	assertForwarded(t, *captured, url.Values{"days": {"30"}})
 }
 
 func TestLLMSpendForwardsModel(t *testing.T) {
@@ -75,9 +88,7 @@ func TestLLMSpendForwardsModel(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
 	}
-	if !strings.Contains(*captured, "model=groq-llama") {
-		t.Errorf("model not forwarded; core received %q", *captured)
-	}
+	assertForwarded(t, *captured, url.Values{"model": {"groq-llama"}})
 }
 
 func TestLLMSpendForwardsModelAndDays(t *testing.T) {
@@ -89,9 +100,7 @@ func TestLLMSpendForwardsModelAndDays(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
 	}
-	if !strings.Contains(*captured, "model=gemini-flash") || !strings.Contains(*captured, "days=7") {
-		t.Errorf("model+days not both forwarded; core received %q", *captured)
-	}
+	assertForwarded(t, *captured, url.Values{"model": {"gemini-flash"}, "days": {"7"}})
 }
 
 func TestLLMSpendRejectsInvalidDays(t *testing.T) {

@@ -1638,7 +1638,6 @@ func (m *MockDatabase) LLMSpend(ctx context.Context, model string, since *time.T
 		return nil, err
 	}
 	byAlias := map[string]*LLMSpend{}
-	var order []string
 	for _, r := range m.spendLogs {
 		if r.ModelGroup == "" {
 			continue
@@ -1653,7 +1652,6 @@ func (m *MockDatabase) LLMSpend(ctx context.Context, model string, since *time.T
 		if !ok {
 			agg = &LLMSpend{Model: r.ModelGroup}
 			byAlias[r.ModelGroup] = agg
-			order = append(order, r.ModelGroup)
 		}
 		agg.Spend += r.Spend
 		agg.PromptTokens += r.PromptTokens
@@ -1661,11 +1659,17 @@ func (m *MockDatabase) LLMSpend(ctx context.Context, model string, since *time.T
 		agg.TotalTokens += r.PromptTokens + r.CompletionTokens
 		agg.Requests++
 	}
-	sort.Strings(order)
-	out := make([]LLMSpend, 0, len(order))
-	for _, a := range order {
-		out = append(out, *byAlias[a])
+	out := make([]LLMSpend, 0, len(byAlias))
+	for _, agg := range byAlias {
+		out = append(out, *agg)
 	}
+	// Mirror the pgx ORDER BY SUM(spend) DESC, model_group.
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Spend != out[j].Spend {
+			return out[i].Spend > out[j].Spend
+		}
+		return out[i].Model < out[j].Model
+	})
 	return out, nil
 }
 

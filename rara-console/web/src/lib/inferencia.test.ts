@@ -129,6 +129,12 @@ describe('spend (CONSOLE-INFER-#9)', () => {
 		).toBe(true);
 		expect(isSpend(null)).toBe(false);
 		expect(isSpend({ model: 'x' })).toBe(false);
+		// empty alias and non-finite numbers must be rejected at the trust boundary
+		const base = { spend: 0.004, total_tokens: 420, prompt_tokens: 300, completion_tokens: 120, requests: 2 };
+		expect(isSpend({ ...base, model: '' })).toBe(false);
+		expect(isSpend({ ...base, model: '  ' })).toBe(false);
+		expect(isSpend({ ...base, model: 'groq', spend: Number.NaN })).toBe(false);
+		expect(isSpend({ ...base, model: 'groq', total_tokens: Number.POSITIVE_INFINITY })).toBe(false);
 	});
 
 	it('indexSpendByModel keys rows by alias', () => {

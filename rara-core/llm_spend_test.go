@@ -167,6 +167,13 @@ func TestHTTPLLMSpendNoData(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("want 200 on empty, got %d: %s", rec.Code, rec.Body.String())
 	}
+	var rows []LLMSpend
+	if err := json.Unmarshal(rec.Body.Bytes(), &rows); err != nil {
+		t.Fatalf("decode []LLMSpend: %v", err)
+	}
+	if len(rows) != 0 {
+		t.Errorf("want empty slice with no spend, got %+v", rows)
+	}
 }
 
 // TestCoreLLMSpendWrapsDBError: Core.LLMSpend propagates db errors (cancelled ctx).

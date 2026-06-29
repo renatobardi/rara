@@ -30,18 +30,25 @@
 	// ── real cost/tokens (CONSOLE-INFER-#9) ──
 	let spend = $state<LLMSpend[]>([]);
 	let spendPeriod = $state(2); // index into SPEND_PERIODS; default 30d
+	let spendError = $state(false); // a failed fetch ≠ genuine "no spend"
 	let spendByModel = $derived(indexSpendByModel(spend));
+	let spendSeq = 0; // guards against out-of-order responses on rapid period switches
 
 	function fetchSpend() {
+		const seq = ++spendSeq;
 		const days = SPEND_PERIODS[spendPeriod].days;
 		const url = days === null ? '/api/llm-spend' : `/api/llm-spend?days=${days}`;
 		return fetch(url)
 			.then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
 			.then((d) => {
+				if (seq !== spendSeq) return; // a newer period was selected; drop stale data
 				spend = asList<LLMSpend>(d).filter(isSpend);
+				spendError = false;
 			})
 			.catch(() => {
-				spend = []; // degrade to "sem dados" — never blocks the registry table
+				if (seq !== spendSeq) return;
+				spend = [];
+				spendError = true; // surface the failure instead of faking $0 — never blocks the table
 			});
 	}
 
@@ -482,6 +489,9 @@
 				>{t.inferencia[p.key as 'spend24h' | 'spend7d' | 'spend30d' | 'spendAll']}</button>
 			{/each}
 		</div>
+		{#if spendError}
+			<span class="text-amber-500">{t.inferencia.spendError}</span>
+		{/if}
 	</div>
 
 	{#if formOpen?.entity === 'model' && formOpen.mode === 'add'}
