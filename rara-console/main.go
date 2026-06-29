@@ -773,46 +773,6 @@ func (s *server) handleDeleteLLMProvider(w http.ResponseWriter, r *http.Request)
 	proxyWrite(w, status, body, err)
 }
 
-// handleLLMModels proxies GET /v1/llm-models, forwarding the optional ?provider_id= filter. The
-// value is re-encoded via url.Values (and rejected if non-numeric) to prevent query injection.
-func (s *server) handleLLMModels(w http.ResponseWriter, r *http.Request) {
-	path := "/v1/llm-models"
-	if raw := r.URL.Query().Get("provider_id"); raw != "" {
-		// isNumericID (digits-only) so the filter matches the same ID contract as the route handlers
-		// — strconv.Atoi would also accept non-canonical "+1"/"-1".
-		if !isNumericID(raw) {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "provider_id must be a number"})
-			return
-		}
-		q := url.Values{}
-		q.Set("provider_id", raw)
-		path += "?" + q.Encode()
-	}
-	body, err := s.fetchCore(r.Context(), path)
-	if err != nil {
-		badGateway(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, json.RawMessage(body))
-}
-
-// handleUpsertLLMModel proxies PUT /v1/llm-models with bearer injected.
-func (s *server) handleUpsertLLMModel(w http.ResponseWriter, r *http.Request) {
-	status, body, err := s.putCore(r.Context(), "/v1/llm-models", r.Body)
-	proxyWrite(w, status, body, err)
-}
-
-// handleDeleteLLMModel proxies DELETE /v1/llm-models/{id}. Rejects non-numeric ids.
-func (s *server) handleDeleteLLMModel(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	if !isNumericID(id) {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid model id"})
-		return
-	}
-	status, body, err := s.doCore(r.Context(), http.MethodDelete, "/v1/llm-models/"+id, r.Body)
-	proxyWrite(w, status, body, err)
-}
-
 // --- litellm model catalog (CONSOLE-INFER-#CATALOG) ------------------------
 // The Model form auto-fills upstream + costs from litellm's model_prices_and_context_window.json,
 // pinned to the gateway tag so the catalog matches what the gateway actually serves. We never
@@ -1285,9 +1245,6 @@ func main() {
 	mux.HandleFunc("PUT /api/llm-providers", s.handleUpsertLLMProvider)
 	mux.HandleFunc("DELETE /api/llm-providers/{id}", s.handleDeleteLLMProvider)
 	mux.HandleFunc("GET /api/llm-catalog", s.handleLLMCatalog)
-	mux.HandleFunc("GET /api/llm-models", s.handleLLMModels)
-	mux.HandleFunc("PUT /api/llm-models", s.handleUpsertLLMModel)
-	mux.HandleFunc("DELETE /api/llm-models/{id}", s.handleDeleteLLMModel)
 	mux.HandleFunc("GET /api/decisions", s.handleDecisionsFeed)
 	mux.HandleFunc("GET /api/items/{id}/decisions", s.handleItemDecisions)
 	mux.HandleFunc("GET /api/source-kinds", s.handleSourceKinds)

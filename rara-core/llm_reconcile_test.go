@@ -5,8 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 
@@ -339,4 +341,54 @@ func TestDiffLLMModelsDeletesLegacyAlias(t *testing.T) {
 	if gotDel["a1"] || gotDel["a3"] {
 		t.Errorf("delete set = %v, must not include a1 (keep) or a3 (config.yaml)", gotDel)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// MockDatabase implementations for the reconciler's DB seam
+// ---------------------------------------------------------------------------
+
+// ListBoundUpstreams mirrors the SQL: DISTINCT enabled-worker env->>'LITELLM_MODEL' values that
+// contain '/', ordered. Legacy bare aliases (no '/') and missing keys are excluded.
+func (m *MockDatabase) ListBoundUpstreams(_ context.Context) ([]string, error) {
+	seen := map[string]bool{}
+	var out []string
+	for _, p := range m.providers {
+		if !p.Enabled || len(p.Env) == 0 {
+			continue
+		}
+		var env map[string]any
+		if err := json.Unmarshal(p.Env, &env); err != nil {
+			return nil, fmt.Errorf("list bound upstreams: decode provider env: %w", err)
+		}
+		up, _ := env["LITELLM_MODEL"].(string)
+		// Mirror the SQL regex '^[^/]+/.+$': non-empty kind and model around the first '/'.
+		kind, model, ok := strings.Cut(up, "/")
+		if !ok || kind == "" || model == "" || seen[up] {
+			continue
+		}
+		seen[up] = true
+		out = append(out, up)
+	}
+	sort.Strings(out) // mirror ORDER BY upstream
+	return out, nil
+}
+
+// ListLLMProvidersForSync mirrors the SQL: enabled, non-deleted providers with key material,
+// ordered by id (so the reconciler's first-id-wins kind resolution is deterministic).
+func (m *MockDatabase) ListLLMProvidersForSync(_ context.Context) ([]llmProviderSync, error) {
+	sorted := append([]mockLLMProvider(nil), m.llmProviders...)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].ID < sorted[j].ID })
+	var out []llmProviderSync
+	for _, p := range sorted {
+		if p.DeletedAt != nil || !p.Enabled {
+			continue
+		}
+		out = append(out, llmProviderSync{
+			Kind:          p.Kind,
+			BaseURL:       p.BaseURL,
+			KeyCiphertext: p.KeyCiphertext,
+			KeyNonce:      p.KeyNonce,
+		})
+	}
+	return out, nil
 }

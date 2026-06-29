@@ -141,19 +141,6 @@ type mockLLMProvider struct {
 	DeletedAt     *bool // non-nil = soft-deleted
 }
 
-type mockLLMModel struct {
-	ID           int
-	ProviderID   int
-	ProviderName string // denormalized from llmProviders for list join
-	Alias        string
-	Upstream     string
-	InputCost    float64
-	OutputCost   float64
-	Params       json.RawMessage
-	Enabled      bool
-	DeletedAt    *bool // non-nil = soft-deleted
-}
-
 type MockDatabase struct {
 	capabilities map[string]Capability // UNIQUE(name)
 	providers    map[string]Provider   // UNIQUE(name)
@@ -196,9 +183,6 @@ type MockDatabase struct {
 
 	llmProviders      []mockLLMProvider
 	nextLLMProviderID int
-
-	llmModels      []mockLLMModel
-	nextLLMModelID int
 
 	spendLogs []mockSpendLog // mirrors litellm."LiteLLM_SpendLogs" rows (tests seed directly)
 
@@ -252,7 +236,6 @@ func newMockDatabase() *MockDatabase {
 		nextFeedSrcID:         1,
 		nextEmailSrcID:        1,
 		nextLLMProviderID:     1,
-		nextLLMModelID:        1,
 		itemContents:          make(map[int]ItemContentResult),
 		nowFn:                 time.Now,
 	}

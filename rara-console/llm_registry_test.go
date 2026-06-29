@@ -8,9 +8,9 @@ import (
 	"testing"
 )
 
-// fakeLLMCore stands in for the rara-core surface's llm_providers / llm_models endpoints. It
-// enforces the bearer, records the forwarded method+path+body, and serves masked reads (only
-// key_last4, never api_key) so the BFF tests can prove the secret never reaches the SPA.
+// fakeLLMCore stands in for the rara-core surface's llm_providers endpoints. It enforces the
+// bearer, records the forwarded method+path+body, and serves masked reads (only key_last4,
+// never api_key) so the BFF tests can prove the secret never reaches the SPA.
 func fakeLLMCore(t *testing.T, token string, method, path, body *string) *httptest.Server {
 	t.Helper()
 	record := func(w http.ResponseWriter, r *http.Request, resp string) {
@@ -46,19 +46,6 @@ func fakeLLMCore(t *testing.T, token string, method, path, body *string) *httpte
 		record(w, r, `{"id":1,"name":"openai","key_last4":"7xyz","enabled":true}`)
 	})
 	mux.HandleFunc("DELETE /v1/llm-providers/{id}", func(w http.ResponseWriter, r *http.Request) {
-		record(w, r, `{"deleted":true}`)
-	})
-	mux.HandleFunc("GET /v1/llm-models", func(w http.ResponseWriter, r *http.Request) {
-		record(w, r, `[{"id":5,"provider_id":1,"alias":"gpt","upstream":"gpt-4o"}]`)
-		// record() captured only the bare path; re-attach the query so forwarding can be asserted.
-		if path != nil && *path != "" && r.URL.RawQuery != "" {
-			*path += "?" + r.URL.RawQuery
-		}
-	})
-	mux.HandleFunc("PUT /v1/llm-models", func(w http.ResponseWriter, r *http.Request) {
-		record(w, r, `{"id":5,"provider_id":1,"alias":"gpt"}`)
-	})
-	mux.HandleFunc("DELETE /v1/llm-models/{id}", func(w http.ResponseWriter, r *http.Request) {
 		record(w, r, `{"deleted":true}`)
 	})
 	srv := httptest.NewServer(mux)
@@ -221,108 +208,6 @@ func TestDeleteLLMProviderRejectsBadID(t *testing.T) {
 	}
 }
 
-func TestLLMModelsProxiesGET(t *testing.T) {
-	var method, path string
-	core := fakeLLMCore(t, "secret", &method, &path, nil)
-	s := &server{coreURL: core.URL, token: "secret", client: core.Client()}
-
-	rec := httptest.NewRecorder()
-	s.handleLLMModels(rec, httptest.NewRequest("GET", "/api/llm-models", nil))
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status=%d, body=%s", rec.Code, rec.Body)
-	}
-	if method != "GET" || path != "/v1/llm-models" {
-		t.Errorf("forwarded %s %s, want GET /v1/llm-models", method, path)
-	}
-}
-
-func TestLLMModelsForwardsProviderID(t *testing.T) {
-	var path string
-	core := fakeLLMCore(t, "secret", nil, &path, nil)
-	s := &server{coreURL: core.URL, token: "secret", client: core.Client()}
-
-	rec := httptest.NewRecorder()
-	s.handleLLMModels(rec, httptest.NewRequest("GET", "/api/llm-models?provider_id=3", nil))
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status=%d, body=%s", rec.Code, rec.Body)
-	}
-	if path != "/v1/llm-models?provider_id=3" {
-		t.Errorf("forwarded path=%q, want /v1/llm-models?provider_id=3", path)
-	}
-}
-
-func TestLLMModelsRejectsBadProviderID(t *testing.T) {
-	var path string
-	core := fakeLLMCore(t, "secret", nil, &path, nil)
-	s := &server{coreURL: core.URL, token: "secret", client: core.Client()}
-
-	rec := httptest.NewRecorder()
-	s.handleLLMModels(rec, httptest.NewRequest("GET", "/api/llm-models?provider_id=evil", nil))
-
-	if rec.Code != http.StatusBadRequest {
-		t.Errorf("status=%d, want 400 for non-numeric provider_id", rec.Code)
-	}
-	if path != "" {
-		t.Errorf("bad provider_id reached upstream at %q, want no upstream call", path)
-	}
-}
-
-func TestUpsertLLMModelProxiesPUT(t *testing.T) {
-	var method, path, body string
-	core := fakeLLMCore(t, "secret", &method, &path, &body)
-	s := &server{coreURL: core.URL, token: "secret", client: core.Client()}
-
-	const reqBody = `{"provider_id":1,"alias":"gpt","upstream":"gpt-4o"}`
-	rec := httptest.NewRecorder()
-	s.handleUpsertLLMModel(rec, httptest.NewRequest("PUT", "/api/llm-models", strings.NewReader(reqBody)))
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status=%d, body=%s", rec.Code, rec.Body)
-	}
-	if method != "PUT" || path != "/v1/llm-models" {
-		t.Errorf("forwarded %s %s, want PUT /v1/llm-models", method, path)
-	}
-	if body != reqBody {
-		t.Errorf("forwarded body=%s, want %s", body, reqBody)
-	}
-}
-
-func TestDeleteLLMModelProxiesIDInPath(t *testing.T) {
-	var method, path string
-	core := fakeLLMCore(t, "secret", &method, &path, nil)
-	s := &server{coreURL: core.URL, token: "secret", client: core.Client()}
-
-	rec := httptest.NewRecorder()
-	req := newReqWithPathValue("DELETE", "/api/llm-models/5", "", map[string]string{"id": "5"})
-	s.handleDeleteLLMModel(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status=%d, body=%s", rec.Code, rec.Body)
-	}
-	if method != "DELETE" || path != "/v1/llm-models/5" {
-		t.Errorf("forwarded %s %s, want DELETE /v1/llm-models/5", method, path)
-	}
-}
-
-func TestDeleteLLMModelRejectsBadID(t *testing.T) {
-	var path string
-	core := fakeLLMCore(t, "secret", nil, &path, nil)
-	s := &server{coreURL: core.URL, token: "secret", client: core.Client()}
-
-	rec := httptest.NewRecorder()
-	req := newReqWithPathValue("DELETE", "/api/llm-models/x", "", map[string]string{"id": "x"})
-	s.handleDeleteLLMModel(rec, req)
-
-	if rec.Code != http.StatusBadRequest {
-		t.Errorf("status=%d, want 400 for non-numeric id", rec.Code)
-	}
-	if path != "" {
-		t.Errorf("bad id reached upstream at %q, want no upstream call", path)
-	}
-}
-
 // The collection paths are method-scoped (GET list, PUT upsert); an unsupported method must get a
 // 405 from the router, not fall through to a handler. This mux mirrors the registrations in main().
 func TestLLMRegistryUnsupportedMethodReturns405(t *testing.T) {
@@ -333,15 +218,10 @@ func TestLLMRegistryUnsupportedMethodReturns405(t *testing.T) {
 	mux.HandleFunc("GET /api/llm-providers", s.handleLLMProviders)
 	mux.HandleFunc("PUT /api/llm-providers", s.handleUpsertLLMProvider)
 	mux.HandleFunc("DELETE /api/llm-providers/{id}", s.handleDeleteLLMProvider)
-	mux.HandleFunc("GET /api/llm-models", s.handleLLMModels)
-	mux.HandleFunc("PUT /api/llm-models", s.handleUpsertLLMModel)
-	mux.HandleFunc("DELETE /api/llm-models/{id}", s.handleDeleteLLMModel)
 
-	for _, target := range []string{"/api/llm-providers", "/api/llm-models"} {
-		rec := httptest.NewRecorder()
-		mux.ServeHTTP(rec, httptest.NewRequest("POST", target, strings.NewReader(`{}`)))
-		if rec.Code != http.StatusMethodNotAllowed {
-			t.Errorf("POST %s: status=%d, want 405", target, rec.Code)
-		}
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest("POST", "/api/llm-providers", strings.NewReader(`{}`)))
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Errorf("POST /api/llm-providers: status=%d, want 405", rec.Code)
 	}
 }
