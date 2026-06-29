@@ -12,7 +12,8 @@ Introduziu uma indireção desnecessária.
 - **Provider** = vendor (qualquer um do litellm) + API key. Adicionar um provider **habilita TODOS os models dele**.
 - **Model** = não é cadastrado; vem do **catálogo do litellm** filtrado pelos providers adicionados.
 - **Binding** (worker/agent) = escolhe **Provider + Model** direto → grava `LITELLM_MODEL = groq/llama-3.3-70b-versatile`
-  (string completa, sem alias). O gateway roteia via wildcard `groq/*` + a key do provider.
+  (string completa, sem alias). O gateway roteia pelo **model concreto** (registrado com `model_name =
+  string completa do upstream` + a key do provider). _Não usa wildcard como primitivo — ver §2/§5._
 
 ## 2. Confirmado no gateway real (SPIKE CORR-#0 — ver `docs/SPIKE-CORR-INFER.md`)
 
@@ -58,8 +59,8 @@ DB, sobrevive a restart, deletável. (Discovery do dropdown = catálogo estátic
 ## 7. Reaproveitado vs reworkado
 - ♻️ Reaproveita: `llm_providers`+cifragem (#1/#2), gateway DB-mode (#4a), **CATALOG (#286)** (vira a fonte do
   provider-list e do model-dropdown por provider), backend de spend (#9).
-- 🔧 Reworka: `llm_models` (#3) sai; reconciler (#4b) vira wildcard; dropdown do worker (#8) vira provider+model;
-  display de spend (#9) vira gráficos.
+- 🔧 Reworka: `llm_models` (#3) sai; reconciler (#4b) passa a registrar **models concretos** `kind/model`
+  (não wildcard — ver §5); dropdown do worker (#8) vira provider+model; display de spend (#9) vira gráficos.
 
 ## 8. Fatias (CORR-#n) — ANTES do #10
 
