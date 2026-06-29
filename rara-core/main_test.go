@@ -1723,6 +1723,9 @@ func (m *MockDatabase) LLMSpendByProvider(ctx context.Context, since *time.Time)
 		if i := strings.IndexByte(prov, '/'); i >= 0 {
 			prov = prov[:i]
 		}
+		if prov == "" {
+			continue // malformed model_group like "/m" — mirrors split_part(...) <> ''
+		}
 		agg, ok := byProv[prov]
 		if !ok {
 			agg = &LLMSpendProvider{Provider: prov}

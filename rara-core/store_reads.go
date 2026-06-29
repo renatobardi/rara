@@ -1068,7 +1068,9 @@ func (d *pgxDatabase) LLMSpendTimeseries(ctx context.Context, since *time.Time) 
 // model_group prefix before "/" (CORR-INFER-#4) — highest spend first. An old
 // slash-less alias stays whole (split_part returns the string intact).
 func (d *pgxDatabase) LLMSpendByProvider(ctx context.Context, since *time.Time) ([]LLMSpendProvider, error) {
-	conds := []string{`model_group <> ''`}
+	// The second cond drops malformed model_groups like "/m" whose prefix is empty —
+	// they'd otherwise fold into one unlabelled "" provider bucket.
+	conds := []string{`model_group <> ''`, `split_part(model_group, '/', 1) <> ''`}
 	var args []any
 	if since != nil {
 		args = append(args, since)

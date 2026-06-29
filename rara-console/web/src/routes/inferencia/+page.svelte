@@ -73,7 +73,11 @@
 
 	// Fetch both spend aggregations for the chosen window; either failing flips the
 	// error flag (distinct from "no data"). null days = all-time (no ?days).
+	// A monotonic token discards out-of-order responses: a slow earlier window must
+	// not overwrite a faster later one (rapid period switches).
+	let spendReqSeq = 0;
 	async function fetchSpend(days: number | null) {
+		const seq = ++spendReqSeq;
 		spendLoading = true;
 		spendError = false;
 		spendDaysSel = days;
@@ -84,16 +88,22 @@
 				fetch(`/api/llm-spend/by-provider${qs}`)
 			]);
 			if (!tsRes.ok || !provRes.ok) throw new Error();
-			spendDays = asList<LLMSpendDay>(await tsRes.json()).filter(isSpendDay);
-			spendProviders = asList<LLMSpendProvider>(await provRes.json()).filter(isSpendProvider);
+			const days_ = asList<LLMSpendDay>(await tsRes.json()).filter(isSpendDay);
+			const provs_ = asList<LLMSpendProvider>(await provRes.json()).filter(isSpendProvider);
+			if (seq !== spendReqSeq) return; // a newer request superseded this one
+			spendDays = days_;
+			spendProviders = provs_;
 			spendLoading = false;
 		} catch {
+			if (seq !== spendReqSeq) return;
 			spendError = true;
 			spendLoading = false;
 		}
 	}
 
-	let overallBars = $derived(spendBars(spendDays.map((d) => ({ label: formatDay(d.day), value: d.spend }))));
+	// Key the daily series by the raw `day` (formatDay drops the year, so the all-time
+	// window would otherwise collide same-MM-DD days across years); format at render.
+	let overallBars = $derived(spendBars(spendDays.map((d) => ({ label: d.day, value: d.spend }))));
 	let providerBars = $derived(spendBars(spendProviders.map((p) => ({ label: p.provider, value: p.spend }))));
 	let spendTotal = $derived(spendDays.reduce((s, d) => s + d.spend, 0));
 	let hasSpend = $derived(spendDays.length > 0 || spendProviders.length > 0);
@@ -374,6 +384,7 @@
 		{#each SPEND_PERIODS as p (p.key)}
 			<button
 				class="rounded-token border px-3 py-1 text-[12px] {spendDaysSel === p.days ? 'border-text bg-text text-bg' : 'border-border text-muted hover:bg-hover'}"
+				aria-pressed={spendDaysSel === p.days}
 				onclick={() => fetchSpend(p.days)}
 			>{periodLabel[p.key]}</button>
 		{/each}
@@ -408,11 +419,16 @@
 {#snippet columnChart(bars: SpendBar[])}
 	<div class="flex h-40 gap-1">
 		{#each bars as b (b.label)}
-			<div class="flex min-w-0 flex-1 flex-col items-center gap-1" title="{b.label}: {formatUSD(b.value)}">
+			<div
+				class="flex min-w-0 flex-1 flex-col items-center gap-1"
+				title="{formatDay(b.label)}: {formatUSD(b.value)}"
+				role="img"
+				aria-label="{formatDay(b.label)}: {formatUSD(b.value)}"
+			>
 				<div class="flex w-full flex-1 items-end">
 					<div class="w-full rounded-t bg-text" style="height: {Math.max(b.pct, b.value > 0 ? 2 : 0)}%"></div>
 				</div>
-				<span class="w-full truncate text-center text-[9px] text-muted">{b.label}</span>
+				<span class="w-full truncate text-center text-[9px] text-muted" aria-hidden="true">{formatDay(b.label)}</span>
 			</div>
 		{/each}
 	</div>

@@ -1313,8 +1313,17 @@ func (h *httpSurface) llmSpend(w http.ResponseWriter, r *http.Request) {
 	writeResult(w, rows, err)
 }
 
-// spendSince parses ?days=N (1..365) into a since cutoff; "" means all-time.
-// On a bad value it writes a 400 and returns ok=false.
+// dayAlignedSince returns the start (in now's location) of the day N-1 days before
+// now, so an N-day window spans exactly N calendar days — matching the daily
+// bucketing in LLMSpendTimeseries (no partial leading bucket).
+func dayAlignedSince(now time.Time, n int) time.Time {
+	start := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	return start.AddDate(0, 0, -(n - 1))
+}
+
+// spendSince parses ?days=N (1..365) into a since cutoff; "" means all-time. The
+// cutoff is aligned to the start of the day so the spend charts return exactly N
+// calendar buckets. On a bad value it writes a 400 and returns ok=false.
 func spendSince(w http.ResponseWriter, r *http.Request) (since *time.Time, ok bool) {
 	raw := r.URL.Query().Get("days")
 	if raw == "" {
@@ -1325,7 +1334,7 @@ func spendSince(w http.ResponseWriter, r *http.Request) (since *time.Time, ok bo
 		writeResult(w, nil, badInput("days must be a positive integer between 1 and 365"))
 		return nil, false
 	}
-	t := time.Now().Add(-time.Duration(n) * 24 * time.Hour)
+	t := dayAlignedSince(time.Now(), n)
 	return &t, true
 }
 

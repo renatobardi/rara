@@ -297,6 +297,39 @@ func TestLLMSpendByProviderAliasWithoutSlash(t *testing.T) {
 	}
 }
 
+// TestLLMSpendByProviderExcludesEmptyPrefix: a malformed model_group like "/m"
+// has an empty provider prefix and must not fold into a blank bucket.
+func TestLLMSpendByProviderExcludesEmptyPrefix(t *testing.T) {
+	ctx := context.Background()
+	db := newMockDatabase()
+	now := time.Now()
+	seedSpendLog(db, "/m", 0.005, 10, 5, now) // empty prefix — excluded
+	seedSpendLog(db, "groq/llama", 0.002, 10, 5, now)
+
+	rows, err := db.LLMSpendByProvider(ctx, nil)
+	if err != nil {
+		t.Fatalf("LLMSpendByProvider: %v", err)
+	}
+	if len(rows) != 1 || rows[0].Provider != "groq" {
+		t.Fatalf("want only groq (empty prefix dropped), got %+v", rows)
+	}
+}
+
+// TestDayAlignedSince: an N-day window starts at the beginning of the day N-1 days
+// back, so the daily timeseries returns exactly N calendar buckets.
+func TestDayAlignedSince(t *testing.T) {
+	now := time.Date(2026, 6, 29, 15, 30, 45, 0, time.UTC)
+	if got, want := dayAlignedSince(now, 1), time.Date(2026, 6, 29, 0, 0, 0, 0, time.UTC); !got.Equal(want) {
+		t.Errorf("1d: got %v, want %v", got, want)
+	}
+	if got, want := dayAlignedSince(now, 7), time.Date(2026, 6, 23, 0, 0, 0, 0, time.UTC); !got.Equal(want) {
+		t.Errorf("7d: got %v, want %v", got, want)
+	}
+	if got, want := dayAlignedSince(now, 30), time.Date(2026, 5, 31, 0, 0, 0, 0, time.UTC); !got.Equal(want) {
+		t.Errorf("30d: got %v, want %v", got, want)
+	}
+}
+
 // TestHTTPLLMSpendTimeseries200: the endpoint returns []LLMSpendDay.
 func TestHTTPLLMSpendTimeseries200(t *testing.T) {
 	core, db, _ := newTestCore(t)
