@@ -10,7 +10,7 @@ export const t = {
 		curation: 'Curadoria',
 		fontes: 'Fontes',
 		workers: 'Workers',
-		inferencia: 'Inferência',
+		inferencia: 'Providers',
 		agents: 'Agents',
 		secSystem: 'Sistema',
 		audit: 'Auditoria',
@@ -249,6 +249,7 @@ export const t = {
 		errBaseUrlScheme: 'Base URL deve usar http ou https.',
 		errBaseUrlPrivate: 'Base URL deve apontar para um host público.',
 		errKindRequired: 'Tipo é obrigatório.',
+		errKindDuplicate: 'Já existe um provider ativo deste tipo.',
 		// ── shared ──
 		searchToggle: 'Buscar',
 		searchPlaceholder: 'Buscar por nome…',
