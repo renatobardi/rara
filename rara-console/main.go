@@ -971,6 +971,34 @@ func (s *server) handleWorkerMetrics(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, json.RawMessage(body))
 }
 
+// handleLLMSpend proxies GET /v1/llm-spend — real cost/tokens per model alias
+// (CONSOLE-INFER-#9). Forwards the optional model (alias) and days=N (1–365);
+// both re-encoded via url.Values so neither can inject into the core query string.
+func (s *server) handleLLMSpend(w http.ResponseWriter, r *http.Request) {
+	q := url.Values{}
+	if raw := r.URL.Query().Get("days"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 1 || n > 365 {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "days must be an integer between 1 and 365"})
+			return
+		}
+		q.Set("days", strconv.Itoa(n))
+	}
+	if model := r.URL.Query().Get("model"); model != "" {
+		q.Set("model", model)
+	}
+	path := "/v1/llm-spend"
+	if enc := q.Encode(); enc != "" {
+		path += "?" + enc
+	}
+	body, err := s.fetchCore(r.Context(), path)
+	if err != nil {
+		badGateway(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, json.RawMessage(body))
+}
+
 // handleCoreHealth proxies GET /v1/health — the system health aggregate (db_ok, last reconcile,
 // provider staleness). Always 200 from core; transport failures become 502.
 func (s *server) handleCoreHealth(w http.ResponseWriter, r *http.Request) {
@@ -1035,6 +1063,7 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/workers/metrics", s.handleWorkerMetrics)
+	mux.HandleFunc("GET /api/llm-spend", s.handleLLMSpend)
 	mux.HandleFunc("GET /api/health", s.handleCoreHealth)
 	mux.HandleFunc("GET /api/usage", s.handleCoreUsage)
 	mux.HandleFunc("GET /api/overview", s.handleOverview)

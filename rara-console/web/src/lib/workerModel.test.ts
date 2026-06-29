@@ -30,17 +30,24 @@ describe('enabledAliases', () => {
 });
 
 describe('usesModel', () => {
-	it('is true for LLM capabilities', () => {
+	it('is true for known LLM capabilities', () => {
 		expect(usesModel('destilar')).toBe(true);
 		expect(usesModel('gate_barato')).toBe(true);
 		expect(usesModel('gate_rico')).toBe(true);
 	});
-	it('is false for non-LLM capabilities (pure collectors)', () => {
+	it('is true for new LLM workers not in any hardcoded list (denylist, not allowlist)', () => {
+		expect(usesModel('reason')).toBe(true);
+		expect(usesModel('hone')).toBe(true);
+	});
+	it('is false for deterministic capabilities (pure collectors)', () => {
 		expect(usesModel('coletar')).toBe(false);
 		expect(usesModel('transcrever')).toBe(false);
 		expect(usesModel('extrair')).toBe(false);
 	});
-	it('is true for a non-LLM capability that already carries a binding', () => {
+	it('is false when no capability is chosen yet', () => {
+		expect(usesModel('')).toBe(false);
+	});
+	it('is true for a deterministic capability that already carries a binding', () => {
 		expect(usesModel('coletar', { LITELLM_MODEL: 'groq-llama' })).toBe(true);
 	});
 });

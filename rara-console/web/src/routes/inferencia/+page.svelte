@@ -8,9 +8,15 @@
 		maskKey,
 		validateBaseUrl,
 		costPerMillion,
+		isSpend,
+		indexSpendByModel,
+		formatUSD,
+		formatTokens,
+		SPEND_PERIODS,
 		PROVIDER_KINDS,
 		type LLMProvider,
-		type LLMModel
+		type LLMModel,
+		type LLMSpend
 	} from '$lib/inferencia';
 
 	// ── data ──
@@ -20,6 +26,31 @@
 	let provError = $state(false);
 	let modelLoading = $state(true);
 	let modelError = $state(false);
+
+	// ── real cost/tokens (CONSOLE-INFER-#9) ──
+	let spend = $state<LLMSpend[]>([]);
+	let spendPeriod = $state(2); // index into SPEND_PERIODS; default 30d
+	let spendError = $state(false); // a failed fetch ≠ genuine "no spend"
+	let spendByModel = $derived(indexSpendByModel(spend));
+	let spendSeq = 0; // guards against out-of-order responses on rapid period switches
+
+	function fetchSpend() {
+		const seq = ++spendSeq;
+		const days = SPEND_PERIODS[spendPeriod].days;
+		const url = days === null ? '/api/llm-spend' : `/api/llm-spend?days=${days}`;
+		return fetch(url)
+			.then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
+			.then((d) => {
+				if (seq !== spendSeq) return; // a newer period was selected; drop stale data
+				spend = asList<LLMSpend>(d).filter(isSpend);
+				spendError = false;
+			})
+			.catch(() => {
+				if (seq !== spendSeq) return;
+				spend = [];
+				spendError = true; // surface the failure instead of faking $0 — never blocks the table
+			});
+	}
 
 	function fetchProviders() {
 		provLoading = true;
@@ -54,7 +85,13 @@
 	onMount(() => {
 		fetchProviders();
 		fetchModels();
+		fetchSpend();
 	});
+
+	function pickSpendPeriod(i: number) {
+		spendPeriod = i;
+		fetchSpend();
+	}
 
 	// ── toasts (mirrors workers/+page.svelte) ──
 	type Toast = { id: number; kind: 'ok' | 'err'; msg: string };
@@ -440,6 +477,23 @@
 		{/if}
 	</div>
 
+	<!-- real cost/tokens period selector (CONSOLE-INFER-#9) -->
+	<div class="mb-4 flex items-center gap-2 text-[12px]">
+		<span class="text-muted">{t.inferencia.spendPeriodLabel}</span>
+		<div class="inline-flex overflow-hidden rounded-token border border-border" role="group" aria-label={t.inferencia.spendPeriodLabel}>
+			{#each SPEND_PERIODS as p, i (p.key)}
+				<button
+					class="px-2.5 py-1 {spendPeriod === i ? 'bg-text text-bg' : 'text-muted hover:bg-hover'}"
+					aria-pressed={spendPeriod === i}
+					onclick={() => pickSpendPeriod(i)}
+				>{t.inferencia[p.key as 'spend24h' | 'spend7d' | 'spend30d' | 'spendAll']}</button>
+			{/each}
+		</div>
+		{#if spendError}
+			<span class="text-amber-500">{t.inferencia.spendError}</span>
+		{/if}
+	</div>
+
 	{#if formOpen?.entity === 'model' && formOpen.mode === 'add'}
 		<div class="mb-4">{@render modelForm()}</div>
 	{/if}
@@ -466,6 +520,8 @@
 						<th class="px-4 py-2.5 font-medium">{t.inferencia.colUpstream}</th>
 						<th class="px-4 py-2.5 font-medium">{t.inferencia.colCostIn}</th>
 						<th class="px-4 py-2.5 font-medium">{t.inferencia.colCostOut}</th>
+						<th class="px-4 py-2.5 font-medium">{t.inferencia.colSpend}</th>
+						<th class="px-4 py-2.5 font-medium">{t.inferencia.colTokens}</th>
 						<th class="px-4 py-2.5 font-medium">{t.inferencia.colEnabled}</th>
 						<th class="w-10 px-2 py-2.5"><span class="sr-only">{t.inferencia.actionsLabel}</span></th>
 					</tr>
@@ -478,6 +534,8 @@
 							<td class="px-4 py-2.5 font-mono text-[12px] text-muted">{m.upstream}</td>
 							<td class="whitespace-nowrap px-4 py-2.5 tabular-nums text-muted">{costPerMillion(m.input_cost_per_token)}</td>
 							<td class="whitespace-nowrap px-4 py-2.5 tabular-nums text-muted">{costPerMillion(m.output_cost_per_token)}</td>
+							<td class="whitespace-nowrap px-4 py-2.5 tabular-nums">{formatUSD(spendByModel.get(m.alias)?.spend ?? 0)}</td>
+							<td class="whitespace-nowrap px-4 py-2.5 tabular-nums text-muted">{formatTokens(spendByModel.get(m.alias)?.total_tokens ?? 0)}</td>
 							<td class="px-4 py-2.5">
 								<span class="inline-flex items-center gap-1.5 text-muted">
 									<span class="h-[7px] w-[7px] flex-none rounded-full {m.enabled ? 'bg-green' : 'bg-surface-2 border border-border'}"></span>
@@ -493,7 +551,7 @@
 							</td>
 						</tr>
 						{#if formOpen?.entity === 'model' && formOpen.mode === 'edit' && mEditId === m.id}
-							<tr><td colspan="7" class="px-4 py-3">{@render modelForm()}</td></tr>
+							<tr><td colspan="9" class="px-4 py-3">{@render modelForm()}</td></tr>
 						{/if}
 					{/each}
 				</tbody>

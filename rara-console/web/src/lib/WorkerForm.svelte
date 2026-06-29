@@ -89,10 +89,11 @@
 	const modelOptions = $derived(
 		[...new Set([...(model ? [model] : []), ...enabledAliases(models)])]
 	);
-	// Show only for workers that actually call an LLM (LLM capability or an existing
-	// binding) — pure collectors stay hidden. Reactive on capability (editable in add
-	// mode). Optional — never required.
-	const showModel = $derived(usesModel(capability, initial?.env));
+	// Show only for LLM-capable workers AND when there's actually something to pick —
+	// if /api/llm-models fails/returns empty (and there's no existing binding to keep),
+	// modelOptions is empty and the field degrades to hidden. Reactive on capability
+	// (editable in add mode). Optional — never required.
+	const showModel = $derived(usesModel(capability, initial?.env) && modelOptions.length > 0);
 
 	// Clear a stale selection if capability switches away from LLM, so submit never
 	// writes LITELLM_MODEL onto a non-LLM worker.

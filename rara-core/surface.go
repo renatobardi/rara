@@ -103,6 +103,18 @@ type WorkerMetric struct {
 	LastActivityAt *time.Time     `json:"last_activity_at,omitempty"`
 }
 
+// LLMSpend is the real cost/tokens rollup for one model alias, returned by
+// GET /v1/llm-spend (CONSOLE-INFER-#9). Sourced from litellm's spend log and
+// keyed by model_group — the alias workers send as LITELLM_MODEL.
+type LLMSpend struct {
+	Model            string  `json:"model"` // model_group = alias
+	Spend            float64 `json:"spend"` // USD, summed
+	TotalTokens      int     `json:"total_tokens"`
+	PromptTokens     int     `json:"prompt_tokens"`
+	CompletionTokens int     `json:"completion_tokens"`
+	Requests         int     `json:"requests"`
+}
+
 // ---------------------------------------------------------------------------
 // Core — the operations layer (the "núcleo" both adapters drive).
 // ---------------------------------------------------------------------------
@@ -1080,6 +1092,17 @@ func (c *Core) WorkerMetrics(ctx context.Context, since *time.Time) ([]WorkerMet
 	return metrics, nil
 }
 
+// LLMSpend returns real cost/tokens per model alias from the litellm spend log
+// (CONSOLE-INFER-#9). model="" rolls up every alias; since restricts the window
+// (nil = all-time). Aggregated by model_group — the alias the workers send.
+func (c *Core) LLMSpend(ctx context.Context, model string, since *time.Time) ([]LLMSpend, error) {
+	rows, err := c.db.LLMSpend(ctx, model, since)
+	if err != nil {
+		return nil, fmt.Errorf("core llm spend: %w", err)
+	}
+	return rows, nil
+}
+
 // SubmitLinkedIn is the stash collector (deliverable #3): upsert the post + discover the
 // spine item. Returns the item id.
 func (c *Core) SubmitLinkedIn(ctx context.Context, p LinkedInPost) (int, error) {
@@ -1160,6 +1183,7 @@ func NewSurfaceMux(core *Core, token string) http.Handler {
 
 	// Worker metrics rollup (CONSOLE-WORKERS.pt-BR.md §8, slice 2/9).
 	mux.HandleFunc("GET /v1/workers/metrics", h.workerMetrics)
+	mux.HandleFunc("GET /v1/llm-spend", h.llmSpend)
 
 	// LLM provider registry (CONSOLE-INFER #2).
 	mux.HandleFunc("GET /v1/llm-providers", h.listLLMProviders)
@@ -1230,6 +1254,21 @@ func (h *httpSurface) workerMetrics(w http.ResponseWriter, r *http.Request) {
 	}
 	metrics, err := h.core.WorkerMetrics(r.Context(), since)
 	writeResult(w, metrics, err)
+}
+
+func (h *httpSurface) llmSpend(w http.ResponseWriter, r *http.Request) {
+	var since *time.Time
+	if raw := r.URL.Query().Get("days"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n <= 0 || n > 365 {
+			writeResult(w, nil, badInput("days must be a positive integer between 1 and 365"))
+			return
+		}
+		t := time.Now().Add(-time.Duration(n) * 24 * time.Hour)
+		since = &t
+	}
+	rows, err := h.core.LLMSpend(r.Context(), r.URL.Query().Get("model"), since)
+	writeResult(w, rows, err)
 }
 
 func (h *httpSurface) listItems(w http.ResponseWriter, r *http.Request) {

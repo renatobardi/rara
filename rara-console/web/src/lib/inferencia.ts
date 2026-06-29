@@ -107,3 +107,52 @@ export function costPerMillion(perToken: number): string {
 	if (!perToken) return '—';
 	return `$${(perToken * 1_000_000).toFixed(2)}/1M`;
 }
+
+// --- Real cost/tokens from the litellm spend log (CONSOLE-INFER-#9) ---------
+
+// LLMSpend mirrors GET /api/llm-spend: one rollup per model alias (model = the
+// alias workers send as LITELLM_MODEL = litellm's model_group).
+export type LLMSpend = {
+	model: string;
+	spend: number;
+	total_tokens: number;
+	prompt_tokens: number;
+	completion_tokens: number;
+	requests: number;
+};
+
+export function isSpend(v: unknown): v is LLMSpend {
+	if (typeof v !== 'object' || v === null) return false;
+	const s = v as Record<string, unknown>;
+	const nonNeg = (n: unknown): n is number => typeof n === 'number' && Number.isFinite(n) && n >= 0;
+	const nonNegInt = (n: unknown): n is number => typeof n === 'number' && Number.isInteger(n) && n >= 0;
+	return typeof s.model === 'string' && s.model.trim().length > 0 &&
+		nonNeg(s.spend) && nonNegInt(s.total_tokens) && nonNegInt(s.prompt_tokens) &&
+		nonNegInt(s.completion_tokens) && nonNegInt(s.requests);
+}
+
+// indexSpendByModel turns the spend rows into an alias → row lookup for the table.
+export function indexSpendByModel(rows: LLMSpend[]): Map<string, LLMSpend> {
+	return new Map(rows.map((r) => [r.model, r]));
+}
+
+// formatUSD renders a summed spend. Zero (or no data) shows a dash; tiny values keep
+// 4 decimals so sub-cent spend is still legible.
+export function formatUSD(usd: number): string {
+	if (!usd) return '—';
+	return `$${usd.toFixed(usd < 1 ? 4 : 2)}`;
+}
+
+// formatTokens renders a token count with thousands separators; zero shows a dash.
+export function formatTokens(n: number): string {
+	if (!n) return '—';
+	return n.toLocaleString('en-US');
+}
+
+// SPEND_PERIODS is the 24h·7d·30d·Tudo selector; days feeds ?days=N (null = all-time).
+export const SPEND_PERIODS: { key: string; days: number | null }[] = [
+	{ key: 'spend24h', days: 1 },
+	{ key: 'spend7d', days: 7 },
+	{ key: 'spend30d', days: 30 },
+	{ key: 'spendAll', days: null }
+];

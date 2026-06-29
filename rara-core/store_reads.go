@@ -969,6 +969,60 @@ func (d *pgxDatabase) WorkerMetrics(ctx context.Context, since *time.Time) ([]Wo
 	return out, nil
 }
 
+// LLMSpend reads litellm's spend log directly and rolls it up per model alias.
+//
+// Cross-component read: litellm owns the litellm schema, but the rara contract is
+// the database table (a worker reads another's table, never calls it), and the
+// shared role has SELECT on it. We aggregate by model_group — the alias workers
+// send as LITELLM_MODEL — and skip the empty-alias liveness rows. The schema and
+// "startTime" identifiers are case-sensitive, hence the quotes. Secret hygiene:
+// only cost/token columns are projected; api_key/messages/response never leave the DB.
+func (d *pgxDatabase) LLMSpend(ctx context.Context, model string, since *time.Time) ([]LLMSpend, error) {
+	var (
+		conds = []string{`model_group <> ''`}
+		args  []any
+	)
+	if model != "" {
+		args = append(args, model)
+		conds = append(conds, fmt.Sprintf("model_group = $%d", len(args)))
+	}
+	if since != nil {
+		args = append(args, since)
+		conds = append(conds, fmt.Sprintf(`"startTime" >= $%d`, len(args)))
+	}
+
+	q := `SELECT model_group,
+	             COALESCE(SUM(spend), 0) AS spend,
+	             COALESCE(SUM(prompt_tokens), 0),
+	             COALESCE(SUM(completion_tokens), 0),
+	             COALESCE(SUM(total_tokens), 0),
+	             COUNT(*)
+	      FROM litellm."LiteLLM_SpendLogs"
+	      WHERE ` + strings.Join(conds, " AND ") + `
+	      GROUP BY model_group
+	      ORDER BY spend DESC, model_group`
+
+	rows, err := d.conn.Query(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("llm spend query: %w", err)
+	}
+	defer rows.Close()
+
+	out := []LLMSpend{}
+	for rows.Next() {
+		var s LLMSpend
+		if err := rows.Scan(&s.Model, &s.Spend, &s.PromptTokens, &s.CompletionTokens,
+			&s.TotalTokens, &s.Requests); err != nil {
+			return nil, fmt.Errorf("llm spend scan: %w", err)
+		}
+		out = append(out, s)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("llm spend rows: %w", err)
+	}
+	return out, nil
+}
+
 // sourceViewCols is the SELECT projection for sources_v, shared by ListSources and GetSource.
 const sourceViewCols = `api_id, kind, lane, display_name, COALESCE(tags,'{}'), status,
 	COALESCE(config_summary,''), created_at, updated_at`
