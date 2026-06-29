@@ -431,18 +431,24 @@
 
 <!-- ══ snippets ══ -->
 <!-- columnChart: vertical bars (spend per day). ponytail: CSS heights, no chart lib.
-     Columns stretch to the h-40 row (default items-stretch) so the bar's %-height resolves. -->
+     Columns are flex-1 capped at max-w-16 + justify-start so the axis grows left-to-right
+     like a timeline — a single day reads as one slim bar, not a full-width block.
+     With ≤3 bars the value sits above each (no hover needed); more would clutter. -->
 {#snippet columnChart(bars: SpendBar[])}
-	<div class="flex h-40 gap-1">
+	{@const showValues = bars.length <= 3}
+	<div class="flex h-40 justify-start gap-1">
 		{#each bars as b (b.label)}
 			<div
-				class="flex min-w-0 flex-1 flex-col items-center gap-1"
+				class="flex min-w-0 flex-1 flex-col items-center gap-1 {showValues ? 'max-w-[6rem]' : 'max-w-[4rem]'}"
 				title="{formatDay(b.label)}: {formatUSD(b.value)}"
 				role="img"
 				aria-label="{formatDay(b.label)}: {formatUSD(b.value)}"
 			>
+				{#if showValues}
+					<span class="w-full whitespace-nowrap text-center font-mono text-[10px] text-muted" aria-hidden="true">{formatUSD(b.value)}</span>
+				{/if}
 				<div class="flex w-full flex-1 items-end">
-					<div class="w-full rounded-t bg-blue" style="height: {Math.max(b.pct, b.value > 0 ? 2 : 0)}%"></div>
+					<div class="w-full rounded-t bg-text" style="height: {Math.max(b.pct, b.value > 0 ? 2 : 0)}%"></div>
 				</div>
 				<span class="w-full truncate text-center text-[9px] text-muted" aria-hidden="true">{formatDay(b.label)}</span>
 			</div>
@@ -457,7 +463,7 @@
 			<div class="flex items-center gap-2 text-[12px]">
 				<span class="w-24 flex-none truncate text-muted" title={b.label}>{b.label}</span>
 				<div class="h-4 flex-1 rounded bg-surface-2">
-					<div class="h-4 rounded bg-blue" style="width: {Math.max(b.pct, b.value > 0 ? 2 : 0)}%"></div>
+					<div class="h-4 rounded bg-text" style="width: {Math.max(b.pct, b.value > 0 ? 2 : 0)}%"></div>
 				</div>
 				<span class="w-16 flex-none text-right font-mono text-muted">{formatUSD(b.value)}</span>
 			</div>
