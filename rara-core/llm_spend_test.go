@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 )
@@ -171,9 +172,16 @@ func TestHTTPLLMSpendNoData(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("want 200 on empty, got %d: %s", rec.Code, rec.Body.String())
 	}
+	// Body must be [] (non-nil), not null — the frontend filters/aggregates over an array.
+	if got := strings.TrimSpace(rec.Body.String()); got != "[]" {
+		t.Fatalf("want body []; got %q", got)
+	}
 	var rows []LLMSpend
 	if err := json.Unmarshal(rec.Body.Bytes(), &rows); err != nil {
 		t.Fatalf("decode []LLMSpend: %v", err)
+	}
+	if rows == nil {
+		t.Error("want non-nil empty slice, got nil (would serialize as null)")
 	}
 	if len(rows) != 0 {
 		t.Errorf("want empty slice with no spend, got %+v", rows)

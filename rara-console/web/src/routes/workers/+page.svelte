@@ -56,6 +56,7 @@
 	// --- core state ---
 	let workers = $state<Worker[]>([]);
 	let models = $state<LLMModel[]>([]);
+	let modelsLoadFailed = $state(false);
 	let loading = $state(true);
 	let error = $state(false);
 	let saving = $state<string | null>(null);
@@ -101,8 +102,8 @@
 			.catch(() => { /* coluna "última execução" degrada para — */ });
 		fetch('/api/llm-models')
 			.then((r) => (r.ok ? r.json() : Promise.reject()))
-			.then((d) => { models = asList<LLMModel>(d).filter(isModel); })
-			.catch(() => { /* dropdown de Model degrada para oculto */ });
+			.then((d) => { models = asList<LLMModel>(d).filter(isModel); modelsLoadFailed = false; })
+			.catch(() => { modelsLoadFailed = true; /* WorkerForm bloqueia salvar worker LLM sem Model */ });
 	});
 
 	// ── filtros + busca (client-side, lista pequena) ──
@@ -320,7 +321,7 @@
 
 	{#if formMode === 'add' && !formLockedWorker}
 		<div class="mb-4">
-			<WorkerForm initial={null} lockedApp={null} capabilities={knownCapabilities} {models} onSave={saveWorker} onCancel={closeForm} />
+			<WorkerForm initial={null} lockedApp={null} capabilities={knownCapabilities} {models} {modelsLoadFailed} onSave={saveWorker} onCancel={closeForm} />
 		</div>
 	{/if}
 
@@ -516,7 +517,7 @@
 						{#if formMode === 'edit' && formInitial?.name === p.name}
 							<tr>
 								<td colspan="8" class="px-4 py-3">
-									<WorkerForm initial={formInitial} lockedApp={null} capabilities={knownCapabilities} {models} onSave={saveWorker} onCancel={closeForm} />
+									<WorkerForm initial={formInitial} lockedApp={null} capabilities={knownCapabilities} {models} {modelsLoadFailed} onSave={saveWorker} onCancel={closeForm} />
 								</td>
 							</tr>
 						{/if}

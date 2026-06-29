@@ -123,6 +123,7 @@ export const t = {
 		formModel: 'Model (LLM)',
 		formModelNone: '— nenhum —',
 		formModelCloudrunHint: 'Propaga ao Cloud Run no próximo sync.',
+		formModelLoadFailed: 'Não foi possível carregar os models — recarregue para definir o Model.',
 		formRunnerUrl: 'Runner URL',
 		formRunnerUrlPlaceholder: 'https://host.tailnet:8080 (vazio p/ cloudrun)',
 		formEnv: 'Env (JSON objeto)',

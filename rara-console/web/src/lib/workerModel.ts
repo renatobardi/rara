@@ -21,6 +21,21 @@ export function usesModel(capability: string, env?: Record<string, string>): boo
 	return capability !== '' && !NON_LLM_CAPABILITIES.has(capability);
 }
 
+// Whether a save must be blocked because the operator can't pick a Model they need.
+// True only when the worker is LLM-capable *by capability*, the /api/llm-models fetch
+// failed (so the dropdown can't render), and there's no existing binding to preserve.
+// This is the one case where an empty Model is a silent data-loss bug rather than a
+// deliberate choice: a non-LLM worker, an already-bound worker, or a successful (even if
+// empty) models load all return false and keep the field optional as before. Pairs with
+// [[usesModel]] — distinguishes "fetch failed" from "no models exist".
+export function blocksOnModelLoadFailure(
+	capability: string,
+	env: Record<string, string> | undefined,
+	modelsLoadFailed: boolean
+): boolean {
+	return modelsLoadFailed && currentAlias(env) === '' && usesModel(capability);
+}
+
 // Aliases of enabled models — the dropdown options.
 export function enabledAliases(models: LLMModel[]): string[] {
 	return models.filter((m) => m.enabled).map((m) => m.alias);

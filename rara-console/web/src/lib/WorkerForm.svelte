@@ -2,7 +2,7 @@
 	import { untrack } from 'svelte';
 	import { t } from '$lib/strings';
 	import type { LLMModel } from '$lib/inferencia';
-	import { enabledAliases, currentAlias, envWithoutModel, withModelAlias, usesModel } from '$lib/workerModel';
+	import { enabledAliases, currentAlias, envWithoutModel, withModelAlias, usesModel, blocksOnModelLoadFailure } from '$lib/workerModel';
 
 	type Constraints = {
 		requires?: string;
@@ -31,6 +31,9 @@
 		capabilities: string[];
 		/** Enabled LLM models for the Model dropdown (from /api/llm-models). */
 		models?: LLMModel[];
+		/** True when the /api/llm-models fetch failed — distinguishes "no models exist" from
+		 * "couldn't load", so an LLM worker isn't saved without a Model by accident. */
+		modelsLoadFailed?: boolean;
 		/** Pre-fill worker and make it read-only (add-placement mode). */
 		lockedWorker?: string;
 		/** Pre-fill capability and make it read-only (add-placement mode). */
@@ -47,6 +50,7 @@
 		initial = null,
 		capabilities,
 		models = [],
+		modelsLoadFailed = false,
 		lockedWorker,
 		lockedCapability,
 		lockedConstraints = null,
@@ -94,6 +98,9 @@
 	// modelOptions is empty and the field degrades to hidden. Reactive on capability
 	// (editable in add mode). Optional — never required.
 	const showModel = $derived(usesModel(capability, initial?.env) && modelOptions.length > 0);
+	// If the worker needs a Model but the list failed to load (so the dropdown can't render
+	// and there's no binding to keep), block the save instead of silently writing no model.
+	const modelBlocked = $derived(blocksOnModelLoadFailure(capability, initial?.env, modelsLoadFailed));
 
 	// Clear a stale selection if capability switches away from LLM, so submit never
 	// writes LITELLM_MODEL onto a non-LLM worker.
@@ -166,6 +173,7 @@
 				e.env = t.workers.formEnvInvalid;
 			}
 		}
+		if (modelBlocked) e.model = t.workers.formModelLoadFailed;
 		errors = e;
 		return Object.keys(e).length === 0;
 	}
@@ -351,6 +359,11 @@
 					{#if runtime === 'cloudrun' && model}
 						<p id="wf-model-cloudrun-hint" class="mt-0.5 text-[11px] text-muted">{t.workers.formModelCloudrunHint}</p>
 					{/if}
+				</div>
+			{:else if modelBlocked}
+				<div>
+					<span class={labelClass}>{t.workers.formModel}</span>
+					<p class={errorClass} role="alert">{t.workers.formModelLoadFailed}</p>
 				</div>
 			{/if}
 
