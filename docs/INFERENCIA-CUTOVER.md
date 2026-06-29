@@ -62,9 +62,12 @@ until filled in.
    you'll also see the `config.yaml` copies with `db_model = false` — see below.)
 5. **Smoke a real distill.** Run `distill` against one real item through the
    gateway alias and confirm a normal completion (no auth/model-not-found error).
-6. **Pause one model = remove from gateway.** Disable a model in the UI; after
-   the next reconcile pass its `db_model` entry is gone from `/model/info`. Re-enable
-   to bring it back. This proves the registry is authoritative.
+6. **Pause one model = remove only the registry copy.** Disable a model in the
+   UI; after the next reconcile pass its `db_model = true` entry is gone from
+   `/model/info`. While `config.yaml` is still loaded as the safety-net the alias
+   keeps being served by the static (`db_model = false`) copy until the follow-up
+   deploy — so this proves the reconciler owns the registry copy, not that the
+   alias is gone. Re-enable to bring the registry copy back.
 
 ## config.yaml decision — kept as legacy safety-net, emptied in a follow-up
 

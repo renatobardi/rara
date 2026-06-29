@@ -10,10 +10,13 @@
 -- Idempotent: ON CONFLICT DO NOTHING preserves any operator-edited row (key,
 -- enabled, cost) on re-apply, so this is safe to re-run on every merge.
 
-INSERT INTO llm_providers (name, kind, enabled) VALUES
-    ('groq',     'groq',     false),
-    ('gemini',   'gemini',   false),
-    ('deepseek', 'deepseek', false)
+-- owner_id IS NULL = system-owned. Names are unique only per owner, so the seed
+-- pins owner_id NULL explicitly and the model JOIN matches only the system row —
+-- a future tenant provider sharing a name never captures these aliases.
+INSERT INTO llm_providers (owner_id, name, kind, enabled) VALUES
+    (NULL, 'groq',     'groq',     false),
+    (NULL, 'gemini',   'gemini',   false),
+    (NULL, 'deepseek', 'deepseek', false)
 ON CONFLICT (owner_id, name) WHERE deleted_at IS NULL DO NOTHING;
 
 INSERT INTO llm_models (provider_id, alias, upstream, enabled)
@@ -24,5 +27,8 @@ FROM (VALUES
     ('gemini',   'gemini-flash',  'gemini/gemini-2.5-flash-lite'),
     ('deepseek', 'deepseek-chat', 'deepseek/deepseek-v4-flash')
 ) AS v(provider_name, alias, upstream)
-JOIN llm_providers p ON p.name = v.provider_name AND p.deleted_at IS NULL
+JOIN llm_providers p
+  ON p.name = v.provider_name
+ AND p.owner_id IS NULL
+ AND p.deleted_at IS NULL
 ON CONFLICT (owner_id, alias) WHERE deleted_at IS NULL DO NOTHING;
