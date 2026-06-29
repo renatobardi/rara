@@ -56,10 +56,26 @@
 	// --- core state ---
 	let workers = $state<Worker[]>([]);
 	let models = $state<LLMModel[]>([]);
-	// Starts true: until the first /api/llm-models resolve confirms models are available,
-	// an LLM worker must not be saved without one (the fetch may still be in flight when the
-	// form opens). Flips to false only on a successful load; a failed load keeps it true.
-	let modelsLoadFailed = $state(true);
+	// 'loading' until the first /api/llm-models resolves, then 'ready' (≥1 model) or 'failed'
+	// (fetch error, malformed body, or empty registry). WorkerForm blocks an LLM save unless
+	// 'ready', so a worker never saves modelless while the list is still unknown — and shows a
+	// "loading" hint vs a "failed, reload" error so the in-flight window isn't a false alarm.
+	let modelsStatus = $state<'loading' | 'ready' | 'failed'>('loading');
+
+	function loadModels() {
+		modelsStatus = 'loading';
+		fetch('/api/llm-models')
+			.then((r) => (r.ok ? r.json() : Promise.reject()))
+			.then((d) => {
+				// A malformed body is a load failure, not "no models" — else WorkerForm wouldn't
+				// block (modelOptions empty + status ready = silent save of an LLM worker).
+				if (!Array.isArray(d) || !d.every(isModel)) throw new Error('unexpected payload');
+				models = d;
+				// An empty registry is still "no model to pick" — the bug covers "ou volta vazio".
+				modelsStatus = d.length > 0 ? 'ready' : 'failed';
+			})
+			.catch(() => { models = []; modelsStatus = 'failed'; /* WorkerForm bloqueia salvar worker LLM sem Model */ });
+	}
 	let loading = $state(true);
 	let error = $state(false);
 	let saving = $state<string | null>(null);
@@ -103,18 +119,7 @@
 			.then((r) => (r.ok ? r.json() : Promise.reject()))
 			.then((d) => { metricsLite = Array.isArray(d) ? d : []; })
 			.catch(() => { /* coluna "última execução" degrada para — */ });
-		fetch('/api/llm-models')
-			.then((r) => (r.ok ? r.json() : Promise.reject()))
-			.then((d) => {
-				// A malformed body is a load failure, not "no models" — else WorkerForm wouldn't
-				// block (modelOptions empty + modelsLoadFailed false = silent save of an LLM worker).
-				if (!Array.isArray(d) || !d.every(isModel)) throw new Error('unexpected payload');
-				models = d;
-				// An empty registry is still "no model to pick" — keep the save blocked (the bug
-				// covers "ou volta vazio"); only a non-empty list clears the guard.
-				modelsLoadFailed = d.length === 0;
-			})
-			.catch(() => { models = []; modelsLoadFailed = true; /* WorkerForm bloqueia salvar worker LLM sem Model */ });
+		loadModels();
 	});
 
 	// ── filtros + busca (client-side, lista pequena) ──
@@ -251,6 +256,7 @@
 	}
 
 	function openAdd() {
+		if (modelsStatus !== 'ready') loadModels(); // recover a transient model-fetch failure on reopen
 		formInitial = null;
 		formMode = 'add';
 		formLockedWorker = null;
@@ -259,6 +265,7 @@
 	}
 
 	function openEdit(p: Provider, workerName: string) {
+		if (modelsStatus !== 'ready') loadModels(); // recover a transient model-fetch failure on reopen
 		formInitial = { ...p, worker: workerName };
 		formMode = 'edit';
 		formLockedWorker = null;
@@ -332,7 +339,7 @@
 
 	{#if formMode === 'add' && !formLockedWorker}
 		<div class="mb-4">
-			<WorkerForm initial={null} lockedApp={null} capabilities={knownCapabilities} {models} {modelsLoadFailed} onSave={saveWorker} onCancel={closeForm} />
+			<WorkerForm initial={null} lockedApp={null} capabilities={knownCapabilities} {models} {modelsStatus} onSave={saveWorker} onCancel={closeForm} />
 		</div>
 	{/if}
 
@@ -528,7 +535,7 @@
 						{#if formMode === 'edit' && formInitial?.name === p.name}
 							<tr>
 								<td colspan="8" class="px-4 py-3">
-									<WorkerForm initial={formInitial} lockedApp={null} capabilities={knownCapabilities} {models} {modelsLoadFailed} onSave={saveWorker} onCancel={closeForm} />
+									<WorkerForm initial={formInitial} lockedApp={null} capabilities={knownCapabilities} {models} {modelsStatus} onSave={saveWorker} onCancel={closeForm} />
 								</td>
 							</tr>
 						{/if}

@@ -31,10 +31,12 @@
 		capabilities: string[];
 		/** Enabled LLM models for the Model dropdown (from /api/llm-models). */
 		models?: LLMModel[];
-		/** True when no model is available to bind — the /api/llm-models fetch failed, is still
-		 * in flight, or returned an empty registry. Required (no safe default): a caller that
-		 * forgets it must not silently get the unsafe `false` and let an LLM worker save modelless. */
-		modelsLoadFailed: boolean;
+		/** Whether the model registry is usable: 'loading' (fetch in flight), 'ready' (≥1 model),
+		 * or 'failed' (fetch error, malformed body, or empty registry). Required (no default): an
+		 * LLM worker must not save modelless unless this is 'ready', and the form distinguishes a
+		 * still-loading hint from a "failed — reload" error so the in-flight window isn't a false
+		 * alarm. */
+		modelsStatus: 'loading' | 'ready' | 'failed';
 		/** Pre-fill worker and make it read-only (add-placement mode). */
 		lockedWorker?: string;
 		/** Pre-fill capability and make it read-only (add-placement mode). */
@@ -51,7 +53,7 @@
 		initial = null,
 		capabilities,
 		models = [],
-		modelsLoadFailed,
+		modelsStatus,
 		lockedWorker,
 		lockedCapability,
 		lockedConstraints = null,
@@ -99,9 +101,9 @@
 	// modelOptions is empty and the field degrades to hidden. Reactive on capability
 	// (editable in add mode). Optional — never required.
 	const showModel = $derived(usesModel(capability, initial?.env) && modelOptions.length > 0);
-	// If the worker needs a Model but the list failed to load (so the dropdown can't render
-	// and there's no binding to keep), block the save instead of silently writing no model.
-	const modelBlocked = $derived(blocksOnModelLoadFailure(capability, initial?.env, modelsLoadFailed));
+	// If the worker needs a Model but the registry isn't ready (loading, failed, or empty) and
+	// there's no binding to keep, block the save instead of silently writing no model.
+	const modelBlocked = $derived(blocksOnModelLoadFailure(capability, initial?.env, modelsStatus !== 'ready'));
 
 	// Clear a stale selection if capability switches away from LLM, so submit never
 	// writes LITELLM_MODEL onto a non-LLM worker.
@@ -364,7 +366,11 @@
 			{:else if modelBlocked}
 				<div>
 					<span class={labelClass}>{t.workers.formModel}</span>
-					<p class={errorClass} role="alert">{t.workers.formModelLoadFailed}</p>
+					{#if modelsStatus === 'loading'}
+						<p class="mt-0.5 text-[11px] text-muted" role="status">{t.workers.formModelLoading}</p>
+					{:else}
+						<p class={errorClass} role="alert">{t.workers.formModelLoadFailed}</p>
+					{/if}
 				</div>
 			{/if}
 
