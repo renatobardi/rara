@@ -171,6 +171,19 @@
 	let pEnabled = $state(true);
 	let pEditId = $state<number | null>(null);
 
+	// Fixed kinds have a single canonical endpoint; name = kind, no base_url needed.
+	// Configurable kinds allow a free name and accept a custom base_url.
+	const CONFIGURABLE_KINDS = ['openai_compatible', 'azure'];
+	let isConfigurable = $derived(CONFIGURABLE_KINDS.includes(pKind.trim()));
+	// Auto-fill name and clear base_url for fixed providers (add mode only).
+	$effect(() => {
+		const kind = pKind.trim();
+		if (formOpen !== 'add' || !kind) return;
+		if (CONFIGURABLE_KINDS.includes(kind)) return;
+		pName = kind;
+		pBaseUrl = '';
+	});
+
 	// Open the form to create a new provider, clearing any prior state.
 	function openAddProvider() {
 		formOpen = 'add';
@@ -196,6 +209,9 @@
 		const e: Record<string, string> = {};
 		if (!pName.trim()) e.name = t.inferencia.errNameRequired;
 		if (!pKind.trim()) e.kind = t.inferencia.errKindRequired;
+		if (!isConfigurable && providers.some((p) => p.kind === pKind.trim() && p.enabled && p.id !== pEditId)) {
+			e.kind = t.inferencia.errKindDuplicate;
+		}
 		const baseErr = validateBaseUrl(pKind, pBaseUrl);
 		if (baseErr === 'required') e.baseUrl = t.inferencia.errBaseUrlRequired;
 		else if (baseErr === 'invalid') e.baseUrl = t.inferencia.errBaseUrlInvalid;
@@ -426,7 +442,7 @@
 				aria-label="{formatDay(b.label)}: {formatUSD(b.value)}"
 			>
 				<div class="flex w-full flex-1 items-end">
-					<div class="w-full rounded-t bg-text" style="height: {Math.max(b.pct, b.value > 0 ? 2 : 0)}%"></div>
+					<div class="w-full rounded-t bg-blue" style="height: {Math.max(b.pct, b.value > 0 ? 2 : 0)}%"></div>
 				</div>
 				<span class="w-full truncate text-center text-[9px] text-muted" aria-hidden="true">{formatDay(b.label)}</span>
 			</div>
@@ -441,7 +457,7 @@
 			<div class="flex items-center gap-2 text-[12px]">
 				<span class="w-24 flex-none truncate text-muted" title={b.label}>{b.label}</span>
 				<div class="h-4 flex-1 rounded bg-surface-2">
-					<div class="h-4 rounded bg-text" style="width: {Math.max(b.pct, b.value > 0 ? 2 : 0)}%"></div>
+					<div class="h-4 rounded bg-blue" style="width: {Math.max(b.pct, b.value > 0 ? 2 : 0)}%"></div>
 				</div>
 				<span class="w-16 flex-none text-right font-mono text-muted">{formatUSD(b.value)}</span>
 			</div>
@@ -478,9 +494,11 @@
 					<label class={labelClass} for="p-name">{formOpen === 'edit' ? t.inferencia.formNameReadonly : t.inferencia.formName}</label>
 					{#if formOpen === 'edit'}
 						<input id="p-name" class={readonlyFieldClass} value={pName} readonly />
+					{:else if isConfigurable}
+						<input id="p-name" class={fieldClass} placeholder={t.inferencia.formNamePlaceholder} bind:value={pName} autocomplete="off" aria-describedby={formErrors.name ? 'p-name-err' : undefined} aria-invalid={formErrors.name ? 'true' : undefined} />
+						{#if formErrors.name}<p id="p-name-err" class={errorClass}>{formErrors.name}</p>{/if}
 					{:else}
-						<input id="p-name" class={fieldClass} placeholder={t.inferencia.formNamePlaceholder} bind:value={pName} autocomplete="off" />
-						{#if formErrors.name}<p class={errorClass}>{formErrors.name}</p>{/if}
+						<input id="p-name" class={readonlyFieldClass} value={pName} readonly />
 					{/if}
 				</div>
 				<div>
@@ -492,11 +510,13 @@
 					<p id="p-kind-hint" class="mt-0.5 text-[11px] text-muted">{t.inferencia.formKindHint}</p>
 					{#if formErrors.kind}<p id="p-kind-err" class={errorClass}>{formErrors.kind}</p>{/if}
 				</div>
+				{#if isConfigurable}
 				<div class="sm:col-span-2">
 					<label class={labelClass} for="p-baseurl">{t.inferencia.formBaseUrl}</label>
-					<input id="p-baseurl" class={fieldClass} placeholder={t.inferencia.formBaseUrlPlaceholder} bind:value={pBaseUrl} autocomplete="off" />
-					{#if formErrors.baseUrl}<p class={errorClass}>{formErrors.baseUrl}</p>{/if}
+					<input id="p-baseurl" class={fieldClass} placeholder={t.inferencia.formBaseUrlPlaceholder} bind:value={pBaseUrl} autocomplete="off" aria-describedby={formErrors.baseUrl ? 'p-baseurl-err' : undefined} aria-invalid={formErrors.baseUrl ? 'true' : undefined} />
+					{#if formErrors.baseUrl}<p id="p-baseurl-err" class={errorClass}>{formErrors.baseUrl}</p>{/if}
 				</div>
+				{/if}
 				<div class="sm:col-span-2">
 					<label class={labelClass} for="p-key">{t.inferencia.formApiKey}</label>
 					<input id="p-key" type="password" class={fieldClass} placeholder={formOpen === 'edit' ? t.inferencia.formApiKeyPlaceholderEdit : t.inferencia.formApiKeyPlaceholderNew} bind:value={pApiKey} autocomplete="off" />
