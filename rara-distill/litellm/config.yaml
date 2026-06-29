@@ -8,6 +8,13 @@
 #
 # model_name values are the ALIASES distill sends as `model` (set via LITELLM_MODEL env var).
 # litellm_params.model is the real upstream. Keys come from the gateway's environment only.
+#
+# CUTOVER (CONSOLE-INFER-#7): this model_list is now a LEGACY bootstrap / safety-net.
+# The authoritative LLM catalog lives in Neon (llm_providers / llm_models) and is
+# reconciled into this gateway at runtime (store_model_in_db). Once the registry serves
+# all four aliases, empty this model_list in a follow-up deploy. During the transition
+# the duplicate aliases are harmless — registry and config map each alias to the same
+# upstream + key. Full runbook: docs/INFERENCIA-CUTOVER.md.
 
 model_list:
   - model_name: groq-llama
