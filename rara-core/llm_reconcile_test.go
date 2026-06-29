@@ -324,8 +324,8 @@ func TestDiffLLMModelsDeletesLegacyAlias(t *testing.T) {
 	}
 	actual := []litellm.Model{
 		{ModelName: "groq/llama-3.3-70b-versatile", Fingerprint: "fp1", ID: "a1", DBModel: true},
-		{ModelName: "groq-llama", Fingerprint: "x", ID: "a2", DBModel: true},  // legacy — must be deleted
-		{ModelName: "config/m", Fingerprint: "x", ID: "a3", DBModel: false},   // config.yaml — never touched
+		{ModelName: "groq-llama", Fingerprint: "x", ID: "a2", DBModel: true}, // legacy — must be deleted
+		{ModelName: "config/m", Fingerprint: "x", ID: "a3", DBModel: false},  // config.yaml — never touched
 	}
 	bound := map[string]bool{"groq/llama-3.3-70b-versatile": true}
 
