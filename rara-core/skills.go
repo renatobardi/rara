@@ -20,6 +20,10 @@ import (
 // maxSkillNameLen bounds name to the skills.name column width (VARCHAR(64)).
 const maxSkillNameLen = 64
 
+// skillIDPositiveMsg is the shared guard message for the file endpoints (one const so the three
+// callers can't drift, and the static analyzer doesn't flag a duplicated literal).
+const skillIDPositiveMsg = "skill id must be positive"
+
 // SkillInput is the write-side payload for a skill (the SKILL.md bundle metadata).
 type SkillInput struct {
 	Name        string          `json:"name"`
@@ -178,7 +182,7 @@ func (c *Core) DeleteSkill(ctx context.Context, id int) error {
 // ListSkillFiles returns the files of a skill bundle.
 func (c *Core) ListSkillFiles(ctx context.Context, skillID int) ([]SkillFile, error) {
 	if skillID <= 0 {
-		return nil, badInput("skill id must be positive")
+		return nil, badInput(skillIDPositiveMsg)
 	}
 	return c.db.ListSkillFiles(ctx, skillID)
 }
@@ -186,7 +190,7 @@ func (c *Core) ListSkillFiles(ctx context.Context, skillID int) ([]SkillFile, er
 // UpsertSkillFile validates the path and persists a file in a skill bundle.
 func (c *Core) UpsertSkillFile(ctx context.Context, skillID int, in SkillFileInput) (int, error) {
 	if skillID <= 0 {
-		return 0, badInput("skill id must be positive")
+		return 0, badInput(skillIDPositiveMsg)
 	}
 	if err := validateSkillPath(in.Path); err != nil {
 		return 0, err
@@ -197,7 +201,7 @@ func (c *Core) UpsertSkillFile(ctx context.Context, skillID int, in SkillFileInp
 // DeleteSkillFile removes a file from a skill bundle.
 func (c *Core) DeleteSkillFile(ctx context.Context, skillID int, path string) error {
 	if skillID <= 0 {
-		return badInput("skill id must be positive")
+		return badInput(skillIDPositiveMsg)
 	}
 	if strings.TrimSpace(path) == "" {
 		return badInput("file path cannot be empty")
@@ -242,11 +246,26 @@ func (c *Core) ImportSkill(ctx context.Context, rawURL string) (SkillRow, error)
 const maxSkillImportBytes = 1 << 20 // 1 MiB
 
 func httpGetURL(ctx context.Context, rawURL string) ([]byte, error) {
+	// Dedicated client: http.DefaultClient follows redirects, so a public URL could bounce to
+	// metadata/loopback/private *after* the initial validateEndpointURL check — SSRF. Revalidate
+	// every hop in CheckRedirect, cap the chain, and bound the whole request with a timeout.
+	client := &http.Client{
+		Timeout: 15 * time.Second,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 10 {
+				return fmt.Errorf("too many redirects")
+			}
+			if err := validateEndpointURL(req.URL.String()); err != nil {
+				return fmt.Errorf("redirect to %q blocked: %w", req.URL.Redacted(), err)
+			}
+			return nil
+		},
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return nil, err
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -254,7 +273,16 @@ func httpGetURL(ctx context.Context, rawURL string) ([]byte, error) {
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("upstream returned %d", resp.StatusCode)
 	}
-	return io.ReadAll(io.LimitReader(resp.Body, maxSkillImportBytes))
+	// Read one byte past the limit so an over-size body is rejected, not silently truncated and
+	// imported as if complete.
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxSkillImportBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(body) > maxSkillImportBytes {
+		return nil, fmt.Errorf("SKILL.md exceeds %d-byte limit", maxSkillImportBytes)
+	}
+	return body, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -349,8 +377,10 @@ func (d *pgxDatabase) UpsertSkill(ctx context.Context, name, description, conten
 			trusted     = EXCLUDED.trusted
 		RETURNING id`
 	var id int
-	err := d.conn.QueryRow(ctx, q, name, description, content, config, trusted).Scan(&id)
-	return id, err
+	if err := d.conn.QueryRow(ctx, q, name, description, content, config, trusted).Scan(&id); err != nil {
+		return 0, fmt.Errorf("upsert skill: %w", err)
+	}
+	return id, nil
 }
 
 func (d *pgxDatabase) ListSkills(ctx context.Context) ([]SkillRow, error) {
@@ -361,7 +391,7 @@ func (d *pgxDatabase) ListSkills(ctx context.Context) ([]SkillRow, error) {
 		ORDER BY id`
 	rows, err := d.conn.Query(ctx, q)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("list skills: %w", err)
 	}
 	defer rows.Close()
 	var out []SkillRow
@@ -369,17 +399,22 @@ func (d *pgxDatabase) ListSkills(ctx context.Context) ([]SkillRow, error) {
 		var s SkillRow
 		if err := rows.Scan(&s.ID, &s.Name, &s.Description, &s.Content, &s.Config,
 			&s.Trusted, &s.CreatedAt, &s.UpdatedAt); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("list skills: scan: %w", err)
 		}
 		out = append(out, s)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list skills: %w", err)
+	}
+	return out, nil
 }
 
 func (d *pgxDatabase) DeleteSkill(ctx context.Context, id int) error {
 	const q = `UPDATE skills SET deleted_at = CURRENT_TIMESTAMP WHERE id = $1 AND deleted_at IS NULL`
-	_, err := d.conn.Exec(ctx, q, id)
-	return err
+	if _, err := d.conn.Exec(ctx, q, id); err != nil {
+		return fmt.Errorf("delete skill: %w", err)
+	}
+	return nil
 }
 
 func (d *pgxDatabase) ListSkillFiles(ctx context.Context, skillID int) ([]SkillFile, error) {
@@ -393,18 +428,21 @@ func (d *pgxDatabase) ListSkillFiles(ctx context.Context, skillID int) ([]SkillF
 		ORDER BY path`
 	rows, err := d.conn.Query(ctx, q, skillID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("list skill files: %w", err)
 	}
 	defer rows.Close()
 	var out []SkillFile
 	for rows.Next() {
 		var f SkillFile
 		if err := rows.Scan(&f.ID, &f.SkillID, &f.Path, &f.Content, &f.CreatedAt, &f.UpdatedAt); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("list skill files: scan: %w", err)
 		}
 		out = append(out, f)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list skill files: %w", err)
+	}
+	return out, nil
 }
 
 func (d *pgxDatabase) UpsertSkillFile(ctx context.Context, skillID int, path, content string) (int, error) {
@@ -421,11 +459,16 @@ func (d *pgxDatabase) UpsertSkillFile(ctx context.Context, skillID int, path, co
 	if errors.Is(err, pgx.ErrNoRows) {
 		return 0, errNotFound
 	}
-	return id, err
+	if err != nil {
+		return 0, fmt.Errorf("upsert skill file: %w", err)
+	}
+	return id, nil
 }
 
 func (d *pgxDatabase) DeleteSkillFile(ctx context.Context, skillID int, path string) error {
 	const q = `DELETE FROM skill_files WHERE skill_id = $1 AND path = $2`
-	_, err := d.conn.Exec(ctx, q, skillID, path)
-	return err
+	if _, err := d.conn.Exec(ctx, q, skillID, path); err != nil {
+		return fmt.Errorf("delete skill file: %w", err)
+	}
+	return nil
 }

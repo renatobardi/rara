@@ -40,8 +40,14 @@ CREATE TABLE IF NOT EXISTS skill_files (
     UNIQUE (skill_id, path),
     -- Defense in depth (the core validates too): a bundle path must be a relative path with no
     -- traversal, absolute prefix, or drive/ADS colon, so it can't escape the daemon's workdir.
+    -- The '..' rule matches a whole path SEGMENT only (like the core's segment check), so a
+    -- legit name such as 'notes..md' is allowed — keeping the API and DB contracts aligned.
     -- 'SKILL.md' is reserved — that's skills.content, not a bundle file.
-    CHECK (btrim(path) <> '' AND path !~ '(^[/\\])|(\.\.)|:' AND lower(path) <> 'skill.md')
+    CHECK (
+        btrim(path) <> ''
+        AND btrim(path) !~ '(^[/\\])|((^|[/\\])\.\.([/\\]|$))|:'
+        AND lower(btrim(path)) <> 'skill.md'
+    )
 );
 
 DROP TRIGGER IF EXISTS skill_files_set_updated_at ON skill_files;

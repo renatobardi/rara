@@ -242,6 +242,8 @@ export const t = {
 		deleting: 'Excluindo…',
 		// files
 		filesTitle: 'Arquivos do bundle',
+		filesLoading: 'Carregando arquivos…',
+		filesError: 'Não foi possível carregar os arquivos.',
 		filesEmpty: 'Nenhum arquivo. Adicione utils.py, config.json…',
 		addFile: 'Adicionar arquivo',
 		filePathLabel: 'Caminho',

@@ -206,14 +206,19 @@ func TestUpsertSkillFileProxiesPUT(t *testing.T) {
 }
 
 func TestDeleteSkillFileProxiesDELETE(t *testing.T) {
-	var method, path string
-	core := fakeSkillsCore(t, "secret", &method, &path, nil)
+	var method, path, body string
+	core := fakeSkillsCore(t, "secret", &method, &path, &body)
 	s := &server{coreURL: core.URL, token: "secret", client: core.Client()}
 
+	const reqBody = `{"path":"utils.py"}`
 	rec := httptest.NewRecorder()
-	req := newReqWithPathValue("DELETE", "/api/skills/3/files", `{"path":"utils.py"}`, map[string]string{"id": "3"})
+	req := newReqWithPathValue("DELETE", "/api/skills/3/files", reqBody, map[string]string{"id": "3"})
 	s.handleDeleteSkillFile(rec, req)
 	if rec.Code != http.StatusOK || method != "DELETE" || path != "/v1/skills/3/files" {
 		t.Errorf("forwarded %s %s (code %d), want DELETE /v1/skills/3/files", method, path, rec.Code)
+	}
+	// The path travels in the body — assert it's forwarded, else a regression that drops it is silent.
+	if body != reqBody {
+		t.Errorf("forwarded body=%s, want %s", body, reqBody)
 	}
 }

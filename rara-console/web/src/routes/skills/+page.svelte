@@ -19,16 +19,22 @@
 	let loading = $state(true);
 	let error = $state(false);
 
+	// A monotonic token discards out-of-order responses: a slow initial GET must not overwrite the
+	// fresh list a later save/import/delete just fetched (which would hide the change from the operator).
+	let skillsReqSeq = 0;
 	function fetchSkills() {
+		const seq = ++skillsReqSeq;
 		loading = true;
 		error = false;
 		return fetch('/api/skills')
 			.then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
 			.then((d) => {
+				if (seq !== skillsReqSeq) return; // superseded by a newer fetch
 				skills = asList<Skill>(d);
 				loading = false;
 			})
 			.catch(() => {
+				if (seq !== skillsReqSeq) return;
 				error = true;
 				loading = false;
 			});
@@ -165,18 +171,28 @@
 
 	// ── files ──
 	let files = $state<SkillFile[]>([]);
+	let filesLoading = $state(false);
+	let filesError = $state(false);
 	// A monotonic token discards out-of-order responses: rapidly switching skills must not let a
 	// slow earlier fetch overwrite the current skill's files.
 	let filesReqSeq = 0;
 	function fetchFiles(skillID: number) {
 		const seq = ++filesReqSeq;
+		filesLoading = true;
+		filesError = false;
 		return fetch(`/api/skills/${skillID}/files`)
 			.then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
 			.then((d) => {
-				if (seq === filesReqSeq) files = asList<SkillFile>(d);
+				if (seq !== filesReqSeq) return;
+				files = asList<SkillFile>(d);
+				filesLoading = false;
 			})
 			.catch(() => {
-				if (seq === filesReqSeq) files = [];
+				if (seq !== filesReqSeq) return;
+				// Distinguish a load failure from a genuinely empty bundle — otherwise the operator
+				// might "recreate" utils.py and overwrite existing content via the upsert.
+				filesError = true;
+				filesLoading = false;
 			});
 	}
 
@@ -477,7 +493,11 @@
 								>
 							</div>
 
-							{#if files.length === 0}
+							{#if filesLoading}
+								<p class="text-[12px] text-muted">{t.skills.filesLoading}</p>
+							{:else if filesError}
+								<p class="text-[12px] text-red-500">{t.skills.filesError}</p>
+							{:else if files.length === 0}
 								<p class="text-[12px] text-muted">{t.skills.filesEmpty}</p>
 							{:else}
 								<ul class="flex flex-col gap-1">
