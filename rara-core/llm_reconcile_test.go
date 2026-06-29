@@ -3,8 +3,10 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"log"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -34,73 +36,172 @@ func (f *fakeGateway) DeleteModel(_ context.Context, id string) error {
 	return nil
 }
 
-// seedSyncModel creates an enabled provider (with a real encrypted key) + enabled model.
-func seedSyncModel(t *testing.T, core *Core, alias, upstream, apiKey string) {
+// seedLLMProvider creates an enabled llm_provider of the given kind with a real encrypted key.
+func seedLLMProvider(t *testing.T, core *Core, name, kind, apiKey string) {
 	t.Helper()
-	ctx := context.Background()
-	if err := core.UpsertLLMProvider(ctx, LLMProviderInput{
-		Name: "groq-test", Kind: "groq", APIKey: apiKey,
+	if err := core.UpsertLLMProvider(context.Background(), LLMProviderInput{
+		Name: name, Kind: kind, APIKey: apiKey,
 	}); err != nil {
-		t.Fatalf("seed provider: %v", err)
-	}
-	providers, err := core.ListLLMProviders(ctx)
-	if err != nil || len(providers) == 0 {
-		t.Fatalf("list providers: %v", err)
-	}
-	if err := core.UpsertLLMModel(ctx, LLMModelInput{
-		ProviderID: providers[0].ID, Alias: alias, Upstream: upstream,
-	}); err != nil {
-		t.Fatalf("seed model: %v", err)
+		t.Fatalf("seed llm provider %q: %v", name, err)
 	}
 }
 
-func TestLLMReconcileCreatesNewModel(t *testing.T) {
+// seedWorkerBinding creates an enabled worker (providers row) whose env pins LITELLM_MODEL —
+// the source of the reconciler's desired set.
+func seedWorkerBinding(t *testing.T, db *MockDatabase, name, litellmModel string) {
+	t.Helper()
+	mustCapability(t, db, capDestilar)
+	env, err := json.Marshal(map[string]string{"DISTILL_PROVIDER": name, "LITELLM_MODEL": litellmModel})
+	if err != nil {
+		t.Fatalf("marshal env: %v", err)
+	}
+	mustProvider(t, db, Provider{
+		Name: name, Capability: capDestilar, Worker: "distill",
+		Runtime: runtimeCloudRun, Activation: activationOnDemand,
+		Enabled: true, Env: env,
+	})
+}
+
+func TestLLMReconcileCreatesConcreteModelForBoundUpstream(t *testing.T) {
 	core, db, box := newTestCoreWithBox(t)
-	seedSyncModel(t, core, "groq-llama", "groq/llama-3.3", "sk-test-123") // gitleaks:allow
+	seedLLMProvider(t, core, "groq-main", "groq", "sk-test-123") // gitleaks:allow
+	seedWorkerBinding(t, db, "distill-cloud", "groq/llama-3.3-70b-versatile")
 	gw := &fakeGateway{}
 
 	r := NewLLMReconciler(db, gw, box)
 	if err := r.Reconcile(context.Background()); err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
-	if len(gw.added) != 1 || gw.added[0].ModelName != "groq-llama" {
-		t.Fatalf("want 1 create of groq-llama, got %+v", gw.added)
+	if len(gw.added) != 1 {
+		// Don't print gw.added — its Models carry the decrypted APIKey.
+		t.Fatalf("want 1 create, got %d", len(gw.added))
 	}
-	if gw.added[0].Upstream != "groq/llama-3.3" {
-		t.Errorf("upstream = %q", gw.added[0].Upstream)
+	got := gw.added[0]
+	// model_name == litellm_params.model == the full upstream string (no alias indirection).
+	if got.ModelName != "groq/llama-3.3-70b-versatile" || got.Upstream != "groq/llama-3.3-70b-versatile" {
+		t.Errorf("model_name/upstream = %q / %q, want both groq/llama-3.3-70b-versatile", got.ModelName, got.Upstream)
 	}
-	if gw.added[0].APIKey != "sk-test-123" { // gitleaks:allow
-		t.Errorf("decrypted key not handed to gateway: %q", gw.added[0].APIKey)
+	if got.APIKey != "sk-test-123" { // gitleaks:allow
+		// Never echo got.APIKey — a mismatch would leak the decrypted key into CI logs.
+		t.Errorf("decrypted key not handed to gateway (value redacted)")
 	}
 	if len(gw.deleted) != 0 {
 		t.Errorf("unexpected deletes: %v", gw.deleted)
 	}
 }
 
-func TestLLMReconcileDeletesOrphanButIgnoresConfigModels(t *testing.T) {
+func TestLLMReconcileIgnoresLegacyAliasesEnd2End(t *testing.T) {
 	core, db, box := newTestCoreWithBox(t)
-	seedSyncModel(t, core, "groq-llama", "groq/llama-3.3", "sk-test-123") // gitleaks:allow
+	seedLLMProvider(t, core, "groq-main", "groq", "sk-test-123") // gitleaks:allow
+	seedWorkerBinding(t, db, "distill-cloud", "groq/llama-3.3-70b-versatile")
+	// A legacy worker still pinning a bare alias (no '/') must NOT enter the desired set.
+	seedWorkerBinding(t, db, "sift-cloud", "groq-llama")
 	gw := &fakeGateway{models: []litellm.Model{
-		{ModelName: "config-model", Upstream: "groq/old", ID: "cfg1", DBModel: false}, // config.yaml — read-only
-		{ModelName: "stale-db", Upstream: "x/y", ID: "db9", DBModel: true},            // orphan db_model
+		// Legacy alias managed in the gateway DB (db_model, no '/') — coexists, never touched.
+		{ModelName: "groq-llama", Upstream: "groq/llama-3.3-70b-versatile", ID: "db-legacy", DBModel: true},
+		// config.yaml model — read-only.
+		{ModelName: "config-model", Upstream: "groq/old", ID: "cfg1", DBModel: false},
 	}}
 
 	r := NewLLMReconciler(db, gw, box)
 	if err := r.Reconcile(context.Background()); err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
-	// groq-llama is created (not in gateway); stale-db orphan is deleted; config-model untouched.
-	if len(gw.added) != 1 || gw.added[0].ModelName != "groq-llama" {
-		t.Errorf("want create groq-llama, got %+v", gw.added)
+	if len(gw.added) != 1 || gw.added[0].ModelName != "groq/llama-3.3-70b-versatile" {
+		t.Errorf("want only the concrete model created, got %d adds", len(gw.added))
 	}
-	if len(gw.deleted) != 1 || gw.deleted[0] != "db9" {
-		t.Errorf("want delete of orphan db9 only, got %v", gw.deleted)
+	if len(gw.deleted) != 0 {
+		t.Errorf("legacy alias / config model must be left untouched, got deletes %v", gw.deleted)
+	}
+}
+
+func TestLLMReconcileSkipsBoundUpstreamWithoutProvider(t *testing.T) {
+	_, db, box := newTestCoreWithBox(t)
+	// Worker binds groq/... but no enabled groq provider exists → skip, log, don't fail.
+	seedWorkerBinding(t, db, "distill-cloud", "groq/llama-3.3-70b-versatile")
+	gw := &fakeGateway{}
+
+	var logBuf bytes.Buffer
+	old := log.Writer()
+	log.SetOutput(&logBuf)
+	defer log.SetOutput(old)
+
+	r := NewLLMReconciler(db, gw, box)
+	if err := r.Reconcile(context.Background()); err != nil {
+		t.Fatalf("Reconcile must not fail when a provider is missing: %v", err)
+	}
+	if len(gw.added) != 0 || len(gw.deleted) != 0 {
+		t.Errorf("no writes when the provider is absent, got +%d -%d", len(gw.added), len(gw.deleted))
+	}
+	if !strings.Contains(logBuf.String(), "groq/llama-3.3-70b-versatile") {
+		t.Errorf("expected a skip log mentioning the upstream, got %q", logBuf.String())
+	}
+}
+
+func TestLLMReconcileSkipsProviderWithoutKey(t *testing.T) {
+	_, db, box := newTestCoreWithBox(t)
+	// Enabled provider for kind groq but with no key material (degenerate row).
+	db.llmProviders = append(db.llmProviders, mockLLMProvider{
+		ID: 1, Name: "groq-nokey", Kind: "groq", Enabled: true,
+	})
+	seedWorkerBinding(t, db, "distill-cloud", "groq/llama-3.3-70b-versatile")
+	gw := &fakeGateway{}
+
+	r := NewLLMReconciler(db, gw, box)
+	if err := r.Reconcile(context.Background()); err != nil {
+		t.Fatalf("Reconcile must not fail when a provider has no key: %v", err)
+	}
+	if len(gw.added) != 0 {
+		t.Errorf("a keyless provider cannot be registered, got %d adds", len(gw.added))
+	}
+}
+
+func TestLLMReconcileDeletesManagedConcreteWithoutBinding(t *testing.T) {
+	core, db, box := newTestCoreWithBox(t)
+	seedLLMProvider(t, core, "groq-main", "groq", "sk-test-123") // gitleaks:allow
+	// No worker binds any upstream. A managed concrete model lingers in the gateway.
+	gw := &fakeGateway{models: []litellm.Model{
+		{ModelName: "groq/retired-model", Upstream: "groq/retired-model", ID: "db-old", DBModel: true},
+	}}
+
+	r := NewLLMReconciler(db, gw, box)
+	if err := r.Reconcile(context.Background()); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if len(gw.deleted) != 1 || gw.deleted[0] != "db-old" {
+		t.Errorf("want delete of orphan managed concrete db-old, got %v", gw.deleted)
+	}
+	if len(gw.added) != 0 {
+		t.Errorf("unexpected creates: %d adds", len(gw.added))
+	}
+}
+
+func TestLLMReconcileRetainsModelWhenProviderTemporarilyMissing(t *testing.T) {
+	_, db, box := newTestCoreWithBox(t)
+	// A worker still binds the upstream, but its provider is currently absent (disabled/removed).
+	seedWorkerBinding(t, db, "distill-cloud", "groq/llama-3.3-70b-versatile")
+	// The gateway already serves the managed concrete model from an earlier healthy pass.
+	gw := &fakeGateway{models: []litellm.Model{
+		{ModelName: "groq/llama-3.3-70b-versatile", Upstream: "groq/llama-3.3-70b-versatile", ID: "db1", DBModel: true},
+	}}
+
+	r := NewLLMReconciler(db, gw, box)
+	if err := r.Reconcile(context.Background()); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	// The binding is still active — a transient provider misconfig must NOT delete a live model.
+	if len(gw.deleted) != 0 {
+		t.Errorf("must retain a still-bound model when its provider is temporarily missing, got deletes %v", gw.deleted)
+	}
+	if len(gw.added) != 0 {
+		t.Errorf("cannot recreate without a key; expected no creates, got %d adds", len(gw.added))
 	}
 }
 
 func TestLLMReconcileIdempotentSecondPassNoWrites(t *testing.T) {
 	core, db, box := newTestCoreWithBox(t)
-	seedSyncModel(t, core, "groq-llama", "groq/llama-3.3", "sk-test-123") // gitleaks:allow
+	seedLLMProvider(t, core, "groq-main", "groq", "sk-test-123") // gitleaks:allow
+	seedWorkerBinding(t, db, "distill-cloud", "groq/llama-3.3-70b-versatile")
 	gw := &fakeGateway{}
 	r := NewLLMReconciler(db, gw, box)
 
@@ -124,30 +225,11 @@ func TestLLMReconcileIdempotentSecondPassNoWrites(t *testing.T) {
 	}
 }
 
-func TestLLMReconcileUpdatesOnContentChange(t *testing.T) {
-	core, db, box := newTestCoreWithBox(t)
-	seedSyncModel(t, core, "groq-llama", "groq/llama-3.3", "sk-test-123") // gitleaks:allow
-	// Gateway has the alias as a db_model but with a stale fingerprint (e.g. old upstream).
-	gw := &fakeGateway{models: []litellm.Model{
-		{ModelName: "groq-llama", Upstream: "groq/OLD", Fingerprint: "stale", ID: "db1", DBModel: true},
-	}}
-
-	r := NewLLMReconciler(db, gw, box)
-	if err := r.Reconcile(context.Background()); err != nil {
-		t.Fatalf("Reconcile: %v", err)
-	}
-	if len(gw.deleted) != 1 || gw.deleted[0] != "db1" {
-		t.Errorf("want delete of stale db1, got %v", gw.deleted)
-	}
-	if len(gw.added) != 1 || gw.added[0].Upstream != "groq/llama-3.3" {
-		t.Errorf("want recreate with new upstream, got %+v", gw.added)
-	}
-}
-
 func TestLLMReconcileNeverLogsDecryptedKey(t *testing.T) {
 	core, db, box := newTestCoreWithBox(t)
 	const secret = "sk-super-secret-9f3" // gitleaks:allow
-	seedSyncModel(t, core, "groq-llama", "groq/llama-3.3", secret)
+	seedLLMProvider(t, core, "groq-main", "groq", secret)
+	seedWorkerBinding(t, db, "distill-cloud", "groq/llama-3.3-70b-versatile")
 	gw := &fakeGateway{}
 
 	var logBuf bytes.Buffer
@@ -164,13 +246,15 @@ func TestLLMReconcileNeverLogsDecryptedKey(t *testing.T) {
 	}
 	// Sanity: the key DID reach the gateway client (decryption happened).
 	if len(gw.added) != 1 || gw.added[0].APIKey != secret {
-		t.Errorf("key not delivered to gateway: %+v", gw.added)
+		// Don't print gw.added — it carries the plaintext key.
+		t.Errorf("decrypted key not delivered to gateway (got %d adds; value redacted)", len(gw.added))
 	}
 }
 
 func TestLLMReconcileGatewayUnavailableNoWrites(t *testing.T) {
 	core, db, box := newTestCoreWithBox(t)
-	seedSyncModel(t, core, "groq-llama", "groq/llama-3.3", "sk-test-123") // gitleaks:allow
+	seedLLMProvider(t, core, "groq-main", "groq", "sk-test-123") // gitleaks:allow
+	seedWorkerBinding(t, db, "distill-cloud", "groq/llama-3.3-70b-versatile")
 	gw := &fakeGateway{healthErr: errors.New("connection refused")}
 
 	r := NewLLMReconciler(db, gw, box)
@@ -183,32 +267,41 @@ func TestLLMReconcileGatewayUnavailableNoWrites(t *testing.T) {
 	}
 }
 
-func TestDiffLLMModelsPure(t *testing.T) {
+func TestDiffLLMModelsIgnoresLegacyAliases(t *testing.T) {
 	desired := []litellm.Model{
-		{ModelName: "keep", Fingerprint: "fp-keep"},
-		{ModelName: "new", Fingerprint: "fp-new"},
-		{ModelName: "changed", Fingerprint: "fp-v2"},
+		{ModelName: "groq/keep", Fingerprint: "fp-keep"},
+		{ModelName: "groq/new", Fingerprint: "fp-new"},
+		{ModelName: "groq/changed", Fingerprint: "fp-v2"},
 	}
 	actual := []litellm.Model{
-		{ModelName: "keep", Fingerprint: "fp-keep", ID: "a1", DBModel: true},
-		{ModelName: "changed", Fingerprint: "fp-v1", ID: "a2", DBModel: true},
-		{ModelName: "orphan", Fingerprint: "x", ID: "a3", DBModel: true},
-		{ModelName: "fromconfig", Fingerprint: "x", ID: "a4", DBModel: false},
+		{ModelName: "groq/keep", Fingerprint: "fp-keep", ID: "a1", DBModel: true},
+		{ModelName: "groq/changed", Fingerprint: "fp-v1", ID: "a2", DBModel: true},
+		{ModelName: "groq/orphan", Fingerprint: "x", ID: "a3", DBModel: true},   // not bound → delete
+		{ModelName: "groq-llama", Fingerprint: "x", ID: "a4", DBModel: true},    // legacy alias (no '/') → ignore
+		{ModelName: "config/model", Fingerprint: "x", ID: "a5", DBModel: false}, // config.yaml → ignore
+		{ModelName: "groq/retained", Fingerprint: "x", ID: "a6", DBModel: true}, // bound, unresolvable → retain
 	}
-	create, del := diffLLMModels(desired, actual)
+	// Every desired name is bound; "groq/retained" is bound but absent from desired (provider
+	// transiently unresolvable). "groq/orphan" is NOT bound.
+	bound := map[string]bool{"groq/keep": true, "groq/new": true, "groq/changed": true, "groq/retained": true}
+
+	create, del := diffLLMModels(desired, actual, bound)
 
 	gotCreate := map[string]bool{}
 	for _, c := range create {
 		gotCreate[c.ModelName] = true
 	}
-	if !gotCreate["new"] || !gotCreate["changed"] || gotCreate["keep"] {
-		t.Errorf("create set wrong: %v", gotCreate)
+	wantCreate := map[string]bool{"groq/new": true, "groq/changed": true}
+	if !reflect.DeepEqual(gotCreate, wantCreate) {
+		t.Errorf("create set = %v, want exactly %v", gotCreate, wantCreate)
 	}
 	gotDel := map[string]bool{}
 	for _, id := range del {
 		gotDel[id] = true
 	}
-	if !gotDel["a2"] || !gotDel["a3"] || gotDel["a1"] || gotDel["a4"] {
-		t.Errorf("delete set wrong: %v (a4=config must be ignored)", gotDel)
+	// a2 (changed) + a3 (orphan). NOT a1 (keep), a4 (legacy), a5 (config), a6 (retained bound).
+	wantDel := map[string]bool{"a2": true, "a3": true}
+	if !reflect.DeepEqual(gotDel, wantDel) {
+		t.Errorf("delete set = %v, want exactly %v (a6 must be retained as still-bound)", gotDel, wantDel)
 	}
 }
