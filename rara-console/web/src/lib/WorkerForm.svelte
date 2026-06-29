@@ -1,6 +1,8 @@
 <script lang="ts">
 	import { untrack } from 'svelte';
 	import { t } from '$lib/strings';
+	import type { LLMModel } from '$lib/inferencia';
+	import { enabledAliases, currentAlias, envWithoutModel, withModelAlias, usesModel } from '$lib/workerModel';
 
 	type Constraints = {
 		requires?: string;
@@ -27,6 +29,8 @@
 	type Props = {
 		initial?: Provider | null;
 		capabilities: string[];
+		/** Enabled LLM models for the Model dropdown (from /api/llm-models). */
+		models?: LLMModel[];
 		/** Pre-fill worker and make it read-only (add-placement mode). */
 		lockedWorker?: string;
 		/** Pre-fill capability and make it read-only (add-placement mode). */
@@ -42,6 +46,7 @@
 	let {
 		initial = null,
 		capabilities,
+		models = [],
 		lockedWorker,
 		lockedCapability,
 		lockedConstraints = null,
@@ -70,7 +75,30 @@
 	let activation = $state(untrack(() => initial?.activation ?? 'on_demand'));
 	let enabled = $state(untrack(() => initial?.enabled ?? true));
 	let runnerUrl = $state(untrack(() => initial?.runner_url ?? ''));
-	let envRaw = $state(untrack(() => (initial?.env ? JSON.stringify(initial.env, null, 2) : '')));
+	// LITELLM_MODEL is owned by the dropdown; the raw env editor shows everything else.
+	let model = $state(untrack(() => currentAlias(initial?.env)));
+	let envRaw = $state(
+		untrack(() => {
+			const rest = envWithoutModel(initial?.env);
+			return Object.keys(rest).length ? JSON.stringify(rest, null, 2) : '';
+		})
+	);
+
+	// Dropdown options: enabled aliases, plus the current one if it's stale/disabled
+	// so an existing binding still shows instead of silently blanking.
+	const modelOptions = $derived(
+		[...new Set([...(model ? [model] : []), ...enabledAliases(models)])]
+	);
+	// Show only for workers that actually call an LLM (LLM capability or an existing
+	// binding) — pure collectors stay hidden. Reactive on capability (editable in add
+	// mode). Optional — never required.
+	const showModel = $derived(usesModel(capability, initial?.env));
+
+	// Clear a stale selection if capability switches away from LLM, so submit never
+	// writes LITELLM_MODEL onto a non-LLM worker.
+	$effect(() => {
+		if (!showModel) model = '';
+	});
 
 	// constraints fields
 	let cRequires = $state(untrack(() => initial?.constraints?.requires ?? ''));
@@ -177,9 +205,10 @@
 
 		if (runtime !== 'cloudrun' && runnerUrl.trim()) payload.runner_url = runnerUrl.trim();
 
-		if (envRaw.trim()) {
-			payload.env = JSON.parse(envRaw.trim());
-		}
+		// ponytail: LITELLM_BASE_URL not written here — the runner host injects it
+		// (RUNNER_WORKER_ENV_FILE on VPC/Mac). Add a gateway source if that stops holding.
+		const envObj = withModelAlias(envRaw.trim() ? JSON.parse(envRaw.trim()) : {}, model);
+		if (Object.keys(envObj).length) payload.env = envObj;
 
 		const constraints = buildConstraints();
 		if (constraints) payload.constraints = constraints;
@@ -302,6 +331,27 @@
 				</select>
 				{#if errors.activation}<p class={errorClass}>{errors.activation}</p>{/if}
 			</div>
+
+			<!-- Model (LLM) — writes LITELLM_MODEL into env; optional, hidden when no models -->
+			{#if showModel}
+				<div>
+					<label class={labelClass} for="wf-model">{t.workers.formModel}</label>
+					<select
+						id="wf-model"
+						class={fieldClass}
+						bind:value={model}
+						aria-describedby={runtime === 'cloudrun' && model ? 'wf-model-cloudrun-hint' : undefined}
+					>
+						<option value="">{t.workers.formModelNone}</option>
+						{#each modelOptions as alias}
+							<option value={alias}>{alias}</option>
+						{/each}
+					</select>
+					{#if runtime === 'cloudrun' && model}
+						<p id="wf-model-cloudrun-hint" class="mt-0.5 text-[11px] text-muted">{t.workers.formModelCloudrunHint}</p>
+					{/if}
+				</div>
+			{/if}
 
 			<!-- Enabled toggle -->
 			<div class="flex items-center gap-3 pt-1">

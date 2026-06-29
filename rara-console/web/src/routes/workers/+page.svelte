@@ -3,6 +3,7 @@
 	import { t } from '$lib/strings';
 	import { timeAgo } from '$lib/timeAgo';
 	import WorkerForm from '$lib/WorkerForm.svelte';
+	import { asList, isModel, type LLMModel } from '$lib/inferencia';
 
 	type Constraints = {
 		requires?: string;
@@ -54,6 +55,7 @@
 
 	// --- core state ---
 	let workers = $state<Worker[]>([]);
+	let models = $state<LLMModel[]>([]);
 	let loading = $state(true);
 	let error = $state(false);
 	let saving = $state<string | null>(null);
@@ -97,6 +99,10 @@
 			.then((r) => (r.ok ? r.json() : Promise.reject()))
 			.then((d) => { metricsLite = Array.isArray(d) ? d : []; })
 			.catch(() => { /* coluna "última execução" degrada para — */ });
+		fetch('/api/llm-models')
+			.then((r) => (r.ok ? r.json() : Promise.reject()))
+			.then((d) => { models = asList<LLMModel>(d).filter(isModel); })
+			.catch(() => { /* dropdown de Model degrada para oculto */ });
 	});
 
 	// ── filtros + busca (client-side, lista pequena) ──
@@ -314,7 +320,7 @@
 
 	{#if formMode === 'add' && !formLockedWorker}
 		<div class="mb-4">
-			<WorkerForm initial={null} lockedApp={null} capabilities={knownCapabilities} onSave={saveWorker} onCancel={closeForm} />
+			<WorkerForm initial={null} lockedApp={null} capabilities={knownCapabilities} {models} onSave={saveWorker} onCancel={closeForm} />
 		</div>
 	{/if}
 
@@ -510,7 +516,7 @@
 						{#if formMode === 'edit' && formInitial?.name === p.name}
 							<tr>
 								<td colspan="8" class="px-4 py-3">
-									<WorkerForm initial={formInitial} lockedApp={null} capabilities={knownCapabilities} onSave={saveWorker} onCancel={closeForm} />
+									<WorkerForm initial={formInitial} lockedApp={null} capabilities={knownCapabilities} {models} onSave={saveWorker} onCancel={closeForm} />
 								</td>
 							</tr>
 						{/if}
