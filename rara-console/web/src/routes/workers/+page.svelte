@@ -56,7 +56,10 @@
 	// --- core state ---
 	let workers = $state<Worker[]>([]);
 	let models = $state<LLMModel[]>([]);
-	let modelsLoadFailed = $state(false);
+	// Starts true: until the first /api/llm-models resolve confirms models are available,
+	// an LLM worker must not be saved without one (the fetch may still be in flight when the
+	// form opens). Flips to false only on a successful load; a failed load keeps it true.
+	let modelsLoadFailed = $state(true);
 	let loading = $state(true);
 	let error = $state(false);
 	let saving = $state<string | null>(null);
