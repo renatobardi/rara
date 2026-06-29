@@ -6,6 +6,11 @@ import {
 	maskKey,
 	validateBaseUrl,
 	costPerMillion,
+	isSpend,
+	indexSpendByModel,
+	formatUSD,
+	formatTokens,
+	SPEND_PERIODS,
 	type LLMProvider
 } from './inferencia';
 
@@ -111,5 +116,42 @@ describe('type guards', () => {
 		expect(isModel({ id: 1 })).toBe(false);
 		// missing cost fields → rejected
 		expect(isModel({ id: 1, provider_id: 1, alias: 'x', upstream: 'y', enabled: true })).toBe(false);
+	});
+});
+
+describe('spend (CONSOLE-INFER-#9)', () => {
+	it('isSpend accepts a real row and rejects junk', () => {
+		expect(
+			isSpend({
+				model: 'groq-llama', spend: 0.004, total_tokens: 420,
+				prompt_tokens: 300, completion_tokens: 120, requests: 2
+			})
+		).toBe(true);
+		expect(isSpend(null)).toBe(false);
+		expect(isSpend({ model: 'x' })).toBe(false);
+	});
+
+	it('indexSpendByModel keys rows by alias', () => {
+		const idx = indexSpendByModel([
+			{ model: 'groq-llama', spend: 0.004, total_tokens: 420, prompt_tokens: 300, completion_tokens: 120, requests: 2 }
+		]);
+		expect(idx.get('groq-llama')?.requests).toBe(2);
+		expect(idx.get('absent')).toBeUndefined();
+	});
+
+	it('formatUSD shows a dash for zero and dollars otherwise', () => {
+		expect(formatUSD(0)).toBe('—');
+		expect(formatUSD(0.004)).toBe('$0.0040');
+		expect(formatUSD(12.5)).toBe('$12.50');
+	});
+
+	it('formatTokens groups thousands and dashes zero', () => {
+		expect(formatTokens(0)).toBe('—');
+		expect(formatTokens(420)).toBe('420');
+		expect(formatTokens(1234567)).toBe('1,234,567');
+	});
+
+	it('SPEND_PERIODS offers 24h/7d/30d/Tudo, with Tudo meaning all-time', () => {
+		expect(SPEND_PERIODS.map((p) => p.days)).toEqual([1, 7, 30, null]);
 	});
 });

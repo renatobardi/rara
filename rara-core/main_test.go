@@ -200,6 +200,8 @@ type MockDatabase struct {
 	llmModels      []mockLLMModel
 	nextLLMModelID int
 
+	spendLogs []mockSpendLog // mirrors litellm."LiteLLM_SpendLogs" rows (tests seed directly)
+
 	nextFlowID     int
 	nextItemID     int
 	nextFeedID     int
@@ -1616,6 +1618,53 @@ func (m *MockDatabase) WorkerMetrics(ctx context.Context, since *time.Time) ([]W
 		wm := byProvider[p]
 		workerMetricFinalize(wm)
 		out = append(out, *wm)
+	}
+	return out, nil
+}
+
+// mockSpendLog mirrors one litellm LiteLLM_SpendLogs row (the fields LLMSpend reads).
+type mockSpendLog struct {
+	ModelGroup       string
+	Spend            float64
+	PromptTokens     int
+	CompletionTokens int
+	StartTime        time.Time
+}
+
+// LLMSpend mirrors the pgx aggregation: group by model_group, skip empty aliases,
+// optional model + since filters, sum spend/tokens, count requests.
+func (m *MockDatabase) LLMSpend(ctx context.Context, model string, since *time.Time) ([]LLMSpend, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	byAlias := map[string]*LLMSpend{}
+	var order []string
+	for _, r := range m.spendLogs {
+		if r.ModelGroup == "" {
+			continue
+		}
+		if model != "" && r.ModelGroup != model {
+			continue
+		}
+		if since != nil && r.StartTime.Before(*since) {
+			continue
+		}
+		agg, ok := byAlias[r.ModelGroup]
+		if !ok {
+			agg = &LLMSpend{Model: r.ModelGroup}
+			byAlias[r.ModelGroup] = agg
+			order = append(order, r.ModelGroup)
+		}
+		agg.Spend += r.Spend
+		agg.PromptTokens += r.PromptTokens
+		agg.CompletionTokens += r.CompletionTokens
+		agg.TotalTokens += r.PromptTokens + r.CompletionTokens
+		agg.Requests++
+	}
+	sort.Strings(order)
+	out := make([]LLMSpend, 0, len(order))
+	for _, a := range order {
+		out = append(out, *byAlias[a])
 	}
 	return out, nil
 }

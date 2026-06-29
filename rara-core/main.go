@@ -835,6 +835,11 @@ type Database interface {
 	// after that time are counted. Results are ordered by provider name.
 	WorkerMetrics(ctx context.Context, since *time.Time) ([]WorkerMetric, error)
 
+	// LLMSpend aggregates real cost/tokens per model alias from litellm's spend
+	// log (CONSOLE-INFER-#9). model="" rolls up every alias; since restricts the
+	// window (nil = all-time). Grouped by model_group (the LITELLM_MODEL alias).
+	LLMSpend(ctx context.Context, model string, since *time.Time) ([]LLMSpend, error)
+
 	// --- LLM provider registry (CONSOLE-INFER #2) ---------------------------
 	// UpsertLLMProvider writes a provider row keyed by (owner_id=NULL, name)
 	// with a new encrypted key. Use UpdateLLMProviderFields when api_key is absent.
