@@ -1023,6 +1023,89 @@ func (d *pgxDatabase) LLMSpend(ctx context.Context, model string, since *time.Ti
 	return out, nil
 }
 
+// LLMSpendTimeseries rolls litellm's spend log into one row per calendar day
+// (CORR-INFER-#4), oldest first, for the overall-spend chart. Same cross-component
+// read + secret hygiene as LLMSpend; the day is bucketed by the DB session's
+// timezone (matching the since filter's tz-naive handling).
+func (d *pgxDatabase) LLMSpendTimeseries(ctx context.Context, since *time.Time) ([]LLMSpendDay, error) {
+	conds := []string{`model_group <> ''`}
+	var args []any
+	if since != nil {
+		args = append(args, since)
+		conds = append(conds, fmt.Sprintf(`"startTime" >= $%d`, len(args)))
+	}
+
+	q := `SELECT to_char(("startTime")::date, 'YYYY-MM-DD') AS day,
+	             COALESCE(SUM(spend), 0),
+	             COALESCE(SUM(total_tokens), 0),
+	             COUNT(*)
+	      FROM litellm."LiteLLM_SpendLogs"
+	      WHERE ` + strings.Join(conds, " AND ") + `
+	      GROUP BY day
+	      ORDER BY day`
+
+	rows, err := d.conn.Query(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("llm spend timeseries query: %w", err)
+	}
+	defer rows.Close()
+
+	out := []LLMSpendDay{}
+	for rows.Next() {
+		var s LLMSpendDay
+		if err := rows.Scan(&s.Day, &s.Spend, &s.TotalTokens, &s.Requests); err != nil {
+			return nil, fmt.Errorf("llm spend timeseries scan: %w", err)
+		}
+		out = append(out, s)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("llm spend timeseries rows: %w", err)
+	}
+	return out, nil
+}
+
+// LLMSpendByProvider rolls litellm's spend log into one row per provider — the
+// model_group prefix before "/" (CORR-INFER-#4) — highest spend first. An old
+// slash-less alias stays whole (split_part returns the string intact).
+func (d *pgxDatabase) LLMSpendByProvider(ctx context.Context, since *time.Time) ([]LLMSpendProvider, error) {
+	// The second cond drops malformed model_groups like "/m" whose prefix is empty —
+	// they'd otherwise fold into one unlabelled "" provider bucket.
+	conds := []string{`model_group <> ''`, `split_part(model_group, '/', 1) <> ''`}
+	var args []any
+	if since != nil {
+		args = append(args, since)
+		conds = append(conds, fmt.Sprintf(`"startTime" >= $%d`, len(args)))
+	}
+
+	q := `SELECT split_part(model_group, '/', 1) AS provider,
+	             COALESCE(SUM(spend), 0),
+	             COALESCE(SUM(total_tokens), 0),
+	             COUNT(*)
+	      FROM litellm."LiteLLM_SpendLogs"
+	      WHERE ` + strings.Join(conds, " AND ") + `
+	      GROUP BY provider
+	      ORDER BY SUM(spend) DESC, provider`
+
+	rows, err := d.conn.Query(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("llm spend by-provider query: %w", err)
+	}
+	defer rows.Close()
+
+	out := []LLMSpendProvider{}
+	for rows.Next() {
+		var s LLMSpendProvider
+		if err := rows.Scan(&s.Provider, &s.Spend, &s.TotalTokens, &s.Requests); err != nil {
+			return nil, fmt.Errorf("llm spend by-provider scan: %w", err)
+		}
+		out = append(out, s)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("llm spend by-provider rows: %w", err)
+	}
+	return out, nil
+}
+
 // sourceViewCols is the SELECT projection for sources_v, shared by ListSources and GetSource.
 const sourceViewCols = `api_id, kind, lane, display_name, COALESCE(tags,'{}'), status,
 	COALESCE(config_summary,''), created_at, updated_at`

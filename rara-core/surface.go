@@ -115,6 +115,26 @@ type LLMSpend struct {
 	Requests         int     `json:"requests"`
 }
 
+// LLMSpendDay is the daily spend/tokens rollup returned by
+// GET /v1/llm-spend/timeseries (CORR-INFER-#4), one entry per calendar day for
+// the overall-spend chart. Day is YYYY-MM-DD (bucketed by the DB session tz).
+type LLMSpendDay struct {
+	Day         string  `json:"day"`   // YYYY-MM-DD
+	Spend       float64 `json:"spend"` // USD, summed
+	TotalTokens int     `json:"total_tokens"`
+	Requests    int     `json:"requests"`
+}
+
+// LLMSpendProvider is the per-provider spend/tokens rollup returned by
+// GET /v1/llm-spend/by-provider (CORR-INFER-#4). Provider is the model_group
+// prefix before "/" (an old slash-less alias stays whole).
+type LLMSpendProvider struct {
+	Provider    string  `json:"provider"`
+	Spend       float64 `json:"spend"` // USD, summed
+	TotalTokens int     `json:"total_tokens"`
+	Requests    int     `json:"requests"`
+}
+
 // ---------------------------------------------------------------------------
 // Core — the operations layer (the "núcleo" both adapters drive).
 // ---------------------------------------------------------------------------
@@ -1103,6 +1123,26 @@ func (c *Core) LLMSpend(ctx context.Context, model string, since *time.Time) ([]
 	return rows, nil
 }
 
+// LLMSpendTimeseries returns daily spend/tokens from the litellm spend log
+// (CORR-INFER-#4). since restricts the window (nil = all-time).
+func (c *Core) LLMSpendTimeseries(ctx context.Context, since *time.Time) ([]LLMSpendDay, error) {
+	rows, err := c.db.LLMSpendTimeseries(ctx, since)
+	if err != nil {
+		return nil, fmt.Errorf("core llm spend timeseries: %w", err)
+	}
+	return rows, nil
+}
+
+// LLMSpendByProvider returns spend/tokens grouped by provider — the model_group
+// prefix before "/" (CORR-INFER-#4). since restricts the window (nil = all-time).
+func (c *Core) LLMSpendByProvider(ctx context.Context, since *time.Time) ([]LLMSpendProvider, error) {
+	rows, err := c.db.LLMSpendByProvider(ctx, since)
+	if err != nil {
+		return nil, fmt.Errorf("core llm spend by-provider: %w", err)
+	}
+	return rows, nil
+}
+
 // SubmitLinkedIn is the stash collector (deliverable #3): upsert the post + discover the
 // spine item. Returns the item id.
 func (c *Core) SubmitLinkedIn(ctx context.Context, p LinkedInPost) (int, error) {
@@ -1184,6 +1224,8 @@ func NewSurfaceMux(core *Core, token string) http.Handler {
 	// Worker metrics rollup (CONSOLE-WORKERS.pt-BR.md §8, slice 2/9).
 	mux.HandleFunc("GET /v1/workers/metrics", h.workerMetrics)
 	mux.HandleFunc("GET /v1/llm-spend", h.llmSpend)
+	mux.HandleFunc("GET /v1/llm-spend/timeseries", h.llmSpendTimeseries)
+	mux.HandleFunc("GET /v1/llm-spend/by-provider", h.llmSpendByProvider)
 
 	// LLM provider registry (CONSOLE-INFER #2).
 	mux.HandleFunc("GET /v1/llm-providers", h.listLLMProviders)
@@ -1268,6 +1310,49 @@ func (h *httpSurface) llmSpend(w http.ResponseWriter, r *http.Request) {
 		since = &t
 	}
 	rows, err := h.core.LLMSpend(r.Context(), r.URL.Query().Get("model"), since)
+	writeResult(w, rows, err)
+}
+
+// dayAlignedSince returns the start (in now's location) of the day N-1 days before
+// now, so an N-day window spans exactly N calendar days — matching the daily
+// bucketing in LLMSpendTimeseries (no partial leading bucket).
+func dayAlignedSince(now time.Time, n int) time.Time {
+	start := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	return start.AddDate(0, 0, -(n - 1))
+}
+
+// spendSince parses ?days=N (1..365) into a since cutoff; "" means all-time. The
+// cutoff is aligned to the start of the day so the spend charts return exactly N
+// calendar buckets. On a bad value it writes a 400 and returns ok=false.
+func spendSince(w http.ResponseWriter, r *http.Request) (since *time.Time, ok bool) {
+	raw := r.URL.Query().Get("days")
+	if raw == "" {
+		return nil, true
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n <= 0 || n > 365 {
+		writeResult(w, nil, badInput("days must be a positive integer between 1 and 365"))
+		return nil, false
+	}
+	t := dayAlignedSince(time.Now(), n)
+	return &t, true
+}
+
+func (h *httpSurface) llmSpendTimeseries(w http.ResponseWriter, r *http.Request) {
+	since, ok := spendSince(w, r)
+	if !ok {
+		return
+	}
+	rows, err := h.core.LLMSpendTimeseries(r.Context(), since)
+	writeResult(w, rows, err)
+}
+
+func (h *httpSurface) llmSpendByProvider(w http.ResponseWriter, r *http.Request) {
+	since, ok := spendSince(w, r)
+	if !ok {
+		return
+	}
+	rows, err := h.core.LLMSpendByProvider(r.Context(), since)
 	writeResult(w, rows, err)
 }
 

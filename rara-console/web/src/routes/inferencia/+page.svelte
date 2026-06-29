@@ -8,8 +8,17 @@
 		validateBaseUrl,
 		isCatalogEntry,
 		catalogKinds,
+		isSpendDay,
+		isSpendProvider,
+		formatDay,
+		formatUSD,
+		spendBars,
+		SPEND_PERIODS,
 		type LLMProvider,
-		type CatalogEntry
+		type CatalogEntry,
+		type LLMSpendDay,
+		type LLMSpendProvider,
+		type SpendBar
 	} from '$lib/inferencia';
 
 	// ── data ──
@@ -48,9 +57,61 @@
 			});
 	}
 
+	// ── Gastos (CORR-INFER-#4): spend charts off the litellm spend log ──
+	let spendDays = $state<LLMSpendDay[]>([]);
+	let spendProviders = $state<LLMSpendProvider[]>([]);
+	let spendLoading = $state(true);
+	let spendError = $state(false);
+	let spendDaysSel = $state<number | null>(7); // default 7d (mirrors #9)
+
+	const periodLabel: Record<string, string> = {
+		spend24h: t.inferencia.spend24h,
+		spend7d: t.inferencia.spend7d,
+		spend30d: t.inferencia.spend30d,
+		spendAll: t.inferencia.spendAll
+	};
+
+	// Fetch both spend aggregations for the chosen window; either failing flips the
+	// error flag (distinct from "no data"). null days = all-time (no ?days).
+	// A monotonic token discards out-of-order responses: a slow earlier window must
+	// not overwrite a faster later one (rapid period switches).
+	let spendReqSeq = 0;
+	async function fetchSpend(days: number | null) {
+		const seq = ++spendReqSeq;
+		spendLoading = true;
+		spendError = false;
+		spendDaysSel = days;
+		const qs = days !== null ? `?days=${days}` : '';
+		try {
+			const [tsRes, provRes] = await Promise.all([
+				fetch(`/api/llm-spend/timeseries${qs}`),
+				fetch(`/api/llm-spend/by-provider${qs}`)
+			]);
+			if (!tsRes.ok || !provRes.ok) throw new Error();
+			const days_ = asList<LLMSpendDay>(await tsRes.json()).filter(isSpendDay);
+			const provs_ = asList<LLMSpendProvider>(await provRes.json()).filter(isSpendProvider);
+			if (seq !== spendReqSeq) return; // a newer request superseded this one
+			spendDays = days_;
+			spendProviders = provs_;
+			spendLoading = false;
+		} catch {
+			if (seq !== spendReqSeq) return;
+			spendError = true;
+			spendLoading = false;
+		}
+	}
+
+	// Key the daily series by the raw `day` (formatDay drops the year, so the all-time
+	// window would otherwise collide same-MM-DD days across years); format at render.
+	let overallBars = $derived(spendBars(spendDays.map((d) => ({ label: d.day, value: d.spend }))));
+	let providerBars = $derived(spendBars(spendProviders.map((p) => ({ label: p.provider, value: p.spend }))));
+	let spendTotal = $derived(spendDays.reduce((s, d) => s + d.spend, 0));
+	let hasSpend = $derived(spendDays.length > 0 || spendProviders.length > 0);
+
 	onMount(() => {
 		fetchProviders();
 		fetchCatalog();
+		fetchSpend(spendDaysSel);
 	});
 
 	// ── toasts (mirrors workers/+page.svelte) ──
@@ -312,7 +373,82 @@
 	{/if}
 </section>
 
+<!-- ══ Gastos (CORR-INFER-#4) ══ -->
+<section class="mt-8">
+	<div class="mb-1 flex items-center gap-2">
+		<h2 class="text-[15px] font-semibold">{t.inferencia.gastosSection}</h2>
+	</div>
+	<p class="mb-4 text-[12px] text-muted">{t.inferencia.gastosSubtitle}</p>
+
+	<div class="mb-4 flex items-center gap-1.5">
+		{#each SPEND_PERIODS as p (p.key)}
+			<button
+				class="rounded-token border px-3 py-1 text-[12px] {spendDaysSel === p.days ? 'border-text bg-text text-bg' : 'border-border text-muted hover:bg-hover'}"
+				aria-pressed={spendDaysSel === p.days}
+				onclick={() => fetchSpend(p.days)}
+			>{periodLabel[p.key]}</button>
+		{/each}
+		{#if !spendLoading && !spendError && hasSpend}
+			<span class="ml-auto text-[12px] text-muted">{t.inferencia.spendTotal}: <span class="font-mono font-semibold text-text">{formatUSD(spendTotal)}</span></span>
+		{/if}
+	</div>
+
+	{#if spendLoading}
+		<p class="text-[13px] text-muted">{t.inferencia.spendLoading}</p>
+	{:else if spendError}
+		<p class="text-[13px] text-red-500">{t.inferencia.spendError}</p>
+	{:else if !hasSpend}
+		<p class="text-[13px] text-muted">{t.inferencia.spendEmpty}</p>
+	{:else}
+		<div class="grid grid-cols-1 gap-4 lg:grid-cols-2">
+			<div class="rounded-xl border border-border p-4">
+				<h3 class="mb-3 text-[13px] font-semibold">{t.inferencia.chartOverallTitle}</h3>
+				{@render columnChart(overallBars)}
+			</div>
+			<div class="rounded-xl border border-border p-4">
+				<h3 class="mb-3 text-[13px] font-semibold">{t.inferencia.chartProviderTitle}</h3>
+				{@render barChart(providerBars)}
+			</div>
+		</div>
+	{/if}
+</section>
+
 <!-- ══ snippets ══ -->
+<!-- columnChart: vertical bars (spend per day). ponytail: CSS heights, no chart lib.
+     Columns stretch to the h-40 row (default items-stretch) so the bar's %-height resolves. -->
+{#snippet columnChart(bars: SpendBar[])}
+	<div class="flex h-40 gap-1">
+		{#each bars as b (b.label)}
+			<div
+				class="flex min-w-0 flex-1 flex-col items-center gap-1"
+				title="{formatDay(b.label)}: {formatUSD(b.value)}"
+				role="img"
+				aria-label="{formatDay(b.label)}: {formatUSD(b.value)}"
+			>
+				<div class="flex w-full flex-1 items-end">
+					<div class="w-full rounded-t bg-text" style="height: {Math.max(b.pct, b.value > 0 ? 2 : 0)}%"></div>
+				</div>
+				<span class="w-full truncate text-center text-[9px] text-muted" aria-hidden="true">{formatDay(b.label)}</span>
+			</div>
+		{/each}
+	</div>
+{/snippet}
+
+<!-- barChart: horizontal bars (spend per provider). -->
+{#snippet barChart(bars: SpendBar[])}
+	<div class="flex flex-col gap-2">
+		{#each bars as b (b.label)}
+			<div class="flex items-center gap-2 text-[12px]">
+				<span class="w-24 flex-none truncate text-muted" title={b.label}>{b.label}</span>
+				<div class="h-4 flex-1 rounded bg-surface-2">
+					<div class="h-4 rounded bg-text" style="width: {Math.max(b.pct, b.value > 0 ? 2 : 0)}%"></div>
+				</div>
+				<span class="w-16 flex-none text-right font-mono text-muted">{formatUSD(b.value)}</span>
+			</div>
+		{/each}
+	</div>
+{/snippet}
+
 {#snippet kebab(id: string, actions: { label: string; run: () => void; danger?: boolean }[])}
 	<div class="relative inline-block" data-kebab>
 		<button

@@ -239,3 +239,47 @@ export const SPEND_PERIODS: { key: string; days: number | null }[] = [
 	{ key: 'spend30d', days: 30 },
 	{ key: 'spendAll', days: null }
 ];
+
+// --- Spend charts (CORR-INFER-#4) -------------------------------------------
+
+// LLMSpendDay mirrors GET /api/llm-spend/timeseries: one row per calendar day.
+export type LLMSpendDay = { day: string; spend: number; total_tokens: number; requests: number };
+
+// LLMSpendProvider mirrors GET /api/llm-spend/by-provider: one row per provider
+// (the model_group prefix before "/").
+export type LLMSpendProvider = { provider: string; spend: number; total_tokens: number; requests: number };
+
+const nonNegNum = (n: unknown): n is number => typeof n === 'number' && Number.isFinite(n) && n >= 0;
+const nonNegIntNum = (n: unknown): n is number => typeof n === 'number' && Number.isInteger(n) && n >= 0;
+
+export function isSpendDay(v: unknown): v is LLMSpendDay {
+	if (typeof v !== 'object' || v === null) return false;
+	const d = v as Record<string, unknown>;
+	return typeof d.day === 'string' && d.day.trim().length > 0 &&
+		nonNegNum(d.spend) && nonNegIntNum(d.total_tokens) && nonNegIntNum(d.requests);
+}
+
+export function isSpendProvider(v: unknown): v is LLMSpendProvider {
+	if (typeof v !== 'object' || v === null) return false;
+	const p = v as Record<string, unknown>;
+	return typeof p.provider === 'string' && p.provider.trim().length > 0 &&
+		nonNegNum(p.spend) && nonNegIntNum(p.total_tokens) && nonNegIntNum(p.requests);
+}
+
+// formatDay shortens an ISO day "2026-06-20" to "06-20" for the chart axis; any
+// non-matching string passes through unchanged.
+export function formatDay(day: string): string {
+	const m = /^\d{4}-(\d{2}-\d{2})$/.exec(day.trim());
+	return m ? m[1] : day;
+}
+
+// SpendBar is one normalized bar for the inline SVG charts: pct = value/max*100,
+// 0 when every value is 0 (an all-zero/empty period renders flat, not NaN).
+export type SpendBar = { label: string; value: number; pct: number };
+
+// spendBars normalizes labelled values into bars, preserving input order so the
+// caller controls sort (timeseries = chronological, by-provider = spend DESC).
+export function spendBars(rows: { label: string; value: number }[]): SpendBar[] {
+	const max = rows.reduce((m, r) => (r.value > m ? r.value : m), 0);
+	return rows.map((r) => ({ label: r.label, value: r.value, pct: max > 0 ? (r.value / max) * 100 : 0 }));
+}

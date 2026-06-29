@@ -1673,6 +1673,82 @@ func (m *MockDatabase) LLMSpend(ctx context.Context, model string, since *time.T
 	return out, nil
 }
 
+// LLMSpendTimeseries mirrors the pgx daily rollup: group by calendar day, skip
+// empty aliases, optional since filter, sum spend/tokens, oldest day first.
+func (m *MockDatabase) LLMSpendTimeseries(ctx context.Context, since *time.Time) ([]LLMSpendDay, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	byDay := map[string]*LLMSpendDay{}
+	for _, r := range m.spendLogs {
+		if r.ModelGroup == "" {
+			continue
+		}
+		if since != nil && r.StartTime.Before(*since) {
+			continue
+		}
+		day := r.StartTime.Format("2006-01-02")
+		agg, ok := byDay[day]
+		if !ok {
+			agg = &LLMSpendDay{Day: day}
+			byDay[day] = agg
+		}
+		agg.Spend += r.Spend
+		agg.TotalTokens += r.PromptTokens + r.CompletionTokens
+		agg.Requests++
+	}
+	out := make([]LLMSpendDay, 0, len(byDay))
+	for _, agg := range byDay {
+		out = append(out, *agg)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Day < out[j].Day })
+	return out, nil
+}
+
+// LLMSpendByProvider mirrors the pgx provider rollup: group by the model_group
+// prefix before "/", skip empty aliases, optional since filter, highest spend first.
+func (m *MockDatabase) LLMSpendByProvider(ctx context.Context, since *time.Time) ([]LLMSpendProvider, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	byProv := map[string]*LLMSpendProvider{}
+	for _, r := range m.spendLogs {
+		if r.ModelGroup == "" {
+			continue
+		}
+		if since != nil && r.StartTime.Before(*since) {
+			continue
+		}
+		prov := r.ModelGroup
+		if i := strings.IndexByte(prov, '/'); i >= 0 {
+			prov = prov[:i]
+		}
+		if prov == "" {
+			continue // malformed model_group like "/m" — mirrors split_part(...) <> ''
+		}
+		agg, ok := byProv[prov]
+		if !ok {
+			agg = &LLMSpendProvider{Provider: prov}
+			byProv[prov] = agg
+		}
+		agg.Spend += r.Spend
+		agg.TotalTokens += r.PromptTokens + r.CompletionTokens
+		agg.Requests++
+	}
+	out := make([]LLMSpendProvider, 0, len(byProv))
+	for _, agg := range byProv {
+		out = append(out, *agg)
+	}
+	// Mirror ORDER BY SUM(spend) DESC, provider.
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Spend != out[j].Spend {
+			return out[i].Spend > out[j].Spend
+		}
+		return out[i].Provider < out[j].Provider
+	})
+	return out, nil
+}
+
 // compile-time guarantee the mock satisfies the seam the pgx impl does.
 var _ Database = (*MockDatabase)(nil)
 
