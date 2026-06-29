@@ -175,11 +175,13 @@
 	// Configurable kinds allow a free name and accept a custom base_url.
 	const CONFIGURABLE_KINDS = ['openai_compatible', 'azure'];
 	let isConfigurable = $derived(CONFIGURABLE_KINDS.includes(pKind.trim()));
-	// Auto-fill name from kind for fixed providers (add mode only).
+	// Auto-fill name and clear base_url for fixed providers (add mode only).
 	$effect(() => {
-		if (formOpen === 'add' && pKind.trim() && !CONFIGURABLE_KINDS.includes(pKind.trim())) {
-			pName = pKind.trim();
-		}
+		const kind = pKind.trim();
+		if (formOpen !== 'add' || !kind) return;
+		if (CONFIGURABLE_KINDS.includes(kind)) return;
+		pName = kind;
+		pBaseUrl = '';
 	});
 
 	// Open the form to create a new provider, clearing any prior state.
@@ -207,7 +209,7 @@
 		const e: Record<string, string> = {};
 		if (!pName.trim()) e.name = t.inferencia.errNameRequired;
 		if (!pKind.trim()) e.kind = t.inferencia.errKindRequired;
-		if (!isConfigurable && formOpen === 'add' && providers.some(p => p.kind === pKind.trim())) {
+		if (!isConfigurable && providers.some((p) => p.kind === pKind.trim() && p.enabled && p.id !== pEditId)) {
 			e.kind = t.inferencia.errKindDuplicate;
 		}
 		const baseErr = validateBaseUrl(pKind, pBaseUrl);
@@ -493,8 +495,8 @@
 					{#if formOpen === 'edit'}
 						<input id="p-name" class={readonlyFieldClass} value={pName} readonly />
 					{:else if isConfigurable}
-						<input id="p-name" class={fieldClass} placeholder={t.inferencia.formNamePlaceholder} bind:value={pName} autocomplete="off" />
-						{#if formErrors.name}<p class={errorClass}>{formErrors.name}</p>{/if}
+						<input id="p-name" class={fieldClass} placeholder={t.inferencia.formNamePlaceholder} bind:value={pName} autocomplete="off" aria-describedby={formErrors.name ? 'p-name-err' : undefined} aria-invalid={formErrors.name ? 'true' : undefined} />
+						{#if formErrors.name}<p id="p-name-err" class={errorClass}>{formErrors.name}</p>{/if}
 					{:else}
 						<input id="p-name" class={readonlyFieldClass} value={pName} readonly />
 					{/if}
@@ -511,8 +513,8 @@
 				{#if isConfigurable}
 				<div class="sm:col-span-2">
 					<label class={labelClass} for="p-baseurl">{t.inferencia.formBaseUrl}</label>
-					<input id="p-baseurl" class={fieldClass} placeholder={t.inferencia.formBaseUrlPlaceholder} bind:value={pBaseUrl} autocomplete="off" />
-					{#if formErrors.baseUrl}<p class={errorClass}>{formErrors.baseUrl}</p>{/if}
+					<input id="p-baseurl" class={fieldClass} placeholder={t.inferencia.formBaseUrlPlaceholder} bind:value={pBaseUrl} autocomplete="off" aria-describedby={formErrors.baseUrl ? 'p-baseurl-err' : undefined} aria-invalid={formErrors.baseUrl ? 'true' : undefined} />
+					{#if formErrors.baseUrl}<p id="p-baseurl-err" class={errorClass}>{formErrors.baseUrl}</p>{/if}
 				</div>
 				{/if}
 				<div class="sm:col-span-2">
