@@ -123,15 +123,15 @@ jobs:
           # overrides (not baked in at deploy time). Default placeholders are set here so the job
           # definition is valid; the dispatcher always overrides them on each run.
           #
-          # NOTE: groq-fast hardcoded (llama-3.1-8b-instant) — gates are a simple JSON judge and
+          # NOTE: groq/llama-3.1-8b-instant (8b) — gates are a simple JSON judge and
           # don't need the 70b; keeping them on groq-fast avoids quota contention with distill
-          # (groq-llama/70b). vars.LITELLM_MODEL=gemini-flash is spend-capped → ignored.
+          # (groq/llama-3.3-70b-versatile/70b). vars.LITELLM_MODEL=gemini-flash is spend-capped → ignored.
           SECRETS="DATABASE_URL=database-url:latest,LITELLM_API_KEY=litellm-api-key:latest"
           # SIFT_GATE/SIFT_PROVIDER are intentionally invalid placeholders: the dispatcher ALWAYS
           # overrides them per execution. If the job runs without a dispatcher override (e.g. via
           # run_after_deploy=true or a manual gcloud execute) it will fail fast on unrecognised
           # capability — correct behaviour; silent wrong-queue processing would be worse.
-          ENV_VARS="SIFT_GATE=PLACEHOLDER_GATE,SIFT_PROVIDER=PLACEHOLDER_PROVIDER,LITELLM_BASE_URL=$LITELLM_BASE_URL,LITELLM_MODEL=groq-fast"
+          ENV_VARS="SIFT_GATE=PLACEHOLDER_GATE,SIFT_PROVIDER=PLACEHOLDER_PROVIDER,LITELLM_BASE_URL=$LITELLM_BASE_URL,LITELLM_MODEL=groq/llama-3.1-8b-instant"
           COMMON_ARGS="--image $IMAGE --region $REGION --project $GCP_PROJECT --set-secrets $SECRETS --set-env-vars $ENV_VARS --max-retries 0 --task-timeout 3600s --memory 512Mi --cpu 1"
 
           if gcloud run jobs describe "$JOB_NAME" --region "$REGION" --project "$GCP_PROJECT" &>/dev/null 2>&1; then

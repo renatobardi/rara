@@ -1232,11 +1232,6 @@ func NewSurfaceMux(core *Core, token string) http.Handler {
 	mux.HandleFunc("PUT /v1/llm-providers", h.upsertLLMProvider)
 	mux.HandleFunc("DELETE /v1/llm-providers/{id}", h.deleteLLMProvider)
 
-	// LLM model registry (CONSOLE-INFER #3).
-	mux.HandleFunc("GET /v1/llm-models", h.listLLMModels)
-	mux.HandleFunc("PUT /v1/llm-models", h.upsertLLMModel)
-	mux.HandleFunc("DELETE /v1/llm-models/{id}", h.deleteLLMModel)
-
 	// LinkedIn manual inbox.
 	mux.HandleFunc("POST /v1/linkedin/inbox", h.linkedinInbox)
 

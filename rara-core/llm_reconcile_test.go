@@ -5,8 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 
@@ -90,16 +92,20 @@ func TestLLMReconcileCreatesConcreteModelForBoundUpstream(t *testing.T) {
 	}
 }
 
-func TestLLMReconcileIgnoresLegacyAliasesEnd2End(t *testing.T) {
+// TestLLMReconcileDeletesLegacyAliasFromGateway: after CORR-INFER #5 the reconciler cleans up
+// legacy bare aliases (db_model, no '/') from the gateway. A worker still pinning a bare alias
+// does not enter the desired set (ListBoundUpstreams filters it out), but that alias IS deleted
+// from the gateway because bound only contains kind/model strings.
+func TestLLMReconcileDeletesLegacyAliasFromGateway(t *testing.T) {
 	core, db, box := newTestCoreWithBox(t)
 	seedLLMProvider(t, core, "groq-main", "groq", "sk-test-123") // gitleaks:allow
 	seedWorkerBinding(t, db, "distill-cloud", "groq/llama-3.3-70b-versatile")
 	// A legacy worker still pinning a bare alias (no '/') must NOT enter the desired set.
 	seedWorkerBinding(t, db, "sift-cloud", "groq-llama")
 	gw := &fakeGateway{models: []litellm.Model{
-		// Legacy alias managed in the gateway DB (db_model, no '/') — coexists, never touched.
+		// Legacy alias managed in the gateway DB (db_model, no '/') — no longer retained after CORR-#5.
 		{ModelName: "groq-llama", Upstream: "groq/llama-3.3-70b-versatile", ID: "db-legacy", DBModel: true},
-		// config.yaml model — read-only.
+		// config.yaml model — read-only, never touched.
 		{ModelName: "config-model", Upstream: "groq/old", ID: "cfg1", DBModel: false},
 	}}
 
@@ -110,8 +116,9 @@ func TestLLMReconcileIgnoresLegacyAliasesEnd2End(t *testing.T) {
 	if len(gw.added) != 1 || gw.added[0].ModelName != "groq/llama-3.3-70b-versatile" {
 		t.Errorf("want only the concrete model created, got %d adds", len(gw.added))
 	}
-	if len(gw.deleted) != 0 {
-		t.Errorf("legacy alias / config model must be left untouched, got deletes %v", gw.deleted)
+	// Legacy alias (no binding in bound set) must now be deleted; config.yaml model untouched.
+	if len(gw.deleted) != 1 || gw.deleted[0] != "db-legacy" {
+		t.Errorf("want delete of legacy alias db-legacy, got %v", gw.deleted)
 	}
 }
 
@@ -267,7 +274,10 @@ func TestLLMReconcileGatewayUnavailableNoWrites(t *testing.T) {
 	}
 }
 
-func TestDiffLLMModelsIgnoresLegacyAliases(t *testing.T) {
+// TestDiffLLMModelsLegacyAliasWithoutBindingDeleted: a legacy db_model alias (no '/') with no
+// active binding is deleted from the gateway. bound only contains kind/model strings (from
+// ListBoundUpstreams), so legacy aliases are never in bound and are always eligible for cleanup.
+func TestDiffLLMModelsLegacyAliasWithoutBindingDeleted(t *testing.T) {
 	desired := []litellm.Model{
 		{ModelName: "groq/keep", Fingerprint: "fp-keep"},
 		{ModelName: "groq/new", Fingerprint: "fp-new"},
@@ -277,12 +287,12 @@ func TestDiffLLMModelsIgnoresLegacyAliases(t *testing.T) {
 		{ModelName: "groq/keep", Fingerprint: "fp-keep", ID: "a1", DBModel: true},
 		{ModelName: "groq/changed", Fingerprint: "fp-v1", ID: "a2", DBModel: true},
 		{ModelName: "groq/orphan", Fingerprint: "x", ID: "a3", DBModel: true},   // not bound → delete
-		{ModelName: "groq-llama", Fingerprint: "x", ID: "a4", DBModel: true},    // legacy alias (no '/') → ignore
-		{ModelName: "config/model", Fingerprint: "x", ID: "a5", DBModel: false}, // config.yaml → ignore
+		{ModelName: "groq-llama", Fingerprint: "x", ID: "a4", DBModel: true},    // legacy alias, no binding → delete
+		{ModelName: "config/model", Fingerprint: "x", ID: "a5", DBModel: false}, // config.yaml → never touched
 		{ModelName: "groq/retained", Fingerprint: "x", ID: "a6", DBModel: true}, // bound, unresolvable → retain
 	}
 	// Every desired name is bound; "groq/retained" is bound but absent from desired (provider
-	// transiently unresolvable). "groq/orphan" is NOT bound.
+	// transiently unresolvable). "groq/orphan" and "groq-llama" are NOT bound.
 	bound := map[string]bool{"groq/keep": true, "groq/new": true, "groq/changed": true, "groq/retained": true}
 
 	create, del := diffLLMModels(desired, actual, bound)
@@ -299,9 +309,86 @@ func TestDiffLLMModelsIgnoresLegacyAliases(t *testing.T) {
 	for _, id := range del {
 		gotDel[id] = true
 	}
-	// a2 (changed) + a3 (orphan). NOT a1 (keep), a4 (legacy), a5 (config), a6 (retained bound).
-	wantDel := map[string]bool{"a2": true, "a3": true}
+	// a2 (changed) + a3 (orphan) + a4 (legacy alias, no binding). NOT a1 (keep), a5 (config), a6 (retained bound).
+	wantDel := map[string]bool{"a2": true, "a3": true, "a4": true}
 	if !reflect.DeepEqual(gotDel, wantDel) {
 		t.Errorf("delete set = %v, want exactly %v (a6 must be retained as still-bound)", gotDel, wantDel)
 	}
+}
+
+// TestDiffLLMModelsDeletesLegacyAlias: a legacy db_model alias (no '/') with no active binding
+// is included in deleteIDs; a config.yaml model is never touched regardless.
+func TestDiffLLMModelsDeletesLegacyAlias(t *testing.T) {
+	desired := []litellm.Model{
+		{ModelName: "groq/llama-3.3-70b-versatile", Fingerprint: "fp1"},
+	}
+	actual := []litellm.Model{
+		{ModelName: "groq/llama-3.3-70b-versatile", Fingerprint: "fp1", ID: "a1", DBModel: true},
+		{ModelName: "groq-llama", Fingerprint: "x", ID: "a2", DBModel: true}, // legacy — must be deleted
+		{ModelName: "config/m", Fingerprint: "x", ID: "a3", DBModel: false},  // config.yaml — never touched
+	}
+	bound := map[string]bool{"groq/llama-3.3-70b-versatile": true}
+
+	_, del := diffLLMModels(desired, actual, bound)
+
+	gotDel := map[string]bool{}
+	for _, id := range del {
+		gotDel[id] = true
+	}
+	if !gotDel["a2"] {
+		t.Errorf("delete set = %v, want a2 (legacy alias without binding) included", gotDel)
+	}
+	if gotDel["a1"] || gotDel["a3"] {
+		t.Errorf("delete set = %v, must not include a1 (keep) or a3 (config.yaml)", gotDel)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// MockDatabase implementations for the reconciler's DB seam
+// ---------------------------------------------------------------------------
+
+// ListBoundUpstreams mirrors the SQL: DISTINCT enabled-worker env->>'LITELLM_MODEL' values that
+// contain '/', ordered. Legacy bare aliases (no '/') and missing keys are excluded.
+func (m *MockDatabase) ListBoundUpstreams(_ context.Context) ([]string, error) {
+	seen := map[string]bool{}
+	var out []string
+	for _, p := range m.providers {
+		if !p.Enabled || len(p.Env) == 0 {
+			continue
+		}
+		var env map[string]any
+		if err := json.Unmarshal(p.Env, &env); err != nil {
+			return nil, fmt.Errorf("list bound upstreams: decode provider env: %w", err)
+		}
+		up, _ := env["LITELLM_MODEL"].(string)
+		// Mirror the SQL regex '^[^/]+/.+$': non-empty kind and model around the first '/'.
+		kind, model, ok := strings.Cut(up, "/")
+		if !ok || kind == "" || model == "" || seen[up] {
+			continue
+		}
+		seen[up] = true
+		out = append(out, up)
+	}
+	sort.Strings(out) // mirror ORDER BY upstream
+	return out, nil
+}
+
+// ListLLMProvidersForSync mirrors the SQL: enabled, non-deleted providers with key material,
+// ordered by id (so the reconciler's first-id-wins kind resolution is deterministic).
+func (m *MockDatabase) ListLLMProvidersForSync(_ context.Context) ([]llmProviderSync, error) {
+	sorted := append([]mockLLMProvider(nil), m.llmProviders...)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].ID < sorted[j].ID })
+	var out []llmProviderSync
+	for _, p := range sorted {
+		if p.DeletedAt != nil || !p.Enabled {
+			continue
+		}
+		out = append(out, llmProviderSync{
+			Kind:          p.Kind,
+			BaseURL:       p.BaseURL,
+			KeyCiphertext: p.KeyCiphertext,
+			KeyNonce:      p.KeyNonce,
+		})
+	}
+	return out, nil
 }

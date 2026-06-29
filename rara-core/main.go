@@ -862,20 +862,6 @@ type Database interface {
 	// DeleteLLMProvider soft-deletes the provider with the given id (sets deleted_at).
 	DeleteLLMProvider(ctx context.Context, id int) error
 
-	// --- LLM model registry (CONSOLE-INFER #3) ---------------------------
-	// GetLLMProvider returns one provider by id (found=false if absent or deleted).
-	// Used by the model layer to validate provider_id on upsert.
-	GetLLMProvider(ctx context.Context, id int) (LLMProviderRow, bool, error)
-	// UpsertLLMModel writes a model row keyed by (owner_id=NULL, alias). The write is
-	// conditioned on the provider being active, so it returns errNotFound if the provider
-	// was deleted or disabled since validation.
-	UpsertLLMModel(ctx context.Context, m llmModelUpsert) (int, error)
-	// ListLLMModels returns non-deleted models with a light provider name join.
-	// providerID=0 returns all.
-	ListLLMModels(ctx context.Context, providerID int) ([]LLMModelRow, error)
-	// DeleteLLMModel soft-deletes the model with the given id (sets deleted_at).
-	DeleteLLMModel(ctx context.Context, id int) error
-
 	// --- LLM reconciler: concrete provider/model entries (CORR-INFER #1) --
 	// ListBoundUpstreams returns the DISTINCT concrete upstreams ("{kind}/{model}", with a
 	// non-empty kind before the first '/' and a non-empty model after it) that enabled worker
@@ -1550,7 +1536,7 @@ Commands:
   reconcile [--loop]         Run the reconciler: one pass, or always-on with --loop
                              (--loop also mounts the surface if SURFACE_ADDR is set, and
                              reconciles the LLM registry into the gateway when LITELLM_BASE_URL is set)
-  reconcile-llm              Sync the LLM registry (llm_providers + llm_models) into the
+  reconcile-llm              Sync the LLM registry (llm_providers) into the
                              LiteLLM gateway once (LITELLM_BASE_URL + LITELLM_MASTER_KEY + RARA_SECRETS_KEY)
   surface [--addr :8080]     Serve the control surface (HTTP núcleo + MCP adapter) standalone
                              (SURFACE_TOKEN required; --addr defaults to SURFACE_ADDR/:8080)
