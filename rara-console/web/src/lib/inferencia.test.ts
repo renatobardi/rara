@@ -199,6 +199,8 @@ describe('llm catalog', () => {
 		expect(isCatalogEntry({ ...groq, output_cost_per_token: Infinity })).toBe(false);
 		expect(isCatalogEntry({ ...groq, input_cost_per_token: -1e-7 })).toBe(false);
 		expect(isCatalogEntry({ ...groq, max_tokens: -1 })).toBe(false);
+		expect(isCatalogEntry({ ...groq, upstream: '   ' })).toBe(false); // whitespace-only
+		expect(isCatalogEntry({ ...groq, provider: '  ' })).toBe(false);
 	});
 
 	it('filterCatalog matches upstream or provider, case-insensitively', () => {

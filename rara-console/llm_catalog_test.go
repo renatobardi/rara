@@ -11,8 +11,10 @@ import (
 
 // A trimmed litellm model_prices file: two chat models, one non-chat (embedding), and the
 // bogus sample_spec doc entry the real file ships with — the normalizer must drop the last two.
+// sample_spec types max_tokens as a descriptive STRING (as the real file does), so this fixture
+// also guards the per-entry decode: a strict whole-map decode would fail on it and abort everything.
 const fakeCatalogJSON = `{
-  "sample_spec": {"litellm_provider": "one of", "mode": "one of: chat, embedding"},
+  "sample_spec": {"max_tokens": "LEGACY parameter, use max_input/output_tokens", "input_cost_per_token": 0.0, "litellm_provider": "one of", "mode": "one of: chat, embedding"},
   "groq/llama-3.3-70b-versatile": {"litellm_provider": "groq", "input_cost_per_token": 5.9e-7, "output_cost_per_token": 7.9e-7, "max_tokens": 32768, "max_input_tokens": 128000, "mode": "chat"},
   "text-embedding-3-small": {"litellm_provider": "openai", "input_cost_per_token": 2e-8, "mode": "embedding"},
   "gemini/gemini-2.0-flash": {"litellm_provider": "gemini", "input_cost_per_token": 1e-7, "output_cost_per_token": 4e-7, "max_tokens": 8192, "max_input_tokens": 1048576, "mode": "chat"}

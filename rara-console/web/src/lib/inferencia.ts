@@ -168,8 +168,8 @@ export function isCatalogEntry(v: unknown): v is CatalogEntry {
 	// Costs feed the form's number inputs, so reject NaN/Infinity/negative (mirrors isSpend). Costs
 	// can legitimately be 0 (free models), hence >= 0.
 	const nonNegFinite = (n: unknown): n is number => typeof n === 'number' && Number.isFinite(n) && n >= 0;
-	return typeof e.upstream === 'string' && e.upstream.length > 0 &&
-		typeof e.provider === 'string' &&
+	return typeof e.upstream === 'string' && e.upstream.trim().length > 0 &&
+		typeof e.provider === 'string' && e.provider.trim().length > 0 &&
 		nonNegFinite(e.input_cost_per_token) && nonNegFinite(e.output_cost_per_token) &&
 		nonNegFinite(e.max_tokens) && e.mode === 'chat';
 }

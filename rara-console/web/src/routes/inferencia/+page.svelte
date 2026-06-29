@@ -78,10 +78,10 @@
 		if (!hit) return;
 		mCostIn = String(hit.input_cost_per_token);
 		mCostOut = String(hit.output_cost_per_token);
-		// Keep the provider in sync with the picked model (overwrite, so switching models re-points it)
-		// — unless the operator chose one manually, or the catalog implies no unique provider (then we
-		// leave the current selection rather than wiping a valid default).
-		if (!providerTouched && hit.provider_id) mProviderId = hit.provider_id;
+		// While the operator hasn't chosen a provider manually, derive it from the picked model:
+		// set it on a unique match, and clear it when the catalog resolves no unique provider — so a
+		// provider auto-filled for a previous model can't linger out of sync after switching models.
+		if (!providerTouched) mProviderId = hit.provider_id ?? '';
 	}
 
 	function fetchProviders() {

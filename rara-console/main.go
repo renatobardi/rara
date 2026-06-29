@@ -920,18 +920,26 @@ func (s *server) fetchCatalog(ctx context.Context) ([]llmCatalogEntry, error) {
 // by upstream for a stable list. The mode != "chat" filter drops embeddings, image models, and the
 // bogus "sample_spec" doc entry the file ships with.
 func normalizeCatalog(raw []byte) ([]llmCatalogEntry, error) {
-	var m map[string]struct {
-		Provider  string  `json:"litellm_provider"`
-		InCost    float64 `json:"input_cost_per_token"`
-		OutCost   float64 `json:"output_cost_per_token"`
-		MaxTokens int     `json:"max_tokens"`
-		Mode      string  `json:"mode"`
-	}
+	// Decode the outer object as raw messages, then each entry on its own. The file is heterogeneous:
+	// the "sample_spec" doc entry types fields like max_tokens as descriptive strings, so a single
+	// strict map[string]struct decode would fail on it and abort the whole catalog. Per-entry decode
+	// skips anything off-schema instead.
+	var m map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &m); err != nil {
 		return nil, fmt.Errorf("llm catalog parse: %w", err)
 	}
 	out := make([]llmCatalogEntry, 0, len(m))
-	for upstream, v := range m {
+	for upstream, rawEntry := range m {
+		var v struct {
+			Provider  string  `json:"litellm_provider"`
+			InCost    float64 `json:"input_cost_per_token"`
+			OutCost   float64 `json:"output_cost_per_token"`
+			MaxTokens int     `json:"max_tokens"`
+			Mode      string  `json:"mode"`
+		}
+		if err := json.Unmarshal(rawEntry, &v); err != nil {
+			continue // off-schema entry (e.g. sample_spec) — skip, don't fail the catalog
+		}
 		if v.Mode != "chat" {
 			continue
 		}
