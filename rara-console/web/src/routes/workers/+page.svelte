@@ -3,7 +3,8 @@
 	import { t } from '$lib/strings';
 	import { timeAgo } from '$lib/timeAgo';
 	import WorkerForm from '$lib/WorkerForm.svelte';
-	import { isModel, type LLMModel } from '$lib/inferencia';
+	import { asList, isProvider as isLLMProvider, isCatalogEntry, type LLMProvider, type CatalogEntry } from '$lib/inferencia';
+	import { registryReady } from '$lib/workerModel';
 
 	type Constraints = {
 		requires?: string;
@@ -55,42 +56,60 @@
 
 	// --- core state ---
 	let workers = $state<Worker[]>([]);
-	let models = $state<LLMModel[]>([]);
-	// 'loading' until the first /api/llm-models resolves, then 'ready' (≥1 model) or 'failed'
-	// (fetch error, malformed body, or empty registry). WorkerForm blocks an LLM save unless
-	// 'ready', so a worker never saves modelless while the list is still unknown — and shows a
-	// "loading" hint vs a "failed, reload" error so the in-flight window isn't a false alarm.
-	let modelsStatus = $state<'loading' | 'ready' | 'failed'>('loading');
-	let modelsSeq = 0; // guards against out-of-order responses (onMount + reopen-retry can overlap)
-	let modelsAbort: AbortController | null = null;
+	// Provider+Model picker registry: enabled providers (the Provider dropdown) and the litellm
+	// catalog (the Model dropdown per kind). The worker binds LITELLM_MODEL="kind/model" directly.
+	let providers = $state<LLMProvider[]>([]);
+	let catalog = $state<CatalogEntry[]>([]);
+	// 'loading' until both /api/llm-providers and /api/llm-catalog resolve, then 'ready' (≥1 enabled
+	// provider AND a non-empty catalog) or 'failed' (either fetch errored, body malformed, or empty).
+	// WorkerForm blocks an LLM save unless 'ready', so a worker never saves modelless while the
+	// registry is still unknown — and shows a "loading" hint vs a "failed, reload" error so the
+	// in-flight window isn't a false alarm. ponytail: catalog failure also gates (matches the spec's
+	// "catálogo/providers falham → guard"); a rare BYO-during-catalog-outage just needs a reload.
+	let registryStatus = $state<'loading' | 'ready' | 'failed'>('loading');
+	let registrySeq = 0; // guards against out-of-order responses (onMount + reopen-retry can overlap)
+	let registryAbort: AbortController | null = null;
 
-	function loadModels() {
-		const seq = ++modelsSeq;
-		modelsAbort?.abort(); // cancel any prior in-flight load
+	function loadRegistry() {
+		const seq = ++registrySeq;
+		registryAbort?.abort(); // cancel any prior in-flight load
 		const abort = new AbortController();
-		modelsAbort = abort;
+		registryAbort = abort;
 		// A hung fetch would leave status='loading' forever (form blocks LLM saves indefinitely);
 		// time out so it lands on 'failed' and the reopen-retry path can recover.
 		const timer = setTimeout(() => abort.abort(), 10000);
-		modelsStatus = 'loading';
-		fetch('/api/llm-models', { signal: abort.signal })
-			.then((r) => (r.ok ? r.json() : Promise.reject()))
-			.then((d) => {
-				if (seq !== modelsSeq) return; // a newer load started; drop stale data
-				// A malformed body is a load failure, not "no models" — else WorkerForm wouldn't
-				// block (modelOptions empty + status ready = silent save of an LLM worker).
-				if (!Array.isArray(d) || !d.every(isModel)) throw new Error('unexpected payload');
-				models = d;
-				// An empty registry is still "no model to pick" — the bug covers "ou volta vazio".
-				modelsStatus = d.length > 0 ? 'ready' : 'failed';
+		registryStatus = 'loading';
+		const asJson = (r: Response) => (r.ok ? r.json() : Promise.reject());
+		Promise.all([
+			fetch('/api/llm-providers', { signal: abort.signal }).then(asJson),
+			fetch('/api/llm-catalog', { signal: abort.signal }).then(asJson)
+		])
+			.then(([provData, catData]) => {
+				if (seq !== registrySeq) return; // a newer load started; drop stale data
+				// Strict: a partially-invalid payload is a load failure, not "fewer items" — else the
+				// registry could read ready with silently-dropped providers/models (matches the old
+				// /api/llm-models loader). Reject unless every item validates.
+				const provList = asList<unknown>(provData);
+				const catList = asList<unknown>(catData);
+				const provValid = provList.filter(isLLMProvider);
+				const catValid = catList.filter(isCatalogEntry);
+				if (provValid.length !== provList.length || catValid.length !== catList.length) {
+					throw new Error('unexpected registry payload');
+				}
+				providers = provValid;
+				catalog = catValid;
+				// Ready only when at least one enabled provider can actually yield a saveable model
+				// (a catalog model of its kind, or BYO free-text) — a non-empty catalog whose models
+				// belong to no enabled provider would still leave the Model dropdown empty.
+				registryStatus = registryReady(providers, catalog) ? 'ready' : 'failed';
 			})
 			.catch(() => {
-				if (seq !== modelsSeq) return; // a newer load started (incl. our own abort); don't clobber it
-				models = []; modelsStatus = 'failed'; /* WorkerForm bloqueia salvar worker LLM sem Model */
+				if (seq !== registrySeq) return; // a newer load started (incl. our own abort); don't clobber it
+				providers = []; catalog = []; registryStatus = 'failed'; /* WorkerForm bloqueia salvar worker LLM sem Model */
 			})
 			.finally(() => {
 				clearTimeout(timer);
-				if (modelsAbort === abort) modelsAbort = null;
+				if (registryAbort === abort) registryAbort = null;
 			});
 	}
 	let loading = $state(true);
@@ -136,7 +155,7 @@
 			.then((r) => (r.ok ? r.json() : Promise.reject()))
 			.then((d) => { metricsLite = Array.isArray(d) ? d : []; })
 			.catch(() => { /* coluna "última execução" degrada para — */ });
-		loadModels();
+		loadRegistry();
 	});
 
 	// ── filtros + busca (client-side, lista pequena) ──
@@ -273,7 +292,7 @@
 	}
 
 	function openAdd() {
-		if (modelsStatus === 'failed') loadModels(); // recover a terminal model-fetch failure on reopen (don't disrupt an in-flight load)
+		if (registryStatus === 'failed') loadRegistry(); // recover a terminal registry-fetch failure on reopen (don't disrupt an in-flight load)
 		formInitial = null;
 		formMode = 'add';
 		formLockedWorker = null;
@@ -282,7 +301,7 @@
 	}
 
 	function openEdit(p: Provider, workerName: string) {
-		if (modelsStatus === 'failed') loadModels(); // recover a terminal model-fetch failure on reopen (don't disrupt an in-flight load)
+		if (registryStatus === 'failed') loadRegistry(); // recover a terminal registry-fetch failure on reopen (don't disrupt an in-flight load)
 		formInitial = { ...p, worker: workerName };
 		formMode = 'edit';
 		formLockedWorker = null;
@@ -356,7 +375,7 @@
 
 	{#if formMode === 'add' && !formLockedWorker}
 		<div class="mb-4">
-			<WorkerForm initial={null} lockedApp={null} capabilities={knownCapabilities} {models} {modelsStatus} onSave={saveWorker} onCancel={closeForm} />
+			<WorkerForm initial={null} lockedApp={null} capabilities={knownCapabilities} {providers} {catalog} {registryStatus} onSave={saveWorker} onCancel={closeForm} />
 		</div>
 	{/if}
 
@@ -552,7 +571,7 @@
 						{#if formMode === 'edit' && formInitial?.name === p.name}
 							<tr>
 								<td colspan="8" class="px-4 py-3">
-									<WorkerForm initial={formInitial} lockedApp={null} capabilities={knownCapabilities} {models} {modelsStatus} onSave={saveWorker} onCancel={closeForm} />
+									<WorkerForm initial={formInitial} lockedApp={null} capabilities={knownCapabilities} {providers} {catalog} {registryStatus} onSave={saveWorker} onCancel={closeForm} />
 								</td>
 							</tr>
 						{/if}

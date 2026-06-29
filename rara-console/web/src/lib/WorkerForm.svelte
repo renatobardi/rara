@@ -1,8 +1,8 @@
 <script lang="ts">
 	import { untrack } from 'svelte';
 	import { t } from '$lib/strings';
-	import type { LLMModel } from '$lib/inferencia';
-	import { enabledAliases, currentAlias, envWithoutModel, withModelAlias, usesModel, blocksOnModelLoadFailure } from '$lib/workerModel';
+	import type { LLMProvider, CatalogEntry } from '$lib/inferencia';
+	import { currentModel, envWithoutModel, withModel, usesModel, blocksOnModelLoadFailure, parseModel, resolveModel, modelsForKind, modelHasInvalidChars, BYO_KIND } from '$lib/workerModel';
 
 	type Constraints = {
 		requires?: string;
@@ -29,14 +29,16 @@
 	type Props = {
 		initial?: Provider | null;
 		capabilities: string[];
-		/** Enabled LLM models for the Model dropdown (from /api/llm-models). */
-		models?: LLMModel[];
-		/** Whether the model registry is usable: 'loading' (fetch in flight), 'ready' (≥1 model),
-		 * or 'failed' (fetch error, malformed body, or empty registry). Required (no default): an
-		 * LLM worker must not save modelless unless this is 'ready', and the form distinguishes a
-		 * still-loading hint from a "failed — reload" error so the in-flight window isn't a false
-		 * alarm. */
-		modelsStatus: 'loading' | 'ready' | 'failed';
+		/** Enabled LLM providers for the Provider dropdown (from /api/llm-providers). */
+		providers?: LLMProvider[];
+		/** litellm model catalog (from /api/llm-catalog) — feeds the Model dropdown per provider kind. */
+		catalog?: CatalogEntry[];
+		/** Whether the provider registry is usable: 'loading' (fetch in flight), 'ready' (≥1 enabled
+		 * provider), or 'failed' (fetch error, malformed body, or no enabled provider). Required (no
+		 * default): an LLM worker must not save modelless unless this is 'ready', and the form
+		 * distinguishes a still-loading hint from a "failed — reload" error so the in-flight window
+		 * isn't a false alarm. */
+		registryStatus: 'loading' | 'ready' | 'failed';
 		/** Pre-fill worker and make it read-only (add-placement mode). */
 		lockedWorker?: string;
 		/** Pre-fill capability and make it read-only (add-placement mode). */
@@ -52,8 +54,9 @@
 	let {
 		initial = null,
 		capabilities,
-		models = [],
-		modelsStatus,
+		providers = [],
+		catalog = [],
+		registryStatus,
 		lockedWorker,
 		lockedCapability,
 		lockedConstraints = null,
@@ -82,8 +85,10 @@
 	let activation = $state(untrack(() => initial?.activation ?? 'on_demand'));
 	let enabled = $state(untrack(() => initial?.enabled ?? true));
 	let runnerUrl = $state(untrack(() => initial?.runner_url ?? ''));
-	// LITELLM_MODEL is owned by the dropdown; the raw env editor shows everything else.
-	let model = $state(untrack(() => currentAlias(initial?.env)));
+	// LITELLM_MODEL ("kind/model") is owned by the Provider+Model dropdowns; the raw env editor
+	// shows everything else. Split the current binding into the two selects.
+	let providerKind = $state(untrack(() => parseModel(currentModel(initial?.env)).kind));
+	let model = $state(untrack(() => parseModel(currentModel(initial?.env)).model));
 	let envRaw = $state(
 		untrack(() => {
 			const rest = envWithoutModel(initial?.env);
@@ -91,24 +96,40 @@
 		})
 	);
 
-	// Dropdown options: enabled aliases, plus the current one if it's stale/disabled
-	// so an existing binding still shows instead of silently blanking.
+	// Provider dropdown options: distinct kinds of enabled providers, plus the current binding's
+	// kind if its provider is gone/disabled so an existing binding still shows. value = kind
+	// (the binding stores kind/model, not a provider id), label = a provider name for readability.
+	const providerOptions = $derived.by(() => {
+		const seen = new Set<string>();
+		const opts: { kind: string; label: string }[] = [];
+		for (const p of providers) {
+			if (!p.enabled || seen.has(p.kind)) continue;
+			seen.add(p.kind);
+			opts.push({ kind: p.kind, label: p.name });
+		}
+		if (providerKind && !seen.has(providerKind)) opts.unshift({ kind: providerKind, label: providerKind });
+		return opts;
+	});
+	// BYO (openai_compatible) models aren't in the catalog → free-text Model entry.
+	const isByo = $derived(providerKind === BYO_KIND);
+	// Model dropdown options: catalog models for the chosen kind, plus the current one if it's
+	// stale/absent so an existing binding still shows instead of silently blanking.
 	const modelOptions = $derived(
-		[...new Set([...(model ? [model] : []), ...enabledAliases(models)])]
+		[...new Set([...(model ? [model] : []), ...modelsForKind(catalog, providerKind)])]
 	);
-	// Show only for LLM-capable workers AND when there's actually something to pick —
-	// if /api/llm-models fails/returns empty (and there's no existing binding to keep),
-	// modelOptions is empty and the field degrades to hidden. Reactive on capability
+	// Show only for LLM-capable workers AND when there's actually a provider to pick — if
+	// /api/llm-providers fails/returns no enabled provider (and there's no existing binding to
+	// keep), providerOptions is empty and the field degrades to hidden. Reactive on capability
 	// (editable in add mode). Optional — never required.
-	const showModel = $derived(usesModel(capability, initial?.env) && modelOptions.length > 0);
+	const showModel = $derived(usesModel(capability, initial?.env) && providerOptions.length > 0);
 	// If the worker needs a Model but the registry isn't ready (loading, failed, or empty) and
 	// there's no binding to keep, block the save instead of silently writing no model.
-	const modelBlocked = $derived(blocksOnModelLoadFailure(capability, initial?.env, modelsStatus !== 'ready'));
+	const modelBlocked = $derived(blocksOnModelLoadFailure(capability, initial?.env, registryStatus !== 'ready'));
 
-	// Clear a stale selection if capability switches away from LLM, so submit never
-	// writes LITELLM_MODEL onto a non-LLM worker.
+	// Clear the selection if capability switches away from LLM, so submit never writes
+	// LITELLM_MODEL onto a non-LLM worker.
 	$effect(() => {
-		if (!showModel) model = '';
+		if (!showModel) { providerKind = ''; model = ''; }
 	});
 
 	// constraints fields
@@ -177,7 +198,10 @@
 			}
 		}
 		if (modelBlocked) {
-			e.model = modelsStatus === 'loading' ? t.workers.formModelLoading : t.workers.formModelLoadFailed;
+			e.model = registryStatus === 'loading' ? t.workers.formModelLoading : t.workers.formModelLoadFailed;
+		} else if (showModel && modelHasInvalidChars(model.trim())) {
+			// BYO free-text model must be a single clean token — a newline/space would corrupt the env file.
+			e.model = t.workers.formModelInvalid;
 		}
 		errors = e;
 		return Object.keys(e).length === 0;
@@ -221,7 +245,7 @@
 
 		// ponytail: LITELLM_BASE_URL not written here — the runner host injects it
 		// (RUNNER_WORKER_ENV_FILE on VPC/Mac). Add a gateway source if that stops holding.
-		const envObj = withModelAlias(envRaw.trim() ? JSON.parse(envRaw.trim()) : {}, model);
+		const envObj = withModel(envRaw.trim() ? JSON.parse(envRaw.trim()) : {}, resolveModel(providerKind, model));
 		if (Object.keys(envObj).length) payload.env = envObj;
 
 		const constraints = buildConstraints();
@@ -346,32 +370,61 @@
 				{#if errors.activation}<p class={errorClass}>{errors.activation}</p>{/if}
 			</div>
 
-			<!-- Model (LLM) — writes LITELLM_MODEL into env; optional, hidden when no models -->
-			<!-- Blocked state wins over the select: a not-ready registry shows the loading/error
-			     feedback instead of a stale dropdown the operator could pick from while save is blocked. -->
+			<!-- Provider + Model (LLM) — writes LITELLM_MODEL="kind/model" into env; optional, hidden
+			     when no provider. Blocked state wins over the selects: a not-ready registry shows the
+			     loading/error feedback instead of stale dropdowns while save is blocked. -->
 			{#if modelBlocked}
 				<div>
-					<span class={labelClass}>{t.workers.formModel}</span>
-					{#if modelsStatus === 'loading'}
+					<span class={labelClass}>{t.workers.formProvider}</span>
+					{#if registryStatus === 'loading'}
 						<p class="mt-0.5 text-[11px] text-muted" role="status">{t.workers.formModelLoading}</p>
 					{:else}
 						<p class={errorClass} role="alert">{t.workers.formModelLoadFailed}</p>
 					{/if}
 				</div>
 			{:else if showModel}
+				<!-- Provider -->
 				<div>
-					<label class={labelClass} for="wf-model">{t.workers.formModel}</label>
+					<label class={labelClass} for="wf-provider">{t.workers.formProvider}</label>
 					<select
-						id="wf-model"
+						id="wf-provider"
 						class={fieldClass}
-						bind:value={model}
-						aria-describedby={runtime === 'cloudrun' && model ? 'wf-model-cloudrun-hint' : undefined}
+						bind:value={providerKind}
+						onchange={() => { model = ''; }}
 					>
-						<option value="">{t.workers.formModelNone}</option>
-						{#each modelOptions as alias}
-							<option value={alias}>{alias}</option>
+						<option value="">{t.workers.formProviderNone}</option>
+						{#each providerOptions as opt}
+							<option value={opt.kind}>{opt.label}</option>
 						{/each}
 					</select>
+				</div>
+				<!-- Model: catalog dropdown per provider kind, or free text for BYO (openai_compatible) -->
+				<div>
+					<label class={labelClass} for="wf-model">{t.workers.formModel}</label>
+					{#if isByo}
+						<input
+							id="wf-model"
+							class={fieldClass}
+							placeholder={t.workers.formModelManualPlaceholder}
+							bind:value={model}
+							autocomplete="off"
+							aria-describedby={runtime === 'cloudrun' && model ? 'wf-model-cloudrun-hint' : undefined}
+						/>
+					{:else}
+						<select
+							id="wf-model"
+							class={fieldClass}
+							bind:value={model}
+							disabled={!providerKind}
+							aria-describedby={runtime === 'cloudrun' && model ? 'wf-model-cloudrun-hint' : undefined}
+						>
+							<option value="">{t.workers.formModelNone}</option>
+							{#each modelOptions as m}
+								<option value={m}>{m}</option>
+							{/each}
+						</select>
+					{/if}
+					{#if errors.model}<p class={errorClass}>{errors.model}</p>{/if}
 					{#if runtime === 'cloudrun' && model}
 						<p id="wf-model-cloudrun-hint" class="mt-0.5 text-[11px] text-muted">{t.workers.formModelCloudrunHint}</p>
 					{/if}
