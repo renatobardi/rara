@@ -13,6 +13,7 @@ import {
 	SPEND_PERIODS,
 	isCatalogEntry,
 	filterCatalog,
+	catalogKinds,
 	catalogKindFor,
 	applyCatalogPick,
 	type LLMProvider,
@@ -110,6 +111,14 @@ describe('type guards', () => {
 		expect(isProvider(provider)).toBe(true);
 		expect(isProvider(null)).toBe(false);
 		expect(isProvider({ name: 'x' })).toBe(false);
+		// kind is any litellm provider now, not the fixed six — a catalog-only kind is accepted,
+		// but an empty kind is still junk.
+		expect(isProvider({ ...provider, kind: 'vertex_ai' })).toBe(true);
+		expect(isProvider({ ...provider, kind: '' })).toBe(false);
+		expect(isProvider({ ...provider, kind: '   ' })).toBe(false);
+		// mirror the backend's 1..24 contract — a kind longer than 24 chars is out of contract.
+		expect(isProvider({ ...provider, kind: 'x'.repeat(25) })).toBe(false);
+		expect(isProvider({ ...provider, kind: 'x'.repeat(24) })).toBe(true);
 	});
 	it('isModel accepts a real row and rejects junk', () => {
 		expect(
@@ -212,6 +221,15 @@ describe('llm catalog', () => {
 	it('filterCatalog caps the list when the query is empty', () => {
 		const many = Array.from({ length: 200 }, (_, i) => ({ ...groq, upstream: `m/${i}` }));
 		expect(filterCatalog(many, '', 50)).toHaveLength(50);
+	});
+
+	it('catalogKinds lists distinct providers sorted, with openai_compatible last and de-duped', () => {
+		expect(catalogKinds(catalog)).toEqual(['gemini', 'groq', 'openai_compatible']);
+		// empty catalog still offers the BYO option
+		expect(catalogKinds([])).toEqual(['openai_compatible']);
+		// a catalog that already carries openai_compatible must not duplicate it
+		const withCompat = [...catalog, { ...groq, provider: 'openai_compatible' }];
+		expect(catalogKinds(withCompat)).toEqual(['gemini', 'groq', 'openai_compatible']);
 	});
 
 	it('catalogKindFor maps a known litellm provider to our enum, else null', () => {

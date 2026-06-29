@@ -270,21 +270,44 @@ func TestUpsertLLMProviderSoftDelete(t *testing.T) {
 	}
 }
 
-func TestUpsertLLMProviderInvalidKind(t *testing.T) {
+func TestUpsertLLMProviderEmptyKind(t *testing.T) {
 	ctx := context.Background()
 	core, _, _ := newTestCoreWithBox(t)
 
-	err := core.UpsertLLMProvider(ctx, LLMProviderInput{
-		Name:   "bad-kind",
-		Kind:   "unknown_vendor",
-		APIKey: "key",
-	})
-	if err == nil {
-		t.Fatal("invalid kind should return error")
-	}
 	var bad badInputError
-	if !errors.As(err, &bad) {
-		t.Errorf("want badInputError, got %T: %v", err, err)
+	// both an empty and a whitespace-only kind must be rejected at the trust boundary.
+	for _, kind := range []string{"", "   "} {
+		err := core.UpsertLLMProvider(ctx, LLMProviderInput{Name: "no-kind", Kind: kind, APIKey: "key"})
+		if err == nil {
+			t.Fatalf("kind %q should return error", kind)
+		}
+		if !errors.As(err, &bad) {
+			t.Errorf("kind %q: want badInputError, got %T: %v", kind, err, err)
+		}
+	}
+}
+
+// kind is no longer a fixed enum of 6 — any litellm provider from the catalog is valid (the SPA
+// constrains the picker to the catalog). A provider the old CHECK rejected must now persist, and a
+// surrounding-whitespace kind must be normalized before storage.
+func TestUpsertLLMProviderAcceptsCatalogKind(t *testing.T) {
+	ctx := context.Background()
+	core, _, _ := newTestCoreWithBox(t)
+
+	if err := core.UpsertLLMProvider(ctx, LLMProviderInput{
+		Name:   "vertex-main",
+		Kind:   "  vertex_ai  ", // padded: must be trimmed, then accepted
+		APIKey: "key",
+	}); err != nil {
+		t.Fatalf("catalog kind should be accepted: %v", err)
+	}
+	// assert through the public read path, not the mock, so normalization is verified end-to-end.
+	all, err := core.ListLLMProviders(ctx)
+	if err != nil {
+		t.Fatalf("ListLLMProviders: %v", err)
+	}
+	if len(all) != 1 || all[0].Kind != "vertex_ai" {
+		t.Errorf("provider not persisted with normalized catalog kind: %+v", all)
 	}
 }
 
@@ -384,11 +407,11 @@ func TestHTTPDeleteLLMProvider(t *testing.T) {
 	}
 }
 
-func TestHTTPUpsertLLMProviderInvalidKind(t *testing.T) {
+func TestHTTPUpsertLLMProviderEmptyKind(t *testing.T) {
 	core, _, _ := newTestCoreWithBox(t)
 
 	mux := NewSurfaceMux(core, testToken)
-	body := `{"name":"bad","kind":"alien","api_key":"k"}`
+	body := `{"name":"bad","kind":"","api_key":"k"}`
 	req := httptest.NewRequest(http.MethodPut, "/v1/llm-providers", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer "+testToken)
 	req.Header.Set("Content-Type", "application/json")
@@ -396,6 +419,6 @@ func TestHTTPUpsertLLMProviderInvalidKind(t *testing.T) {
 	mux.ServeHTTP(w, req)
 
 	if w.Code != http.StatusBadRequest {
-		t.Fatalf("want 400 for invalid kind, got %d", w.Code)
+		t.Fatalf("want 400 for empty kind, got %d", w.Code)
 	}
 }
