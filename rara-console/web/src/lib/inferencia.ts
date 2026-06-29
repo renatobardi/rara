@@ -149,6 +149,74 @@ export function formatTokens(n: number): string {
 	return n.toLocaleString('en-US');
 }
 
+// --- litellm model catalog autocomplete (CONSOLE-INFER-#CATALOG) -----------
+
+// CatalogEntry mirrors one slim row from GET /api/llm-catalog (the BFF strips the full litellm blob
+// down to these fields). The Model form uses it to auto-fill upstream + costs.
+export type CatalogEntry = {
+	upstream: string;
+	provider: string;
+	input_cost_per_token: number;
+	output_cost_per_token: number;
+	max_tokens: number;
+	mode: string;
+};
+
+export function isCatalogEntry(v: unknown): v is CatalogEntry {
+	if (typeof v !== 'object' || v === null) return false;
+	const e = v as Record<string, unknown>;
+	// Costs feed the form's number inputs, so reject NaN/Infinity/negative (mirrors isSpend). Costs
+	// can legitimately be 0 (free models), hence >= 0.
+	const nonNegFinite = (n: unknown): n is number => typeof n === 'number' && Number.isFinite(n) && n >= 0;
+	return typeof e.upstream === 'string' && e.upstream.trim().length > 0 &&
+		typeof e.provider === 'string' && e.provider.trim().length > 0 &&
+		nonNegFinite(e.input_cost_per_token) && nonNegFinite(e.output_cost_per_token) &&
+		nonNegFinite(e.max_tokens) && e.mode === 'chat';
+}
+
+// filterCatalog returns entries whose upstream or provider contains the query (case-insensitive),
+// capped at `limit` so the datalist DOM stays small even for the 2k+ row catalog.
+export function filterCatalog(rows: CatalogEntry[], query: string, limit = 50): CatalogEntry[] {
+	if (limit <= 0) return [];
+	const q = query.trim().toLowerCase();
+	const out: CatalogEntry[] = [];
+	for (const r of rows) {
+		if (!q || r.upstream.toLowerCase().includes(q) || r.provider.toLowerCase().includes(q)) {
+			out.push(r);
+			if (out.length >= limit) break;
+		}
+	}
+	return out;
+}
+
+// catalogKindFor maps litellm's provider name onto our PROVIDER_KINDS enum, or null when there's no
+// 1:1 match (the form then leaves the provider for the operator to pick).
+export function catalogKindFor(provider: string): ProviderKind | null {
+	return PROVIDER_KINDS.includes(provider as ProviderKind) ? (provider as ProviderKind) : null;
+}
+
+// applyCatalogPick resolves a chosen upstream against the catalog, returning the fields to auto-fill
+// in the Model form — or null when the upstream isn't in the catalog (manual/BYO entry stays valid).
+// provider_id is filled only when exactly one registered provider matches the mapped kind, so the
+// assistant never silently picks the wrong provider when the choice is ambiguous.
+export function applyCatalogPick(
+	upstream: string,
+	catalog: CatalogEntry[],
+	providers: LLMProvider[]
+): { upstream: string; input_cost_per_token: number; output_cost_per_token: number; provider_id: number | null } | null {
+	const entry = catalog.find((e) => e.upstream === upstream.trim());
+	if (!entry) return null;
+	const kind = catalogKindFor(entry.provider);
+	// Only auto-select an enabled provider — never silently point a new model at a disabled one.
+	const matches = kind ? providers.filter((p) => p.kind === kind && p.enabled) : [];
+	return {
+		upstream: entry.upstream,
+		input_cost_per_token: entry.input_cost_per_token,
+		output_cost_per_token: entry.output_cost_per_token,
+		provider_id: matches.length === 1 ? matches[0].id : null
+	};
+}
+
 // SPEND_PERIODS is the 24h·7d·30d·Tudo selector; days feeds ?days=N (null = all-time).
 export const SPEND_PERIODS: { key: string; days: number | null }[] = [
 	{ key: 'spend24h', days: 1 },

@@ -11,7 +11,12 @@ import {
 	formatUSD,
 	formatTokens,
 	SPEND_PERIODS,
-	type LLMProvider
+	isCatalogEntry,
+	filterCatalog,
+	catalogKindFor,
+	applyCatalogPick,
+	type LLMProvider,
+	type CatalogEntry
 } from './inferencia';
 
 describe('asList', () => {
@@ -164,5 +169,90 @@ describe('spend (CONSOLE-INFER-#9)', () => {
 
 	it('SPEND_PERIODS offers 24h/7d/30d/Tudo, with Tudo meaning all-time', () => {
 		expect(SPEND_PERIODS.map((p) => p.days)).toEqual([1, 7, 30, null]);
+	});
+});
+
+describe('llm catalog', () => {
+	const groq: CatalogEntry = {
+		upstream: 'groq/llama-3.3-70b-versatile', provider: 'groq',
+		input_cost_per_token: 5.9e-7, output_cost_per_token: 7.9e-7, max_tokens: 32768, mode: 'chat'
+	};
+	const gemini: CatalogEntry = {
+		upstream: 'gemini/gemini-2.0-flash', provider: 'gemini',
+		input_cost_per_token: 1e-7, output_cost_per_token: 4e-7, max_tokens: 8192, mode: 'chat'
+	};
+	const catalog = [gemini, groq];
+
+	it('isCatalogEntry accepts a well-formed row and rejects junk', () => {
+		expect(isCatalogEntry(groq)).toBe(true);
+		expect(isCatalogEntry({ upstream: 'x' })).toBe(false);
+		expect(isCatalogEntry(null)).toBe(false);
+		expect(isCatalogEntry({ ...groq, input_cost_per_token: 'free' })).toBe(false);
+	});
+
+	it('isCatalogEntry rejects missing mandatory fields and non-finite/negative numerics', () => {
+		const { max_tokens, mode, ...noMaxNoMode } = groq;
+		void max_tokens; void mode;
+		expect(isCatalogEntry(noMaxNoMode)).toBe(false); // max_tokens + mode are mandatory
+		expect(isCatalogEntry({ ...groq, mode: 'embedding' })).toBe(false); // only chat is valid
+		expect(isCatalogEntry({ ...groq, input_cost_per_token: NaN })).toBe(false);
+		expect(isCatalogEntry({ ...groq, output_cost_per_token: Infinity })).toBe(false);
+		expect(isCatalogEntry({ ...groq, input_cost_per_token: -1e-7 })).toBe(false);
+		expect(isCatalogEntry({ ...groq, max_tokens: -1 })).toBe(false);
+		expect(isCatalogEntry({ ...groq, upstream: '   ' })).toBe(false); // whitespace-only
+		expect(isCatalogEntry({ ...groq, provider: '  ' })).toBe(false);
+	});
+
+	it('filterCatalog matches upstream or provider, case-insensitively', () => {
+		expect(filterCatalog(catalog, 'GROQ').map((e) => e.upstream)).toEqual([groq.upstream]);
+		expect(filterCatalog(catalog, 'flash').map((e) => e.upstream)).toEqual([gemini.upstream]);
+		expect(filterCatalog(catalog, 'llama').map((e) => e.upstream)).toEqual([groq.upstream]);
+	});
+
+	it('filterCatalog caps the list when the query is empty', () => {
+		const many = Array.from({ length: 200 }, (_, i) => ({ ...groq, upstream: `m/${i}` }));
+		expect(filterCatalog(many, '', 50)).toHaveLength(50);
+	});
+
+	it('catalogKindFor maps a known litellm provider to our enum, else null', () => {
+		expect(catalogKindFor('groq')).toBe('groq');
+		expect(catalogKindFor('anthropic')).toBe('anthropic');
+		expect(catalogKindFor('bedrock')).toBeNull();
+		expect(catalogKindFor('')).toBeNull();
+	});
+
+	it('applyCatalogPick fills upstream + costs and auto-selects the unique matching provider', () => {
+		const providers: LLMProvider[] = [
+			{ id: 1, name: 'my-groq', kind: 'groq', enabled: true },
+			{ id: 2, name: 'my-gemini', kind: 'gemini', enabled: true }
+		];
+		const hit = applyCatalogPick(groq.upstream, catalog, providers);
+		expect(hit).toEqual({
+			upstream: groq.upstream,
+			input_cost_per_token: 5.9e-7,
+			output_cost_per_token: 7.9e-7,
+			provider_id: 1
+		});
+	});
+
+	it('applyCatalogPick leaves provider_id null when the kind is ambiguous or absent', () => {
+		const two: LLMProvider[] = [
+			{ id: 1, name: 'groq-a', kind: 'groq', enabled: true },
+			{ id: 2, name: 'groq-b', kind: 'groq', enabled: true }
+		];
+		expect(applyCatalogPick(groq.upstream, catalog, two)?.provider_id).toBeNull();
+		expect(applyCatalogPick(groq.upstream, catalog, [])?.provider_id).toBeNull();
+	});
+
+	it('applyCatalogPick does not auto-select a disabled provider even when it is the only match', () => {
+		const disabled: LLMProvider[] = [{ id: 1, name: 'my-groq', kind: 'groq', enabled: false }];
+		const hit = applyCatalogPick(groq.upstream, catalog, disabled);
+		expect(hit?.provider_id).toBeNull(); // still fills costs, just not the disabled provider
+		expect(hit?.input_cost_per_token).toBe(5.9e-7);
+	});
+
+	it('applyCatalogPick returns null for a manual upstream not in the catalog (manual entry stays valid)', () => {
+		expect(applyCatalogPick('my/custom-model', catalog, [])).toBeNull();
+		expect(applyCatalogPick('', catalog, [])).toBeNull();
 	});
 });
