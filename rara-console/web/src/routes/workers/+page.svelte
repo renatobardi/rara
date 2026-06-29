@@ -110,7 +110,9 @@
 				// block (modelOptions empty + modelsLoadFailed false = silent save of an LLM worker).
 				if (!Array.isArray(d) || !d.every(isModel)) throw new Error('unexpected payload');
 				models = d;
-				modelsLoadFailed = false;
+				// An empty registry is still "no model to pick" — keep the save blocked (the bug
+				// covers "ou volta vazio"); only a non-empty list clears the guard.
+				modelsLoadFailed = d.length === 0;
 			})
 			.catch(() => { models = []; modelsLoadFailed = true; /* WorkerForm bloqueia salvar worker LLM sem Model */ });
 	});

@@ -31,9 +31,10 @@
 		capabilities: string[];
 		/** Enabled LLM models for the Model dropdown (from /api/llm-models). */
 		models?: LLMModel[];
-		/** True when the /api/llm-models fetch failed — distinguishes "no models exist" from
-		 * "couldn't load", so an LLM worker isn't saved without a Model by accident. */
-		modelsLoadFailed?: boolean;
+		/** True when no model is available to bind — the /api/llm-models fetch failed, is still
+		 * in flight, or returned an empty registry. Required (no safe default): a caller that
+		 * forgets it must not silently get the unsafe `false` and let an LLM worker save modelless. */
+		modelsLoadFailed: boolean;
 		/** Pre-fill worker and make it read-only (add-placement mode). */
 		lockedWorker?: string;
 		/** Pre-fill capability and make it read-only (add-placement mode). */
@@ -50,7 +51,7 @@
 		initial = null,
 		capabilities,
 		models = [],
-		modelsLoadFailed = false,
+		modelsLoadFailed,
 		lockedWorker,
 		lockedCapability,
 		lockedConstraints = null,
