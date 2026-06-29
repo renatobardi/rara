@@ -8,8 +8,8 @@ name: Deploy rara-distill
 # (amd64 for Cloud Run + arm64 for VPC Oracle Ampere + Mac) and pushes a manifest list to
 # Artifact Registry. Cloud Run pulls the amd64 leaf automatically. See DOCKER-MULTIMODULE.md.
 #
-# Env: DISTILL_PROVIDER=distill (matches the provider seed); LITELLM_MODEL=groq-llama hardcoded
-# (llama-3.3-70b) — distill needs 70b for quality; vars.LITELLM_MODEL=gemini-flash is
+# Env: DISTILL_PROVIDER=distill (matches the provider seed); LITELLM_MODEL=groq/llama-3.3-70b-versatile
+# hardcoded (70b) — distill needs 70b for quality; vars.LITELLM_MODEL=gemini-flash is
 # spend-capped → ignored. Edit this YAML to change the model. (Same reasoning as deploy-sift.yml.)
 on:
   workflow_dispatch:
@@ -125,10 +125,10 @@ jobs:
           # Update first, create if absent (avoids a describe→create/update TOCTOU race).
           # DATABASE_URL is the shared contract DB; LITELLM_API_KEY is distill-specific.
           # DISTILL_PROVIDER=distill matches the provider seed in the DB.
-          # NOTE: groq-llama hardcoded (llama-3.3-70b) — distill needs 70b for quality, and
+          # NOTE: groq/llama-3.3-70b-versatile (70b) — distill needs 70b for quality, and
           # vars.LITELLM_MODEL=gemini-flash is spend-capped (429s) so it must NOT be used.
           SECRETS="DATABASE_URL=database-url:latest,LITELLM_API_KEY=litellm-api-key:latest"
-          ENV_VARS="DISTILL_PROVIDER=distill,LITELLM_BASE_URL=$LITELLM_BASE_URL,LITELLM_MODEL=groq-llama"
+          ENV_VARS="DISTILL_PROVIDER=distill,LITELLM_BASE_URL=$LITELLM_BASE_URL,LITELLM_MODEL=groq/llama-3.3-70b-versatile"
           COMMON_ARGS="--image $IMAGE --region $REGION --project $GCP_PROJECT --set-secrets $SECRETS --set-env-vars $ENV_VARS --max-retries 0 --task-timeout 3600s --memory 512Mi --cpu 1"
 
           UPDATE_ERR=$(gcloud run jobs update "$JOB_NAME" $COMMON_ARGS 2>&1) && echo "$UPDATE_ERR" || {

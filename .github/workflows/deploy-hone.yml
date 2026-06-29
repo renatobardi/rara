@@ -111,7 +111,7 @@ jobs:
             --region "$REGION"
             --project "$GCP_PROJECT"
             --set-secrets "DATABASE_URL=database-url:latest,LITELLM_API_KEY=litellm-api-key:latest"
-            --set-env-vars "LITELLM_BASE_URL=$LITELLM_BASE_URL,LITELLM_MODEL=groq-llama"
+            --set-env-vars "LITELLM_BASE_URL=$LITELLM_BASE_URL,LITELLM_MODEL=groq/llama-3.3-70b-versatile"
             --max-retries 0
             --task-timeout 3600s
             --memory 512Mi
