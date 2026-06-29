@@ -268,7 +268,20 @@ export const t = {
 		saveOk: 'Salvo.',
 		saveError: 'Erro ao salvar.',
 		deleteOk: 'Excluído.',
-		deleteError: 'Erro ao excluir.'
+		deleteError: 'Erro ao excluir.',
+		// ── Gastos section (CORR-INFER-#4) ──
+		gastosSection: 'Gastos',
+		gastosSubtitle: 'Custo real do gateway (litellm) no período.',
+		spend24h: '24h',
+		spend7d: '7d',
+		spend30d: '30d',
+		spendAll: 'Tudo',
+		spendLoading: 'Carregando gastos…',
+		spendError: 'Não foi possível carregar os gastos.',
+		spendEmpty: 'Sem gastos no período.',
+		spendTotal: 'Total',
+		chartOverallTitle: 'Gasto por dia',
+		chartProviderTitle: 'Gasto por provider'
 	},
 	fontes: {
 		title: 'Fontes',

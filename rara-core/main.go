@@ -840,6 +840,14 @@ type Database interface {
 	// window (nil = all-time). Grouped by model_group (the LITELLM_MODEL alias).
 	LLMSpend(ctx context.Context, model string, since *time.Time) ([]LLMSpend, error)
 
+	// LLMSpendTimeseries aggregates spend/tokens per calendar day (CORR-INFER-#4),
+	// oldest day first; since restricts the window (nil = all-time).
+	LLMSpendTimeseries(ctx context.Context, since *time.Time) ([]LLMSpendDay, error)
+
+	// LLMSpendByProvider aggregates spend/tokens grouped by provider — the
+	// model_group prefix before "/" (CORR-INFER-#4), highest spend first.
+	LLMSpendByProvider(ctx context.Context, since *time.Time) ([]LLMSpendProvider, error)
+
 	// --- LLM provider registry (CONSOLE-INFER #2) ---------------------------
 	// UpsertLLMProvider writes a provider row keyed by (owner_id=NULL, name)
 	// with a new encrypted key. Use UpdateLLMProviderFields when api_key is absent.

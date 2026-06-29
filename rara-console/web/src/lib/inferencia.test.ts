@@ -16,6 +16,10 @@ import {
 	catalogKinds,
 	catalogKindFor,
 	applyCatalogPick,
+	isSpendDay,
+	isSpendProvider,
+	formatDay,
+	spendBars,
 	type LLMProvider,
 	type CatalogEntry
 } from './inferencia';
@@ -178,6 +182,51 @@ describe('spend (CONSOLE-INFER-#9)', () => {
 
 	it('SPEND_PERIODS offers 24h/7d/30d/Tudo, with Tudo meaning all-time', () => {
 		expect(SPEND_PERIODS.map((p) => p.days)).toEqual([1, 7, 30, null]);
+	});
+});
+
+describe('spend charts (CORR-INFER-#4)', () => {
+	it('isSpendDay accepts a real row and rejects junk', () => {
+		expect(isSpendDay({ day: '2026-06-20', spend: 0.004, total_tokens: 420, requests: 2 })).toBe(true);
+		expect(isSpendDay(null)).toBe(false);
+		expect(isSpendDay({ day: '', spend: 0, total_tokens: 0, requests: 0 })).toBe(false);
+		expect(isSpendDay({ day: '2026-06-20', spend: Number.NaN, total_tokens: 0, requests: 0 })).toBe(false);
+		expect(isSpendDay({ day: '2026-06-20', spend: -1, total_tokens: 0, requests: 0 })).toBe(false);
+		expect(isSpendDay({ day: '2026-06-20', spend: 0, total_tokens: 1.5, requests: 0 })).toBe(false);
+	});
+
+	it('isSpendProvider accepts a real row and rejects junk', () => {
+		expect(isSpendProvider({ provider: 'groq', spend: 0.004, total_tokens: 420, requests: 2 })).toBe(true);
+		expect(isSpendProvider(null)).toBe(false);
+		expect(isSpendProvider({ provider: '  ', spend: 0, total_tokens: 0, requests: 0 })).toBe(false);
+		expect(isSpendProvider({ provider: 'groq', spend: Number.POSITIVE_INFINITY, total_tokens: 0, requests: 0 })).toBe(false);
+		expect(isSpendProvider({ provider: 'groq', spend: 0, total_tokens: -1, requests: 0 })).toBe(false);
+	});
+
+	it('formatDay strips the year, passes other strings through', () => {
+		expect(formatDay('2026-06-20')).toBe('06-20');
+		expect(formatDay('all-time')).toBe('all-time');
+	});
+
+	it('spendBars normalizes to pct of the max, preserving order', () => {
+		const bars = spendBars([
+			{ label: 'a', value: 1 },
+			{ label: 'b', value: 4 },
+			{ label: 'c', value: 0 }
+		]);
+		expect(bars.map((b) => b.label)).toEqual(['a', 'b', 'c']);
+		expect(bars[0].pct).toBe(25);
+		expect(bars[1].pct).toBe(100);
+		expect(bars[2].pct).toBe(0);
+	});
+
+	it('spendBars yields all-zero pct (not NaN) when every value is zero', () => {
+		const bars = spendBars([{ label: 'a', value: 0 }, { label: 'b', value: 0 }]);
+		expect(bars.every((b) => b.pct === 0)).toBe(true);
+	});
+
+	it('spendBars handles an empty input', () => {
+		expect(spendBars([])).toEqual([]);
 	});
 });
 

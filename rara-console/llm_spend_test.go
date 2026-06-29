@@ -134,6 +134,108 @@ func TestLLMSpendRejectsInvalidDays(t *testing.T) {
 	}
 }
 
+// --- CORR-INFER-#4: timeseries + by-provider proxies ------------------------
+
+// fakeChartCore serves the two chart paths and records the forwarded query string.
+func fakeChartCore(t *testing.T, token string) (*httptest.Server, *string) {
+	t.Helper()
+	captured := new(string)
+	h := func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer "+token {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		*captured = r.URL.RawQuery
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[]`))
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /v1/llm-spend/timeseries", h)
+	mux.HandleFunc("GET /v1/llm-spend/by-provider", h)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv, captured
+}
+
+func doChart(s *server, handler http.HandlerFunc, base, rawQuery string) *httptest.ResponseRecorder {
+	rec := httptest.NewRecorder()
+	target := base
+	if rawQuery != "" {
+		target += "?" + rawQuery
+	}
+	handler(rec, httptest.NewRequest("GET", target, nil))
+	return rec
+}
+
+func TestLLMSpendChartsForwardDays(t *testing.T) {
+	core, captured := fakeChartCore(t, "tok")
+	s := &server{coreURL: core.URL, token: "tok", client: core.Client()}
+	cases := []struct {
+		name    string
+		handler http.HandlerFunc
+		base    string
+	}{
+		{"timeseries", s.handleLLMSpendTimeseries, "/api/llm-spend/timeseries"},
+		{"by-provider", s.handleLLMSpendByProvider, "/api/llm-spend/by-provider"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			*captured = ""
+			rec := doChart(s, c.handler, c.base, "days=30")
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+			}
+			assertForwarded(t, *captured, url.Values{"days": {"30"}})
+		})
+	}
+}
+
+func TestLLMSpendChartsNoQueryForwarded(t *testing.T) {
+	core, captured := fakeChartCore(t, "tok")
+	s := &server{coreURL: core.URL, token: "tok", client: core.Client()}
+	*captured = "sentinel"
+	rec := doChart(s, s.handleLLMSpendTimeseries, "/api/llm-spend/timeseries", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if *captured != "" {
+		t.Errorf("expected no query forwarded, got %q", *captured)
+	}
+}
+
+func TestLLMSpendChartsRejectInvalidDays(t *testing.T) {
+	s := &server{coreURL: "http://127.0.0.1:1", token: "x", client: http.DefaultClient}
+	handlers := map[string]http.HandlerFunc{
+		"/api/llm-spend/timeseries":  s.handleLLMSpendTimeseries,
+		"/api/llm-spend/by-provider": s.handleLLMSpendByProvider,
+	}
+	for base, handler := range handlers {
+		for _, raw := range []string{"days=abc", "days=0", "days=-1", "days=400"} {
+			rec := doChart(s, handler, base, raw)
+			if rec.Code != http.StatusBadRequest {
+				t.Errorf("%s %q: status = %d, want 400; body=%s", base, raw, rec.Code, rec.Body.String())
+			}
+		}
+	}
+}
+
+func TestLLMSpendChartsReturn502OnCoreError(t *testing.T) {
+	mux := http.NewServeMux()
+	fail := func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusInternalServerError) }
+	mux.HandleFunc("GET /v1/llm-spend/timeseries", fail)
+	mux.HandleFunc("GET /v1/llm-spend/by-provider", fail)
+	core := httptest.NewServer(mux)
+	t.Cleanup(core.Close)
+	s := &server{coreURL: core.URL, token: "tok", client: core.Client()}
+
+	if rec := doChart(s, s.handleLLMSpendTimeseries, "/api/llm-spend/timeseries", ""); rec.Code != http.StatusBadGateway {
+		t.Errorf("timeseries status = %d, want 502", rec.Code)
+	}
+	if rec := doChart(s, s.handleLLMSpendByProvider, "/api/llm-spend/by-provider", ""); rec.Code != http.StatusBadGateway {
+		t.Errorf("by-provider status = %d, want 502", rec.Code)
+	}
+}
+
 func TestLLMSpendReturns502OnCoreError(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/llm-spend", func(w http.ResponseWriter, r *http.Request) {
