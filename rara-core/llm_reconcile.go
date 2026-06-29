@@ -238,7 +238,12 @@ func diffLLMModels(desired, actual []litellm.Model, bound map[string]bool) (crea
 			continue // config.yaml model — read-only, never managed here
 		}
 		if !strings.Contains(a.ModelName, "/") {
-			continue // legacy bare alias — coexists, never managed here (CORR-INFER #1)
+			// ponytail: CORR-INFER #5 cleanup — legacy alias (no '/') deleted when unbound.
+			// bound only contains kind/model strings, so legacy aliases are never retained via bound.
+			if !bound[a.ModelName] {
+				deleteIDs = append(deleteIDs, a.ID)
+			}
+			continue
 		}
 		if prev, ok := actualByName[a.ModelName]; ok {
 			// Duplicate db_model alias (out-of-band create): keep one, delete the extra.
