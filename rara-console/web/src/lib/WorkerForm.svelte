@@ -347,7 +347,18 @@
 			</div>
 
 			<!-- Model (LLM) — writes LITELLM_MODEL into env; optional, hidden when no models -->
-			{#if showModel}
+			<!-- Blocked state wins over the select: a not-ready registry shows the loading/error
+			     feedback instead of a stale dropdown the operator could pick from while save is blocked. -->
+			{#if modelBlocked}
+				<div>
+					<span class={labelClass}>{t.workers.formModel}</span>
+					{#if modelsStatus === 'loading'}
+						<p class="mt-0.5 text-[11px] text-muted" role="status">{t.workers.formModelLoading}</p>
+					{:else}
+						<p class={errorClass} role="alert">{t.workers.formModelLoadFailed}</p>
+					{/if}
+				</div>
+			{:else if showModel}
 				<div>
 					<label class={labelClass} for="wf-model">{t.workers.formModel}</label>
 					<select
@@ -363,15 +374,6 @@
 					</select>
 					{#if runtime === 'cloudrun' && model}
 						<p id="wf-model-cloudrun-hint" class="mt-0.5 text-[11px] text-muted">{t.workers.formModelCloudrunHint}</p>
-					{/if}
-				</div>
-			{:else if modelBlocked}
-				<div>
-					<span class={labelClass}>{t.workers.formModel}</span>
-					{#if modelsStatus === 'loading'}
-						<p class="mt-0.5 text-[11px] text-muted" role="status">{t.workers.formModelLoading}</p>
-					{:else}
-						<p class={errorClass} role="alert">{t.workers.formModelLoadFailed}</p>
 					{/if}
 				</div>
 			{/if}

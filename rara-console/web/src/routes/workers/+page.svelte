@@ -62,11 +62,18 @@
 	// "loading" hint vs a "failed, reload" error so the in-flight window isn't a false alarm.
 	let modelsStatus = $state<'loading' | 'ready' | 'failed'>('loading');
 	let modelsSeq = 0; // guards against out-of-order responses (onMount + reopen-retry can overlap)
+	let modelsAbort: AbortController | null = null;
 
 	function loadModels() {
 		const seq = ++modelsSeq;
+		modelsAbort?.abort(); // cancel any prior in-flight load
+		const abort = new AbortController();
+		modelsAbort = abort;
+		// A hung fetch would leave status='loading' forever (form blocks LLM saves indefinitely);
+		// time out so it lands on 'failed' and the reopen-retry path can recover.
+		const timer = setTimeout(() => abort.abort(), 10000);
 		modelsStatus = 'loading';
-		fetch('/api/llm-models')
+		fetch('/api/llm-models', { signal: abort.signal })
 			.then((r) => (r.ok ? r.json() : Promise.reject()))
 			.then((d) => {
 				if (seq !== modelsSeq) return; // a newer load started; drop stale data
@@ -78,8 +85,12 @@
 				modelsStatus = d.length > 0 ? 'ready' : 'failed';
 			})
 			.catch(() => {
-				if (seq !== modelsSeq) return; // a newer load started; don't clobber it
+				if (seq !== modelsSeq) return; // a newer load started (incl. our own abort); don't clobber it
 				models = []; modelsStatus = 'failed'; /* WorkerForm bloqueia salvar worker LLM sem Model */
+			})
+			.finally(() => {
+				clearTimeout(timer);
+				if (modelsAbort === abort) modelsAbort = null;
 			});
 	}
 	let loading = $state(true);
@@ -262,7 +273,7 @@
 	}
 
 	function openAdd() {
-		if (modelsStatus !== 'ready') loadModels(); // recover a transient model-fetch failure on reopen
+		if (modelsStatus === 'failed') loadModels(); // recover a terminal model-fetch failure on reopen (don't disrupt an in-flight load)
 		formInitial = null;
 		formMode = 'add';
 		formLockedWorker = null;
@@ -271,7 +282,7 @@
 	}
 
 	function openEdit(p: Provider, workerName: string) {
-		if (modelsStatus !== 'ready') loadModels(); // recover a transient model-fetch failure on reopen
+		if (modelsStatus === 'failed') loadModels(); // recover a terminal model-fetch failure on reopen (don't disrupt an in-flight load)
 		formInitial = { ...p, worker: workerName };
 		formMode = 'edit';
 		formLockedWorker = null;
