@@ -117,19 +117,22 @@
 	const modelOptions = $derived(
 		[...new Set([...(model ? [model] : []), ...modelsForKind(catalog, providerKind)])]
 	);
-	// Show only for LLM-capable workers AND when there's actually a provider to pick — if
+	// Whether this is an LLM worker (by capability, or because it already carries a binding).
+	const isLlmWorker = $derived(usesModel(capability, initial?.env));
+	// Show the picker only for LLM workers AND when there's actually a provider to pick — if
 	// /api/llm-providers fails/returns no enabled provider (and there's no existing binding to
 	// keep), providerOptions is empty and the field degrades to hidden. Reactive on capability
 	// (editable in add mode). Optional — never required.
-	const showModel = $derived(usesModel(capability, initial?.env) && providerOptions.length > 0);
+	const showModel = $derived(isLlmWorker && providerOptions.length > 0);
 	// If the worker needs a Model but the registry isn't ready (loading, failed, or empty) and
 	// there's no binding to keep, block the save instead of silently writing no model.
 	const modelBlocked = $derived(blocksOnModelLoadFailure(capability, initial?.env, registryStatus !== 'ready'));
 
-	// Clear the selection if capability switches away from LLM, so submit never writes
-	// LITELLM_MODEL onto a non-LLM worker.
+	// Clear the selection only when capability switches away from LLM, so submit never writes
+	// LITELLM_MODEL onto a non-LLM worker. Keyed off isLlmWorker (not showModel) so a registry
+	// outage that merely hides the picker never blanks an existing binding on an unrelated save.
 	$effect(() => {
-		if (!showModel) { providerKind = ''; model = ''; }
+		if (!isLlmWorker) { providerKind = ''; model = ''; }
 	});
 
 	// constraints fields
@@ -149,6 +152,13 @@
 
 	// validation errors
 	let errors = $state<Record<string, string>>({});
+
+	// aria-describedby for the Model control: the cloudrun hint and/or the validation error, when present.
+	const modelDescribedBy = $derived(
+		[runtime === 'cloudrun' && model ? 'wf-model-cloudrun-hint' : '', errors.model ? 'wf-model-error' : '']
+			.filter(Boolean)
+			.join(' ') || undefined
+	);
 	let submitting = $state(false);
 	let serverError = $state('');
 
@@ -199,8 +209,9 @@
 		}
 		if (modelBlocked) {
 			e.model = registryStatus === 'loading' ? t.workers.formModelLoading : t.workers.formModelLoadFailed;
-		} else if (showModel && modelHasInvalidChars(model.trim())) {
-			// BYO free-text model must be a single clean token — a newline/space would corrupt the env file.
+		} else if (showModel && modelHasInvalidChars(model)) {
+			// BYO free-text model must be a single clean token — any whitespace/newline would corrupt
+			// the env file. Validate the RAW value so what's approved is exactly what gets persisted.
 			e.model = t.workers.formModelInvalid;
 		}
 		errors = e;
@@ -408,7 +419,8 @@
 							placeholder={t.workers.formModelManualPlaceholder}
 							bind:value={model}
 							autocomplete="off"
-							aria-describedby={runtime === 'cloudrun' && model ? 'wf-model-cloudrun-hint' : undefined}
+							aria-invalid={!!errors.model}
+							aria-describedby={modelDescribedBy}
 						/>
 					{:else}
 						<select
@@ -416,7 +428,8 @@
 							class={fieldClass}
 							bind:value={model}
 							disabled={!providerKind}
-							aria-describedby={runtime === 'cloudrun' && model ? 'wf-model-cloudrun-hint' : undefined}
+							aria-invalid={!!errors.model}
+							aria-describedby={modelDescribedBy}
 						>
 							<option value="">{t.workers.formModelNone}</option>
 							{#each modelOptions as m}
@@ -424,7 +437,7 @@
 							{/each}
 						</select>
 					{/if}
-					{#if errors.model}<p class={errorClass}>{errors.model}</p>{/if}
+					{#if errors.model}<p id="wf-model-error" class={errorClass}>{errors.model}</p>{/if}
 					{#if runtime === 'cloudrun' && model}
 						<p id="wf-model-cloudrun-hint" class="mt-0.5 text-[11px] text-muted">{t.workers.formModelCloudrunHint}</p>
 					{/if}
