@@ -273,6 +273,7 @@ export const t = {
 		formProviderPlaceholder: 'Selecione um provider…',
 		formUpstream: 'Upstream',
 		formUpstreamPlaceholder: 'ex: groq/llama-3.1-8b-instant',
+		catalogHint: 'Escolha do catálogo litellm para preencher custos automaticamente — ou digite um upstream manual.',
 		formCostIn: 'Custo input (por token)',
 		formCostOut: 'Custo output (por token)',
 		formParams: 'Params (objeto JSON)',

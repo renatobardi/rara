@@ -24,8 +24,10 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -43,8 +45,12 @@ type server struct {
 	coreURL       string
 	token         string
 	client        *http.Client
-	previewClient *http.Client      // outbound fetches for iframe/OG preview; shorter timeout
+	previewClient *http.Client      // outbound fetches for iframe/OG preview + llm catalog; shorter timeout
 	isPrivate     func(string) bool // SSRF guard; nil disables check (tests use httptest addresses)
+	catalogURL        string        // litellm model_prices file, pinned to the gateway tag
+	catalogTTL        time.Duration // catalog changes slowly; refetch at most this often
+	catalogRetryAfter time.Duration // after a failed refetch, wait this long before retrying
+	catalog           *catalogCache
 }
 
 // fetchCoreWithStatus does an authenticated GET and returns the raw status + body without a 2xx
@@ -807,6 +813,141 @@ func (s *server) handleDeleteLLMModel(w http.ResponseWriter, r *http.Request) {
 	proxyWrite(w, status, body, err)
 }
 
+// --- litellm model catalog (CONSOLE-INFER-#CATALOG) ------------------------
+// The Model form auto-fills upstream + costs from litellm's model_prices_and_context_window.json,
+// pinned to the gateway tag so the catalog matches what the gateway actually serves. We never
+// hand the 1.5MB blob to the SPA — only the slim per-model fields the form needs.
+
+// defaultCatalogURL is pinned to the gateway tag (litellm v1.90.0). Bump alongside the gateway image.
+const defaultCatalogURL = "https://raw.githubusercontent.com/BerriAI/litellm/v1.90.0/model_prices_and_context_window.json"
+
+// maxCatalogBytes caps the catalog download. The real file is ~1.5MB; this leaves room to grow but
+// stops an unbounded body. A var so tests can shrink it.
+var maxCatalogBytes int64 = 16 << 20
+
+// llmCatalogEntry is the slim per-model row the SPA receives — never the full litellm blob.
+type llmCatalogEntry struct {
+	Upstream           string  `json:"upstream"`
+	Provider           string  `json:"provider"`
+	InputCostPerToken  float64 `json:"input_cost_per_token"`
+	OutputCostPerToken float64 `json:"output_cost_per_token"`
+	MaxTokens          int     `json:"max_tokens"`
+	Mode               string  `json:"mode"`
+}
+
+// catalogCache holds the normalized catalog with the last success + last attempt timestamps.
+// ponytail: a single mutex held across the refetch serializes concurrent misses — fine for a
+// low-traffic operator console; switch to singleflight if it ever stampedes.
+type catalogCache struct {
+	mu       sync.Mutex
+	data     []llmCatalogEntry
+	fetched  time.Time // last successful fetch (drives the TTL)
+	lastFail time.Time // last failed refetch (throttles retries during an outage)
+}
+
+// handleLLMCatalog serves GET /api/llm-catalog — the cached, slimmed litellm model catalog.
+func (s *server) handleLLMCatalog(w http.ResponseWriter, r *http.Request) {
+	entries, err := s.catalog.get(s)
+	if err != nil {
+		badGateway(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, entries)
+}
+
+// get returns the cached catalog, refetching when the TTL has lapsed. On a refetch failure it serves
+// the stale cache if it has one (graceful degradation), else errors. After any failed fetch it
+// throttles retries to catalogRetryAfter — for both a warm cache (serve stale) and a cold one (fail
+// fast) — so an upstream outage doesn't make every request hang on (and serialize behind) a fetch
+// that will just time out again. The fetch uses a cache-owned context so one client canceling its
+// request doesn't abort the shared refresh everyone else is waiting on.
+func (c *catalogCache) get(s *server) ([]llmCatalogEntry, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.data != nil && time.Since(c.fetched) < s.catalogTTL {
+		return c.data, nil
+	}
+	if !c.lastFail.IsZero() && time.Since(c.lastFail) < s.catalogRetryAfter {
+		if c.data != nil {
+			return c.data, nil // serve stale rather than reattempt a doomed fetch
+		}
+		return nil, fmt.Errorf("llm catalog unavailable (last fetch failed %s ago)", time.Since(c.lastFail).Round(time.Second))
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), catalogFetchTimeout)
+	defer cancel()
+	fresh, err := s.fetchCatalog(ctx)
+	if err != nil {
+		c.lastFail = time.Now()
+		if c.data != nil {
+			log.Printf("console: llm-catalog refetch failed, serving stale: %v", err)
+			return c.data, nil
+		}
+		return nil, err
+	}
+	c.data = fresh
+	c.fetched = time.Now()
+	c.lastFail = time.Time{} // recovery: clear the throttle so the next TTL lapse refetches promptly
+	return fresh, nil
+}
+
+// catalogFetchTimeout bounds a single catalog download independently of any client request, so the
+// shared refresh can't hang the mutex even if previewClient were misconfigured without a timeout.
+const catalogFetchTimeout = 20 * time.Second
+
+// fetchCatalog downloads and normalizes the pinned litellm catalog. The URL is a fixed constant
+// (not user input), so no SSRF guard is needed.
+func (s *server) fetchCatalog(ctx context.Context) ([]llmCatalogEntry, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.catalogURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("llm catalog request: %w", err)
+	}
+	resp, err := s.previewClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("llm catalog fetch: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("llm catalog fetch: status %d", resp.StatusCode)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxCatalogBytes))
+	if err != nil {
+		return nil, fmt.Errorf("llm catalog read: %w", err)
+	}
+	return normalizeCatalog(body)
+}
+
+// normalizeCatalog parses the litellm map and projects each chat model down to the slim DTO, sorted
+// by upstream for a stable list. The mode != "chat" filter drops embeddings, image models, and the
+// bogus "sample_spec" doc entry the file ships with.
+func normalizeCatalog(raw []byte) ([]llmCatalogEntry, error) {
+	var m map[string]struct {
+		Provider  string  `json:"litellm_provider"`
+		InCost    float64 `json:"input_cost_per_token"`
+		OutCost   float64 `json:"output_cost_per_token"`
+		MaxTokens int     `json:"max_tokens"`
+		Mode      string  `json:"mode"`
+	}
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return nil, fmt.Errorf("llm catalog parse: %w", err)
+	}
+	out := make([]llmCatalogEntry, 0, len(m))
+	for upstream, v := range m {
+		if v.Mode != "chat" {
+			continue
+		}
+		out = append(out, llmCatalogEntry{
+			Upstream:           upstream,
+			Provider:           v.Provider,
+			InputCostPerToken:  v.InCost,
+			OutputCostPerToken: v.OutCost,
+			MaxTokens:          v.MaxTokens,
+			Mode:               v.Mode,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Upstream < out[j].Upstream })
+	return out, nil
+}
+
 // handleDecisionsFeed proxies GET /v1/decisions, forwarding the optional ?limit= param.
 // Validates limit is numeric (non-numeric → 400); core clamps the value to 1-200.
 func (s *server) handleDecisionsFeed(w http.ResponseWriter, r *http.Request) {
@@ -1053,6 +1194,10 @@ func main() {
 		client:        &http.Client{Timeout: 15 * time.Second},
 		previewClient: &http.Client{Timeout: 8 * time.Second},
 		isPrivate:     isPrivateHost,
+		catalogURL:        defaultCatalogURL,
+		catalogTTL:        12 * time.Hour,
+		catalogRetryAfter: time.Minute,
+		catalog:           &catalogCache{},
 	}
 	addr := mustEnv("CONSOLE_ADDR") // tailnet IP only, e.g. 100.x.x.x:8081 — never 0.0.0.0
 
@@ -1093,6 +1238,7 @@ func main() {
 	mux.HandleFunc("GET /api/llm-providers", s.handleLLMProviders)
 	mux.HandleFunc("PUT /api/llm-providers", s.handleUpsertLLMProvider)
 	mux.HandleFunc("DELETE /api/llm-providers/{id}", s.handleDeleteLLMProvider)
+	mux.HandleFunc("GET /api/llm-catalog", s.handleLLMCatalog)
 	mux.HandleFunc("GET /api/llm-models", s.handleLLMModels)
 	mux.HandleFunc("PUT /api/llm-models", s.handleUpsertLLMModel)
 	mux.HandleFunc("DELETE /api/llm-models/{id}", s.handleDeleteLLMModel)

@@ -14,9 +14,13 @@
 		formatTokens,
 		SPEND_PERIODS,
 		PROVIDER_KINDS,
+		isCatalogEntry,
+		filterCatalog,
+		applyCatalogPick,
 		type LLMProvider,
 		type LLMModel,
-		type LLMSpend
+		type LLMSpend,
+		type CatalogEntry
 	} from '$lib/inferencia';
 
 	// ── data ──
@@ -50,6 +54,34 @@
 				spend = [];
 				spendError = true; // surface the failure instead of faking $0 — never blocks the table
 			});
+	}
+
+	// ── litellm catalog autocomplete (CONSOLE-INFER-#CATALOG) ──
+	// Best-effort: a failed fetch just leaves the combobox empty; manual upstream entry still works.
+	let catalog = $state<CatalogEntry[]>([]);
+	function fetchCatalog() {
+		return fetch('/api/llm-catalog')
+			.then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
+			.then((d) => {
+				catalog = asList<CatalogEntry>(d).filter(isCatalogEntry);
+			})
+			.catch(() => {
+				catalog = [];
+			});
+	}
+	// True once the operator picks a provider by hand — after that we never override their choice.
+	let providerTouched = $state(false);
+	// On each keystroke in the upstream field, auto-fill costs (and the provider when unambiguous) if
+	// the value exactly matches a catalog model. Non-matches leave the fields as typed (BYO stays valid).
+	function onUpstreamInput() {
+		const hit = applyCatalogPick(mUpstream, catalog, providers);
+		if (!hit) return;
+		mCostIn = String(hit.input_cost_per_token);
+		mCostOut = String(hit.output_cost_per_token);
+		// Keep the provider in sync with the picked model (overwrite, so switching models re-points it)
+		// — unless the operator chose one manually, or the catalog implies no unique provider (then we
+		// leave the current selection rather than wiping a valid default).
+		if (!providerTouched && hit.provider_id) mProviderId = hit.provider_id;
 	}
 
 	function fetchProviders() {
@@ -86,6 +118,7 @@
 		fetchProviders();
 		fetchModels();
 		fetchSpend();
+		fetchCatalog();
 	});
 
 	function pickSpendPeriod(i: number) {
@@ -186,7 +219,7 @@
 		formErrors = {}; formServerError = '';
 		mAlias = ''; mProviderId = providers[0]?.id ?? ''; mUpstream = '';
 		mCostIn = '0'; mCostOut = '0'; mParamsRaw = ''; mEnabled = true; mEditId = null;
-		activeKebab = null;
+		providerTouched = false; activeKebab = null;
 	}
 	function openEditModel(m: LLMModel) {
 		formOpen = { entity: 'model', mode: 'edit' };
@@ -194,7 +227,7 @@
 		mAlias = m.alias; mProviderId = m.provider_id; mUpstream = m.upstream;
 		mCostIn = String(m.input_cost_per_token); mCostOut = String(m.output_cost_per_token);
 		mParamsRaw = m.params && Object.keys(m.params as object).length ? JSON.stringify(m.params, null, 2) : '';
-		mEnabled = m.enabled; mEditId = m.id; activeKebab = null;
+		mEnabled = m.enabled; mEditId = m.id; providerTouched = true; activeKebab = null;
 	}
 	function closeForm() {
 		formOpen = null; formErrors = {}; formServerError = ''; submitting = false;
@@ -641,7 +674,7 @@
 				</div>
 				<div>
 					<label class={labelClass} for="m-provider">{t.inferencia.formProvider}</label>
-					<select id="m-provider" class={fieldClass} bind:value={mProviderId}>
+					<select id="m-provider" class={fieldClass} bind:value={mProviderId} onchange={() => (providerTouched = true)}>
 						<option value="" disabled>{t.inferencia.formProviderPlaceholder}</option>
 						{#each providers as p}<option value={p.id}>{p.name}</option>{/each}
 					</select>
@@ -649,7 +682,11 @@
 				</div>
 				<div class="sm:col-span-2">
 					<label class={labelClass} for="m-upstream">{t.inferencia.formUpstream}</label>
-					<input id="m-upstream" class={fieldClass} placeholder={t.inferencia.formUpstreamPlaceholder} bind:value={mUpstream} autocomplete="off" />
+					<input id="m-upstream" class={fieldClass} list="m-catalog" placeholder={t.inferencia.formUpstreamPlaceholder} bind:value={mUpstream} oninput={onUpstreamInput} autocomplete="off" />
+					<datalist id="m-catalog">
+						{#each filterCatalog(catalog, mUpstream, 50) as e (e.upstream)}<option value={e.upstream}>{e.provider}</option>{/each}
+					</datalist>
+					{#if catalog.length}<p class="mt-1 text-[11px] text-muted">{t.inferencia.catalogHint}</p>{/if}
 					{#if formErrors.upstream}<p class={errorClass}>{formErrors.upstream}</p>{/if}
 				</div>
 				<div>
