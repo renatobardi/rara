@@ -992,7 +992,7 @@ func (d *pgxDatabase) LLMSpend(ctx context.Context, model string, since *time.Ti
 	}
 
 	q := `SELECT model_group,
-	             COALESCE(SUM(spend), 0),
+	             COALESCE(SUM(spend), 0) AS spend,
 	             COALESCE(SUM(prompt_tokens), 0),
 	             COALESCE(SUM(completion_tokens), 0),
 	             COALESCE(SUM(total_tokens), 0),
@@ -1000,7 +1000,7 @@ func (d *pgxDatabase) LLMSpend(ctx context.Context, model string, since *time.Ti
 	      FROM litellm."LiteLLM_SpendLogs"
 	      WHERE ` + strings.Join(conds, " AND ") + `
 	      GROUP BY model_group
-	      ORDER BY SUM(spend) DESC, model_group`
+	      ORDER BY spend DESC, model_group`
 
 	rows, err := d.conn.Query(ctx, q, args...)
 	if err != nil {

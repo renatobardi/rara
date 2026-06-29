@@ -135,6 +135,11 @@ describe('spend (CONSOLE-INFER-#9)', () => {
 		expect(isSpend({ ...base, model: '  ' })).toBe(false);
 		expect(isSpend({ ...base, model: 'groq', spend: Number.NaN })).toBe(false);
 		expect(isSpend({ ...base, model: 'groq', total_tokens: Number.POSITIVE_INFINITY })).toBe(false);
+		// negative metrics and fractional counts are malformed too
+		expect(isSpend({ ...base, model: 'groq', spend: -0.01 })).toBe(false);
+		expect(isSpend({ ...base, model: 'groq', total_tokens: -1 })).toBe(false);
+		expect(isSpend({ ...base, model: 'groq', prompt_tokens: 1.5 })).toBe(false);
+		expect(isSpend({ ...base, model: 'groq', requests: 0.5 })).toBe(false);
 	});
 
 	it('indexSpendByModel keys rows by alias', () => {

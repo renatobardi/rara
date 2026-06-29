@@ -52,6 +52,10 @@ func TestLLMSpendAggregatesByModelGroup(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("want 2 aliases, got %d (%+v)", len(got), rows)
 	}
+	// Order must mirror the pgx ORDER BY SUM(spend) DESC: gemini-flash (0.010) before groq-llama (0.004).
+	if rows[0].Model != "gemini-flash" || rows[1].Model != "groq-llama" {
+		t.Errorf("order = [%s, %s], want [gemini-flash, groq-llama]", rows[0].Model, rows[1].Model)
+	}
 
 	g := got["groq-llama"]
 	if g.Requests != 2 {
