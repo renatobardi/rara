@@ -46,9 +46,11 @@ export function isProvider(v: unknown): v is LLMProvider {
 	if (typeof v !== 'object' || v === null) return false;
 	const p = v as Record<string, unknown>;
 	// kind is no longer a fixed enum — any litellm provider is valid (the picker is fed by the
-	// catalog), so only require a non-empty string here, not membership in PROVIDER_KINDS.
+	// catalog), so just require a non-empty string within the backend's 1..24 contract (mirrors
+	// the core's validLLMKind), not membership in PROVIDER_KINDS.
+	const kind = typeof p.kind === 'string' ? p.kind.trim() : '';
 	return typeof p.id === 'number' && typeof p.name === 'string' &&
-		typeof p.kind === 'string' && p.kind.trim().length > 0 &&
+		kind.length > 0 && kind.length <= 24 &&
 		typeof p.enabled === 'boolean';
 }
 

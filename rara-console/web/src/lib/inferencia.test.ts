@@ -116,6 +116,9 @@ describe('type guards', () => {
 		expect(isProvider({ ...provider, kind: 'vertex_ai' })).toBe(true);
 		expect(isProvider({ ...provider, kind: '' })).toBe(false);
 		expect(isProvider({ ...provider, kind: '   ' })).toBe(false);
+		// mirror the backend's 1..24 contract — a kind longer than 24 chars is out of contract.
+		expect(isProvider({ ...provider, kind: 'x'.repeat(25) })).toBe(false);
+		expect(isProvider({ ...provider, kind: 'x'.repeat(24) })).toBe(true);
 	});
 	it('isModel accepts a real row and rejects junk', () => {
 		expect(
