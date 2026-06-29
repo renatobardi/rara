@@ -439,13 +439,13 @@
 	<div class="flex h-40 justify-start gap-1">
 		{#each bars as b (b.label)}
 			<div
-				class="flex min-w-0 max-w-16 flex-1 flex-col items-center gap-1"
+				class="flex min-w-0 flex-1 flex-col items-center gap-1 {showValues ? 'max-w-[6rem]' : 'max-w-[4rem]'}"
 				title="{formatDay(b.label)}: {formatUSD(b.value)}"
 				role="img"
 				aria-label="{formatDay(b.label)}: {formatUSD(b.value)}"
 			>
 				{#if showValues}
-					<span class="w-full truncate text-center font-mono text-[10px] text-muted" aria-hidden="true">{formatUSD(b.value)}</span>
+					<span class="w-full whitespace-nowrap text-center font-mono text-[10px] text-muted" aria-hidden="true">{formatUSD(b.value)}</span>
 				{/if}
 				<div class="flex w-full flex-1 items-end">
 					<div class="w-full rounded-t bg-text" style="height: {Math.max(b.pct, b.value > 0 ? 2 : 0)}%"></div>
