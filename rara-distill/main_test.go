@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	addon "rara-addon"
@@ -498,6 +500,12 @@ type MockDistillStore struct {
 	loadErr       error
 	saved         []Distillation
 	saveErr       error
+	// saveAttempts records every SaveDistillation call (including ones rejected below), in order,
+	// so a test can assert a retry happened. rejectStructuredJSON simulates the jsonb column
+	// refusing a payload Go marshalled as valid JSON: it returns SQLSTATE 22P02 unless structured
+	// is "{}" (the sanitized fallback the retry uses).
+	saveAttempts         []Distillation
+	rejectStructuredJSON bool
 }
 
 func newMockStore() *MockDistillStore { return &MockDistillStore{docs: map[string]SourceDoc{}} }
@@ -515,8 +523,12 @@ func (m *MockDistillStore) LoadSourceDoc(ctx context.Context, sourceRef string) 
 }
 
 func (m *MockDistillStore) SaveDistillation(ctx context.Context, d Distillation) (int, error) {
+	m.saveAttempts = append(m.saveAttempts, d)
 	if m.saveErr != nil {
 		return 0, m.saveErr
+	}
+	if m.rejectStructuredJSON && string(d.Structured) != "{}" {
+		return 0, &pgconn.PgError{Code: "22P02", Message: "invalid input syntax for type json"}
 	}
 	m.saved = append(m.saved, d)
 	return 1000 + len(m.saved), nil // first save -> 1001 (deterministic OutputRef)
@@ -817,6 +829,51 @@ func TestHandlerSaveErrorPropagates(t *testing.T) {
 	}
 }
 
+// TestHandlerRetriesSaveOnInvalidJSON: a structured payload Go marshals as valid JSON but the
+// jsonb column rejects (SQLSTATE 22P02) must not terminally fail the item. The handler retries the
+// save once with structured='{}' + parse_failed, so the distillation persists (content kept,
+// toxic structured dropped). Guards the 22P02 bleed where json.Valid passes but PG jsonb refuses.
+func TestHandlerRetriesSaveOnInvalidJSON(t *testing.T) {
+	store := newMockStore()
+	store.docs["vid1"] = SourceDoc{SourceKey: "vid1", SourceRef: "vid1", Transcript: "x"}
+	store.rejectStructuredJSON = true
+	cur := &MockCurator{results: []string{curationJSON("# ok", "d")}} // non-empty structured
+
+	h := distillHandler(store, cur, "mock/engine", newRecipeResolver(nil, "", ""))
+	res, err := h(context.Background(), addon.Item{SourceRef: "vid1", FlowID: 1}, addon.Step{Seq: 1})
+
+	if err != nil {
+		t.Fatalf("handler should persist after retrying with {}, got error: %v", err)
+	}
+	if len(store.saveAttempts) != 2 {
+		t.Fatalf("save attempts = %d, want 2 (toxic structured, then retry with {})", len(store.saveAttempts))
+	}
+	if string(store.saveAttempts[0].Structured) == "{}" {
+		t.Error("first attempt should carry the original (toxic) structured payload")
+	}
+	retry := store.saveAttempts[1]
+	if string(retry.Structured) != "{}" {
+		t.Errorf("retry structured = %s, want {}", retry.Structured)
+	}
+	if retry.StructuredStatus != structParseFailed {
+		t.Errorf("retry structured_status = %q, want %q", retry.StructuredStatus, structParseFailed)
+	}
+	// The persisted record (not just the attempt) must keep the content and carry the sanitized
+	// structured — the row is the distillation that survives, so assert on what actually landed.
+	if len(store.saved) != 1 {
+		t.Fatalf("saved rows = %d, want 1 (only the successful retry persists)", len(store.saved))
+	}
+	if store.saved[0].Content != "# ok" {
+		t.Errorf("saved content = %q, want %q (content preserved across the retry)", store.saved[0].Content, "# ok")
+	}
+	if string(store.saved[0].Structured) != "{}" {
+		t.Errorf("saved structured = %s, want {}", store.saved[0].Structured)
+	}
+	if res.OutputRef == "" {
+		t.Error("want an OutputRef from the successful retry")
+	}
+}
+
 // TestHandlerRecipeOptionsErrorPropagates: a failure reading the per-step recipe config propagates
 // (the handler does not fall back to the default on a real DB error).
 func TestHandlerRecipeOptionsErrorPropagates(t *testing.T) {
@@ -989,6 +1046,29 @@ func TestLoadSourceDocIntegration(t *testing.T) {
 // ---------------------------------------------------------------------------
 // sanitizeStructured — 22P02 guard
 // ---------------------------------------------------------------------------
+
+// TestIsInvalidJSONError: only the two Postgres jsonb-rejection codes (22P02, 22P05) trigger the
+// structured='{}' retry. A different SQLSTATE (e.g. a unique violation) or a plain error must NOT,
+// so a transient/unrelated failure never silently drops the structured extraction.
+func TestIsInvalidJSONError(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"22P02 invalid json syntax", &pgconn.PgError{Code: "22P02"}, true},
+		{"wrapped 22P02 (pgx wraps the PgError)", fmt.Errorf("upsert: %w", &pgconn.PgError{Code: "22P02"}), true},
+		{"22P05 untranslatable char", &pgconn.PgError{Code: "22P05"}, true},
+		{"23505 unique violation", &pgconn.PgError{Code: "23505"}, false},
+		{"plain error", errors.New("neon write timeout"), false},
+		{"nil", nil, false},
+	}
+	for _, c := range cases {
+		if got := isInvalidJSONError(c.err); got != c.want {
+			t.Errorf("%s: isInvalidJSONError = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
 
 // TestSanitizeStructuredInvalidJSON: non-JSON bytes are replaced with '{}' and
 // structured_status set to parse_failed; content and status are untouched.
