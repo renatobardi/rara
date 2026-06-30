@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	addon "rara-addon"
@@ -646,9 +647,27 @@ func distillHandler(store DistillStore, cur Curator, engineName string, rr *reci
 		d := distillDoc(dctx, cur, engineName, recipe, doc)
 		cancel()
 
-		sctx, cancelSave := context.WithTimeout(ctx, saveTimeout)
-		id, saveErr := store.SaveDistillation(sctx, d)
-		cancelSave()
+		// Each attempt gets its own full saveTimeout budget — the retry must not inherit the
+		// first attempt's already-consumed deadline.
+		saveOnce := func(dist Distillation) (int, error) {
+			sctx, cancel := context.WithTimeout(ctx, saveTimeout)
+			defer cancel()
+			return store.SaveDistillation(sctx, dist)
+		}
+		id, saveErr := saveOnce(d)
+		if isInvalidJSONError(saveErr) {
+			// The structured payload was JSON-valid to Go (json.Valid passed in sanitizeStructured)
+			// but the jsonb column refused it — an escape PG cannot store (e.g. a NUL escape from a
+			// transcript). Persist the distillation without the toxic extraction rather than
+			// terminally failing the item. Log only size + a digest, never the raw bytes — they are
+			// transcript-derived and may be sensitive — so occurrences stay diagnosable/dedupable.
+			sum := sha256.Sum256(d.Structured)
+			log.Printf("distill %s: structured rejected by jsonb (%v); retrying with structured={} (len=%d sha256=%s)",
+				doc.SourceKey, saveErr, len(d.Structured), hex.EncodeToString(sum[:8]))
+			d.Structured = []byte("{}")
+			d.StructuredStatus = structParseFailed
+			id, saveErr = saveOnce(d)
+		}
 		if saveErr != nil {
 			return addon.Result{}, fmt.Errorf("destilar %s: save: %w", doc.SourceKey, saveErr)
 		}
@@ -1119,6 +1138,21 @@ func (db *appDB) LoadSourceDoc(ctx context.Context, sourceRef string) (SourceDoc
 		doc.YoutubeVideoID = *ytID
 	}
 	return doc, true, nil
+}
+
+// isInvalidJSONError reports whether err is Postgres rejecting a jsonb value that Go considered
+// valid JSON: SQLSTATE 22P02 (invalid_text_representation) or 22P05 (untranslatable_character,
+// e.g. a NUL escape PG cannot store as text). `structured` is the only jsonb the save writes,
+// so such an error means that column — the handler retries with structured='{}' to persist the
+// rest of the distillation. json.Valid in sanitizeStructured catches malformed bytes but not
+// these PG-specific refusals, so this is the backstop that keeps a toxic extraction from
+// terminally failing the item.
+func isInvalidJSONError(err error) bool {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		return pgErr.Code == "22P02" || pgErr.Code == "22P05"
+	}
+	return false
 }
 
 // sanitizeStructured ensures dist.Structured is valid JSON for the jsonb column.
