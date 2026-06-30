@@ -661,9 +661,16 @@ func distillHandler(store DistillStore, cur Curator, engineName string, rr *reci
 			// transcript). Persist the distillation without the toxic extraction rather than
 			// terminally failing the item. Log only size + a digest, never the raw bytes — they are
 			// transcript-derived and may be sensitive — so occurrences stay diagnosable/dedupable.
+			// Log only the SQLSTATE, never the error message — a PgError can echo the rejected
+			// value (transcript-derived, possibly sensitive) in its Message/Detail.
+			var pgErr *pgconn.PgError
+			sqlState := ""
+			if errors.As(saveErr, &pgErr) {
+				sqlState = pgErr.Code
+			}
 			sum := sha256.Sum256(d.Structured)
-			log.Printf("distill %s: structured rejected by jsonb (%v); retrying with structured={} (len=%d sha256=%s)",
-				doc.SourceKey, saveErr, len(d.Structured), hex.EncodeToString(sum[:8]))
+			log.Printf("distill %s: structured rejected by jsonb (SQLSTATE %s); retrying with structured={} (len=%d sha256=%s)",
+				doc.SourceKey, sqlState, len(d.Structured), hex.EncodeToString(sum[:8]))
 			d.Structured = []byte("{}")
 			d.StructuredStatus = structParseFailed
 			id, saveErr = saveOnce(d)
