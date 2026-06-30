@@ -1230,7 +1230,10 @@ func (db *appDB) SaveDistillation(ctx context.Context, dist Distillation) (int, 
 		dist.Engine,
 		nullStr(dist.Title),
 		nullStr(dist.Content),
-		dist.Structured,
+		// string, not []byte: the pool runs in SimpleProtocol (PgBouncer/pooler), where pgx encodes
+		// a []byte as a bytea hex literal that the jsonb column rejects (SQLSTATE 22P02). A string is
+		// sent as a text literal the jsonb column parses. sanitizeStructured guarantees valid JSON.
+		string(dist.Structured),
 		dist.StructuredStatus,
 		nullStr(dist.DocContext),
 		dist.SourceSHA256,
