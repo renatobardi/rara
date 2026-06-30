@@ -1253,6 +1253,12 @@ func main() {
 	mux.HandleFunc("GET /api/skills/{id}/files", s.handleSkillFiles)
 	mux.HandleFunc("PUT /api/skills/{id}/files", s.handleUpsertSkillFile)
 	mux.HandleFunc("DELETE /api/skills/{id}/files", s.handleDeleteSkillFile)
+	// Agent registry (CONSOLE-#10b). {id}/skills is deeper than {id}, so it's matched first.
+	mux.HandleFunc("GET /api/agents", s.handleAgents)
+	mux.HandleFunc("PUT /api/agents", s.handleUpsertAgent)
+	mux.HandleFunc("GET /api/agents/{id}", s.handleGetAgent)
+	mux.HandleFunc("DELETE /api/agents/{id}", s.handleDeleteAgent)
+	mux.HandleFunc("PUT /api/agents/{id}/skills", s.handleSetAgentSkills)
 	mux.HandleFunc("GET /api/decisions", s.handleDecisionsFeed)
 	mux.HandleFunc("GET /api/items/{id}/decisions", s.handleItemDecisions)
 	mux.HandleFunc("GET /api/source-kinds", s.handleSourceKinds)

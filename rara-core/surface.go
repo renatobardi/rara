@@ -1244,6 +1244,13 @@ func NewSurfaceMux(core *Core, token string) http.Handler {
 	mux.HandleFunc("PUT /v1/skills/{id}/files", h.upsertSkillFile)
 	mux.HandleFunc("DELETE /v1/skills/{id}/files", h.deleteSkillFile)
 
+	// Agent registry (CONSOLE-#10b). {id}/skills is deeper than {id}, so the mux matches it first.
+	mux.HandleFunc("GET /v1/agents", h.listAgents)
+	mux.HandleFunc("PUT /v1/agents", h.upsertAgent)
+	mux.HandleFunc("GET /v1/agents/{id}", h.getAgent)
+	mux.HandleFunc("DELETE /v1/agents/{id}", h.deleteAgent)
+	mux.HandleFunc("PUT /v1/agents/{id}/skills", h.setAgentSkills)
+
 	// LinkedIn manual inbox.
 	mux.HandleFunc("POST /v1/linkedin/inbox", h.linkedinInbox)
 
