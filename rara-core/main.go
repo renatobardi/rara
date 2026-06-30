@@ -862,6 +862,20 @@ type Database interface {
 	// DeleteLLMProvider soft-deletes the provider with the given id (sets deleted_at).
 	DeleteLLMProvider(ctx context.Context, id int) error
 
+	// --- Skill registry (CONSOLE-#10a) -------------------------------------
+	// UpsertSkill writes a skill keyed by (owner_id=NULL, name); config is a jsonb object.
+	UpsertSkill(ctx context.Context, name, description, content, config string, trusted bool) (int, error)
+	// ListSkills returns non-deleted skills (with content + config).
+	ListSkills(ctx context.Context) ([]SkillRow, error)
+	// DeleteSkill soft-deletes the skill with the given id.
+	DeleteSkill(ctx context.Context, id int) error
+	// ListSkillFiles returns the supporting files of a skill bundle, ordered by path.
+	ListSkillFiles(ctx context.Context, skillID int) ([]SkillFile, error)
+	// UpsertSkillFile writes a file in a skill bundle, keyed by (skill_id, path).
+	UpsertSkillFile(ctx context.Context, skillID int, path, content string) (int, error)
+	// DeleteSkillFile removes a file from a skill bundle.
+	DeleteSkillFile(ctx context.Context, skillID int, path string) error
+
 	// --- LLM reconciler: concrete provider/model entries (CORR-INFER #1) --
 	// ListBoundUpstreams returns the DISTINCT concrete upstreams ("{kind}/{model}", with a
 	// non-empty kind before the first '/' and a non-empty model after it) that enabled worker
@@ -1824,6 +1838,7 @@ func serveSurfacePool(ctx context.Context, dbURL, addr, token string) error {
 		log.Printf("ERROR: surface: %v — LLM provider key writes disabled", err)
 	}
 	core.box = box
+	core.fetchURL = httpGetURL
 	return ServeSurface(ctx, core, addr, token)
 }
 
