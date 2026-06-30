@@ -158,6 +158,17 @@ type mockSkillFile struct {
 	Content string
 }
 
+type mockAgent struct {
+	ID           int
+	Name         string
+	Description  string
+	AvatarURL    string
+	Visibility   string
+	Instructions string
+	Model        string
+	DeletedAt    *bool // non-nil = soft-deleted
+}
+
 type MockDatabase struct {
 	capabilities map[string]Capability // UNIQUE(name)
 	providers    map[string]Provider   // UNIQUE(name)
@@ -205,6 +216,10 @@ type MockDatabase struct {
 	nextSkillID     int
 	skillFiles      []mockSkillFile
 	nextSkillFileID int
+
+	agents      []mockAgent
+	nextAgentID int
+	agentSkills map[int][]int // agent_id -> skill_ids
 
 	spendLogs []mockSpendLog // mirrors litellm."LiteLLM_SpendLogs" rows (tests seed directly)
 
@@ -260,6 +275,8 @@ func newMockDatabase() *MockDatabase {
 		nextLLMProviderID:     1,
 		nextSkillID:           1,
 		nextSkillFileID:       1,
+		nextAgentID:           1,
+		agentSkills:           make(map[int][]int),
 		itemContents:          make(map[int]ItemContentResult),
 		nowFn:                 time.Now,
 	}

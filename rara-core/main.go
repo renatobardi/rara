@@ -876,6 +876,20 @@ type Database interface {
 	// DeleteSkillFile removes a file from a skill bundle.
 	DeleteSkillFile(ctx context.Context, skillID int, path string) error
 
+	// --- Agent registry (CONSOLE-#10b) -------------------------------------
+	// UpsertAgent writes an agent keyed by (owner_id=NULL, name); returns its id. Takes a struct
+	// (not positional strings) so the fields can't be silently transposed at a call site.
+	UpsertAgent(ctx context.Context, a AgentRecord) (int, error)
+	// ListAgents returns non-deleted agents (roster; SkillIDs left nil).
+	ListAgents(ctx context.Context) ([]AgentRow, error)
+	// GetAgent returns one non-deleted agent with its attached (non-deleted) skill ids.
+	// found is false when no active agent has that id (a missing row, not a storage failure).
+	GetAgent(ctx context.Context, id int) (AgentRow, bool, error)
+	// DeleteAgent soft-deletes the agent with the given id.
+	DeleteAgent(ctx context.Context, id int) error
+	// SetAgentSkills replaces the agent's attached skills with the given set.
+	SetAgentSkills(ctx context.Context, agentID int, skillIDs []int) error
+
 	// --- LLM reconciler: concrete provider/model entries (CORR-INFER #1) --
 	// ListBoundUpstreams returns the DISTINCT concrete upstreams ("{kind}/{model}", with a
 	// non-empty kind before the first '/' and a non-empty model after it) that enabled worker
