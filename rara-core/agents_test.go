@@ -14,22 +14,22 @@ import (
 // MockDatabase — Agent methods (mirror the SQL contract, zero I/O)
 // ---------------------------------------------------------------------------
 
-func (m *MockDatabase) UpsertAgent(_ context.Context, name, description, avatarURL, visibility, instructions, model string) (int, error) {
-	for i, a := range m.agents {
-		if a.Name == name && a.DeletedAt == nil {
-			m.agents[i].Description = description
-			m.agents[i].AvatarURL = avatarURL
-			m.agents[i].Visibility = visibility
-			m.agents[i].Instructions = instructions
-			m.agents[i].Model = model
-			return a.ID, nil
+func (m *MockDatabase) UpsertAgent(_ context.Context, a AgentRecord) (int, error) {
+	for i, ex := range m.agents {
+		if ex.Name == a.Name && ex.DeletedAt == nil {
+			m.agents[i].Description = a.Description
+			m.agents[i].AvatarURL = a.AvatarURL
+			m.agents[i].Visibility = a.Visibility
+			m.agents[i].Instructions = a.Instructions
+			m.agents[i].Model = a.Model
+			return ex.ID, nil
 		}
 	}
 	id := m.nextAgentID
 	m.nextAgentID++
 	m.agents = append(m.agents, mockAgent{
-		ID: id, Name: name, Description: description, AvatarURL: avatarURL,
-		Visibility: visibility, Instructions: instructions, Model: model,
+		ID: id, Name: a.Name, Description: a.Description, AvatarURL: a.AvatarURL,
+		Visibility: a.Visibility, Instructions: a.Instructions, Model: a.Model,
 	})
 	return id, nil
 }
@@ -69,7 +69,7 @@ func (m *MockDatabase) skillActiveExists(id int) bool {
 	return false
 }
 
-func (m *MockDatabase) GetAgent(_ context.Context, id int) (AgentRow, error) {
+func (m *MockDatabase) GetAgent(_ context.Context, id int) (AgentRow, bool, error) {
 	for _, a := range m.agents {
 		if a.ID != id || a.DeletedAt != nil {
 			continue
@@ -89,9 +89,9 @@ func (m *MockDatabase) GetAgent(_ context.Context, id int) (AgentRow, error) {
 		}
 		sort.Ints(ids)
 		row.SkillIDs = ids
-		return row, nil
+		return row, true, nil
 	}
-	return AgentRow{}, errNotFound
+	return AgentRow{}, false, nil
 }
 
 func (m *MockDatabase) DeleteAgent(_ context.Context, id int) error {
@@ -178,6 +178,21 @@ func TestUpsertAgentRejectsBadVisibility(t *testing.T) {
 	var bad badInputError
 	if !errors.As(err, &bad) {
 		t.Fatalf("want badInput for visibility=public, got %v", err)
+	}
+}
+
+func TestUpsertAgentRejectsMalformedModel(t *testing.T) {
+	ctx := context.Background()
+	core, _, _ := newTestCore(t)
+	var bad badInputError
+	for _, m := range []string{"groq/", "/llama", "noslash", "/"} {
+		if _, err := core.UpsertAgent(ctx, AgentInput{Name: "x", Model: m}); !errors.As(err, &bad) {
+			t.Errorf("model %q accepted, want badInput", m)
+		}
+	}
+	// Empty model is allowed (optional — an agent can exist before a model is picked).
+	if _, err := core.UpsertAgent(ctx, AgentInput{Name: "y", Model: ""}); err != nil {
+		t.Errorf("empty model rejected: %v", err)
 	}
 }
 

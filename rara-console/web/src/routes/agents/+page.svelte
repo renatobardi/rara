@@ -242,14 +242,40 @@
 		if (confirmDelete) confirmDelete = null;
 		else if (formOpen) formOpen = false;
 	}
-	let nameInputEl = $state<HTMLInputElement>();
-	let deleteCancelEl = $state<HTMLButtonElement>();
-	$effect(() => {
-		if (formOpen) nameInputEl?.focus();
-	});
-	$effect(() => {
-		if (confirmDelete) deleteCancelEl?.focus();
-	});
+
+	// Move focus into a dialog when it opens and keep Tab cycling trapped inside it, so keyboard
+	// users can't wander into the page behind the modal; restores focus to the opener on close.
+	// (Mirrors the fontes page action.)
+	function focusInto(node: HTMLElement) {
+		const sel =
+			'a[href], button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
+		const focusables = () =>
+			Array.from(node.querySelectorAll<HTMLElement>(sel)).filter((el) => el.offsetParent !== null);
+		const prev = document.activeElement as HTMLElement | null;
+		focusables()[0]?.focus();
+		function onKeydown(e: KeyboardEvent) {
+			if (e.key !== 'Tab') return;
+			const els = focusables();
+			if (els.length === 0) return;
+			const first = els[0];
+			const last = els[els.length - 1];
+			const active = document.activeElement;
+			if (e.shiftKey && active === first) {
+				e.preventDefault();
+				last.focus();
+			} else if (!e.shiftKey && active === last) {
+				e.preventDefault();
+				first.focus();
+			}
+		}
+		node.addEventListener('keydown', onKeydown);
+		return {
+			destroy: () => {
+				node.removeEventListener('keydown', onKeydown);
+				prev?.focus?.(); // return focus to whatever opened the dialog
+			}
+		};
+	}
 
 	const fieldClass =
 		'w-full rounded-token border border-border bg-bg px-3 py-1.5 text-[13px] text-text placeholder:text-muted focus:border-text focus:outline-none';
@@ -335,6 +361,7 @@
 			role="dialog"
 			aria-modal="true"
 			aria-labelledby="agent-form-title"
+			use:focusInto
 		>
 			<h3 id="agent-form-title" class="mb-4 text-[14px] font-semibold">
 				{editingId === null ? t.agents.create : t.agents.edit}
@@ -344,7 +371,7 @@
 				<div class="grid gap-4 sm:grid-cols-2">
 					<div>
 						<label class={labelClass} for="a-name">{t.agents.nameLabel}</label>
-						<input id="a-name" class={fieldClass} placeholder={t.agents.namePlaceholder} bind:value={eName} bind:this={nameInputEl} autocomplete="off" />
+						<input id="a-name" class={fieldClass} placeholder={t.agents.namePlaceholder} bind:value={eName} autocomplete="off" />
 						{#if formErrors.name}<p class={errorClass}>{formErrors.name}</p>{/if}
 					</div>
 					<div>
@@ -445,11 +472,11 @@
 			if (e.target === e.currentTarget) confirmDelete = null;
 		}}
 	>
-		<div class="w-full max-w-md rounded-xl border border-border bg-bg p-5 shadow-2xl" role="dialog" aria-modal="true" aria-labelledby="del-title">
+		<div class="w-full max-w-md rounded-xl border border-border bg-bg p-5 shadow-2xl" role="dialog" aria-modal="true" aria-labelledby="del-title" use:focusInto>
 			<h3 id="del-title" class="sr-only">{t.agents.delete}</h3>
 			<p class="mb-4 text-[13px] text-text">{t.agents.deleteConfirm.replace('{name}', confirmDelete.name)}</p>
 			<div class="flex justify-end gap-2">
-				<button bind:this={deleteCancelEl} class="rounded-token border border-border px-3.5 py-1.5 text-[13px] text-muted hover:bg-hover" onclick={() => (confirmDelete = null)}>{t.agents.cancel}</button>
+				<button class="rounded-token border border-border px-3.5 py-1.5 text-[13px] text-muted hover:bg-hover" onclick={() => (confirmDelete = null)}>{t.agents.cancel}</button>
 				<button class="rounded-token bg-red-500 px-3.5 py-1.5 text-[13px] font-medium text-white hover:opacity-90 disabled:opacity-50" disabled={deleting} onclick={doDelete}>{deleting ? t.agents.deleting : t.agents.delete}</button>
 			</div>
 		</div>
