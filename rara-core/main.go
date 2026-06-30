@@ -890,6 +890,18 @@ type Database interface {
 	// SetAgentSkills replaces the agent's attached skills with the given set.
 	SetAgentSkills(ctx context.Context, agentID int, skillIDs []int) error
 
+	// --- Agent task queue (CONSOLE-#10c1) ----------------------------------
+	// EnqueueAgentTask inserts a queued task for an agent; returns its id. A missing or
+	// soft-deleted agent yields errNotFound (the insert is guarded by an active-agent EXISTS).
+	EnqueueAgentTask(ctx context.Context, t AgentTaskRecord) (int, error)
+	// ListAgentTasks returns one agent's task history (newest first).
+	ListAgentTasks(ctx context.Context, agentID int) ([]AgentTaskRow, error)
+	// ListAllAgentTasks returns the global task feed; an empty status matches every row.
+	ListAllAgentTasks(ctx context.Context, status string) ([]AgentTaskRow, error)
+	// ClaimAgentTask pulls the next queued task (priority DESC, then oldest), moving it
+	// queued→dispatched via FOR UPDATE SKIP LOCKED. Returns nil when the queue is empty.
+	ClaimAgentTask(ctx context.Context) (*AgentTaskRow, error)
+
 	// --- LLM reconciler: concrete provider/model entries (CORR-INFER #1) --
 	// ListBoundUpstreams returns the DISTINCT concrete upstreams ("{kind}/{model}", with a
 	// non-empty kind before the first '/' and a non-empty model after it) that enabled worker

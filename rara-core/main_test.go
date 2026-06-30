@@ -221,6 +221,9 @@ type MockDatabase struct {
 	nextAgentID int
 	agentSkills map[int][]int // agent_id -> skill_ids
 
+	agentTasks      []mockAgentTask // agent_tasks queue (insertion order = id order)
+	nextAgentTaskID int
+
 	spendLogs []mockSpendLog // mirrors litellm."LiteLLM_SpendLogs" rows (tests seed directly)
 
 	nextFlowID     int
@@ -277,6 +280,7 @@ func newMockDatabase() *MockDatabase {
 		nextSkillFileID:       1,
 		nextAgentID:           1,
 		agentSkills:           make(map[int][]int),
+		nextAgentTaskID:       1,
 		itemContents:          make(map[int]ItemContentResult),
 		nowFn:                 time.Now,
 	}

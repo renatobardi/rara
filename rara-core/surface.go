@@ -1250,6 +1250,9 @@ func NewSurfaceMux(core *Core, token string) http.Handler {
 	mux.HandleFunc("GET /v1/agents/{id}", h.getAgent)
 	mux.HandleFunc("DELETE /v1/agents/{id}", h.deleteAgent)
 	mux.HandleFunc("PUT /v1/agents/{id}/skills", h.setAgentSkills)
+	mux.HandleFunc("POST /v1/agents/{id}/tasks", h.enqueueAgentTask)
+	mux.HandleFunc("GET /v1/agents/{id}/tasks", h.listAgentTasks)
+	mux.HandleFunc("GET /v1/agent-tasks", h.listAllAgentTasks)
 
 	// LinkedIn manual inbox.
 	mux.HandleFunc("POST /v1/linkedin/inbox", h.linkedinInbox)
