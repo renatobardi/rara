@@ -67,6 +67,26 @@ func TestEnqueueAgentTaskProxiesPOST(t *testing.T) {
 	}
 }
 
+// The core returns 404 for an enqueue onto a missing/soft-deleted agent. The write path uses
+// postCore/proxyWrite, so that client error must pass through as 404 — not be flattened to a 502
+// (which would happen if the handler were switched to a fetch-style proxy).
+func TestEnqueueAgentTaskPassesThrough404(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /v1/agents/{id}/tasks", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+	})
+	core := httptest.NewServer(mux)
+	t.Cleanup(core.Close)
+	s := &server{coreURL: core.URL, token: "secret", client: core.Client()}
+
+	rec := httptest.NewRecorder()
+	req := newReqWithPathValue("POST", "/api/agents/3/tasks", `{"instruction":"x"}`, map[string]string{"id": "3"})
+	s.handleEnqueueAgentTask(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("status=%d, want 404 passed through from core", rec.Code)
+	}
+}
+
 func TestAgentTasksHistoryProxiesGET(t *testing.T) {
 	var method, path string
 	core := fakeAgentTasksCore(t, "secret", &method, &path, nil, nil)

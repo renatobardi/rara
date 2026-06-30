@@ -239,11 +239,16 @@ func (d *pgxDatabase) ClaimAgentTask(ctx context.Context) (*AgentTaskRow, error)
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck // no-op after a successful Commit
 
+	// JOIN agents + deleted_at IS NULL: a task whose agent was soft-deleted after enqueue must NOT
+	// be claimed — dispatching it would run an agent the operator already disabled (and burn its
+	// corpus/credentials). FOR UPDATE OF t locks only the task row, never the agents row.
 	const sel = `
-		SELECT id FROM agent_tasks
-		WHERE status = 'queued'
-		ORDER BY priority DESC, created_at, id
-		FOR UPDATE SKIP LOCKED
+		SELECT t.id
+		FROM agent_tasks t
+		JOIN agents a ON a.id = t.agent_id
+		WHERE t.status = 'queued' AND a.deleted_at IS NULL
+		ORDER BY t.priority DESC, t.created_at, t.id
+		FOR UPDATE OF t SKIP LOCKED
 		LIMIT 1`
 	var id int
 	if err := tx.QueryRow(ctx, sel).Scan(&id); errors.Is(err, pgx.ErrNoRows) {

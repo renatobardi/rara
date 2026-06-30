@@ -8,7 +8,7 @@
 CREATE TABLE IF NOT EXISTS agent_tasks (
     id            SERIAL PRIMARY KEY,
     agent_id      INT  NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
-    instruction   TEXT NOT NULL,                                        -- free-form prompt
+    instruction   TEXT NOT NULL CHECK (btrim(instruction) <> ''),       -- free-form prompt
     context_refs  JSONB NOT NULL DEFAULT '[]' CHECK (jsonb_typeof(context_refs) = 'array'),
     status        TEXT NOT NULL DEFAULT 'queued'
                   CHECK (status IN ('queued', 'dispatched', 'running', 'done', 'failed', 'cancelled')),

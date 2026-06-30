@@ -71,6 +71,11 @@ func (m *MockDatabase) ClaimAgentTask(_ context.Context) (*AgentTaskRow, error) 
 		if m.agentTasks[i].Status != taskQueued {
 			continue
 		}
+		// Mirror the JOIN agents … deleted_at IS NULL guard: never claim a task whose agent was
+		// soft-deleted after enqueue.
+		if !m.agentActive(m.agentTasks[i].AgentID) {
+			continue
+		}
 		// Highest priority wins; ties break by lowest id (= insertion order = created_at, id).
 		if best == -1 || m.agentTasks[i].Priority > m.agentTasks[best].Priority {
 			best = i
@@ -87,13 +92,20 @@ func (m *MockDatabase) ClaimAgentTask(_ context.Context) (*AgentTaskRow, error) 
 }
 
 func (t mockAgentTask) row() AgentTaskRow {
-	refs := t.ContextRefs
+	// Deep-copy the mutable fields so a caller mutating the returned row can't reach back into the
+	// mock's stored state — a real Postgres read returns fresh values, not aliases.
+	refs := append(json.RawMessage(nil), t.ContextRefs...)
 	if len(refs) == 0 {
 		refs = json.RawMessage("[]")
 	}
+	var dispatchedAt *time.Time
+	if t.DispatchedAt != nil {
+		ts := *t.DispatchedAt
+		dispatchedAt = &ts
+	}
 	return AgentTaskRow{
 		ID: t.ID, AgentID: t.AgentID, Instruction: t.Instruction, ContextRefs: refs,
-		Status: t.Status, Priority: t.Priority, DispatchedAt: t.DispatchedAt,
+		Status: t.Status, Priority: t.Priority, DispatchedAt: dispatchedAt,
 	}
 }
 
@@ -283,6 +295,25 @@ func TestClaimAgentTaskHonoursPriority(t *testing.T) {
 	}
 	if claimed == nil || claimed.ID != hi {
 		t.Fatalf("claimed = %+v, want high-priority task %d first", claimed, hi)
+	}
+}
+
+// A task whose agent is soft-deleted after enqueue must never be claimed — claiming would run an
+// agent the operator already disabled.
+func TestClaimAgentTaskSkipsSoftDeletedAgent(t *testing.T) {
+	ctx := context.Background()
+	core, _, _ := newTestCore(t)
+	aid := mustAgent(t, core, ctx, AgentInput{Name: "writer"})
+	mustEnqueueTask(t, core, ctx, aid, AgentTaskInput{Instruction: "orphan"})
+	if err := core.DeleteAgent(ctx, aid); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	claimed, err := core.ClaimAgentTask(ctx)
+	if err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if claimed != nil {
+		t.Fatalf("claimed task %d for a soft-deleted agent", claimed.ID)
 	}
 }
 
