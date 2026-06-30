@@ -25,18 +25,20 @@ func (s *server) handleUpsertAgent(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleGetAgent proxies GET /v1/agents/{id} — the agent with its attached skill ids.
+// Uses fetchCoreWithStatus so the core's status propagates: a missing/soft-deleted agent is a 404,
+// not a 502 (plain fetchCore collapses every non-2xx into bad-gateway).
 func (s *server) handleGetAgent(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if !isNumericID(id) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid agent id"})
 		return
 	}
-	body, err := s.fetchCore(r.Context(), "/v1/agents/"+id)
+	status, body, err := s.fetchCoreWithStatus(r.Context(), "/v1/agents/"+id)
 	if err != nil {
 		badGateway(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, json.RawMessage(body))
+	writeJSON(w, status, json.RawMessage(body))
 }
 
 // handleDeleteAgent proxies DELETE /v1/agents/{id}. Rejects non-numeric ids before the upstream.

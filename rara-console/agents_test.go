@@ -109,6 +109,23 @@ func TestGetAgentProxiesIDInPath(t *testing.T) {
 	}
 }
 
+// A 404 from core (missing/soft-deleted agent) must reach the SPA as 404, not be collapsed to 502.
+func TestGetAgentPropagatesNotFound(t *testing.T) {
+	core := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":"not found"}`))
+	}))
+	t.Cleanup(core.Close)
+	s := &server{coreURL: core.URL, token: "secret", client: core.Client()}
+
+	rec := httptest.NewRecorder()
+	req := newReqWithPathValue("GET", "/api/agents/9", "", map[string]string{"id": "9"})
+	s.handleGetAgent(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("status=%d, want 404 propagated (not 502)", rec.Code)
+	}
+}
+
 func TestDeleteAgentProxiesIDInPath(t *testing.T) {
 	var method, path string
 	core := fakeAgentsCore(t, "secret", &method, &path, nil)
