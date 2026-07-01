@@ -43,10 +43,8 @@ type AgentTaskInput struct {
 	Priority    int             `json:"priority,omitempty"`
 }
 
-// AgentTaskRow is the read-side DTO. The daemon-written columns
-// (result/error/session_id/work_dir/completed_at) are intentionally NOT published here yet: nothing
-// writes or reads them in this slice, so exposing always-empty fields would be a misleading contract.
-// The executor (10c2) adds them to both the DTO and the projection when it populates them.
+// AgentTaskRow is the read-side DTO. Daemon-written fields (result/error/session_id/work_dir/
+// completed_at) were absent in 10c1; 10c2a adds them now that the executor populates them.
 type AgentTaskRow struct {
 	ID           int             `json:"id"`
 	AgentID      int             `json:"agent_id"`
@@ -54,8 +52,13 @@ type AgentTaskRow struct {
 	ContextRefs  json.RawMessage `json:"context_refs"`
 	Status       string          `json:"status"`
 	Priority     int             `json:"priority"`
+	Result       json.RawMessage `json:"result,omitempty"`
+	Error        string          `json:"error,omitempty"`
+	SessionID    string          `json:"session_id,omitempty"`
+	WorkDir      string          `json:"work_dir,omitempty"`
 	CreatedAt    time.Time       `json:"created_at"`
 	DispatchedAt *time.Time      `json:"dispatched_at,omitempty"`
+	CompletedAt  *time.Time      `json:"completed_at,omitempty"`
 }
 
 // AgentTaskRecord is the validated, normalized write payload handed to the Database layer.
@@ -119,6 +122,18 @@ func (c *Core) ClaimAgentTask(ctx context.Context) (*AgentTaskRow, error) {
 	return c.db.ClaimAgentTask(ctx)
 }
 
+// UpdateAgentTask writes daemon progress for a claimed task. Validates the status value; the
+// database layer executes an unconditional UPDATE (the daemon is a trusted internal caller).
+func (c *Core) UpdateAgentTask(ctx context.Context, id int, status, sessionID, workDir string, result json.RawMessage, errMsg string) error {
+	if id <= 0 {
+		return badInput("task id must be positive, got %d", id)
+	}
+	if !validTaskStatuses[status] {
+		return badInput("unknown status %q", status)
+	}
+	return c.db.UpdateAgentTask(ctx, id, status, sessionID, workDir, result, errMsg)
+}
+
 // ---------------------------------------------------------------------------
 // HTTP handlers
 // ---------------------------------------------------------------------------
@@ -178,16 +193,25 @@ func (d *pgxDatabase) EnqueueAgentTask(ctx context.Context, t AgentTaskRecord) (
 	return id, nil
 }
 
-// agentTaskCols is the shared read projection (column order matches scanAgentTask). The
-// daemon-written columns (result/error/session_id/work_dir/completed_at) are intentionally absent:
-// nothing reads them in this slice, and the executor (10c2) extends the projection when it does.
-const agentTaskCols = `id, agent_id, instruction, context_refs, status, priority, created_at, dispatched_at`
+// agentTaskCols is the shared read projection (column order matches scanAgentTask).
+const agentTaskCols = `id, agent_id, instruction, context_refs, status, priority,
+	result, error, session_id, work_dir, created_at, dispatched_at, completed_at`
 
 // scanAgentTask scans one row in agentTaskCols order.
 func scanAgentTask(rows pgx.Row) (AgentTaskRow, error) {
 	var a AgentTaskRow
+	var errStr, sessionID, workDir *string
 	err := rows.Scan(&a.ID, &a.AgentID, &a.Instruction, &a.ContextRefs, &a.Status, &a.Priority,
-		&a.CreatedAt, &a.DispatchedAt)
+		&a.Result, &errStr, &sessionID, &workDir, &a.CreatedAt, &a.DispatchedAt, &a.CompletedAt)
+	if errStr != nil {
+		a.Error = *errStr
+	}
+	if sessionID != nil {
+		a.SessionID = *sessionID
+	}
+	if workDir != nil {
+		a.WorkDir = *workDir
+	}
 	return a, err
 }
 
@@ -269,4 +293,26 @@ func (d *pgxDatabase) ClaimAgentTask(ctx context.Context) (*AgentTaskRow, error)
 		return nil, fmt.Errorf("claim agent task: commit: %w", err)
 	}
 	return &a, nil
+}
+
+func (d *pgxDatabase) UpdateAgentTask(ctx context.Context, id int, status, sessionID, workDir string, result json.RawMessage, errMsg string) error {
+	var resultStr *string
+	if len(result) > 0 {
+		s := string(result)
+		resultStr = &s
+	}
+	const q = `
+		UPDATE agent_tasks SET
+			status      = $2,
+			session_id  = NULLIF($3, ''),
+			work_dir    = NULLIF($4, ''),
+			result      = CASE WHEN $5::text IS NOT NULL THEN $5::jsonb ELSE result END,
+			error       = NULLIF($6, ''),
+			completed_at = CASE WHEN $2 IN ('done','failed','cancelled')
+			                    THEN CURRENT_TIMESTAMP ELSE completed_at END
+		WHERE id = $1`
+	if _, err := d.conn.Exec(ctx, q, id, status, sessionID, workDir, resultStr, errMsg); err != nil {
+		return fmt.Errorf("update agent task %d: %w", id, err)
+	}
+	return nil
 }

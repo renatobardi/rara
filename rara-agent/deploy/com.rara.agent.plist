@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Template — install-agent-mac.sh generates and installs the real plist with correct $HOME. -->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.rara.agent</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/YOUR_USER/.rara-agent/run-agent.sh</string>
+    </array>
+
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/YOUR_USER/.rara-agent</string>
+
+    <key>StandardOutPath</key>
+    <string>/Users/YOUR_USER/Library/Logs/rara-agent/output.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/YOUR_USER/Library/Logs/rara-agent/error.log</string>
+</dict>
+</plist>

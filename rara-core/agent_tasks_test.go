@@ -22,7 +22,12 @@ type mockAgentTask struct {
 	ContextRefs  json.RawMessage
 	Status       string
 	Priority     int
+	Result       json.RawMessage
+	Error        string
+	SessionID    string
+	WorkDir      string
 	DispatchedAt *time.Time
+	CompletedAt  *time.Time
 }
 
 func (m *MockDatabase) EnqueueAgentTask(_ context.Context, t AgentTaskRecord) (int, error) {
@@ -103,10 +108,45 @@ func (t mockAgentTask) row() AgentTaskRow {
 		ts := *t.DispatchedAt
 		dispatchedAt = &ts
 	}
+	var completedAt *time.Time
+	if t.CompletedAt != nil {
+		ts := *t.CompletedAt
+		completedAt = &ts
+	}
+	result := append(json.RawMessage(nil), t.Result...)
 	return AgentTaskRow{
 		ID: t.ID, AgentID: t.AgentID, Instruction: t.Instruction, ContextRefs: refs,
-		Status: t.Status, Priority: t.Priority, DispatchedAt: dispatchedAt,
+		Status: t.Status, Priority: t.Priority, Result: result, Error: t.Error,
+		SessionID: t.SessionID, WorkDir: t.WorkDir,
+		DispatchedAt: dispatchedAt, CompletedAt: completedAt,
 	}
+}
+
+func (m *MockDatabase) UpdateAgentTask(_ context.Context, id int, status, sessionID, workDir string, result json.RawMessage, errMsg string) error {
+	for i := range m.agentTasks {
+		if m.agentTasks[i].ID != id {
+			continue
+		}
+		m.agentTasks[i].Status = status
+		if sessionID != "" {
+			m.agentTasks[i].SessionID = sessionID
+		}
+		if workDir != "" {
+			m.agentTasks[i].WorkDir = workDir
+		}
+		if len(result) > 0 {
+			m.agentTasks[i].Result = append(json.RawMessage(nil), result...)
+		}
+		if errMsg != "" {
+			m.agentTasks[i].Error = errMsg
+		}
+		if status == taskDone || status == taskFailed || status == taskCancelled {
+			now := m.nowFn()
+			m.agentTasks[i].CompletedAt = &now
+		}
+		return nil
+	}
+	return fmt.Errorf("task %d not found", id)
 }
 
 // ---------------------------------------------------------------------------
@@ -378,5 +418,52 @@ func TestAgentTasksHTTPGlobalFeedFiltersStatus(t *testing.T) {
 	// An unknown status is a 400 (allowlist), not a silent empty list.
 	if rec := authedDo(t, mux, "GET", "/v1/agent-tasks?status=bogus", ""); rec.Code != http.StatusBadRequest {
 		t.Errorf("status=bogus: %d, want 400", rec.Code)
+	}
+}
+
+func TestUpdateAgentTask(t *testing.T) {
+	ctx := context.Background()
+	core, _, _ := newTestCore(t)
+	aid := mustAgent(t, core, ctx, AgentInput{Name: "bot"})
+	taskID := mustEnqueueTask(t, core, ctx, aid, AgentTaskInput{Instruction: "do work"})
+
+	// Claim to move to dispatched
+	task, err := core.ClaimAgentTask(ctx)
+	if err != nil || task == nil {
+		t.Fatalf("claim: err=%v task=%v", err, task)
+	}
+
+	// Mark running
+	if err := core.UpdateAgentTask(ctx, taskID, taskRunning, "sess-1", "/tmp/w1", nil, ""); err != nil {
+		t.Fatalf("update running: %v", err)
+	}
+	tasks, _ := core.ListAgentTasks(ctx, aid)
+	if tasks[0].Status != taskRunning {
+		t.Errorf("status after running: got %q", tasks[0].Status)
+	}
+	if tasks[0].SessionID != "sess-1" {
+		t.Errorf("session_id: got %q", tasks[0].SessionID)
+	}
+
+	// Mark done with result
+	result := json.RawMessage(`{"output":"docslide created"}`)
+	if err := core.UpdateAgentTask(ctx, taskID, taskDone, "sess-1", "/tmp/w1", result, ""); err != nil {
+		t.Fatalf("update done: %v", err)
+	}
+	tasks, _ = core.ListAgentTasks(ctx, aid)
+	if tasks[0].Status != taskDone {
+		t.Errorf("status after done: got %q", tasks[0].Status)
+	}
+	if string(tasks[0].Result) != `{"output":"docslide created"}` {
+		t.Errorf("result: got %s", tasks[0].Result)
+	}
+	if tasks[0].CompletedAt == nil {
+		t.Error("completed_at should be set after done")
+	}
+
+	// Invalid status rejected
+	var bad badInputError
+	if err := core.UpdateAgentTask(ctx, taskID, "bogus", "", "", nil, ""); !errors.As(err, &bad) {
+		t.Errorf("invalid status accepted: %v", err)
 	}
 }

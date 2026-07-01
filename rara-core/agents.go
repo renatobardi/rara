@@ -31,6 +31,9 @@ const maxAgentNameLen = 64
 // #10a); when a real subject exists, the private rows get filtered by owner here and in the reads.
 var validVisibilities = map[string]bool{"workspace": true, "private": true}
 
+// validExecutors mirrors the agents.executor CHECK. Empty defaults to "cli".
+var validExecutors = map[string]bool{"cli": true, "gateway": true}
+
 // AgentInput is the write-side payload for an agent.
 type AgentInput struct {
 	Name         string `json:"name"`
@@ -38,7 +41,8 @@ type AgentInput struct {
 	AvatarURL    string `json:"avatar_url"`
 	Visibility   string `json:"visibility"`
 	Instructions string `json:"instructions"`
-	Model        string `json:"model"` // "kind/model" upstream, via the picker
+	Model        string `json:"model"`    // "kind/model" upstream, via the picker
+	Executor     string `json:"executor"` // "cli" (default) | "gateway" (10c2b)
 }
 
 // AgentRow is the read-side DTO. SkillIDs is populated only by GetAgent (the detail read);
@@ -51,6 +55,7 @@ type AgentRow struct {
 	Visibility   string    `json:"visibility"`
 	Instructions string    `json:"instructions"`
 	Model        string    `json:"model"`
+	Executor     string    `json:"executor"`
 	SkillIDs     []int     `json:"skill_ids"`
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
@@ -70,6 +75,7 @@ type AgentRecord struct {
 	Visibility   string
 	Instructions string
 	Model        string
+	Executor     string
 }
 
 // ---------------------------------------------------------------------------
@@ -99,9 +105,16 @@ func (c *Core) UpsertAgent(ctx context.Context, in AgentInput) (int, error) {
 	if model != "" && !isKindModel(model) {
 		return 0, badInput("model must be in kind/model format, got %q", in.Model)
 	}
+	exec := strings.TrimSpace(in.Executor)
+	if exec == "" {
+		exec = "cli"
+	}
+	if !validExecutors[exec] {
+		return 0, badInput("executor must be 'cli' or 'gateway', got %q", in.Executor)
+	}
 	return c.db.UpsertAgent(ctx, AgentRecord{
 		Name: name, Description: in.Description, AvatarURL: in.AvatarURL,
-		Visibility: vis, Instructions: in.Instructions, Model: model,
+		Visibility: vis, Instructions: in.Instructions, Model: model, Executor: exec,
 	})
 }
 
@@ -219,18 +232,19 @@ func (h *httpSurface) setAgentSkills(w http.ResponseWriter, r *http.Request) {
 
 func (d *pgxDatabase) UpsertAgent(ctx context.Context, a AgentRecord) (int, error) {
 	const q = `
-		INSERT INTO agents (name, description, avatar_url, visibility, instructions, model)
-		VALUES ($1, $2, $3, $4, $5, $6)
+		INSERT INTO agents (name, description, avatar_url, visibility, instructions, model, executor)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
 		ON CONFLICT (owner_id, name) WHERE deleted_at IS NULL DO UPDATE SET
 			description  = EXCLUDED.description,
 			avatar_url   = EXCLUDED.avatar_url,
 			visibility   = EXCLUDED.visibility,
 			instructions = EXCLUDED.instructions,
-			model        = EXCLUDED.model
+			model        = EXCLUDED.model,
+			executor     = EXCLUDED.executor
 		RETURNING id`
 	var id int
 	if err := d.conn.QueryRow(ctx, q,
-		a.Name, a.Description, a.AvatarURL, a.Visibility, a.Instructions, a.Model).Scan(&id); err != nil {
+		a.Name, a.Description, a.AvatarURL, a.Visibility, a.Instructions, a.Model, a.Executor).Scan(&id); err != nil {
 		return 0, fmt.Errorf("upsert agent: %w", err)
 	}
 	return id, nil
@@ -238,7 +252,7 @@ func (d *pgxDatabase) UpsertAgent(ctx context.Context, a AgentRecord) (int, erro
 
 func (d *pgxDatabase) ListAgents(ctx context.Context) ([]AgentRow, error) {
 	const q = `
-		SELECT id, name, description, avatar_url, visibility, instructions, model, created_at, updated_at
+		SELECT id, name, description, avatar_url, visibility, instructions, model, executor, created_at, updated_at
 		FROM agents
 		WHERE deleted_at IS NULL
 		ORDER BY id`
@@ -251,7 +265,7 @@ func (d *pgxDatabase) ListAgents(ctx context.Context) ([]AgentRow, error) {
 	for rows.Next() {
 		var a AgentRow
 		if err := rows.Scan(&a.ID, &a.Name, &a.Description, &a.AvatarURL, &a.Visibility,
-			&a.Instructions, &a.Model, &a.CreatedAt, &a.UpdatedAt); err != nil {
+			&a.Instructions, &a.Model, &a.Executor, &a.CreatedAt, &a.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("list agents: scan: %w", err)
 		}
 		out = append(out, a)
@@ -264,12 +278,12 @@ func (d *pgxDatabase) ListAgents(ctx context.Context) ([]AgentRow, error) {
 
 func (d *pgxDatabase) GetAgent(ctx context.Context, id int) (AgentRow, bool, error) {
 	const q = `
-		SELECT id, name, description, avatar_url, visibility, instructions, model, created_at, updated_at
+		SELECT id, name, description, avatar_url, visibility, instructions, model, executor, created_at, updated_at
 		FROM agents
 		WHERE id = $1 AND deleted_at IS NULL`
 	var a AgentRow
 	err := d.conn.QueryRow(ctx, q, id).Scan(&a.ID, &a.Name, &a.Description, &a.AvatarURL,
-		&a.Visibility, &a.Instructions, &a.Model, &a.CreatedAt, &a.UpdatedAt)
+		&a.Visibility, &a.Instructions, &a.Model, &a.Executor, &a.CreatedAt, &a.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return AgentRow{}, false, nil
 	}

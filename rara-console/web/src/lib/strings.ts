@@ -249,7 +249,16 @@ export const t = {
 		saveError: 'Não foi possível salvar.',
 		skillsSaveError: 'Agent salvo, mas não foi possível salvar as skills. Tente novamente.',
 		deleteOk: 'Excluído.',
-		deleteError: 'Não foi possível excluir.'
+		deleteError: 'Não foi possível excluir.',
+		tasks: 'Tarefas',
+		taskInstructionPlaceholder: 'Instrução para o agente…',
+		taskSubmit: 'Executar',
+		taskSubmitOk: 'Tarefa enfileirada.',
+		taskSubmitError: 'Não foi possível enviar a tarefa.',
+		tasksLoading: 'Carregando tarefas…',
+		tasksEmpty: 'Nenhuma tarefa ainda.',
+		tasksError: 'Não foi possível carregar as tarefas.',
+		taskShowResult: 'Ver resultado'
 	},
 	skills: {
 		title: 'Skills',

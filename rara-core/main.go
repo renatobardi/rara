@@ -901,6 +901,9 @@ type Database interface {
 	// ClaimAgentTask pulls the next queued task (priority DESC, then oldest), moving it
 	// queued→dispatched via FOR UPDATE SKIP LOCKED. Returns nil when the queue is empty.
 	ClaimAgentTask(ctx context.Context) (*AgentTaskRow, error)
+	// UpdateAgentTask writes daemon progress: status transition + runtime fields (session_id,
+	// work_dir, result, error). completed_at is stamped automatically for terminal statuses.
+	UpdateAgentTask(ctx context.Context, id int, status, sessionID, workDir string, result json.RawMessage, errMsg string) error
 
 	// --- LLM reconciler: concrete provider/model entries (CORR-INFER #1) --
 	// ListBoundUpstreams returns the DISTINCT concrete upstreams ("{kind}/{model}", with a
