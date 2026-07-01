@@ -64,6 +64,11 @@ func runOnce(ctx context.Context, cfg config) (bool, error) {
 	}
 	tc.WorkDir = workDir
 
+	if err := writeContextRefs(ctx, task.ContextRefs, workDir, cfg.store); err != nil {
+		markFailed(err.Error())
+		return true, fmt.Errorf("context refs: %w", err)
+	}
+
 	if err := cfg.store.UpdateTask(ctx, task.ID, "running", "", workDir, nil, ""); err != nil {
 		return true, fmt.Errorf("mark running: %w", err)
 	}

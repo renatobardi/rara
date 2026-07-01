@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -36,29 +37,35 @@ var validExecutors = map[string]bool{"cli": true, "gateway": true}
 
 // AgentInput is the write-side payload for an agent.
 type AgentInput struct {
-	Name         string `json:"name"`
-	Description  string `json:"description"`
-	AvatarURL    string `json:"avatar_url"`
-	Visibility   string `json:"visibility"`
-	Instructions string `json:"instructions"`
-	Model        string `json:"model"`    // "kind/model" upstream, via the picker
-	Executor     string `json:"executor"` // "cli" (default) | "gateway" (10c2b)
+	Name         string          `json:"name"`
+	Description  string          `json:"description"`
+	AvatarURL    string          `json:"avatar_url"`
+	Visibility   string          `json:"visibility"`
+	Instructions string          `json:"instructions"`
+	Model        string          `json:"model"`              // "kind/model" upstream, via the picker
+	Executor     string          `json:"executor"`            // "cli" (default) | "gateway" (10c2b)
+	MCPConfig    json.RawMessage `json:"mcp_config,omitempty"` // jsonb object: MCP server definitions
+	CustomEnv    json.RawMessage `json:"custom_env,omitempty"` // jsonb object: env vars injected into the CLI spawn
+	CustomArgs   json.RawMessage `json:"custom_args,omitempty"` // jsonb array: extra args appended to the CLI spawn
 }
 
 // AgentRow is the read-side DTO. SkillIDs is populated only by GetAgent (the detail read);
 // ListAgents leaves it nil to keep the roster query a single table scan.
 type AgentRow struct {
-	ID           int       `json:"id"`
-	Name         string    `json:"name"`
-	Description  string    `json:"description"`
-	AvatarURL    string    `json:"avatar_url"`
-	Visibility   string    `json:"visibility"`
-	Instructions string    `json:"instructions"`
-	Model        string    `json:"model"`
-	Executor     string    `json:"executor"`
-	SkillIDs     []int     `json:"skill_ids"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	ID           int             `json:"id"`
+	Name         string          `json:"name"`
+	Description  string          `json:"description"`
+	AvatarURL    string          `json:"avatar_url"`
+	Visibility   string          `json:"visibility"`
+	Instructions string          `json:"instructions"`
+	Model        string          `json:"model"`
+	Executor     string          `json:"executor"`
+	MCPConfig    json.RawMessage `json:"mcp_config"`
+	CustomEnv    json.RawMessage `json:"custom_env"`
+	CustomArgs   json.RawMessage `json:"custom_args"`
+	SkillIDs     []int           `json:"skill_ids"`
+	CreatedAt    time.Time       `json:"created_at"`
+	UpdatedAt    time.Time       `json:"updated_at"`
 }
 
 // agentSkillsInput is the body for PUT /v1/agents/{id}/skills.
@@ -76,6 +83,9 @@ type AgentRecord struct {
 	Instructions string
 	Model        string
 	Executor     string
+	MCPConfig    json.RawMessage
+	CustomEnv    json.RawMessage
+	CustomArgs   json.RawMessage
 }
 
 // ---------------------------------------------------------------------------
@@ -115,6 +125,7 @@ func (c *Core) UpsertAgent(ctx context.Context, in AgentInput) (int, error) {
 	return c.db.UpsertAgent(ctx, AgentRecord{
 		Name: name, Description: in.Description, AvatarURL: in.AvatarURL,
 		Visibility: vis, Instructions: in.Instructions, Model: model, Executor: exec,
+		MCPConfig: in.MCPConfig, CustomEnv: in.CustomEnv, CustomArgs: in.CustomArgs,
 	})
 }
 
@@ -231,20 +242,37 @@ func (h *httpSurface) setAgentSkills(w http.ResponseWriter, r *http.Request) {
 // ---------------------------------------------------------------------------
 
 func (d *pgxDatabase) UpsertAgent(ctx context.Context, a AgentRecord) (int, error) {
+	// Default jsonb NOT NULL columns to their DB defaults when the caller omits them.
+	mcp := a.MCPConfig
+	if len(mcp) == 0 {
+		mcp = json.RawMessage(`{}`)
+	}
+	env := a.CustomEnv
+	if len(env) == 0 {
+		env = json.RawMessage(`{}`)
+	}
+	args := a.CustomArgs
+	if len(args) == 0 {
+		args = json.RawMessage(`[]`)
+	}
 	const q = `
-		INSERT INTO agents (name, description, avatar_url, visibility, instructions, model, executor)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		INSERT INTO agents (name, description, avatar_url, visibility, instructions, model, executor, mcp_config, custom_env, custom_args)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		ON CONFLICT (owner_id, name) WHERE deleted_at IS NULL DO UPDATE SET
 			description  = EXCLUDED.description,
 			avatar_url   = EXCLUDED.avatar_url,
 			visibility   = EXCLUDED.visibility,
 			instructions = EXCLUDED.instructions,
 			model        = EXCLUDED.model,
-			executor     = EXCLUDED.executor
+			executor     = EXCLUDED.executor,
+			mcp_config   = EXCLUDED.mcp_config,
+			custom_env   = EXCLUDED.custom_env,
+			custom_args  = EXCLUDED.custom_args
 		RETURNING id`
 	var id int
 	if err := d.conn.QueryRow(ctx, q,
-		a.Name, a.Description, a.AvatarURL, a.Visibility, a.Instructions, a.Model, a.Executor).Scan(&id); err != nil {
+		a.Name, a.Description, a.AvatarURL, a.Visibility, a.Instructions, a.Model, a.Executor,
+		mcp, env, args).Scan(&id); err != nil {
 		return 0, fmt.Errorf("upsert agent: %w", err)
 	}
 	return id, nil
@@ -278,12 +306,15 @@ func (d *pgxDatabase) ListAgents(ctx context.Context) ([]AgentRow, error) {
 
 func (d *pgxDatabase) GetAgent(ctx context.Context, id int) (AgentRow, bool, error) {
 	const q = `
-		SELECT id, name, description, avatar_url, visibility, instructions, model, executor, created_at, updated_at
+		SELECT id, name, description, avatar_url, visibility, instructions, model, executor,
+		       mcp_config, custom_env, custom_args, created_at, updated_at
 		FROM agents
 		WHERE id = $1 AND deleted_at IS NULL`
 	var a AgentRow
 	err := d.conn.QueryRow(ctx, q, id).Scan(&a.ID, &a.Name, &a.Description, &a.AvatarURL,
-		&a.Visibility, &a.Instructions, &a.Model, &a.Executor, &a.CreatedAt, &a.UpdatedAt)
+		&a.Visibility, &a.Instructions, &a.Model, &a.Executor,
+		&a.MCPConfig, &a.CustomEnv, &a.CustomArgs,
+		&a.CreatedAt, &a.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return AgentRow{}, false, nil
 	}

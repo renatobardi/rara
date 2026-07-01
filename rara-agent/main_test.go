@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -29,12 +30,13 @@ func (f *FakeExecutor) Run(_ context.Context, tc TaskCtx) (ExecResult, error) {
 
 // MockStore satisfies the Store interface for tests.
 type MockStore struct {
-	task       *Task
-	agent      AgentInfo
-	skills     []SkillBundle
-	claimErr   error
-	fetchAgErr error
-	fetchSkErr error
+	task          *Task
+	agent         AgentInfo
+	skills        []SkillBundle
+	distillations map[int]string // id → content
+	claimErr      error
+	fetchAgErr    error
+	fetchSkErr    error
 
 	updated []updateCall
 }
@@ -60,6 +62,12 @@ func (m *MockStore) FetchAgent(_ context.Context, _ int) (AgentInfo, error) {
 }
 func (m *MockStore) FetchSkills(_ context.Context, _ []int) ([]SkillBundle, error) {
 	return m.skills, m.fetchSkErr
+}
+func (m *MockStore) FetchDistillation(_ context.Context, id int) (string, error) {
+	if content, ok := m.distillations[id]; ok {
+		return content, nil
+	}
+	return "", fmt.Errorf("distillation %d not found", id)
 }
 
 func TestRunOneTask(t *testing.T) {
@@ -131,6 +139,57 @@ func TestRunOnce_ExecutorError_MarksTaskFailed(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("no failed UpdateTask with error message, calls: %+v", store.updated)
+	}
+}
+
+func TestRunOnce_WritesContextRefs(t *testing.T) {
+	task := &Task{
+		ID: 5, AgentID: 42,
+		Instruction: "use the context",
+		ContextRefs: []byte(`[99]`),
+	}
+	agent := AgentInfo{ID: 42, Name: "ctx-bot"}
+	store := &MockStore{
+		task:          task,
+		agent:         agent,
+		distillations: map[int]string{99: "# My Context\n\nImportant stuff."},
+	}
+	exec := &FakeExecutor{}
+
+	cfg := config{store: store, exec: exec, workBase: t.TempDir()}
+	if _, err := runOnce(context.Background(), cfg); err != nil {
+		t.Fatalf("runOnce: %v", err)
+	}
+
+	// workDir is recorded in the "running" UpdateTask call.
+	var workDir string
+	for _, u := range store.updated {
+		if u.status == "running" && u.workDir != "" {
+			workDir = u.workDir
+		}
+	}
+	if workDir == "" {
+		t.Fatal("workDir not found in UpdateTask calls")
+	}
+
+	content, err := os.ReadFile(filepath.Join(workDir, "context", "99.md"))
+	if err != nil {
+		t.Fatalf("context/99.md not written: %v", err)
+	}
+	if string(content) != "# My Context\n\nImportant stuff." {
+		t.Errorf("content = %q", string(content))
+	}
+}
+
+func TestWriteContextRefs_InvalidIdIgnored(t *testing.T) {
+	refs := []byte(`["notanid", -1, 0]`)
+	dir := t.TempDir()
+	store := &MockStore{}
+	if err := writeContextRefs(context.Background(), refs, dir, store); err != nil {
+		t.Fatalf("writeContextRefs: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "context")); !errors.Is(err, os.ErrNotExist) {
+		t.Error("context/ dir should not exist when all ids are invalid")
 	}
 }
 

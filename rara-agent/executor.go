@@ -70,12 +70,9 @@ type Executor interface {
 // daemonEnv returns os.Environ() minus daemon-specific secrets so they are
 // never visible to the claude subprocess or any tool it invokes.
 var daemonSecrets = map[string]bool{
-	"DATABASE_URL":         true,
-	"CORE_URL":             true,
-	"CORE_TOKEN":           true,
-	"AGENT_POLL_INTERVAL_S": true,
-	"AGENT_WORK_BASE":      true,
-	"CLAUDE_BIN":           true,
+	"DATABASE_URL": true,
+	"CORE_URL":     true,
+	"CORE_TOKEN":   true,
 }
 
 func daemonEnv() []string {

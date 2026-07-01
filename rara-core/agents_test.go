@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -19,6 +20,18 @@ func (m *MockDatabase) UpsertAgent(_ context.Context, a AgentRecord) (int, error
 	if exec == "" {
 		exec = "cli"
 	}
+	mcp := a.MCPConfig
+	if len(mcp) == 0 {
+		mcp = json.RawMessage(`{}`)
+	}
+	env := a.CustomEnv
+	if len(env) == 0 {
+		env = json.RawMessage(`{}`)
+	}
+	args := a.CustomArgs
+	if len(args) == 0 {
+		args = json.RawMessage(`[]`)
+	}
 	for i, ex := range m.agents {
 		if ex.Name == a.Name && ex.DeletedAt == nil {
 			m.agents[i].Description = a.Description
@@ -27,6 +40,9 @@ func (m *MockDatabase) UpsertAgent(_ context.Context, a AgentRecord) (int, error
 			m.agents[i].Instructions = a.Instructions
 			m.agents[i].Model = a.Model
 			m.agents[i].Executor = exec
+			m.agents[i].MCPConfig = mcp
+			m.agents[i].CustomEnv = env
+			m.agents[i].CustomArgs = args
 			return ex.ID, nil
 		}
 	}
@@ -35,6 +51,7 @@ func (m *MockDatabase) UpsertAgent(_ context.Context, a AgentRecord) (int, error
 	m.agents = append(m.agents, mockAgent{
 		ID: id, Name: a.Name, Description: a.Description, AvatarURL: a.AvatarURL,
 		Visibility: a.Visibility, Instructions: a.Instructions, Model: a.Model, Executor: exec,
+		MCPConfig: mcp, CustomEnv: env, CustomArgs: args,
 	})
 	return id, nil
 }
@@ -82,6 +99,7 @@ func (m *MockDatabase) GetAgent(_ context.Context, id int) (AgentRow, bool, erro
 		row := AgentRow{
 			ID: a.ID, Name: a.Name, Description: a.Description, AvatarURL: a.AvatarURL,
 			Visibility: a.Visibility, Instructions: a.Instructions, Model: a.Model, Executor: a.Executor,
+			MCPConfig: a.MCPConfig, CustomEnv: a.CustomEnv, CustomArgs: a.CustomArgs,
 		}
 		// Attached skills, excluding soft-deleted skills (the link survives a soft delete).
 		var ids []int
@@ -407,6 +425,49 @@ func TestAgentSkillsHTTP(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), fmt.Sprintf("[%d]", sid)) {
 		t.Errorf("attached skill not reflected: %s", rec.Body)
+	}
+}
+
+// TestGetAgentReturnsMCPConfig asserts that GET /v1/agents/{id} returns the mcp_config,
+// custom_env, and custom_args that were set on upsert. This is the contract the rara-agent
+// daemon depends on — without it, agents run with no MCP servers and no injected env.
+func TestGetAgentReturnsMCPConfig(t *testing.T) {
+	core, _, _ := newTestCore(t)
+	mux := NewSurfaceMux(core, "tok")
+
+	mcpCfg := `{"mcpServers":{"neon":{"command":"npx","args":["-y","@neondatabase/mcp"]}}}`
+	body := `{"name":"mcp-bot","mcp_config":` + mcpCfg + `,"custom_env":{"FOO":"bar"},"custom_args":["--debug"]}`
+	rec := authedDo(t, mux, "PUT", "/v1/agents", body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PUT /v1/agents: %d %s", rec.Code, rec.Body)
+	}
+	var created struct{ ID int `json:"id"` }
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil || created.ID == 0 {
+		t.Fatalf("parse created id: %v / %s", err, rec.Body)
+	}
+
+	rec = authedDo(t, mux, "GET", fmt.Sprintf("/v1/agents/%d", created.ID), "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /v1/agents/{id}: %d %s", rec.Code, rec.Body)
+	}
+	got := rec.Body.String()
+	if !strings.Contains(got, `"mcp_config"`) {
+		t.Errorf("mcp_config key missing from response: %s", got)
+	}
+	if !strings.Contains(got, `"mcpServers"`) {
+		t.Errorf("mcp_config content not in response: %s", got)
+	}
+	if !strings.Contains(got, `"custom_env"`) {
+		t.Errorf("custom_env missing from response: %s", got)
+	}
+	if !strings.Contains(got, `"FOO"`) {
+		t.Errorf("custom_env content not in response: %s", got)
+	}
+	if !strings.Contains(got, `"custom_args"`) {
+		t.Errorf("custom_args missing from response: %s", got)
+	}
+	if !strings.Contains(got, `"--debug"`) {
+		t.Errorf("custom_args content not in response: %s", got)
 	}
 }
 
