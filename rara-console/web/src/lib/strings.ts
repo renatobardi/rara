@@ -13,6 +13,7 @@ export const t = {
 		inferencia: 'Providers',
 		skills: 'Skills',
 		agents: 'Agents',
+		tasks: 'Tarefas',
 		secSystem: 'Sistema',
 		audit: 'Auditoria',
 		settings: 'Configurações'
@@ -67,7 +68,23 @@ export const t = {
 		feedbackSent: 'Feedback registrado.',
 		feedbackError: 'Erro ao registrar feedback.',
 		retry: 'Tentar novamente',
-		back: '← Voltar'
+		back: '← Voltar',
+		selectRow: 'Selecionar distillation',
+		selectedCount: '{n} selecionada(s)',
+		clearSelection: 'Limpar seleção',
+		quickRunBtn: 'Rodar agent',
+		quickRunTitle: 'Executar agent sobre seleção',
+		quickRunAgent: 'Agent',
+		quickRunAgentPlaceholder: '— escolher agent —',
+		quickRunInstruction: 'Instrução (opcional)',
+		quickRunInstructionPlaceholder: 'Descreva o que o agent deve fazer com as distillations selecionadas',
+		quickRunInstructionRequired: 'A instrução é obrigatória.',
+		quickRunConfirm: 'Executar',
+		quickRunRunning: 'Enfileirando…',
+		quickRunOk: 'Tarefa enfileirada.',
+		quickRunError: 'Não foi possível enfileirar a tarefa.',
+		quickRunAgentsError: 'Não foi possível carregar os agents.',
+		quickRunAgentRequired: 'Escolha um agent.'
 	},
 	workers: {
 		title: 'Workers',
@@ -259,6 +276,24 @@ export const t = {
 		tasksEmpty: 'Nenhuma tarefa ainda.',
 		tasksError: 'Não foi possível carregar as tarefas.',
 		taskShowResult: 'Ver resultado'
+	},
+	tasks: {
+		title: 'Tarefas',
+		loading: 'Carregando tarefas…',
+		error: 'Não foi possível carregar as tarefas.',
+		empty: 'Nenhuma tarefa ainda.',
+		colQueued: 'Na fila',
+		colRunning: 'Executando',
+		colDone: 'Concluído',
+		colFailed: 'Falhou',
+		colCancelled: 'Cancelado',
+		showResult: 'Ver resultado',
+		hideResult: '▲ fechar',
+		labelInstruction: 'Instrução',
+		labelContext: 'Contexto (ids)',
+		labelCreated: 'Criado',
+		labelCompleted: 'Concluído em',
+		labelError: 'Erro'
 	},
 	skills: {
 		title: 'Skills',
