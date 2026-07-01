@@ -282,6 +282,93 @@
 	const labelClass = 'block text-[11px] font-semibold uppercase tracking-wide text-muted mb-1';
 	const errorClass = 'mt-0.5 text-[11px] text-red-500';
 	const skillName = (id: number) => skills.find((s) => s.id === id)?.name ?? `#${id}`;
+
+	// ── task panel ──
+	type AgentTask = {
+		id: number;
+		agent_id: number;
+		instruction: string;
+		status: 'queued' | 'dispatched' | 'running' | 'done' | 'failed' | 'cancelled';
+		priority: number;
+		result?: unknown;
+		error?: string;
+		session_id?: string;
+		work_dir?: string;
+		created_at: string;
+		dispatched_at?: string;
+		completed_at?: string;
+	};
+
+	let selectedAgent = $state<Agent | null>(null);
+	let tasks = $state<AgentTask[]>([]);
+	let tasksLoading = $state(false);
+	let taskPollTimer: ReturnType<typeof setInterval> | null = null;
+	let newInstruction = $state('');
+	let submittingTask = $state(false);
+
+	function toggleTaskPanel(a: Agent) {
+		if (selectedAgent?.id === a.id) {
+			selectedAgent = null;
+			stopTaskPoll();
+			return;
+		}
+		selectedAgent = a;
+		tasks = [];
+		newInstruction = '';
+		fetchTasks(a.id);
+		startTaskPoll(a.id);
+	}
+
+	function stopTaskPoll() {
+		if (taskPollTimer) { clearInterval(taskPollTimer); taskPollTimer = null; }
+	}
+	function startTaskPoll(agentId: number) {
+		stopTaskPoll();
+		taskPollTimer = setInterval(() => fetchTasks(agentId), 3000);
+	}
+	$effect(() => () => stopTaskPoll());
+
+	async function fetchTasks(agentId: number) {
+		tasksLoading = true;
+		try {
+			const r = await fetch(`/api/agents/${agentId}/tasks`);
+			if (r.ok) tasks = asList<AgentTask>(await r.json());
+		} finally {
+			tasksLoading = false;
+		}
+	}
+
+	async function submitTask() {
+		if (!selectedAgent || !newInstruction.trim()) return;
+		submittingTask = true;
+		try {
+			const r = await fetch(`/api/agents/${selectedAgent.id}/tasks`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ instruction: newInstruction.trim() })
+			});
+			if (!r.ok) { toast('err', t.agents.taskSubmitError); return; }
+			newInstruction = '';
+			await fetchTasks(selectedAgent.id);
+			toast('ok', t.agents.taskSubmitOk);
+		} catch {
+			toast('err', t.agents.taskSubmitError);
+		} finally {
+			submittingTask = false;
+		}
+	}
+
+	function statusBadgeClass(status: string): string {
+		const map: Record<string, string> = {
+			queued:     'bg-muted/20 text-muted',
+			dispatched: 'bg-blue-500/20 text-blue-600',
+			running:    'bg-yellow-500/20 text-yellow-700',
+			done:       'bg-green-500/20 text-green-700',
+			failed:     'bg-red-500/20 text-red-600',
+			cancelled:  'bg-muted/30 text-muted'
+		};
+		return map[status] ?? 'bg-muted/20 text-muted';
+	}
 	// Only render an avatar from an http(s) URL — a stored value could otherwise be a data:/blob:/
 	// other-scheme URL the operator pasted. Empty/invalid falls back to the placeholder glyph.
 	function safeAvatar(url: string): string {
@@ -337,11 +424,61 @@
 					{/if}
 					<div class="mt-auto flex gap-2 pt-1">
 						<button class="rounded-token border border-border px-2.5 py-1 text-[12px] text-muted hover:bg-hover" aria-label="{t.agents.edit}: {a.name || t.agents.untitled}" onclick={() => openEdit(a)}>{t.agents.edit}</button>
+						<button class="rounded-token border border-border px-2.5 py-1 text-[12px] text-muted hover:bg-hover {selectedAgent?.id === a.id ? 'bg-surface-2' : ''}" onclick={() => toggleTaskPanel(a)}>{t.agents.tasks}</button>
 						<button class="rounded-token border border-border px-2.5 py-1 text-[12px] text-red-500 hover:bg-hover" aria-label="{t.agents.delete}: {a.name || t.agents.untitled}" onclick={() => (confirmDelete = a)}>{t.agents.delete}</button>
 					</div>
 				</li>
 			{/each}
 		</ul>
+
+		<!-- task panel — shown below the grid for the selected agent -->
+		{#if selectedAgent}
+		<div class="mt-4 rounded-xl border border-border bg-surface p-4">
+			<h3 class="mb-3 text-[13px] font-semibold text-text">{t.agents.tasks}: {selectedAgent.name}</h3>
+
+			<div class="mb-4 flex gap-2">
+				<textarea
+					class="flex-1 resize-none rounded-lg border border-border bg-bg px-3 py-2 text-[13px] text-text placeholder:text-muted focus:outline-none focus:ring-1 focus:ring-accent"
+					rows="2"
+					placeholder={t.agents.taskInstructionPlaceholder}
+					bind:value={newInstruction}
+					disabled={submittingTask}
+				></textarea>
+				<button
+					class="self-end rounded-lg bg-text px-4 py-2 text-[13px] font-medium text-bg hover:opacity-90 disabled:opacity-50"
+					disabled={submittingTask || !newInstruction.trim()}
+					onclick={submitTask}
+				>{t.agents.taskSubmit}</button>
+			</div>
+
+			{#if tasksLoading && tasks.length === 0}
+				<p class="text-[13px] text-muted">{t.agents.tasksLoading}</p>
+			{:else if tasks.length === 0}
+				<p class="text-[13px] text-muted">{t.agents.tasksEmpty}</p>
+			{:else}
+				<ul class="space-y-2">
+				{#each tasks as task (task.id)}
+					<li class="rounded-lg border border-border bg-bg p-3">
+						<div class="flex items-start justify-between gap-2">
+							<p class="flex-1 text-[13px] text-text">{task.instruction}</p>
+							<span class="shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium {statusBadgeClass(task.status)}">{task.status}</span>
+						</div>
+						{#if task.error}
+							<p class="mt-1 text-[12px] text-red-500">{task.error}</p>
+						{/if}
+						{#if task.result}
+							<details class="mt-1">
+								<summary class="cursor-pointer text-[12px] text-muted hover:text-text">{t.agents.taskShowResult}</summary>
+								<pre class="mt-1 max-h-40 overflow-auto rounded bg-surface-2 p-2 text-[11px] text-text">{JSON.stringify(task.result, null, 2)}</pre>
+							</details>
+						{/if}
+						<p class="mt-1 text-[11px] text-muted">#{task.id} · {new Date(task.created_at).toLocaleString()}</p>
+					</li>
+				{/each}
+				</ul>
+			{/if}
+		</div>
+		{/if}
 	{/if}
 </section>
 
