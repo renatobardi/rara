@@ -15,6 +15,10 @@ import (
 // ---------------------------------------------------------------------------
 
 func (m *MockDatabase) UpsertAgent(_ context.Context, a AgentRecord) (int, error) {
+	exec := a.Executor
+	if exec == "" {
+		exec = "cli"
+	}
 	for i, ex := range m.agents {
 		if ex.Name == a.Name && ex.DeletedAt == nil {
 			m.agents[i].Description = a.Description
@@ -22,6 +26,7 @@ func (m *MockDatabase) UpsertAgent(_ context.Context, a AgentRecord) (int, error
 			m.agents[i].Visibility = a.Visibility
 			m.agents[i].Instructions = a.Instructions
 			m.agents[i].Model = a.Model
+			m.agents[i].Executor = exec
 			return ex.ID, nil
 		}
 	}
@@ -29,7 +34,7 @@ func (m *MockDatabase) UpsertAgent(_ context.Context, a AgentRecord) (int, error
 	m.nextAgentID++
 	m.agents = append(m.agents, mockAgent{
 		ID: id, Name: a.Name, Description: a.Description, AvatarURL: a.AvatarURL,
-		Visibility: a.Visibility, Instructions: a.Instructions, Model: a.Model,
+		Visibility: a.Visibility, Instructions: a.Instructions, Model: a.Model, Executor: exec,
 	})
 	return id, nil
 }
@@ -42,7 +47,7 @@ func (m *MockDatabase) ListAgents(_ context.Context) ([]AgentRow, error) {
 		}
 		out = append(out, AgentRow{
 			ID: a.ID, Name: a.Name, Description: a.Description, AvatarURL: a.AvatarURL,
-			Visibility: a.Visibility, Instructions: a.Instructions, Model: a.Model,
+			Visibility: a.Visibility, Instructions: a.Instructions, Model: a.Model, Executor: a.Executor,
 		})
 	}
 	return out, nil
@@ -76,7 +81,7 @@ func (m *MockDatabase) GetAgent(_ context.Context, id int) (AgentRow, bool, erro
 		}
 		row := AgentRow{
 			ID: a.ID, Name: a.Name, Description: a.Description, AvatarURL: a.AvatarURL,
-			Visibility: a.Visibility, Instructions: a.Instructions, Model: a.Model,
+			Visibility: a.Visibility, Instructions: a.Instructions, Model: a.Model, Executor: a.Executor,
 		}
 		// Attached skills, excluding soft-deleted skills (the link survives a soft delete).
 		var ids []int
@@ -193,6 +198,37 @@ func TestUpsertAgentRejectsMalformedModel(t *testing.T) {
 	// Empty model is allowed (optional — an agent can exist before a model is picked).
 	if _, err := core.UpsertAgent(ctx, AgentInput{Name: "y", Model: ""}); err != nil {
 		t.Errorf("empty model rejected: %v", err)
+	}
+}
+
+func TestUpsertAgentExecutorRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	core, _, _ := newTestCore(t)
+
+	// Default executor is "cli"
+	id := mustAgent(t, core, ctx, AgentInput{Name: "bot", Visibility: "workspace"})
+	a, err := core.GetAgent(ctx, id)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if a.Executor != "cli" {
+		t.Errorf("default executor: got %q, want %q", a.Executor, "cli")
+	}
+
+	// Explicit gateway executor persists
+	mustAgent(t, core, ctx, AgentInput{Name: "bot", Visibility: "workspace", Executor: "gateway"})
+	a2, err := core.GetAgent(ctx, id)
+	if err != nil {
+		t.Fatalf("get gateway: %v", err)
+	}
+	if a2.Executor != "gateway" {
+		t.Errorf("explicit executor: got %q, want %q", a2.Executor, "gateway")
+	}
+
+	// Invalid executor rejected
+	var bad badInputError
+	if _, err := core.UpsertAgent(ctx, AgentInput{Name: "bot2", Executor: "magic"}); !errors.As(err, &bad) {
+		t.Errorf("invalid executor accepted, want badInput: %v", err)
 	}
 }
 

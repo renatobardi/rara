@@ -166,6 +166,7 @@ type mockAgent struct {
 	Visibility   string
 	Instructions string
 	Model        string
+	Executor     string
 	DeletedAt    *bool // non-nil = soft-deleted
 }
 
