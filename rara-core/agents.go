@@ -42,10 +42,10 @@ type AgentInput struct {
 	AvatarURL    string          `json:"avatar_url"`
 	Visibility   string          `json:"visibility"`
 	Instructions string          `json:"instructions"`
-	Model        string          `json:"model"`              // "kind/model" upstream, via the picker
-	Executor     string          `json:"executor"`            // "cli" (default) | "gateway" (10c2b)
-	MCPConfig    json.RawMessage `json:"mcp_config,omitempty"` // jsonb object: MCP server definitions
-	CustomEnv    json.RawMessage `json:"custom_env,omitempty"` // jsonb object: env vars injected into the CLI spawn
+	Model        string          `json:"model"`                 // "kind/model" upstream, via the picker
+	Executor     string          `json:"executor"`              // "cli" (default) | "gateway" (10c2b)
+	MCPConfig    json.RawMessage `json:"mcp_config,omitempty"`  // jsonb object: MCP server definitions
+	CustomEnv    json.RawMessage `json:"custom_env,omitempty"`  // jsonb object: env vars injected into the CLI spawn
 	CustomArgs   json.RawMessage `json:"custom_args,omitempty"` // jsonb array: extra args appended to the CLI spawn
 }
 

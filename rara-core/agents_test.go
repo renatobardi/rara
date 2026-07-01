@@ -441,7 +441,9 @@ func TestGetAgentReturnsMCPConfig(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("PUT /v1/agents: %d %s", rec.Code, rec.Body)
 	}
-	var created struct{ ID int `json:"id"` }
+	var created struct {
+		ID int `json:"id"`
+	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil || created.ID == 0 {
 		t.Fatalf("parse created id: %v / %s", err, rec.Body)
 	}
