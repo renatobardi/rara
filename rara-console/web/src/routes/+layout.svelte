@@ -40,6 +40,7 @@
 		{ icon: '⊹', label: t.nav.inferencia, href: '/inferencia' },
 		{ icon: '✸', label: t.nav.skills, href: '/skills' },
 		{ icon: '◆', label: t.nav.agents, href: '/agents' },
+		{ icon: '⊡', label: t.nav.tasks, href: '/tasks' },
 		{ section: t.nav.secSystem },
 		{ icon: '≣', label: t.nav.audit, href: '/auditoria' },
 		{ icon: '⚙', label: t.nav.settings, href: '/configuracoes' }
