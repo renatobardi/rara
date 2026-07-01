@@ -67,6 +67,36 @@ type Executor interface {
 	Run(ctx context.Context, tc TaskCtx) (ExecResult, error)
 }
 
+// daemonEnv returns os.Environ() minus daemon-specific secrets so they are
+// never visible to the claude subprocess or any tool it invokes.
+var daemonSecrets = map[string]bool{
+	"DATABASE_URL":         true,
+	"CORE_URL":             true,
+	"CORE_TOKEN":           true,
+	"AGENT_POLL_INTERVAL_S": true,
+	"AGENT_WORK_BASE":      true,
+	"CLAUDE_BIN":           true,
+}
+
+func daemonEnv() []string {
+	env := make([]string, 0, len(os.Environ()))
+	for _, kv := range os.Environ() {
+		key := kv
+		if i := len(kv); i > 0 {
+			for j := 0; j < i; j++ {
+				if kv[j] == '=' {
+					key = kv[:j]
+					break
+				}
+			}
+		}
+		if !daemonSecrets[key] {
+			env = append(env, kv)
+		}
+	}
+	return env
+}
+
 // CLIExecutor invokes the Claude Code CLI (`claude -p`) in the pre-built workdir.
 type CLIExecutor struct {
 	bin string // path to `claude` binary
@@ -82,7 +112,9 @@ func (e *CLIExecutor) Run(ctx context.Context, tc TaskCtx) (ExecResult, error) {
 
 	cmd := exec.CommandContext(ctx, e.bin, args...) //nolint:gosec — bin is operator-controlled
 	cmd.Dir = tc.WorkDir
-	cmd.Env = os.Environ()
+	// Pass a filtered env: strip daemon secrets (DATABASE_URL, CORE_TOKEN, …) so the
+	// subprocess and any tool it spawns cannot read them from the environment.
+	cmd.Env = daemonEnv()
 	for k, v := range tc.Agent.CustomEnv {
 		cmd.Env = append(cmd.Env, k+"="+v)
 	}

@@ -302,7 +302,9 @@
 	let selectedAgent = $state<Agent | null>(null);
 	let tasks = $state<AgentTask[]>([]);
 	let tasksLoading = $state(false);
+	let tasksError = $state(false);
 	let taskPollTimer: ReturnType<typeof setInterval> | null = null;
+	let tasksFetchSeq = 0;
 	let newInstruction = $state('');
 	let submittingTask = $state(false);
 
@@ -314,6 +316,7 @@
 		}
 		selectedAgent = a;
 		tasks = [];
+		tasksError = false;
 		newInstruction = '';
 		fetchTasks(a.id);
 		startTaskPoll(a.id);
@@ -329,27 +332,38 @@
 	$effect(() => () => stopTaskPoll());
 
 	async function fetchTasks(agentId: number) {
+		const seq = ++tasksFetchSeq;
 		tasksLoading = true;
 		try {
 			const r = await fetch(`/api/agents/${agentId}/tasks`);
-			if (r.ok) tasks = asList<AgentTask>(await r.json());
+			if (seq !== tasksFetchSeq) return; // superseded by a newer fetch
+			if (r.ok) {
+				tasks = asList<AgentTask>(await r.json());
+				tasksError = false;
+			} else {
+				tasksError = true;
+			}
+		} catch {
+			if (seq === tasksFetchSeq) tasksError = true;
 		} finally {
-			tasksLoading = false;
+			if (seq === tasksFetchSeq) tasksLoading = false;
 		}
 	}
 
 	async function submitTask() {
-		if (!selectedAgent || !newInstruction.trim()) return;
+		const agentId = selectedAgent?.id;
+		const instruction = newInstruction.trim();
+		if (!agentId || !instruction) return;
 		submittingTask = true;
 		try {
-			const r = await fetch(`/api/agents/${selectedAgent.id}/tasks`, {
+			const r = await fetch(`/api/agents/${agentId}/tasks`, {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ instruction: newInstruction.trim() })
+				body: JSON.stringify({ instruction })
 			});
 			if (!r.ok) { toast('err', t.agents.taskSubmitError); return; }
 			newInstruction = '';
-			await fetchTasks(selectedAgent.id);
+			await fetchTasks(agentId);
 			toast('ok', t.agents.taskSubmitOk);
 		} catch {
 			toast('err', t.agents.taskSubmitError);
@@ -424,7 +438,12 @@
 					{/if}
 					<div class="mt-auto flex gap-2 pt-1">
 						<button class="rounded-token border border-border px-2.5 py-1 text-[12px] text-muted hover:bg-hover" aria-label="{t.agents.edit}: {a.name || t.agents.untitled}" onclick={() => openEdit(a)}>{t.agents.edit}</button>
-						<button class="rounded-token border border-border px-2.5 py-1 text-[12px] text-muted hover:bg-hover {selectedAgent?.id === a.id ? 'bg-surface-2' : ''}" onclick={() => toggleTaskPanel(a)}>{t.agents.tasks}</button>
+						<button
+							class="rounded-token border border-border px-2.5 py-1 text-[12px] text-muted hover:bg-hover {selectedAgent?.id === a.id ? 'bg-surface-2' : ''}"
+							aria-expanded={selectedAgent?.id === a.id}
+							aria-controls="task-panel-{a.id}"
+							onclick={() => toggleTaskPanel(a)}
+						>{t.agents.tasks}</button>
 						<button class="rounded-token border border-border px-2.5 py-1 text-[12px] text-red-500 hover:bg-hover" aria-label="{t.agents.delete}: {a.name || t.agents.untitled}" onclick={() => (confirmDelete = a)}>{t.agents.delete}</button>
 					</div>
 				</li>
@@ -433,13 +452,14 @@
 
 		<!-- task panel — shown below the grid for the selected agent -->
 		{#if selectedAgent}
-		<div class="mt-4 rounded-xl border border-border bg-surface p-4">
+		<div id="task-panel-{selectedAgent.id}" class="mt-4 rounded-xl border border-border bg-surface p-4">
 			<h3 class="mb-3 text-[13px] font-semibold text-text">{t.agents.tasks}: {selectedAgent.name}</h3>
 
 			<div class="mb-4 flex gap-2">
 				<textarea
 					class="flex-1 resize-none rounded-lg border border-border bg-bg px-3 py-2 text-[13px] text-text placeholder:text-muted focus:outline-none focus:ring-1 focus:ring-accent"
 					rows="2"
+					aria-label={t.agents.taskInstructionPlaceholder}
 					placeholder={t.agents.taskInstructionPlaceholder}
 					bind:value={newInstruction}
 					disabled={submittingTask}
@@ -451,7 +471,9 @@
 				>{t.agents.taskSubmit}</button>
 			</div>
 
-			{#if tasksLoading && tasks.length === 0}
+			{#if tasksError}
+				<p class="text-[13px] text-red-500">{t.agents.tasksError}</p>
+			{:else if tasksLoading && tasks.length === 0}
 				<p class="text-[13px] text-muted">{t.agents.tasksLoading}</p>
 			{:else if tasks.length === 0}
 				<p class="text-[13px] text-muted">{t.agents.tasksEmpty}</p>

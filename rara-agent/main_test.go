@@ -68,7 +68,7 @@ func TestRunOneTask(t *testing.T) {
 	store := &MockStore{task: task, agent: agent}
 	exec := &FakeExecutor{SessionID: "sess-abc", Output: json.RawMessage(`{"ok":true}`)}
 
-	cfg := config{store: store, exec: exec}
+	cfg := config{store: store, exec: exec, workBase: t.TempDir()}
 	ran, err := runOnce(context.Background(), cfg)
 	if err != nil {
 		t.Fatalf("runOnce: %v", err)
@@ -96,7 +96,7 @@ func TestRunOneTask(t *testing.T) {
 
 func TestRunOnce_EmptyQueue(t *testing.T) {
 	store := &MockStore{task: nil}
-	cfg := config{store: store, exec: &FakeExecutor{}}
+	cfg := config{store: store, exec: &FakeExecutor{}, workBase: t.TempDir()}
 	ran, err := runOnce(context.Background(), cfg)
 	if err != nil {
 		t.Fatalf("runOnce: %v", err)
@@ -114,7 +114,7 @@ func TestRunOnce_ExecutorError_MarksTaskFailed(t *testing.T) {
 	store := &MockStore{task: task, agent: AgentInfo{ID: 1}}
 	exec := &FakeExecutor{Err: errors.New("claude exploded")}
 
-	cfg := config{store: store, exec: exec}
+	cfg := config{store: store, exec: exec, workBase: t.TempDir()}
 	ran, err := runOnce(context.Background(), cfg)
 	if err != nil {
 		t.Fatalf("runOnce: %v", err)

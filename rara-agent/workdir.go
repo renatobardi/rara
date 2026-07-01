@@ -12,6 +12,9 @@ import (
 //   - SKILL.md   — concatenation of all skill content (always written)
 //   - skill files — written only for trusted skills (Trusted=true)
 func BuildWorkdir(tc TaskCtx, baseDir string) (string, error) {
+	if err := os.MkdirAll(baseDir, 0o700); err != nil {
+		return "", fmt.Errorf("mkdir work base %q: %w", baseDir, err)
+	}
 	dir, err := os.MkdirTemp(baseDir, fmt.Sprintf("task-%d-*", tc.TaskID))
 	if err != nil {
 		return "", fmt.Errorf("mktemp: %w", err)

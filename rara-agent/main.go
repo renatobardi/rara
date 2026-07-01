@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/signal"
 	"strconv"
+	"syscall"
 	"time"
 )
 
@@ -28,15 +30,21 @@ func runOnce(ctx context.Context, cfg config) (bool, error) {
 		return false, nil
 	}
 
+	markFailed := func(reason string) {
+		if uerr := cfg.store.UpdateTask(ctx, task.ID, "failed", "", "", nil, reason); uerr != nil {
+			log.Printf("task %d: mark failed: %v (original error: %s)", task.ID, uerr, reason)
+		}
+	}
+
 	agent, err := cfg.store.FetchAgent(ctx, task.AgentID)
 	if err != nil {
-		_ = cfg.store.UpdateTask(ctx, task.ID, "failed", "", "", nil, err.Error())
+		markFailed(err.Error())
 		return true, fmt.Errorf("fetch agent %d: %w", task.AgentID, err)
 	}
 
 	skills, err := cfg.store.FetchSkills(ctx, agent.SkillIDs)
 	if err != nil {
-		_ = cfg.store.UpdateTask(ctx, task.ID, "failed", "", "", nil, err.Error())
+		markFailed(err.Error())
 		return true, fmt.Errorf("fetch skills: %w", err)
 	}
 
@@ -51,7 +59,7 @@ func runOnce(ctx context.Context, cfg config) (bool, error) {
 
 	workDir, err := BuildWorkdir(tc, cfg.workBase)
 	if err != nil {
-		_ = cfg.store.UpdateTask(ctx, task.ID, "failed", "", "", nil, err.Error())
+		markFailed(err.Error())
 		return true, fmt.Errorf("build workdir: %w", err)
 	}
 	tc.WorkDir = workDir
@@ -62,7 +70,7 @@ func runOnce(ctx context.Context, cfg config) (bool, error) {
 
 	result, execErr := cfg.exec.Run(ctx, tc)
 	if execErr != nil {
-		_ = cfg.store.UpdateTask(ctx, task.ID, "failed", "", workDir, nil, execErr.Error())
+		markFailed(execErr.Error())
 		return true, nil
 	}
 
@@ -85,7 +93,8 @@ func main() {
 	claudeBin := envOr("CLAUDE_BIN", "claude")
 	workBase := envOr("AGENT_WORK_BASE", "/tmp/rara-agent")
 
-	ctx := context.Background()
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
 
 	store, err := newPgxStore(ctx, dbURL, coreURL, coreToken)
 	if err != nil {
@@ -94,18 +103,28 @@ func main() {
 
 	cfg := config{
 		store:        store,
-		exec:         &CLIExecutor{bin: claudeBin}, // ponytail: stub Run(); Task 6 fills in
+		exec:         &CLIExecutor{bin: claudeBin},
 		pollInterval: time.Duration(pollSec) * time.Second,
 		workBase:     workBase,
 	}
 
 	log.Printf("rara-agent starting (poll=%ds)", pollSec)
+	ticker := time.NewTicker(cfg.pollInterval)
+	defer ticker.Stop()
 	for {
-		_, err := runOnce(ctx, cfg)
+		ran, err := runOnce(ctx, cfg)
 		if err != nil {
 			log.Printf("runOnce error: %v", err)
 		}
-		time.Sleep(cfg.pollInterval)
+		if ran {
+			continue // drain the queue without waiting
+		}
+		select {
+		case <-ctx.Done():
+			log.Println("rara-agent: shutting down")
+			return
+		case <-ticker.C:
+		}
 	}
 }
 
@@ -132,4 +151,3 @@ func envIntOr(k string, def int) int {
 	}
 	return def
 }
-

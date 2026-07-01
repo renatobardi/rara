@@ -1,4 +1,4 @@
-.PHONY: test test-race test-coverage lint build install-local clean all
+.PHONY: test test-race test-coverage lint build build-arm64 install-local clean all
 
 test:
 	go test -v ./...
@@ -18,10 +18,13 @@ lint:
 build:
 	go build -ldflags="-w -s" -o rara-agent .
 
+build-arm64:
+	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags="-w -s" -o rara-agent-arm64 .
+
 install-local:
 	@bash deploy/install-agent-mac.sh
 
 clean:
-	rm -f rara-agent coverage.out
+	rm -f rara-agent rara-agent-arm64 coverage.out
 
 all: clean lint test build

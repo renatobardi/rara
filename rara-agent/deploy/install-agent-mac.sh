@@ -14,7 +14,15 @@ cd "$SCRIPT_DIR"
 echo "Building rara-agent..."
 go build -ldflags="-w -s" -o "$BINARY" .
 
-mkdir -p "$INSTALL_DIR" "$LOG_DIR"
+# Create dirs; LaunchAgents may not exist on a fresh profile.
+mkdir -p "$INSTALL_DIR" "$LOG_DIR" "$(dirname "$PLIST_DST")"
+
+# Restrict dirs and env file: credentials live here.
+chmod 700 "$INSTALL_DIR" "$LOG_DIR"
+if [ -f "$INSTALL_DIR/agent.env" ]; then
+    chmod 600 "$INSTALL_DIR/agent.env"
+fi
+
 cp "$BINARY" "$INSTALL_DIR/$BINARY"
 chmod 755 "$INSTALL_DIR/$BINARY"
 
