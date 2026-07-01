@@ -41,8 +41,8 @@ type AgentInput struct {
 	AvatarURL    string `json:"avatar_url"`
 	Visibility   string `json:"visibility"`
 	Instructions string `json:"instructions"`
-	Model        string `json:"model"`     // "kind/model" upstream, via the picker
-	Executor     string `json:"executor"`  // "cli" (default) | "gateway" (10c2b)
+	Model        string `json:"model"`    // "kind/model" upstream, via the picker
+	Executor     string `json:"executor"` // "cli" (default) | "gateway" (10c2b)
 }
 
 // AgentRow is the read-side DTO. SkillIDs is populated only by GetAgent (the detail read);
