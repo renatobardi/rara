@@ -181,6 +181,20 @@ func TestRunOnce_WritesContextRefs(t *testing.T) {
 	}
 }
 
+func TestWriteContextRefs_UnavailableDistillationIgnored(t *testing.T) {
+	// id 7 is a valid integer but not in the mock map → FetchDistillation returns error.
+	// writeContextRefs must log and skip — not fail the task.
+	refs := []byte(`[7]`)
+	dir := t.TempDir()
+	store := &MockStore{} // empty distillations map
+	if err := writeContextRefs(context.Background(), refs, dir, store); err != nil {
+		t.Fatalf("writeContextRefs: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "context")); !errors.Is(err, os.ErrNotExist) {
+		t.Error("context/ dir should not exist when distillation fetch fails")
+	}
+}
+
 func TestWriteContextRefs_InvalidIdIgnored(t *testing.T) {
 	refs := []byte(`["notanid", -1, 0]`)
 	dir := t.TempDir()
