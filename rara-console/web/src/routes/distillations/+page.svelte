@@ -12,7 +12,7 @@
 		status: string;
 	};
 
-	type Agent = { id: number; name: string; instructions: string };
+	type Agent = { id: number; name: string };
 
 	const STATUS_COLOR: Record<string, string> = {
 		done: 'bg-green',
@@ -60,12 +60,14 @@
 	let agents = $state<Agent[]>([]);
 	let agentsLoading = $state(false);
 	let agentsError = $state(false);
+	let agentsRequestSeq = 0;
 	let selectedAgentId = $state<number | null>(null);
 	let quickInstruction = $state('');
 	let modalErrors = $state<Record<string, string>>({});
 	let submitting = $state(false);
 
 	async function openModal() {
+		const req = ++agentsRequestSeq;
 		modalOpen = true;
 		selectedAgentId = null;
 		quickInstruction = '';
@@ -74,30 +76,32 @@
 		agentsLoading = true;
 		try {
 			const r = await fetch('/api/agents');
+			if (req !== agentsRequestSeq) return;
 			agents = r.ok ? await r.json() : [];
 			if (!r.ok) agentsError = true;
 		} catch {
-			agents = [];
-			agentsError = true;
+			if (req === agentsRequestSeq) { agents = []; agentsError = true; }
 		} finally {
-			agentsLoading = false;
+			if (req === agentsRequestSeq) agentsLoading = false;
 		}
 	}
 
 	async function submitQuickRun() {
 		const errs: Record<string, string> = {};
 		if (!selectedAgentId) errs.agent = t.distillations.quickRunAgentRequired;
+		if (!quickInstruction.trim()) errs.instruction = t.distillations.quickRunInstructionRequired;
 		modalErrors = errs;
 		if (Object.keys(errs).length) return;
 
-		const agent = agents.find((a) => a.id === selectedAgentId)!;
-		const instruction = quickInstruction.trim() || agent.instructions;
+		const agent = agents.find((a) => a.id === selectedAgentId);
+		if (!agent) { modalErrors = { agent: t.distillations.quickRunAgentRequired }; return; }
+
 		submitting = true;
 		try {
 			const r = await fetch(`/api/agents/${selectedAgentId}/tasks`, {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ instruction, context_refs: selectedIds })
+				body: JSON.stringify({ instruction: quickInstruction.trim(), context_refs: selectedIds })
 			});
 			if (!r.ok) {
 				toast('err', t.distillations.quickRunError);
@@ -119,6 +123,38 @@
 
 	function onWindowKeydown(e: KeyboardEvent) {
 		if (e.key === 'Escape') closeModal();
+	}
+
+	// Focus trap for the quick-run modal (mirrors agents/+page.svelte pattern).
+	function focusInto(node: HTMLElement) {
+		const sel =
+			'a[href], button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
+		const focusables = () =>
+			Array.from(node.querySelectorAll<HTMLElement>(sel)).filter((el) => el.offsetParent !== null);
+		const prev = document.activeElement as HTMLElement | null;
+		focusables()[0]?.focus();
+		function onKeydown(e: KeyboardEvent) {
+			if (e.key !== 'Tab') return;
+			const els = focusables();
+			if (els.length === 0) return;
+			const first = els[0];
+			const last = els[els.length - 1];
+			const active = document.activeElement;
+			if (e.shiftKey && active === first) {
+				e.preventDefault();
+				last.focus();
+			} else if (!e.shiftKey && active === last) {
+				e.preventDefault();
+				first.focus();
+			}
+		}
+		node.addEventListener('keydown', onKeydown);
+		return {
+			destroy: () => {
+				node.removeEventListener('keydown', onKeydown);
+				prev?.focus?.();
+			}
+		};
 	}
 
 	const fieldClass =
@@ -211,6 +247,7 @@
 			role="dialog"
 			aria-modal="true"
 			aria-labelledby="qr-title"
+			use:focusInto
 		>
 			<h3 id="qr-title" class="mb-4 text-[14px] font-semibold">{t.distillations.quickRunTitle}</h3>
 			<p class="mb-3 text-[12px] text-muted">
@@ -245,6 +282,7 @@
 						bind:value={quickInstruction}
 						disabled={submitting}
 					></textarea>
+					{#if modalErrors.instruction}<p class={errorClass}>{modalErrors.instruction}</p>{/if}
 				</div>
 
 				<div class="flex gap-2">

@@ -56,6 +56,7 @@
 		'/inferencia': t.nav.inferencia,
 		'/skills': t.nav.skills,
 		'/agents': t.nav.agents,
+		'/tasks': t.nav.tasks,
 		'/auditoria': t.nav.audit,
 		'/configuracoes': t.settings.title
 	};

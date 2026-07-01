@@ -28,6 +28,7 @@
 	let loading = $state(true);
 	let error = $state(false);
 	let fetchSeq = 0;
+	let controller: AbortController | null = null;
 	let expanded = $state<Set<number>>(new Set());
 
 	function tasksForCol(col: (typeof COLS)[number]) {
@@ -41,22 +42,27 @@
 		expanded = next;
 	}
 
-	function statusBadgeClass(status: string): string {
-		const map: Record<string, string> = {
-			queued: 'bg-muted/20 text-muted',
+	function statusBadgeClass(status: AgentTask['status']): string {
+		const map: Record<AgentTask['status'], string> = {
+			queued:     'bg-muted/20 text-muted',
 			dispatched: 'bg-blue-500/20 text-blue-600',
-			running: 'bg-yellow-500/20 text-yellow-700',
-			done: 'bg-green-500/20 text-green-700',
-			failed: 'bg-red-500/20 text-red-600',
-			cancelled: 'bg-muted/30 text-muted'
+			running:    'bg-yellow-500/20 text-yellow-700',
+			done:       'bg-green-500/20 text-green-700',
+			failed:     'bg-red-500/20 text-red-600',
+			cancelled:  'bg-muted/30 text-muted'
 		};
-		return map[status] ?? 'bg-muted/20 text-muted';
+		return map[status];
 	}
 
 	async function fetchTasks() {
 		const seq = ++fetchSeq;
+		controller?.abort();
+		controller = new AbortController();
+		const { signal } = controller;
+		const timeout = setTimeout(() => controller?.abort(), 8000);
 		try {
-			const r = await fetch('/api/agent-tasks');
+			const r = await fetch('/api/agent-tasks', { signal });
+			clearTimeout(timeout);
 			if (seq !== fetchSeq) return;
 			if (r.ok) {
 				const data = await r.json();
@@ -65,8 +71,12 @@
 			} else {
 				error = true;
 			}
-		} catch {
-			if (seq === fetchSeq) error = true;
+		} catch (e) {
+			clearTimeout(timeout);
+			// AbortError = intentional cancel; skip error state update
+			if (seq === fetchSeq && !(e instanceof DOMException && e.name === 'AbortError')) {
+				error = true;
+			}
 		} finally {
 			if (seq === fetchSeq) loading = false;
 		}
@@ -74,7 +84,7 @@
 
 	fetchTasks();
 	const poll = setInterval(fetchTasks, 5000);
-	onDestroy(() => clearInterval(poll));
+	onDestroy(() => { clearInterval(poll); controller?.abort(); });
 </script>
 
 <section>
@@ -108,7 +118,7 @@
 							{#each colTasks as task (task.id)}
 								<li class="rounded-xl border border-border bg-surface p-3">
 									<div class="flex items-start justify-between gap-2">
-										<p class="flex-1 line-clamp-2 text-[12px] text-text">{task.instruction}</p>
+										<p class="flex-1 line-clamp-2 text-[12px] text-text" title={task.instruction}>{task.instruction}</p>
 										<span
 											class="shrink-0 rounded-full px-2 py-0.5 text-[10px] font-medium {statusBadgeClass(task.status)}"
 											>{task.status}</span
@@ -124,10 +134,12 @@
 									{#if task.result || (task.context_refs && task.context_refs.length > 0)}
 										<button
 											class="mt-1.5 text-[11px] text-muted underline hover:text-text"
+											aria-expanded={expanded.has(task.id)}
+											aria-controls="task-details-{task.id}"
 											onclick={() => toggleExpand(task.id)}
-										>{expanded.has(task.id) ? '▲ fechar' : t.tasks.showResult}</button>
+										>{expanded.has(task.id) ? t.tasks.hideResult : t.tasks.showResult}</button>
 										{#if expanded.has(task.id)}
-											<div class="mt-2 space-y-1">
+											<div id="task-details-{task.id}" class="mt-2 space-y-1">
 												{#if task.context_refs && task.context_refs.length > 0}
 													<p class="text-[11px] text-muted">
 														<span class="font-semibold">{t.tasks.labelContext}:</span>
