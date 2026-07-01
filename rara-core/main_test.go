@@ -167,6 +167,9 @@ type mockAgent struct {
 	Instructions string
 	Model        string
 	Executor     string
+	MCPConfig    json.RawMessage
+	CustomEnv    json.RawMessage
+	CustomArgs   json.RawMessage
 	DeletedAt    *bool // non-nil = soft-deleted
 }
 

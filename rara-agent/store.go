@@ -19,6 +19,8 @@ type Store interface {
 	UpdateTask(ctx context.Context, id int, status, sessionID, workDir string, result json.RawMessage, errMsg string) error
 	FetchAgent(ctx context.Context, agentID int) (AgentInfo, error)
 	FetchSkills(ctx context.Context, skillIDs []int) ([]SkillBundle, error)
+	// FetchDistillation returns the content of a distillation (empty string if not yet distilled).
+	FetchDistillation(ctx context.Context, id int) (string, error)
 }
 
 type pgxStore struct {
@@ -226,6 +228,39 @@ func (s *pgxStore) FetchSkills(ctx context.Context, skillIDs []int) ([]SkillBund
 		out = append(out, bundle)
 	}
 	return out, nil
+}
+
+// FetchDistillation calls GET /v1/distillations/{id} and returns the content field.
+// Returns an empty string if the distillation exists but has no content yet.
+func (s *pgxStore) FetchDistillation(ctx context.Context, id int) (string, error) {
+	url := fmt.Sprintf("%s/v1/distillations/%d", s.coreURL, id)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return "", fmt.Errorf("build distillation request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+s.coreToken)
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("fetch distillation %d: %w", id, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("fetch distillation %d: status %d", id, resp.StatusCode)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("read distillation response: %w", err)
+	}
+	var d struct {
+		Content *string `json:"content"`
+	}
+	if err := json.Unmarshal(body, &d); err != nil {
+		return "", fmt.Errorf("decode distillation %d: %w", id, err)
+	}
+	if d.Content == nil {
+		return "", nil
+	}
+	return *d.Content, nil
 }
 
 func (s *pgxStore) fetchSkillFiles(ctx context.Context, skillID int) ([]SkillFile, error) {

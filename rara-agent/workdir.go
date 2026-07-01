@@ -1,9 +1,13 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -50,6 +54,37 @@ func BuildWorkdir(tc TaskCtx, baseDir string) (string, error) {
 	}
 
 	return dir, nil
+}
+
+// writeContextRefs resolves context_refs (JSON int array) into context/<id>.md files so the CLI
+// can read curated content before running. Invalid ids are skipped; unavailable distillations are
+// logged and skipped so a single missing ref can't abort an otherwise valid task.
+func writeContextRefs(ctx context.Context, refs []byte, dir string, store Store) error {
+	if len(refs) == 0 {
+		return nil
+	}
+	var elements []json.RawMessage
+	if err := json.Unmarshal(refs, &elements); err != nil {
+		return fmt.Errorf("parse context_refs: %w", err)
+	}
+	for _, elem := range elements {
+		id, err := strconv.Atoi(strings.TrimSpace(string(elem)))
+		if err != nil || id <= 0 {
+			continue // not a positive integer — skip silently
+		}
+		content, err := store.FetchDistillation(ctx, id)
+		if err != nil {
+			log.Printf("context_ref %d: %v", id, err)
+			continue
+		}
+		if content == "" {
+			continue
+		}
+		if err := writeWorkFile(dir, fmt.Sprintf("context/%d.md", id), content); err != nil {
+			return fmt.Errorf("write context/%d.md: %w", id, err)
+		}
+	}
+	return nil
 }
 
 // writeWorkFile writes content to name inside dir.

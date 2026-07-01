@@ -67,15 +67,15 @@ type Executor interface {
 	Run(ctx context.Context, tc TaskCtx) (ExecResult, error)
 }
 
-// daemonEnv returns os.Environ() minus daemon-specific secrets so they are
-// never visible to the claude subprocess or any tool it invokes.
+// daemonEnv returns os.Environ() minus variables that must not leak to the claude subprocess or
+// any tool it invokes. Secrets (credentials) and AGENT_WORK_BASE are both filtered:
+// AGENT_WORK_BASE exposes the shared root of every task's workdir — the subprocess already has
+// its own workdir via cmd.Dir and must not be able to enumerate sibling tasks.
 var daemonSecrets = map[string]bool{
-	"DATABASE_URL":         true,
-	"CORE_URL":             true,
-	"CORE_TOKEN":           true,
-	"AGENT_POLL_INTERVAL_S": true,
-	"AGENT_WORK_BASE":      true,
-	"CLAUDE_BIN":           true,
+	"DATABASE_URL":    true,
+	"CORE_URL":        true,
+	"CORE_TOKEN":      true,
+	"AGENT_WORK_BASE": true,
 }
 
 func daemonEnv() []string {
